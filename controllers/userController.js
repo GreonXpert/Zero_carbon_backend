@@ -321,6 +321,36 @@ const initializeAdminAccount = async () => {
   }
 };
 
+// =========================
+// FIND USERS BY COMPANY NAME
+// =========================
+const getUsersByCompanyName = async (req, res) => {
+  try {
+    const { companyName } = req.params; // Get companyName from URL parameters
+
+
+    // Find users with the given companyName
+    const users = await User.find({ companyName });
+
+    // Check if any users were found
+    if (!users || users.length === 0) {
+      return res.status(404).json({ message: `No users found for companyName: ${decodedCompanyName}` });
+    }
+
+    // Return the list of users
+    res.status(200).json({
+      success: true,
+      data: users,
+    });
+  } catch (error) {
+    console.error("Error fetching users by companyName:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while fetching users by companyName",
+      error: error.message,
+    });
+  }
+};
 module.exports = {
   registerUser,
   login,
@@ -329,4 +359,5 @@ module.exports = {
   initializeAdminAccount,
   updateUser,
   deleteUser,
+  getUsersByCompanyName, // Add the new function here
 };

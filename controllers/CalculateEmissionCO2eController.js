@@ -1,219 +1,278 @@
-const moment = require("moment");
+// controllers/CalculateEmissionCO2eController.js
+
+// controllers/CalculateEmissionCO2eController.js
+
+const moment    = require("moment");
+const csvtojson = require("csvtojson");
+
 const CalculateEmissionCO2e = require("../models/CalculateEmissionCO2e");
-const CalculationDataOfEmissionC02e = require("../models/CalculationDataOfEmissionC02e");
-const FuelCombustion = require("../models/FuelCombustion");
-const EmissionFactor = require("../models/EmissionFactor");
+const Flowchart             = require("../models/Flowchart");
+const FuelCombustion        = require("../models/FuelCombustion");
+const EmissionFactor        = require("../models/EmissionFactor");
+const User      = require("../models/User");
+const DataEntry = require("../models/DataEntry")
+
+
+// Normalize common unit variants to DB conventions
+function normalizeUnit(u) {
+  if (!u || typeof u !== "string") return u;
+  const low = u.trim().toLowerCase();
+  if (/(litre|liter)s?$/.test(low)) return "litres";
+  if (/(ton(ne)?|tons?)$/.test(low))  return "tonnes";
+  return u;
+}
+
+// Compute emissions given override {standards, activity, fuel, unit}
+async function computeEmissions(
+  qty,
+  assessmentType,
+  uncQty = 0,
+  uncFac = 0,
+  override
+) {
+  let { standards, activity, fuel, unit } = override;
+  if (!standards||!activity||!fuel||!unit)
+    throw new Error("Override must include standards, activity, fuel, unit");
+
+  unit = normalizeUnit(unit);
+  const adjusted = qty * (1 + uncQty/100);
+  const applyUnc = f => f * (1 + uncFac/100);
+
+  if (standards === "IPCC") {
+    const doc = await FuelCombustion.findOne({ activity, fuel });
+    if (!doc) throw new Error("No IPCC data for this activity/fuel");
+    const asmt = doc.assessments.find(a=>a.assessmentType===assessmentType);
+    if (!asmt) throw new Error(`IPCC assessment "${assessmentType}" not found`);
+    return {
+      emissionCO2:  adjusted * applyUnc(asmt.CO2_KgL),
+      emissionCH4:  adjusted * applyUnc(asmt.CH4_KgL),
+      emissionN2O:  adjusted * applyUnc(asmt.N2O_KgL),
+      emissionCO2e: adjusted * applyUnc(asmt.CO2e_KgL)
+    };
+  }
+
+  if (standards === "DEFRA") {
+    const doc = await EmissionFactor.findOne({ "activities.name": activity });
+    if (!doc) throw new Error("No DEFRA data for this activity");
+    const fuelObj = doc.activities
+      .find(a=>a.name===activity)
+      ?.fuels.find(f=>f.name===fuel);
+    if (!fuelObj) throw new Error("Fuel not found in DEFRA data");
+
+    const unitObj = fuelObj.units.find(u=>
+      u.type.trim().toLowerCase() === unit.trim().toLowerCase()
+    );
+    if (!unitObj) {
+      const avail = fuelObj.units.map(u=>u.type).join(", ");
+      throw new Error(`Unit "${unit}" not in DEFRA data (available: ${avail})`);
+    }
+    return {
+      emissionCO2:  adjusted * applyUnc(unitObj.kgCO2),
+      emissionCH4:  adjusted * applyUnc(unitObj.kgCH4),
+      emissionN2O:  adjusted * applyUnc(unitObj.kgN2O),
+      emissionCO2e: adjusted * applyUnc(unitObj.kgCO2e)
+    };
+  }
+
+  throw new Error("Unsupported standard: must be IPCC or DEFRA");
+}
 
 exports.calculateAndSaveEmission = async (req, res) => {
   try {
     const {
       periodOfDate,
       startDate,
-      consumedData,
       assessmentType,
       uncertaintyLevelConsumedData = 0,
       uncertaintyLevelEmissionFactor = 0,
       userId,
+      nodeId,
+      scopeIndex,
+      comments = "",
+      fuelSupplier = ""
+    } = req.body;
+
+    // 1. load flowchart
+    const flowchart = await Flowchart.findOne({ userId });
+    if (!flowchart) {
+      return res.status(400).json({ message: "No flowchart for this user." });
+    }
+    //find the specific node and its API flag
+   const nodeConfig = flowchart.nodes.find(n => n.id === nodeId);
+   if (!nodeConfig) {
+     return res.status(400).json({ message: `Node ${nodeId} not in flowchart.` });
+   }
+   
+    // 2. collect rawData & totalQty
+    let rawData = [], totalQty = 0;
+
+     
+    // CSV branch (file field must be named "document")
+    if (req.file) {
+      if (!nodeId) {
+        return res.status(400).json({ message: "nodeId is required for CSV" });
+      }
+      const rows = await csvtojson().fromFile(req.file.path);
+      for (const { date, quantity } of rows) {
+        if (!date || !quantity) {
+          return res.status(400).json({
+            message: "CSV must have columns: date, quantity"
+          });
+        }
+        const qty  = parseFloat(quantity);
+        const node = flowchart.nodes.find(n=>n.id===nodeId);
+        if (!node) {
+          return res.status(400).json({ message:`No node ${nodeId}` });
+        }
+        totalQty += qty;
+        rawData.push({
+          nodeId,
+          quantity:  qty,
+          timestamp: moment(date,"DD/MM/YYYY").toDate(),
+          inputType: node.details.inputType,
+          scopeIndex: scopeIndex!=null ? +scopeIndex : undefined
+        });
+      }
+    }
+
+    // Manual/API/MQTT branch
+    if (req.body.consumedData) {
+      if (!nodeId) {
+        return res.status(400).json({
+          message: "nodeId is required for manual/API entries"
+        });
+      }
+      const qty  = parseFloat(req.body.consumedData);
+      const node = flowchart.nodes.find(n=>n.id===nodeId);
+      if (!node) {
+        return res.status(400).json({ message:`No node ${nodeId}` });
+      }
+      totalQty += qty;
+      rawData.push({
+        nodeId,
+        quantity:  qty,
+        timestamp: new Date(),
+        inputType: node.details.inputType,
+        scopeIndex: scopeIndex!=null ? +scopeIndex : undefined
+      });
+    }
+
+    if (!rawData.length) {
+      return res.status(400).json({
+        message: "Provide a CSV file or consumedData in body."
+      });
+    }
+
+    // 3. compute emissions per entry & sum
+    let sumCO2=0, sumCH4=0, sumN2O=0, sumCO2e=0, metadataStandard=null;
+    for (const entry of rawData) {
+      const node   = flowchart.nodes.find(n=>n.id===entry.nodeId);
+      const scopes = node.details.scopeDetails;
+      if (!scopes?.length) {
+        return res.status(400).json({
+          message:`Node ${entry.nodeId} has no scopeDetails`
+        });
+      }
+      let idx = entry.scopeIndex;
+      if (scopes.length===1) idx=0;
+      else if (idx==null||idx<0||idx>=scopes.length) {
+        return res.status(400).json({
+          message:
+            `Node ${entry.nodeId} has ${scopes.length} scopes; `+
+            `specify scopeIndex (0–${scopes.length-1})`
+        });
+      }
+      const d = scopes[idx];
+      const override = {
+        standards: d.emissionFactor,
+        activity:  d.activity,
+        fuel:      d.fuel,
+        unit:      d.units
+      };
+
+      const { emissionCO2, emissionCH4, emissionN2O, emissionCO2e } =
+        await computeEmissions(
+          entry.quantity,
+          assessmentType,
+          uncertaintyLevelConsumedData,
+          uncertaintyLevelEmissionFactor,
+          override
+        );
+
+      Object.assign(entry, { emissionCO2, emissionCH4, emissionN2O, emissionCO2e });
+
+      sumCO2  += emissionCO2;
+      sumCH4  += emissionCH4;
+      sumN2O  += emissionN2O;
+      sumCO2e += emissionCO2e;
+
+      if (metadataStandard===null) metadataStandard = d.emissionFactor;
+    }
+
+    // 4. compute endDate
+    const m = moment(startDate,"DD/MM/YYYY");
+    let endDate;
+    switch(periodOfDate) {
+      case "daily":    endDate = m.clone().add(1,"day"  ).format("DD/MM/YYYY"); break;
+      case "weekly":   endDate = m.clone().add(1,"week" ).format("DD/MM/YYYY"); break;
+      case "monthly":  endDate = m.clone().add(1,"month").format("DD/MM/YYYY"); break;
+      case "3-months": endDate = m.clone().add(3,"months").format("DD/MM/YYYY");break;
+      case "yearly":   endDate = m.clone().add(1,"year" ).format("DD/MM/YYYY"); break;
+      default:
+        return res.status(400).json({
+          message:
+            "Invalid periodOfDate. Use 'daily','weekly','monthly','3-months','yearly'."
+        });
+    }
+
+    // 5. pick just the one node + its edges
+    const selectedNode = flowchart.nodes.find(n=>n.id===nodeId);
+    const connectedEdges = flowchart.edges.filter(e=>
+      e.source===nodeId || e.target===nodeId
+    );
+
+    // 6. save
+    const newCalc = new CalculateEmissionCO2e({
+      siteId: nodeId,
+      periodOfDate,
+      startDate,
+      endDate,
+      consumedData: totalQty,
+      assessmentType,
+      uncertaintyLevelConsumedData,
+      uncertaintyLevelEmissionFactor,
+      emissionCO2: sumCO2,
+      emissionCH4: sumCH4,
+      emissionN2O: sumN2O,
+      emissionCO2e: sumCO2e,
+      standards: metadataStandard,
+      userId,
       comments,
       fuelSupplier,
+      documents: req.file ? req.file.path : "",
+      rawData,
+      flowchartNodes: [ selectedNode ],
+      flowchartEdges: connectedEdges
+    });
 
-    } = req.body;
-    // Handle document upload
-    const document = req.file ? req.file.path : "";
-
-    // Step 1: Calculate endDate
-    let endDate;
-    if (periodOfDate === "monthly") {
-      endDate = moment(startDate, "DD/MM/YYYY").add(1, "month").format("DD/MM/YYYY");
-    } else if (periodOfDate === "yearly") {
-      endDate = moment(startDate, "DD/MM/YYYY").add(1, "year").format("DD/MM/YYYY");
-    } else if (periodOfDate === "weekly") {
-      endDate = moment(startDate, "DD/MM/YYYY").add(1, "week").format("DD/MM/YYYY");
-    } else if (periodOfDate === "3-months") {
-      endDate = moment(startDate, "DD/MM/YYYY").add(3, "months").format("DD/MM/YYYY");
-    } else {
-      return res.status(400).json({ message: "Invalid periodOfDate. Use 'weekly', 'monthly', '3-months', or 'yearly'." });
-    }
-
-    // Step 2: Check for overlapping data based on periodOfDate
-    let existingRecord;
-
-    if (periodOfDate === "weekly") {
-      // Check if any record exists for the same user within the week
-      const startOfWeek = moment(startDate, "DD/MM/YYYY").startOf("isoWeek").format("DD/MM/YYYY");
-      const endOfWeek = moment(startOfWeek, "DD/MM/YYYY").add(6, "days").format("DD/MM/YYYY");
-
-      existingRecord = await CalculateEmissionCO2e.findOne({
-        userId,
-        startDate: { $gte: startOfWeek, $lte: endOfWeek },
-      });
-
-      if (existingRecord) {
-        return res.status(400).json({
-          message: `A record for the week starting ${startOfWeek} already exists for this user.`,
-        });
-      }
-    } else if (periodOfDate === "monthly") {
-      // Check if any record exists for the same user within the month
-      const month = moment(startDate, "DD/MM/YYYY").format("MM/YYYY");
-
-      existingRecord = await CalculateEmissionCO2e.findOne({
-        userId,
-        startDate: { $regex: `.*${month}$`, $options: "i" },
-      });
-
-      if (existingRecord) {
-        return res.status(400).json({
-          message: `A record for the month ${month} already exists for this user.`,
-        });
-      }
-    } else if (periodOfDate === "yearly") {
-      // Check if any record exists for the same user within the year
-      const year = moment(startDate, "DD/MM/YYYY").format("YYYY");
-
-      existingRecord = await CalculateEmissionCO2e.findOne({
-        userId,
-        startDate: { $regex: `.*${year}$`, $options: "i" },
-      });
-
-      if (existingRecord) {
-        return res.status(400).json({
-          message: `A record for the year ${year} already exists for this user.`,
-        });
-      }
-    } else if (periodOfDate === "3-months") {
-      // Check for overlapping 3-month intervals
-      const startMonth = moment(startDate, "DD/MM/YYYY").startOf("month").format("MM/YYYY");
-      const endMonth = moment(startDate, "DD/MM/YYYY").add(2, "months").endOf("month").format("MM/YYYY");
-
-      existingRecord = await CalculateEmissionCO2e.findOne({
-        userId,
-        $or: [
-          { startDate: { $regex: `.*${startMonth}$`, $options: "i" } },
-          { startDate: { $regex: `.*${endMonth}$`, $options: "i" } },
-        ],
-      });
-
-      if (existingRecord) {
-        return res.status(400).json({
-          message: `A record for the interval ${startMonth} to ${endMonth} already exists for this user.`,
-        });
-      }
-    }
-
-    // Step 3: Fetch data from CalculationDataOfEmissionC02e
-    const calculationData = await CalculationDataOfEmissionC02e.findOne({ userId });
-    if (!calculationData) {
-      return res.status(404).json({ message: "No data found for the given userId." });
-    }
-
-    const { standards, activity, fuel, unit } = calculationData;
-
-    // Step 4: Fetch emission factors based on standards
-    let emissionData;
-    if (standards === "IPCC") {
-      emissionData = await FuelCombustion.findOne({ activity, fuel });
-      if (!emissionData) {
-        return res.status(404).json({ message: "No matching FuelCombustion data found." });
-      }
-
-      const assessment = emissionData.assessments.find((a) => a.assessmentType === assessmentType);
-      if (!assessment) {
-        return res.status(404).json({ message: `Assessment type ${assessmentType} not found.` });
-      }
-
-      // Fetch values based on unit
-      const { CO2_KgL, CH4_KgL, N2O_KgL, CO2e_KgL } = assessment;
-
-      // Calculate emissions
-      const adjustedConsumedData = consumedData * (1 + uncertaintyLevelConsumedData / 100);
-      const adjustedEmissionFactor = (factor) => factor * (1 + uncertaintyLevelEmissionFactor / 100);
-
-      const emissionCO2 = adjustedConsumedData * adjustedEmissionFactor(CO2_KgL);
-      const emissionCH4 = adjustedConsumedData * adjustedEmissionFactor(CH4_KgL);
-      const emissionN2O = adjustedConsumedData * adjustedEmissionFactor(N2O_KgL);
-      const emissionCO2e = adjustedConsumedData * adjustedEmissionFactor(CO2e_KgL);
-
-      // Save data
-      const newCalculation = new CalculateEmissionCO2e({
-        periodOfDate,
-        startDate,
-        endDate,
-        consumedData,
-        assessmentType,
-        uncertaintyLevelConsumedData,
-        uncertaintyLevelEmissionFactor,
-        emissionCO2,
-        emissionCH4,
-        emissionN2O,
-        emissionCO2e,
-        standards,
-        userId,
-        comments,
-        fuelSupplier,
-        document,
-      });
-
-      await newCalculation.save();
-      return res.status(201).json({ message: "Calculation saved successfully.", data: newCalculation });
-    } else if (standards === "DEFRA") {
-      emissionData = await EmissionFactor.findOne({ "activities.name": activity });
-      if (!emissionData) {
-        return res.status(404).json({ message: "No matching EmissionFactor data found." });
-      }
-
-      const fuelData = emissionData.activities.find((a) => a.name === activity).fuels.find((f) => f.name === fuel);
-
-      if (!fuelData) {
-        return res.status(404).json({ message: "Fuel not found in EmissionFactor data." });
-      }
-
-      const unitData = fuelData.units.find((u) => u.type === unit);
-      if (!unitData) {
-        return res.status(404).json({ message: `Unit ${unit} not found.` });
-      }
-
-      const { kgCO2, kgCH4, kgN2O, kgCO2e } = unitData;
-
-      // Calculate emissions
-      const adjustedConsumedData = consumedData * (1 + uncertaintyLevelConsumedData / 100);
-      const adjustedEmissionFactor = (factor) => factor * (1 + uncertaintyLevelEmissionFactor / 100);
-
-      const emissionCO2 = adjustedConsumedData * adjustedEmissionFactor(kgCO2);
-      const emissionCH4 = adjustedConsumedData * adjustedEmissionFactor(kgCH4);
-      const emissionN2O = adjustedConsumedData * adjustedEmissionFactor(kgN2O);
-      const emissionCO2e = adjustedConsumedData * adjustedEmissionFactor(kgCO2e);
-
-      // Save data
-      const newCalculation = new CalculateEmissionCO2e({
-        periodOfDate,
-        startDate,
-        endDate,
-        consumedData,
-        assessmentType,
-        uncertaintyLevelConsumedData,
-        uncertaintyLevelEmissionFactor,
-        emissionCO2,
-        emissionCH4,
-        emissionN2O,
-        emissionCO2e,
-        standards,
-        userId,
-        comments,
-        fuelSupplier,
-        document,
-      });
-
-      await newCalculation.save();
-      return res.status(201).json({ message: "Calculation saved successfully.", data: newCalculation });
-    } else {
-      return res.status(400).json({ message: "Invalid standards value. Use 'IPCC' or 'DEFRA'." });
-    }
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).json({ message: "An error occurred while calculating emissions.", error: error.message });
+    await newCalc.save();
+    if (flowchart.apiStatus) {
+           await DataEntry.deleteMany({
+             companyName: user.companyName,
+             date: { $gte: startOfDay, $lte: endOfDay }
+           });
+         }
+    return res.status(201).json({ message:"Calculation saved.", data:newCalc });
+  }
+  catch(err) {
+    console.error(err);
+    return res.status(500).json({
+      message:"Error processing emissions.",
+      error:  err.message
+    });
   }
 };
+
 
 
 
@@ -221,51 +280,53 @@ exports.calculateAndSaveEmission = async (req, res) => {
 exports.getEmissionDataByUserId = async (req, res) => {
   try {
     const { userId } = req.params;
-
-    const data = await CalculateEmissionCO2e.find({ userId }).populate("userId", "userName email");
-    if (!data.length) {
-      return res.status(404).json({ message: "No data found for the specified user." });
-    }
-
-    res.status(200).json({ message: "Data fetched successfully.", data });
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching data.", error: error.message });
+    const data = await CalculateEmissionCO2e
+      .find({ userId })
+      .populate("userId", "userName email");
+    if (!data.length)
+      return res.status(404).json({ message: "No data for this user." });
+    return res.status(200).json({ message: "Fetched successfully.", data });
+  } catch (err) {
+    return res.status(500).json({ message: "Fetch error.", error: err.message });
   }
 };
 
 exports.editEmissionDataByUserId = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { startDate, periodOfDate, ...otherFields } = req.body;
+    const { startDate, periodOfDate, ...other } = req.body;
+    const existing = await CalculateEmissionCO2e.findOne({ userId, startDate });
+    if (existing && existing.documents) {
+      return res.status(400).json({
+        message: "Records with uploaded CSV cannot be edited."
+      });
+    }
 
     let endDate;
-
-    // Calculate endDate based on periodOfDate and startDate
     if (startDate && periodOfDate) {
-      if (periodOfDate === "monthly") {
-        endDate = moment(startDate, "DD/MM/YYYY").add(1, "month").format("DD/MM/YYYY");
-      } else if (periodOfDate === "yearly") {
-        endDate = moment(startDate, "DD/MM/YYYY").add(1, "year").format("DD/MM/YYYY");
-      } else {
-        return res.status(400).json({ message: "Invalid periodOfDate. Use 'monthly' or 'yearly'." });
-      }
+      const m = moment(startDate, "DD/MM/YYYY");
+      if (periodOfDate === "monthly")
+        endDate = m.clone().add(1, "month").format("DD/MM/YYYY");
+      else if (periodOfDate === "yearly")
+        endDate = m.clone().add(1, "year").format("DD/MM/YYYY");
+      else
+        return res.status(400).json({
+          message: "Use 'monthly' or 'yearly' for edits."
+        });
     }
 
-    const updateData = { ...otherFields, startDate, endDate };
-
-    const updatedData = await CalculateEmissionCO2e.findOneAndUpdate(
-      { userId },
-      updateData,
+    const updated = await CalculateEmissionCO2e.findOneAndUpdate(
+      { userId, startDate },
+      { ...other, startDate, endDate },
       { new: true, runValidators: true }
     );
+    if (!updated)
+      return res.status(404).json({ message: "No matching record." });
 
-    if (!updatedData) {
-      return res.status(404).json({ message: "No data found for the specified user." });
-    }
+    return res.status(200).json({ message: "Updated.", data: updated });
 
-    res.status(200).json({ message: "Data updated successfully.", data: updatedData });
-  } catch (error) {
-    res.status(500).json({ message: "Error updating data.", error: error.message });
+  } catch (err) {
+    return res.status(500).json({ message: "Update error.", error: err.message });
   }
 };
 
@@ -273,25 +334,17 @@ exports.deleteEmissionDataByUserIdAndDates = async (req, res) => {
   try {
     const { userId } = req.params;
     const { startDate, endDate } = req.body;
+    if (!startDate || !endDate)
+      return res.status(400).json({ message: "startDate & endDate required" });
 
-    // Validate required fields
-    if (!startDate || !endDate) {
-      return res.status(400).json({ message: "Start date and end date are required." });
-    }
-
-    // Delete record based on userId, startDate, and endDate
-    const deletedData = await CalculateEmissionCO2e.findOneAndDelete({
-      userId,
-      startDate,
-      endDate,
+    const deleted = await CalculateEmissionCO2e.findOneAndDelete({
+      userId, startDate, endDate
     });
+    if (!deleted)
+      return res.status(404).json({ message: "No matching record to delete." });
 
-    if (!deletedData) {
-      return res.status(404).json({ message: "No data found for the specified user and dates." });
-    }
-
-    res.status(200).json({ message: "Data deleted successfully.", data: deletedData });
-  } catch (error) {
-    res.status(500).json({ message: "Error deleting data.", error: error.message });
+    return res.status(200).json({ message: "Deleted.", data: deleted });
+  } catch (err) {
+    return res.status(500).json({ message: "Delete error.", error: err.message });
   }
 };
