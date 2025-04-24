@@ -3,6 +3,8 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const connectDB = require("./config/db");
 const path = require("path");
+const http   = require("http");
+const socketIo = require("socket.io")
 
 // Import Routes
 const userR = require("./router/userR");
@@ -18,6 +20,8 @@ const CalculateEmissionCO2eRouter = require("./router/CalculateEmissionCO2eRoute
 const TotalEmissionCO2eControllerRouter = require("./router/TotalEmissionCO2eControllerRoute");
 const CalculationOfElectricityRouter = require("./router/CalculationOfElectricityRouter");
 const TotalEmissionElectricityRouter = require("./router/TotalEmissionElectricityRouter");
+const processFlowR = require("./router/processflowR");
+const dataEntryRoutes = require('./router/dataEntryRoutes');
 
 dotenv.config();
 
@@ -25,10 +29,30 @@ const app = express();
 
 // Middleware
 app.use(express.json());
+
+// 2. Global request logger — logs *every* incoming request
+app.use((req, res, next) => {
+    console.log(`\n[${new Date().toISOString()}] ➜ ${req.method} ${req.originalUrl}`);
+    console.log("  Params:", req.params);
+    console.log("  Query :", req.query);
+    console.log("  Body  :", req.body);
+    next();
+  });
+
+// ——————————— Debug logging for our calculate route ———————————
+app.use('/api/calculate-emission', (req, res, next) => {
+      console.log(
+        `[${new Date().toISOString()}] → calculate-emission ${req.method}`,
+        '\nBody:', req.body
+      );
+      next();
+    });
 app.use(cors({
-    origin: ["http://localhost:3000", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
+    origin: ["http://localhost:3001", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
     credentials: true,
 }));
+
+
 
 // Routes
 app.use("/api/user", userR);
@@ -44,6 +68,30 @@ app.use("/api", CalculateEmissionCO2eRouter);
 app.use("/api", TotalEmissionCO2eControllerRouter);
 app.use("/api", CalculationOfElectricityRouter);
 app.use("/api", TotalEmissionElectricityRouter);
+app.use("/api/processflow", processFlowR);
+app.use('/api/data-entry', dataEntryRoutes);
+
+
+
+
+// Create HTTP server and bind Socket.io
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: ["http://localhost:3001", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
+    credentials: true
+  }
+});
+io.on('connection', (socket) => {
+  console.log(`Client connected: ${socket.id}`);
+  // (You could add event handlers here if clients emit events)
+  socket.on('disconnect', () => {
+    console.log(`Client disconnected: ${socket.id}`);
+  });
+});
+
+// Make io globally accessible (for use in controllers)
+global.io = io;
 
 // Connect to Database
 connectDB();
