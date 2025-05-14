@@ -48,7 +48,7 @@ app.use('/api/calculate-emission', (req, res, next) => {
       next();
     });
 app.use(cors({
-    origin: ["http://localhost:3001", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
+    origin: ["http://localhost:3000"],
     credentials: true,
 }));
 
@@ -78,7 +78,7 @@ app.use('/api/data-entry', dataEntryRoutes);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3001", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
+    origin: ["http://localhost:3000", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
     credentials: true
   }
 });
