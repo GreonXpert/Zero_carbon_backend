@@ -1,10 +1,6 @@
 // controllers/CalculateEmissionCO2eController.js
-
-// controllers/CalculateEmissionCO2eController.js
-
 const moment    = require("moment");
 const csvtojson = require("csvtojson");
-
 const CalculateEmissionCO2e = require("../models/CalculateEmissionCO2e");
 const Flowchart             = require("../models/Flowchart");
 const FuelCombustion        = require("../models/FuelCombustion");
@@ -16,9 +12,27 @@ const DataEntry = require("../models/DataEntry")
 // Normalize common unit variants to DB conventions
 function normalizeUnit(u) {
   if (!u || typeof u !== "string") return u;
-  const low = u.trim().toLowerCase();
-  if (/(litre|liter)s?$/.test(low)) return "litres";
-  if (/(ton(ne)?|tons?)$/.test(low))  return "tonnes";
+  const trimmed = u.trim();
+  const low = trimmed.toLowerCase();
+
+  // existing rules
+  if (/(litre|liter)s?$/.test(low))   return "litres";
+  if (/(ton(ne)?|tons?)$/.test(low))   return "tonnes";
+
+  // new kWh rules
+  // matches:
+  //   "kwh"
+  //   "kwh (net cv)"
+  //   "kwh (gross cv)"
+  const kwhMatch = low.match(/^kwh(?:\s*\((net|gross)\s*cv\))?$/);
+  if (kwhMatch) {
+    const qualifier = kwhMatch[1];            // either "net", "gross", or undefined
+    return qualifier
+      ? `kwh_${qualifier}_cv`                // "kwh_net_cv" or "kwh_gross_cv"
+      : "kwh";                                // plain "kwh"
+  }
+
+  // fallback
   return u;
 }
 
