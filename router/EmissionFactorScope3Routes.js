@@ -41,12 +41,6 @@ router.get('/all', emissionFactorScope3Controller.getAllEmissionFactorsScope3);
 // GET /api/scope3-emission-factors/filter - Filter/Search Scope 3 emission factors
 router.get('/filter', emissionFactorScope3Controller.filterEmissionFactorsScope3);
 
-// GET /api/scope3-emission-factors/categories - Get unique categories
-router.get('/categories', emissionFactorScope3Controller.getUniqueCategories);
-
-// GET /api/scope3-emission-factors/activities/:category - Get activities by category
-router.get('/activities/:category', emissionFactorScope3Controller.getActivitiesByCategory);
-
 // GET /api/scope3-emission-factors/items - Get items by category and activity
 router.get('/items', emissionFactorScope3Controller.getItemsByCategoryAndActivity);
 

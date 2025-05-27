@@ -275,44 +275,7 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
   }
 };
 
-// Get unique categories
-exports.getUniqueCategories = async (req, res) => {
-  try {
-    const categories = await EmissionFactorScope3.distinct('category');
-    res.status(200).json({
-      message: 'Unique categories fetched successfully',
-      data: categories.sort()
-    });
-  } catch (error) {
-    console.error('Error fetching unique categories:', error);
-    res.status(500).json({
-      message: 'Failed to fetch unique categories',
-      error: error.message
-    });
-  }
-};
 
-// Get activities by category
-exports.getActivitiesByCategory = async (req, res) => {
-  try {
-    const { category } = req.params;
-    
-    const activities = await EmissionFactorScope3.distinct('activityDescription', {
-      category: { $regex: category, $options: 'i' }
-    });
-
-    res.status(200).json({
-      message: 'Activities fetched successfully',
-      data: activities.sort()
-    });
-  } catch (error) {
-    console.error('Error fetching activities by category:', error);
-    res.status(500).json({
-      message: 'Failed to fetch activities',
-      error: error.message
-    });
-  }
-};
 
 // Get items by category and activity
 exports.getItemsByCategoryAndActivity = async (req, res) => {
