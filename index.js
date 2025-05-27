@@ -22,6 +22,7 @@ const CalculationOfElectricityRouter = require("./router/CalculationOfElectricit
 const TotalEmissionElectricityRouter = require("./router/TotalEmissionElectricityRouter");
 const processFlowR = require("./router/processflowR");
 const dataEntryRoutes = require('./router/dataEntryRoutes');
+const EmissionFactorScope3Routes = require('./router/EmissionFactorScope3Routes');
 
 dotenv.config();
 
@@ -63,14 +64,14 @@ app.use("/api", EmissionFactorRoute);
 app.use("/api/gwp", gwpRoutes);
 app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
-app.use("/api", CalculationDataOfEmissionC02eRouter);
+// app.use("/api", CalculationDataOfEmissionC02eRouter);
 app.use("/api", CalculateEmissionCO2eRouter);
 app.use("/api", TotalEmissionCO2eControllerRouter);
 app.use("/api", CalculationOfElectricityRouter);
 app.use("/api", TotalEmissionElectricityRouter);
 app.use("/api/processflow", processFlowR);
 app.use('/api/data-entry', dataEntryRoutes);
-
+app.use('/api/scope3-emission-factors', EmissionFactorScope3Routes);
 
 
 
