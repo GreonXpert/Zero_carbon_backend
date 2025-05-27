@@ -1,14 +1,29 @@
 const express = require('express');
 const router = express.Router();
 const emissionFactorController = require('../controllers/EmissionFactorController');
+const multer = require('multer');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Routes
 
 // Create a new category with userName
 router.post('/categories', emissionFactorController.createCategory);
 
+// Bulk CSV upload (file or raw CSV in body.csv)
+router.post(
+  '/categories/bulk',
+  upload.single('file'),
+  emissionFactorController.bulkUpload
+);
+
 // Get all categories
 router.get('/categories', emissionFactorController.getCategories);
+
+router.get(
+  '/categories/download',
+  emissionFactorController.downloadCSV
+);
 
 // Add a new activity to a category
 router.post('/categories/activity', emissionFactorController.addActivity);

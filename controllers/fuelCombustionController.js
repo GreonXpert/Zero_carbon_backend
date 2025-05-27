@@ -1,129 +1,6 @@
 const FuelCombustion = require('../models/FuelCombustion');
 const GWP = require('../models/GWP'); // To fetch GWP values
-
-// Add new Fuel Combustion data with calculations
-// Add new Fuel Combustion data with calculations
-// exports.addFuelCombustion = async (req, res) => {
-//     try {
-//       const {
-//         category,
-//         activity,
-//         fuel,
-//         NCV,
-//         CO2,
-//         CH4,
-//         N2O,
-//         unit,
-//         fuelDensityLiter,
-//         fuelDensityM3,
-//         CO2Formula, // Chemical formula for CO2
-//         CH4Formula, // Chemical formula for CH4
-//         N2OFormula, // Chemical formula for N2O
-//         CO2AssessmentType, // Assessment type for CO2 (e.g., AR5, AR6)
-//         CH4AssessmentType, // Assessment type for CH4
-//         N2OAssessmentType, // Assessment type for N2O
-//         source,
-//         reference
-//       } = req.body;
-  
-//       // Helper function to fetch assessment value based on chemicalFormula and assessmentType
-//       const findAssessmentValue = async (chemicalFormula, assessmentType) => {
-//         const gwpData = await GWP.findOne({ chemicalFormula }).lean();
-//         if (!gwpData) {
-//           throw new Error(`GWP data not found for the chemical formula: ${chemicalFormula}`);
-//         }
-  
-//         const assessmentValue = gwpData.assessments[assessmentType];
-//         if (!assessmentValue) {
-//           throw new Error(
-//             `AssessmentType '${assessmentType}' not found for the chemical formula: ${chemicalFormula}`
-//           );
-//         }
-  
-//         return parseFloat(assessmentValue);
-//       };
-  
-//       // Step 1: Find GWP values for each formula and assessment type
-//       const CO2GWPValue = await findAssessmentValue(CO2Formula, CO2AssessmentType);
-//       const CH4GWPValue = await findAssessmentValue(CH4Formula, CH4AssessmentType);
-//       const N2OGWPValue = await findAssessmentValue(N2OFormula, N2OAssessmentType);
-  
-//       // Step 2: Calculate CO2, CH4, N2O per Kg/T
-//       const CO2_KgT = (NCV * CO2) / 1000;
-//       const CH4_KgT = (NCV * CH4) / 1000;
-//       const N2O_KgT = (NCV * N2O) / 1000;
-  
-//       // Step 3: Calculate CO2e using the assessment values
-//       const CO2e =
-//         (CO2_KgT * CO2GWPValue) +
-//         (CH4_KgT * CH4GWPValue) +
-//         (N2O_KgT * N2OGWPValue);
-  
-//       // Step 4: Calculate densities for Kg/L and Kg/m³
-//       let CO2_KgL = null,
-//         CO2_Kgm3 = null,
-//         CH4_KgL = null,
-//         CH4_Kgm3 = null,
-//         N2O_KgL = null,
-//         N2O_Kgm3 = null,
-//         CO2e_KgL = null,
-//         CO2e_Kgm3 = null;
-  
-//       if (fuelDensityLiter) {
-//         CO2_KgL = (CO2_KgT * fuelDensityLiter) / 1000;
-//         CH4_KgL = (CH4_KgT * fuelDensityLiter) / 1000;
-//         N2O_KgL = (N2O_KgT * fuelDensityLiter) / 1000;
-  
-//         // Calculate CO2e (Kg/L)
-//         CO2e_KgL = (CO2e * fuelDensityLiter) / 1000;
-//       }
-  
-//       if (fuelDensityM3) {
-//         CO2_Kgm3 = (CO2_KgT * fuelDensityM3) / 1000;
-//         CH4_Kgm3 = (CH4_KgT * fuelDensityM3) / 1000;
-//         N2O_Kgm3 = (N2O_KgT * fuelDensityM3) / 1000;
-  
-//         // Calculate CO2e (Kg/m³)
-//         CO2e_Kgm3 = (CO2e * fuelDensityM3) / 1000;
-//       }
-  
-//       // Step 5: Save all data to the database
-//       const newEntry = new FuelCombustion({
-//         category,
-//         activity,
-//         fuel,
-//         NCV,
-//         CO2,
-//         CH4,
-//         N2O,
-//         unit,
-//         CO2_KgT,
-//         CH4_KgT,
-//         N2O_KgT,
-//         CO2e,
-//         fuelDensityLiter,
-//         fuelDensityM3,
-//         CO2_KgL,
-//         CO2_Kgm3,
-//         CH4_KgL,
-//         CH4_Kgm3,
-//         N2O_KgL,
-//         N2O_Kgm3,
-//         CO2e_KgL,
-//         CO2e_Kgm3,
-//         assessmentType: `CO2: ${CO2AssessmentType}, CH4: ${CH4AssessmentType}, N2O: ${N2OAssessmentType}`,
-//         source,
-//         reference
-//       });
-  
-//       await newEntry.save();
-//       res.status(201).json({ message: 'Fuel Combustion data added successfully!', data: newEntry });
-//     } catch (error) {
-//       console.error('Error:', error.message);
-//       res.status(500).json({ message: 'Failed to add Fuel Combustion data', error: error.message });
-//     }
-//   };
- 
+const csvtojson = require('csvtojson');
 
 
 exports.addFuelCombustion = async (req, res) => {
@@ -224,109 +101,131 @@ exports.addFuelCombustion = async (req, res) => {
 };
 
   
+  /**
+ * Bulk-upload CSV or JSON → compute assessments → save many.
+ */
+exports.bulkUploadFuelCombustion = async (req, res) => {
+  try {
+    let rows = [];
+
+    // 1. FILE UPLOAD PATH
+    if (req.files && req.files.length) {
+      // take the first file they sent
+      const file = req.files[0];
+      const name = file.originalname.toLowerCase();
+
+      if (name.endsWith('.csv')) {
+        // CSV → JSON
+        const text = file.buffer.toString('utf8');
+        rows = await csvtojson().fromString(text);
+
+      } else if (name.match(/\.xlsx?$/)) {
+        // Excel → JSON
+        const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+        const sheet    = workbook.Sheets[workbook.SheetNames[0]];
+        // defval: '' ensures empty cells become empty strings
+        rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      } else {
+        return res.status(400).json({ error: 'Unsupported file type. Upload .csv or .xlsx' });
+      }
+    }
+    // 2. RAW CSV in JSON
+    else if (req.body.csv) {
+      rows = await csvtojson().fromString(req.body.csv);
+
+    // 3. JSON array path
+    } else if (Array.isArray(req.body.bulkData)) {
+      rows = req.body.bulkData;
+
+    } else {
+      return res.status(400).json({
+        error: 'No file uploaded, no CSV text, and no bulkData array found.'
+      });
+    }
+
+    // now rows[] is an array of flat objects.
+    // Helper to fetch GWP table for a formula
+    const fetchGWP = async formula => {
+      const gwp = await GWP.findOne({ chemicalFormula: formula }).lean();
+      if (!gwp) throw new Error(`No GWP data for formula "${formula}"`);
+      return gwp.assessments;
+    };
+
+    const created = [];
+    for (const r of rows) {
+      // pull out all the fields (strings from CSV may need casting)
+      const {
+        category, activity, fuel,
+        NCV, CO2, CH4, N2O, unit,
+        fuelDensityLiter, fuelDensityM3,
+        CO2Formula, CH4Formula, N2OFormula,
+        source, reference
+      } = r;
+
+      // fetch all GWP tables in parallel
+      const [CO2GWP, CH4GWP, N2OGWP] = await Promise.all([
+        fetchGWP(CO2Formula),
+        fetchGWP(CH4Formula),
+        fetchGWP(N2OFormula)
+      ]);
+
+      // calculate assessments
+      const assessments = [];
+      const ncv = parseFloat(NCV);
+      const co2 = parseFloat(CO2);
+      const ch4 = parseFloat(CH4);
+      const n2o = parseFloat(N2O);
+      const fDL = parseFloat(fuelDensityLiter) || null;
+      const fDM = parseFloat(fuelDensityM3)    || null;
+
+      for (const [type, gwpCO2] of Object.entries(CO2GWP)) {
+        const gwpCH4 = CH4GWP[type];
+        const gwpN2O = N2OGWP[type];
+        const CO2_KgT = (ncv * co2) / 1000;
+        const CH4_KgT = (ncv * ch4) / 1000;
+        const N2O_KgT = (ncv * n2o) / 1000;
+        const CO2e    = CO2_KgT * gwpCO2 + CH4_KgT * gwpCH4 + N2O_KgT * gwpN2O;
+
+        assessments.push({
+          assessmentType: type,
+          CO2_KgT, CH4_KgT, N2O_KgT, CO2e,
+          CO2_KgL:  fDL ? CO2_KgT * fDL / 1000 : null,
+          CH4_KgL:  fDL ? CH4_KgT * fDL / 1000 : null,
+          N2O_KgL:  fDL ? N2O_KgT * fDL / 1000 : null,
+          CO2e_KgL: fDL ? CO2e    * fDL / 1000 : null,
+          CO2_Kgm3: fDM ? CO2_KgT * fDM / 1000 : null,
+          CH4_Kgm3: fDM ? CH4_KgT * fDM / 1000 : null,
+          N2O_Kgm3: fDM ? N2O_KgT * fDM / 1000 : null,
+          CO2e_Kgm3:fDM ? CO2e    * fDM / 1000 : null
+        });
+      }
+
+      // save one doc
+      const doc = new FuelCombustion({
+        category, activity, fuel,
+        NCV: ncv, CO2: co2, CH4: ch4, N2O: n2o,
+        unit, fuelDensityLiter: fDL, fuelDensityM3: fDM,
+        source, reference,
+        assessments
+      });
+      await doc.save();
+      created.push(doc);
+    }
+
+    res.status(201).json({
+      message: `Imported ${created.length} entries`,
+      created
+    });
+
+  } catch (err) {
+    console.error('Bulk upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
   
-  
 
 
-// Update Fuel Combustion data and recalculate
-// Update Fuel Combustion data and recalculate
-// Update Fuel Combustion data and recalculate
-// exports.updateFuelCombustion = async (req, res) => {
-//   try {
-//       const { id } = req.params; // Document ID to update
-//       const {
-//           NCV,
-//           CO2,
-//           CH4,
-//           N2O,
-//           fuelDensityLiter,
-//           fuelDensityM3,
-//           CO2Formula,
-//           CH4Formula,
-//           N2OFormula,
-//       } = req.body;
-
-//       // Step 1: Find the existing Fuel Combustion data
-//       const fuelCombustion = await FuelCombustion.findById(id);
-//       if (!fuelCombustion) {
-//           return res.status(404).json({ message: 'Fuel Combustion data not found' });
-//       }
-
-//       // Step 2: Update fields if provided in the request
-//       if (NCV !== undefined) fuelCombustion.NCV = NCV;
-//       if (CO2 !== undefined) fuelCombustion.CO2 = CO2;
-//       if (CH4 !== undefined) fuelCombustion.CH4 = CH4;
-//       if (N2O !== undefined) fuelCombustion.N2O = N2O;
-//       if (fuelDensityLiter !== undefined) fuelCombustion.fuelDensityLiter = fuelDensityLiter;
-//       if (fuelDensityM3 !== undefined) fuelCombustion.fuelDensityM3 = fuelDensityM3;
-
-//       // Helper function to fetch GWP values for all assessment types
-//       const fetchGWPValues = async (chemicalFormula) => {
-//           const gwpData = await GWP.findOne({ chemicalFormula }).lean();
-//           if (!gwpData) throw new Error(`GWP data not found for formula: ${chemicalFormula}`);
-//           return gwpData.assessments;
-//       };
-
-//       // Fetch GWP values for each chemical formula
-//       const CO2GWPValues = await fetchGWPValues(CO2Formula);
-//       const CH4GWPValues = await fetchGWPValues(CH4Formula);
-//       const N2OGWPValues = await fetchGWPValues(N2OFormula);
-
-//       const assessments = [];
-
-//       // Recalculate metrics for all assessment types
-//       for (const [assessmentType, CO2GWPValue] of Object.entries(CO2GWPValues)) {
-//           const CH4GWPValue = CH4GWPValues[assessmentType];
-//           const N2OGWPValue = N2OGWPValues[assessmentType];
-
-//           const CO2_KgT = (fuelCombustion.NCV * fuelCombustion.CO2) / 1000;
-//           const CH4_KgT = (fuelCombustion.NCV * fuelCombustion.CH4) / 1000;
-//           const N2O_KgT = (fuelCombustion.NCV * fuelCombustion.N2O) / 1000;
-
-//           const CO2e = (CO2_KgT * CO2GWPValue) + (CH4_KgT * CH4GWPValue) + (N2O_KgT * N2OGWPValue);
-
-//           const CO2_KgL = fuelCombustion.fuelDensityLiter ? (CO2_KgT * fuelCombustion.fuelDensityLiter) / 1000 : null;
-//           const CH4_KgL = fuelCombustion.fuelDensityLiter ? (CH4_KgT * fuelCombustion.fuelDensityLiter) / 1000 : null;
-//           const N2O_KgL = fuelCombustion.fuelDensityLiter ? (N2O_KgT * fuelCombustion.fuelDensityLiter) / 1000 : null;
-//           const CO2e_KgL = fuelCombustion.fuelDensityLiter ? (CO2e * fuelCombustion.fuelDensityLiter) / 1000 : null;
-
-//           const CO2_Kgm3 = fuelCombustion.fuelDensityM3 ? (CO2_KgT * fuelCombustion.fuelDensityM3) / 1000 : null;
-//           const CH4_Kgm3 = fuelCombustion.fuelDensityM3 ? (CH4_KgT * fuelCombustion.fuelDensityM3) / 1000 : null;
-//           const N2O_Kgm3 = fuelCombustion.fuelDensityM3 ? (N2O_KgT * fuelCombustion.fuelDensityM3) / 1000 : null;
-//           const CO2e_Kgm3 = fuelCombustion.fuelDensityM3 ? (CO2e * fuelCombustion.fuelDensityM3) / 1000 : null;
-
-//           assessments.push({
-//               assessmentType,
-//               CO2_KgT,
-//               CH4_KgT,
-//               N2O_KgT,
-//               CO2e,
-//               CO2_KgL,
-//               CH4_KgL,
-//               N2O_KgL,
-//               CO2e_KgL,
-//               CO2_Kgm3,
-//               CH4_Kgm3,
-//               N2O_Kgm3,
-//               CO2e_Kgm3,
-//           });
-//       }
-
-//       // Update assessments in the document
-//       fuelCombustion.assessments = assessments;
-
-//       // Save updated document
-//       const updatedFuelCombustion = await fuelCombustion.save();
-
-//       res.status(200).json({
-//           message: 'Fuel Combustion data updated successfully!',
-//           data: updatedFuelCombustion,
-//       });
-//   } catch (error) {
-//       console.error('Error:', error.message);
-//       res.status(500).json({ message: 'Failed to update Fuel Combustion data', error: error.message });
-//   }
-// };
 
 exports.updateFuelCombustion = async (req, res) => {
   try {
@@ -434,7 +333,90 @@ exports.updateFuelCombustion = async (req, res) => {
 };
 
 
+/**
+  * Download all Fuel Combustion entries as a flattened CSV.
+  * One row per assessmentType.
+  */
+exports.downloadCSV = async (req, res) => {
+  try {
+    // 1. Fetch all docs
+    const docs = await FuelCombustion.find().lean();
 
+    // 2. Build flat records array
+    const records = [];
+    docs.forEach(doc => {
+      (doc.assessments || []).forEach(a => {
+        records.push({
+          category:           doc.category,
+          activity:           doc.activity,
+          fuel:               doc.fuel,
+          NCV:                doc.NCV,
+          CO2:                doc.CO2,
+          CH4:                doc.CH4,
+          N2O:                doc.N2O,
+          unit:               doc.unit,
+          fuelDensityLiter:   doc.fuelDensityLiter,
+          fuelDensityM3:      doc.fuelDensityM3,
+          source:             doc.source,
+          reference:          doc.reference,
+          assessmentType:     a.assessmentType,
+          CO2_KgT:            a.CO2_KgT,
+          CH4_KgT:            a.CH4_KgT,
+          N2O_KgT:            a.N2O_KgT,
+          CO2e:               a.CO2e,
+          CO2_KgL:            a.CO2_KgL,
+          CH4_KgL:            a.CH4_KgL,
+          N2O_KgL:            a.N2O_KgL,
+          CO2e_KgL:           a.CO2e_KgL,
+          CO2_Kgm3:           a.CO2_Kgm3,
+          CH4_Kgm3:           a.CH4_Kgm3,
+          N2O_Kgm3:           a.N2O_Kgm3,
+          CO2e_Kgm3:          a.CO2e_Kgm3,
+          createdAt:          doc.createdAt,
+          updatedAt:          doc.updatedAt
+        });
+      });
+    });
+
+    if (!records.length) {
+      return res.status(404).json({ message: 'No Fuel Combustion data available for download' });
+    }
+
+    // 3. Define CSV columns
+    const fields = [
+      'category','activity','fuel','NCV','CO2','CH4','N2O','unit',
+      'fuelDensityLiter','fuelDensityM3','source','reference',
+      'assessmentType','CO2_KgT','CH4_KgT','N2O_KgT','CO2e',
+      'CO2_KgL','CH4_KgL','N2O_KgL','CO2e_KgL',
+      'CO2_Kgm3','CH4_Kgm3','N2O_Kgm3','CO2e_Kgm3',
+      'createdAt','updatedAt'
+    ];
+    const header = fields.join(',');
+
+    // 4. Build each CSV row, escaping quotes
+    const rows = records.map(rec =>
+      fields.map(f => {
+        const v = rec[f] != null
+          ? rec[f].toString().replace(/"/g,'""')
+          : '';
+        return `"${v}"`;
+      }).join(',')
+    );
+
+    // 5. Send CSV
+    const csv = [header, ...rows].join('\r\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="fuel_combustion.csv"'
+    );
+    return res.send(csv);
+
+  } catch (err) {
+    console.error('Fuel CSV download error:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
   
 
 // Get all Fuel Combustion data

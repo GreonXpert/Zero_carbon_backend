@@ -2,10 +2,26 @@
 const express = require('express');
 const fuelCombustionController = require('../controllers/fuelCombustionController');
 
+
 const router = express.Router();
+
+const multer = require('multer');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Add new Fuel Combustion data
 router.post('/add', fuelCombustionController.addFuelCombustion);
+
+// Bulk upload Fuel Combustion data from CSV file
+// accept any file‐field (avoids “Unexpected field”)
+router.post(
+  '/bulk-upload',
+  upload.any(),
+  fuelCombustionController.bulkUploadFuelCombustion
+);
+
+// Bulk download as CSV
+router.get('/download', fuelCombustionController.downloadCSV);
 
 
 // Filter Fuel Combustion data based on query parameters
