@@ -1,4 +1,5 @@
 const EmissionFactor = require('../models/EmissionFactor');
+ const csvtojson = require('csvtojson');
 
 // Create a new category
 exports.createCategory = async (req, res) => {
@@ -155,3 +156,161 @@ exports.filterData = async (req, res) => {
       res.status(500).json({ error: error.message });
     }
   };
+
+/**
+ * Download all emission factors as a flattened CSV.
+ */
+exports.downloadCSV = async (req, res) => {
+  try {
+    // 1. Fetch everything
+    const categories = await EmissionFactor.find();
+
+    // 2. Flatten into one record per unit
+    const records = [];
+    categories.forEach(category => {
+      category.activities.forEach(activity => {
+        activity.fuels.forEach(fuel => {
+          fuel.units.forEach(unit => {
+            records.push({
+              category: category.name,
+              activity: activity.name,
+              fuel: fuel.name,
+              unitType: unit.type,
+              kgCO2e: unit.kgCO2e,
+              kgCO2: unit.kgCO2,
+              kgCH4: unit.kgCH4,
+              kgN2O: unit.kgN2O,
+              reference: fuel.reference,
+              source: fuel.source
+            });
+          });
+        });
+      });
+    });
+
+    // 3. Define CSV columns & build header row
+    const fields = [
+      'category',
+      'activity',
+      'fuel',
+      'unitType',
+      'kgCO2e',
+      'kgCO2',
+      'kgCH4',
+      'kgN2O',
+      'reference',
+      'source'
+    ];
+    const header = fields.join(',');
+
+    // 4. Build each data row, with proper quoting
+    const rows = records.map(rec => {
+      return fields.map(f => {
+        const val = rec[f] == null ? '' : rec[f].toString();
+        // escape any quotes in the field
+        return `"${val.replace(/"/g, '""')}"`;
+      }).join(',');
+    });
+
+    // 5. Combine into one CSV string
+    const csv = [header, ...rows].join('\r\n');
+
+    // 6. Stream it down
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="emission_factors.csv"');
+    return res.send(csv);
+
+  } catch (error) {
+    console.error('CSV download error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+exports.bulkUpload = async (req, res) => {
+  try {
+    // 1. Get CSV text
+    let csvText;
+    if (req.file) {
+      // if multipart/form-data upload
+      csvText = req.file.buffer.toString('utf8');
+    } else if (req.body.csv) {
+      // if POST body has raw CSV
+      csvText = req.body.csv;
+    } else {
+      return res.status(400).json({ error: 'No CSV provided. Attach as file or in body.csv' });
+    }
+
+    // 2. Parse CSV into flat array of objects
+    //    Expect columns: category,activity,fuel,unitType,kgCO2e,kgCO2,kgCH4,kgN2O,reference,source
+    const rows = await csvtojson().fromString(csvText);
+
+    // 3. Re‐nest into { name, activities: [ { name, fuels: [ { name, reference, source, units: [...] } ] } ] }
+    const byCategory = {};
+    rows.forEach(r => {
+      const {
+        category, activity, fuel,
+        unitType, kgCO2e, kgCO2, kgCH4, kgN2O,
+        reference, source
+      } = r;
+
+      // ensure category
+      if (!byCategory[category]) {
+        byCategory[category] = {
+          name: category,
+          activities: {}
+        };
+      }
+      const cat = byCategory[category];
+
+      // ensure activity
+      if (!cat.activities[activity]) {
+        cat.activities[activity] = {
+          name: activity,
+          fuels: {}
+        };
+      }
+      const act = cat.activities[activity];
+
+      // ensure fuel
+      if (!act.fuels[fuel]) {
+        act.fuels[fuel] = {
+          name: fuel,
+          reference,
+          source,
+          units: []
+        };
+      }
+      const f = act.fuels[fuel];
+
+      // push unit
+      f.units.push({
+        type:  unitType,
+        kgCO2e: parseFloat(kgCO2e) || 0,
+        kgCO2:  parseFloat(kgCO2)  || 0,
+        kgCH4:  parseFloat(kgCH4)  || 0,
+        kgN2O:  parseFloat(kgN2O)  || 0
+      });
+    });
+
+    // 4. Convert to array of docs
+    const docs = Object.values(byCategory).map(cat => ({
+      name: cat.name,
+      activities: Object.values(cat.activities).map(act => ({
+        name: act.name,
+        fuels: Object.values(act.fuels)
+      }))
+    }));
+
+    // 5. Save all at once
+    const created = await EmissionFactor.insertMany(docs);
+
+    res.status(201).json({
+      message: `Imported ${created.length} categories`,
+      created
+    });
+
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
