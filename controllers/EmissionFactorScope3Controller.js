@@ -1,5 +1,7 @@
 const EmissionFactorScope3 = require('../models/EmissionFactorScope3');
 
+
+
 // Add new Scope 3 emission factor
 exports.addEmissionFactorScope3 = async (req, res) => {
   try {
@@ -65,6 +67,9 @@ exports.addEmissionFactorScope3 = async (req, res) => {
     });
   }
 };
+
+
+
 
 // Get all Scope 3 emission factors
 exports.getAllEmissionFactorsScope3 = async (req, res) => {

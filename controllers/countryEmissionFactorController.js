@@ -1,4 +1,6 @@
 const EmissionFactor = require('../models/contryEmissionFactorModel');
+const csvtojson = require('csvtojson');
+const fs = require('fs');
 
 // Add new country emission factor
 const addEmissionFactor = async (req, res) => {
@@ -34,14 +36,146 @@ const addEmissionFactor = async (req, res) => {
     }
 };
 
-// Helper function to get month name
+
+// bring in your month-name helper
 const getMonthName = (month) => {
-    const months = [
-        'january', 'february', 'march', 'april', 'may', 'june',
-        'july', 'august', 'september', 'october', 'november', 'december'
-    ];
-    return months[parseInt(month, 10) - 1];
+  const months = [
+    'january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december'
+  ];
+  return months[parseInt(month, 10) - 1];
 };
+
+// Bulk import country emission factors (CSV upload)
+const bulkImportCountryEmissionFactors = async (req, res) => {
+  try {
+    let rows = [];
+
+    // 1️⃣ CSV upload mode
+    if (req.file) {
+      rows = await csvtojson().fromFile(req.file.path);
+      fs.unlinkSync(req.file.path);
+
+    // 2️⃣ JSON-body mode
+    } else if (Array.isArray(req.body)) {
+      rows = req.body;
+
+    // 3️⃣ neither: error out
+    } else {
+      return res.status(400).json({
+        message: 'Provide either a CSV file under field "csvFile" or a JSON array in the request body.'
+      });
+    }
+
+    const results = { inserted: [], errors: [], duplicates: [] };
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      try {
+        // normalize keys (whether CSV or JSON)
+        const country       = (r.Country || r.country || '').trim();
+        const regionGrid    = (r.RegionGrid || r.regionGrid || '').trim();
+        const emissionFactor= (r.EmissionFactor || r.emissionFactor || '').trim();
+        const reference     = (r.Reference || r.reference || '').trim();
+        const unit          = (r.Unit || r.unit || 'kWh').trim();
+        const fromRaw       = r.From  || r.from;
+        const toRaw         = r.To    || r.to;
+        const valueRaw      = r.Value || r.value;
+
+        if (!country || !regionGrid || !emissionFactor) {
+          throw new Error('Missing required fields: Country, RegionGrid, or EmissionFactor.');
+        }
+
+        // build yearlyValues if both dates+value present
+        let yearlyValues = [];
+        if (fromRaw && toRaw && valueRaw != null) {
+          const value = parseFloat(valueRaw);
+          if (isNaN(value)) throw new Error('Invalid number in "Value".');
+
+          const [fd, fm, fy] = fromRaw.split('/');
+          const [td, tm, ty] = toRaw.split('/');
+          if (![fd,fm,fy,td,tm,ty].every(x => x)) {
+            throw new Error('Invalid date format in From/To, expected dd/mm/yyyy.');
+          }
+
+          const fromLabel = `${getMonthName(fm)}-${fy}`;
+          const toLabel   = `${getMonthName(tm)}-${ty}`;
+          yearlyValues.push({
+            from: fromRaw,
+            to:   toRaw,
+            periodLabel: `${fromLabel} to ${toLabel}`,
+            value
+          });
+        }
+
+        // skip if duplicate
+        const exists = await EmissionFactor.findOne({ country, regionGrid });
+        if (exists) {
+          results.duplicates.push({ index: i+1, country, regionGrid });
+          continue;
+        }
+
+        // save
+        const doc = new EmissionFactor({
+          country,
+          regionGrid,
+          emissionFactor,
+          reference,
+          unit,
+          yearlyValues
+        });
+        const saved = await doc.save();
+        results.inserted.push({ index: i+1, id: saved._id });
+
+      } catch (err) {
+        results.errors.push({ index: i+1, error: err.message });
+      }
+    }
+
+    return res.status(200).json({
+      message: 'Bulk import finished',
+      summary: {
+        total:    rows.length,
+        inserted: results.inserted.length,
+        duplicates: results.duplicates.length,
+        errors:   results.errors.length
+      },
+      details: results
+    });
+
+  } catch (err) {
+    return res.status(500).json({ message: 'Bulk import failed', error: err.message });
+  }
+};
+
+// Download CSV template for country emission factors
+const downloadCountryEmissionFactorsTemplate = async (req, res) => {
+  try {
+    const headers = [
+      'Country',
+      'RegionGrid',
+      'EmissionFactor',   // tCO2/MWh
+      'Reference',
+      'Unit'              // default: kWh
+    ];
+    const sample = [
+      ['India','Southern Grid','0.67','IEA 2021','kWh']
+    ];
+
+    let csv = headers.join(',') + '\n';
+    sample.forEach(row => {
+      csv += row.map(v => `"${v}"`).join(',') + '\n';
+    });
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="country_emission_factors_template.csv"');
+    res.send(csv);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Could not generate CSV template', error: error.message });
+  }
+};
+
 
 // Get all emission factors
 const getAllEmissionFactors = async (req, res) => {
@@ -121,5 +255,7 @@ module.exports = {
     getAllEmissionFactors,
     getEmissionFactorById,
     updateEmissionFactor,
-    deleteEmissionFactor
+    deleteEmissionFactor,
+    bulkImportCountryEmissionFactors,
+    downloadCountryEmissionFactorsTemplate
 };
