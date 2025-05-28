@@ -5,35 +5,67 @@ const CalculateEmissionCO2e = require("../models/CalculateEmissionCO2e");
 const Flowchart             = require("../models/Flowchart");
 const FuelCombustion        = require("../models/FuelCombustion");
 const EmissionFactor        = require("../models/EmissionFactor");
+const emissionFactor2 = require("../models/contryEmissionFactorModel");
+const emissionFactor3 = require("../models/EmissionFactorScope3");
+
 const User      = require("../models/User");
 const DataEntry = require("../models/DataEntry")
 
 
 // Normalize common unit variants to DB conventions
 function normalizeUnit(u) {
-  if (!u || typeof u !== "string") return u;
-  const trimmed = u.trim();
-  const low = trimmed.toLowerCase();
+  if (!u || typeof u !== 'string') return 'other';
 
-  // existing rules
-  if (/(litre|liter)s?$/.test(low))   return "litres";
-  if (/(ton(ne)?|tons?)$/.test(low))   return "tonnes";
+  const low = u.trim().toLowerCase();
 
-  // new kWh rules
-  // matches:
-  //   "kwh"
-  //   "kwh (net cv)"
-  //   "kwh (gross cv)"
+  // special handling for kWh (+ net/gross CV)
   const kwhMatch = low.match(/^kwh(?:\s*\((net|gross)\s*cv\))?$/);
   if (kwhMatch) {
-    const qualifier = kwhMatch[1];            // either "net", "gross", or undefined
-    return qualifier
-      ? `kwh_${qualifier}_cv`                // "kwh_net_cv" or "kwh_gross_cv"
-      : "kwh";                                // plain "kwh"
+    return kwhMatch[1]
+      ? `kwh_${kwhMatch[1]}_cv`   // "kwh_net_cv" or "kwh_gross_cv"
+      : 'kwh';                   // "kwh"
   }
 
-  // fallback
-  return u;
+  // map of all other accepted variants → normalized value
+  const unitMap = {
+    // currencies
+    dollar:      'usd', dollars:   'usd', usd:       'usd', '$':        'usd',
+    rupee:       'inr', rupees:    'inr', inr:       'inr', '₹':        'inr',
+    dirham:      'aed', dirhams:   'aed', aed:       'aed', dh:         'aed',
+    riyal:       'sar', riyals:    'sar', sar:       'sar', sr:         'sar',
+    dinar:       'kwd', dinars:    'kwd', kwd:       'kwd', bhd:        'kwd', jod: 'kwd',
+    'singapore dollar': 'sgd', 'singapore dollars':'sgd', sgd:'sgd','s$':'sgd',
+    ringgit:     'myr','malaysian ringgit':'myr', myr:'myr','rm':'myr',
+
+    // counts
+    number:      'count', count:'count', pieces:'count',
+
+    // mass
+    tonnes:      'tonne', tons:'tonne', tonne:'tonne', ton:'tonne',
+    kg:          'kg', kilogram:'kg', kilograms:'kg',
+
+    // volume
+    l:           'l', litre:'l', litres:'l', liter:'l', liters:'l', ltr:'l',
+    gallon:      'gal', gallons:'gal', gal:'gal',
+    cubic_meter: 'm3', m3:'m3', 'm³':'m3',
+
+    // length/area
+    km:          'km', kilometer:'km', kilometers:'km',
+    mile:        'mile', miles:'mile',
+    square_meter:'m2', m2:'m2', 'm²':'m2',
+
+    // energy
+    mwh:         'mwh', 'mwh':'mwh',
+
+    // time
+    hour:        'h', hours:'h', hr:'h', hrs:'h',
+
+    // specialized
+    'passenger-km':'pkm', pkm:'pkm',
+    'tonne-km':'tkm', tkm:'tkm'
+  };
+
+  return unitMap[low] || 'other';
 }
 
 // Compute emissions given override {standards, activity, fuel, unit}

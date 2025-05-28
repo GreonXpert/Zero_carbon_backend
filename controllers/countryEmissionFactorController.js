@@ -236,8 +236,6 @@ const updateEmissionFactor = async (req, res) => {
 };
 
 
-
-
 // Delete an emission factor by ID
 const deleteEmissionFactor = async (req, res) => {
     try {
@@ -249,6 +247,7 @@ const deleteEmissionFactor = async (req, res) => {
         return res.status(500).json({ message: 'Error deleting emission factor', error: error.message });
     }
 };
+
 
 module.exports = {
     addEmissionFactor,
