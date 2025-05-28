@@ -70,7 +70,6 @@ exports.addEmissionFactorScope3 = async (req, res) => {
 
 
 
-
 // Get all Scope 3 emission factors
 exports.getAllEmissionFactorsScope3 = async (req, res) => {
   try {
@@ -280,7 +279,114 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
   }
 };
 
+// Get unique categories
+exports.getUniqueCategories = async (req, res) => {
+  try {
+    const { field } = req.query;
+    
+    let result = {};
+    let message = '';
 
+    // If no field specified or field is 'all', fetch all unique values
+    if (!field || field === 'all') {
+      const [categories, activityDescriptions, itemNames, units] = await Promise.all([
+        EmissionFactorScope3.distinct('category'),
+        EmissionFactorScope3.distinct('activityDescription'),
+        EmissionFactorScope3.distinct('itemName'),
+        EmissionFactorScope3.distinct('unit')
+      ]);
+
+      result = {
+        categories: categories.sort(),
+        activityDescriptions: activityDescriptions.sort(),
+        itemNames: itemNames.sort(),
+        units: units.sort()
+      };
+      message = 'All unique field values fetched successfully';
+    }
+    // If specific field is requested
+    else {
+      let fieldName = '';
+      let data = [];
+
+      switch (field.toLowerCase()) {
+        case 'category':
+        case 'categories':
+          data = await EmissionFactorScope3.distinct('category');
+          fieldName = 'categories';
+          message = 'Unique categories fetched successfully';
+          break;
+
+        case 'activity':
+        case 'activitydescription':
+        case 'activitydescriptions':
+          data = await EmissionFactorScope3.distinct('activityDescription');
+          fieldName = 'activityDescriptions';
+          message = 'Unique activity descriptions fetched successfully';
+          break;
+
+        case 'item':
+        case 'itemname':
+        case 'itemnames':
+          data = await EmissionFactorScope3.distinct('itemName');
+          fieldName = 'itemNames';
+          message = 'Unique item names fetched successfully';
+          break;
+
+        case 'unit':
+        case 'units':
+          data = await EmissionFactorScope3.distinct('unit');
+          fieldName = 'units';
+          message = 'Unique units fetched successfully';
+          break;
+
+        default:
+          return res.status(400).json({
+            message: 'Invalid field parameter. Use: category, activityDescription, itemName, unit, or all',
+            validFields: ['category', 'activityDescription', 'itemName', 'unit', 'all']
+          });
+      }
+
+      result = {
+        [fieldName]: data.sort()
+      };
+    }
+
+    res.status(200).json({
+      message,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Error fetching unique field values:', error);
+    res.status(500).json({
+      message: 'Failed to fetch unique field values',
+      error: error.message
+    });
+  }
+};
+
+// Get activities by category
+exports.getActivitiesByCategory = async (req, res) => {
+  try {
+    const { category } = req.params;
+    
+    const activities = await EmissionFactorScope3.distinct('activityDescription', {
+      category: { $regex: category, $options: 'i' }
+    });
+
+    res.status(200).json({
+      message: 'Activities fetched successfully',
+      data: activities.sort()
+    });
+  } catch (error) {
+    console.error('Error fetching activities by category:', error);
+    res.status(500).json({
+      message: 'Failed to fetch activities',
+      error: error.message
+    });
+  }
+};
 
 // Get items by category and activity
 exports.getItemsByCategoryAndActivity = async (req, res) => {

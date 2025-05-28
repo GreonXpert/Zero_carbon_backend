@@ -19,23 +19,29 @@ const EmissionFactorScope3Schema = new mongoose.Schema({
   unit: {
     type: String,
     required: true,
-    enum: [
-      'dollar', 'dollars', 'usd', '$',
-      'number', 'count', 'pieces',
-      'tonnes', 'tons', 'tonne', 'ton',
-      'kg', 'kilogram', 'kilograms',
-      'litter', 'litre', 'litres', 'liter', 'liters', 'l',
-      'gallon', 'gallons', 'gal',
-      'km', 'kilometer', 'kilometers',
-      'mile', 'miles',
-      'kwh', 'kWh', 'mwh', 'MWh',
-      'cubic_meter', 'm3', 'm³',
-      'square_meter', 'm2', 'm²',
-      'hour', 'hours', 'hr', 'hrs',
-      'passenger-km', 'pkm',
-      'tonne-km', 'tkm',
-      'other'
-    ]
+   enum: [
+  'dollar', 'dollars', 'usd', '$',
+  'rupee', 'rupees', 'inr', '₹',
+  'dirham', 'dirhams', 'aed', 'dh',
+  'riyal', 'riyals', 'sar', 'sr',
+  'dinar', 'dinars', 'kwd', 'bhd', 'jod',
+  'singapore dollar', 'singapore dollars', 'sgd', 's$',
+  'ringgit', 'malaysian ringgit', 'myr', 'rm',
+  'number', 'count', 'pieces',
+  'tonnes', 'tons', 'tonne', 'ton',
+  'kg', 'kilogram', 'kilograms',
+  'litter', 'litre', 'litres', 'liter', 'liters', 'l',
+  'gallon', 'gallons', 'gal',
+  'km', 'kilometer', 'kilometers',
+  'mile', 'miles',
+  'kwh', 'kWh', 'mwh', 'MWh',
+  'cubic_meter', 'm3', 'm³',
+  'square_meter', 'm2', 'm²',
+  'hour', 'hours', 'hr', 'hrs',
+  'passenger-km', 'pkm',
+  'tonne-km', 'tkm',
+  'other'
+]
   },
   emissionFactor: {
     type: Number,
