@@ -413,23 +413,50 @@ exports.getItemsByCategoryAndActivity = async (req, res) => {
 };
 
 // Bulk import emission factors (CSV file upload or manual data)
+// Update your bulkImportEmissionFactorsScope3 function in the controller
+// Replace the existing function with this updated version:
+
 exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
   try {
     let emissionFactorsData = [];
 
     console.log('🔄 Starting bulk import process...');
+    console.log('📋 Request details:', {
+      hasFiles: !!req.files,
+      filesLength: req.files ? req.files.length : 0,
+      hasBody: !!req.body,
+      bodyKeys: Object.keys(req.body || {}),
+      contentType: req.headers['content-type']
+    });
 
-    // Check if it's a file upload
-    if (req.file) {
+    // Check if it's a file upload (handle both upload.single and upload.any)
+    const uploadedFile = req.file || (req.files && req.files[0]);
+    
+    if (uploadedFile) {
       const csvtojson = require('csvtojson');
-      const fs = require('fs');
       
-      console.log('📁 CSV file detected:', req.file.filename);
+      console.log('📁 CSV file detected:', {
+        filename: uploadedFile.filename || uploadedFile.originalname,
+        mimetype: uploadedFile.mimetype,
+        size: uploadedFile.size,
+        buffer: !!uploadedFile.buffer
+      });
       
       try {
-        // Parse CSV file to JSON
         console.log('🔍 Parsing CSV file...');
-        const csvData = await csvtojson().fromFile(req.file.path);
+        
+        let csvData;
+        if (uploadedFile.buffer) {
+          // For memoryStorage (upload.any())
+          const csvString = uploadedFile.buffer.toString('utf8');
+          csvData = await csvtojson().fromString(csvString);
+        } else if (uploadedFile.path) {
+          // For diskStorage (upload.single())
+          csvData = await csvtojson().fromFile(uploadedFile.path);
+        } else {
+          throw new Error('Unable to read uploaded file');
+        }
+
         console.log(`📊 Found ${csvData.length} rows in CSV`);
         
         // Debug: Log first row to see structure
@@ -438,13 +465,13 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
           console.log('📝 First row data sample:', csvData[0]);
         }
         
-        // Convert CSV data to our schema format (JSON objects)
+        // Convert CSV data to our schema format
         emissionFactorsData = csvData.map((row, index) => {
           const mappedData = {
             category: (row.Category || row.category || '').toString().trim(),
             activityDescription: (row['Activity Description'] || row.activityDescription || row['Activity description'] || '').toString().trim(),
             itemName: (row['Item Name'] || row.itemName || row['Item name'] || '').toString().trim(),
-            unit: (row.Unit || row.unit || '').toString().trim(),
+            unit: (row.Unit || row.unit || '').toString().trim().toLowerCase(),
             emissionFactor: parseFloat(row['Emission Factor'] || row.emissionFactor || row['emission factor'] || 0),
             source: (row.Source || row.source || '').toString().trim(),
             reference: (row.Reference || row.reference || '').toString().trim(),
@@ -463,26 +490,24 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
 
         console.log(`✅ Successfully converted ${emissionFactorsData.length} CSV rows to JSON format`);
 
-        // Clean up uploaded file immediately after parsing
-        try {
-          fs.unlinkSync(req.file.path);
-          console.log('🗑️ Cleaned up uploaded CSV file');
-        } catch (cleanupError) {
-          console.warn('⚠️ Warning: Could not delete uploaded file:', cleanupError.message);
+        // Clean up uploaded file if it's on disk
+        if (uploadedFile.path) {
+          try {
+            const fs = require('fs');
+            fs.unlinkSync(uploadedFile.path);
+            console.log('🗑️ Cleaned up uploaded CSV file');
+          } catch (cleanupError) {
+            console.warn('⚠️ Warning: Could not delete uploaded file:', cleanupError.message);
+          }
         }
         
       } catch (csvError) {
         console.error('❌ CSV parsing error:', csvError);
-        // Try to clean up file even if parsing failed
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (cleanupError) {
-          console.warn('⚠️ Could not cleanup file after CSV error');
-        }
         return res.status(400).json({
           message: 'Error parsing CSV file. Please check the file format and column headers.',
           error: csvError.message,
-          expectedHeaders: ['Category', 'Activity Description', 'Item Name', 'Unit', 'Emission Factor', 'Source']
+          expectedHeaders: ['Category', 'Activity Description', 'Item Name', 'Unit', 'Emission Factor', 'Source'],
+          receivedHeaders: csvError.headers || 'Unknown'
         });
       }
     } else if (req.body.emissionFactors && Array.isArray(req.body.emissionFactors)) {
@@ -491,14 +516,21 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
       emissionFactorsData = req.body.emissionFactors;
       console.log(`📊 Received ${emissionFactorsData.length} JSON records`);
     } else {
+      console.log('❌ No valid data source found');
       return res.status(400).json({
-        message: 'Please provide either a CSV file (field name: csvFile) or an array of emission factors in the request body (field name: emissionFactors)'
+        message: 'Please provide either a CSV file or an array of emission factors in the request body',
+        receivedFiles: req.files ? req.files.length : 0,
+        receivedBodyKeys: Object.keys(req.body || {}),
+        expectedFileField: 'csvFile or any file field',
+        expectedBodyField: 'emissionFactors (array)'
       });
     }
 
     if (!Array.isArray(emissionFactorsData) || emissionFactorsData.length === 0) {
       return res.status(400).json({
-        message: 'No valid emission factors data found. Please check your file or data format.'
+        message: 'No valid emission factors data found. Please check your file or data format.',
+        dataLength: emissionFactorsData.length,
+        dataType: typeof emissionFactorsData
       });
     }
 
@@ -510,7 +542,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
       duplicates: []
     };
 
-    // Process each record and save as individual JSON documents in MongoDB
+    // Process each record and save to MongoDB
     for (let i = 0; i < emissionFactorsData.length; i++) {
       try {
         const factor = emissionFactorsData[i];
@@ -555,7 +587,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
           continue;
         }
 
-        // Create new JSON document for MongoDB
+        // Create new document for MongoDB
         const newFactor = new EmissionFactorScope3({
           category: factor.category.trim(),
           activityDescription: factor.activityDescription.trim(),
@@ -569,7 +601,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
           notes: factor.notes ? factor.notes.trim() : ''
         });
 
-        // Save as JSON document in MongoDB
+        // Save to MongoDB
         const saved = await newFactor.save();
         
         console.log(`✅ Saved record ${i + 1}: ${saved.category} - ${saved.itemName}`);
@@ -596,7 +628,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
     console.log(`📈 Summary: ${results.inserted.length} inserted, ${results.errors.length} errors, ${results.duplicates.length} duplicates`);
 
     res.status(200).json({
-      message: 'Bulk import completed successfully. All data saved as JSON documents in database.',
+      message: 'Bulk import completed successfully',
       summary: {
         totalProvided: emissionFactorsData.length,
         successful: results.inserted.length,
@@ -605,15 +637,16 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
       },
       results: {
         inserted: results.inserted,
-        errors: results.errors.length > 0 ? results.errors : undefined,
-        duplicates: results.duplicates.length > 0 ? results.duplicates : undefined
+        errors: results.errors.length > 0 ? results.errors.slice(0, 10) : undefined, // Limit errors in response
+        duplicates: results.duplicates.length > 0 ? results.duplicates.slice(0, 10) : undefined // Limit duplicates in response
       }
     });
   } catch (error) {
     console.error('💥 Critical error in bulk import:', error);
     res.status(500).json({
       message: 'Failed to perform bulk import',
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
