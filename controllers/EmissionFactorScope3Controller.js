@@ -621,6 +621,20 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
 // Download CSV template for bulk import
 exports.downloadCSVTemplate = async (req, res) => {
   try {
+    console.log('🔄 Starting CSV export process...');
+
+    // Fetch all emission factors from the database
+    const emissionFactors = await EmissionFactorScope3.find({}).sort({ createdAt: -1 });
+    
+    console.log(`📊 Found ${emissionFactors.length} records to export`);
+
+    if (emissionFactors.length === 0) {
+      return res.status(404).json({
+        message: 'No emission factors found in the database to export'
+      });
+    }
+
+    // Define CSV headers
     const csvHeaders = [
       'Category',
       'Activity Description', 
@@ -634,46 +648,50 @@ exports.downloadCSVTemplate = async (req, res) => {
       'Notes'
     ];
 
-    const sampleData = [
-      [
-        'Purchased goods and services',
-        'Office supplies procurement',
-        'Paper (A4)',
-        'kg',
-        '1.29',
-        'DEFRA 2024',
-        'https://example.com/defra-data',
-        '2024',
-        'UK',
-        'Standard office paper'
-      ],
-      [
-        'Business travel',
-        'Air travel',
-        'Domestic flight',
-        'km',
-        '0.255',
-        'ICAO Guidelines',
-        'https://example.com/icao-data',
-        '2024',
-        'Global',
-        'Economy class'
-      ]
-    ];
-
-    // Create CSV content
+    // Create CSV content starting with headers
     let csvContent = csvHeaders.join(',') + '\n';
-    sampleData.forEach(row => {
-      csvContent += row.map(field => `"${field}"`).join(',') + '\n';
+
+    // Add each emission factor as a row in the CSV
+    emissionFactors.forEach((factor) => {
+      const row = [
+        factor.category || '',
+        factor.activityDescription || '',
+        factor.itemName || '',
+        factor.unit || '',
+        factor.emissionFactor || '',
+        factor.source || '',
+        factor.reference || '',
+        factor.year || '',
+        factor.region || '',
+        factor.notes || ''
+      ];
+
+      // Wrap each field in quotes and escape any existing quotes
+      const csvRow = row.map(field => {
+        const fieldStr = String(field);
+        // Escape quotes by doubling them and wrap in quotes
+        return `"${fieldStr.replace(/"/g, '""')}"`;
+      }).join(',');
+
+      csvContent += csvRow + '\n';
     });
 
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="scope3_emission_factors_template.csv"');
+    console.log('✅ CSV content generated successfully');
+
+    // Set response headers for file download
+    const filename = `scope3_emission_factors_${new Date().toISOString().split('T')[0]}.csv`;
+    
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', Buffer.byteLength(csvContent, 'utf8'));
+
+    console.log(`📁 Sending CSV file: ${filename}`);
     res.status(200).send(csvContent);
+
   } catch (error) {
-    console.error('Error generating CSV template:', error);
+    console.error('❌ Error generating CSV export:', error);
     res.status(500).json({
-      message: 'Failed to generate CSV template',
+      message: 'Failed to export emission factors to CSV',
       error: error.message
     });
   }
