@@ -6,6 +6,9 @@ const calculateEmissionController = require("../controllers/CalculateEmissionCO2
 // Route for calculation and saving
 router.post("/calculate-emission",upload.single("document"), calculateEmissionController.calculateAndSaveEmission);
 
+// Get available scopes for a specific node (ADD THIS MISSING ROUTE)
+router.get("/node-scopes/:userId/:nodeId", calculateEmissionController.getAvailableScopesForNode);
+
 // Get data by userId
 router.get("/calculate-emission/:userId", calculateEmissionController.getEmissionDataByUserId);
 

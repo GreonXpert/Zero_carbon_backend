@@ -1,31 +1,77 @@
 const mongoose = require("mongoose");
 
-
-
 const userSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true },
     contactNumber: { type: String, required: true },
-    userName: { type: String, required: true },
+    userName: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     userType: {
       type: String,
       required: true,
-      enum: ["user", "admin", "consultant"],
+      enum: ["super_admin", "consultant_admin", "consultant", "client_admin", "client_employee_head", "employee", "viewer", "auditor"],
     },
     address: { type: String, required: true },
-    // For regular users the companyName can be provided,
-    // but for consultants and admin it will default to Greonxpert Pvt Ltd.
-    companyName: { type: String, default: "Greonxpert Pvt Ltd" },
+    companyName: { type: String },
     isFirstLogin: { type: Boolean, default: true },
-    // Only for admin accounts
-    role: { type: String },
-    // Consultant specific fields
+    isActive: { type: Boolean, default: true },
+    
+    // Hierarchical relationships
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    parentUser: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    
+    // Client relationship
+    clientId: { type: String }, // Format: Greon001, Greon002, etc.
+    
+    // Super Admin specific
+    role: { type: String }, // Only for super admin
+    
+    // Consultant Admin specific
+    teamName: { type: String },
+    assignedClients: [{ type: String }], // Array of clientIds
+    
+    // Consultant specific
     employeeId: { type: String },
     jobRole: { type: String },
     branch: { type: String },
+    consultantAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    
+    // Client Employee Head specific
+    department: { type: String },
+    
+    // Employee specific
+    employeeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    assignedModules: [{ type: String }],
+    
+    // Auditor specific
+    auditPeriod: {
+      startDate: { type: Date },
+      endDate: { type: Date }
+    },
+    auditScope: [{ type: String }],
+    
+    // Viewer specific
+    viewerPurpose: { type: String },
+    viewerExpiryDate: { type: Date },
+    
+    // Permissions
+    permissions: {
+      canViewAllClients: { type: Boolean, default: false },
+      canManageUsers: { type: Boolean, default: false },
+      canManageClients: { type: Boolean, default: false },
+      canViewReports: { type: Boolean, default: false },
+      canEditBoundaries: { type: Boolean, default: false },
+      canSubmitData: { type: Boolean, default: false },
+      canAudit: { type: Boolean, default: false }
+    }
   },
   { timestamps: true }
 );
+
+// Index for efficient queries
+userSchema.index({ clientId: 1 });
+userSchema.index({ userType: 1 });
+userSchema.index({ createdBy: 1 });
+userSchema.index({ email: 1 });
 
 module.exports = mongoose.model("User", userSchema);
