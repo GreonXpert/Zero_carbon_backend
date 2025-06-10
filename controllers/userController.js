@@ -729,69 +729,177 @@ const createViewer = async (req, res) => {
 // Get users based on hierarchy
 const getUsers = async (req, res) => {
   try {
-    let query = {};
-    
-    // Build query based on user type
+    // 1. Build base query by hierarchy (unchanged)
+    let baseQuery = {};
     switch (req.user.userType) {
       case "super_admin":
-        // Can see all users
+        // sees all users
         break;
-        
       case "consultant_admin":
-        // Can see consultants they created and assigned clients
-        query = {
+        baseQuery = {
           $or: [
             { createdBy: req.user.id },
             { consultantAdminId: req.user.id }
           ]
         };
         break;
-        
       case "consultant":
-        // Can see client users for assigned clients
         const assignedClients = await Client.find({
           "leadInfo.assignedConsultantId": req.user.id
         }).select("clientId");
-        
         const clientIds = assignedClients.map(c => c.clientId);
-        query = { clientId: { $in: clientIds } };
+        baseQuery = { clientId: { $in: clientIds } };
         break;
-        
       case "client_admin":
-        // Can see all users in their organization
-        query = { clientId: req.user.clientId };
+        baseQuery = { clientId: req.user.clientId };
         break;
-        
       case "client_employee_head":
-        // Can see employees they created
-        query = { createdBy: req.user.id };
+        baseQuery = { createdBy: req.user.id };
         break;
-        
       default:
-        // Others can't see user lists
-        return res.status(403).json({ 
-          message: "You don't have permission to view users" 
-        });
+        return res.status(403).json({ message: "You don't have permission to view users" });
     }
+
+    // 2. Extract special params (pagination, sorting, search)
+    const {
+      page = 1,
+      limit = 10,
+      sort,        // Can be: "field1:asc,field2:desc" or just "field:order"
+      search,      // Global search term
+      ...filters   // All other params are treated as filters
+    } = req.query;
+
+    // 3. Build filter query from ALL remaining params
+    const filterQuery = {};
     
-    const users = await User.find(query)
-      .select("-password")
-      .populate("createdBy", "userName email")
-      .sort({ createdAt: -1 });
-    
-    res.status(200).json({
-      message: "Users fetched successfully",
-      users
+    // Process each filter param
+    Object.keys(filters).forEach(key => {
+      const value = filters[key];
+      
+      // Handle different filter types
+      if (value.includes(',')) {
+        // Multiple values: use $in operator
+        filterQuery[key] = { $in: value.split(',') };
+      } else if (value.startsWith('>=')) {
+        // Greater than or equal
+        filterQuery[key] = { $gte: value.substring(2) };
+      } else if (value.startsWith('<=')) {
+        // Less than or equal
+        filterQuery[key] = { $lte: value.substring(2) };
+      } else if (value.startsWith('>')) {
+        // Greater than
+        filterQuery[key] = { $gt: value.substring(1) };
+      } else if (value.startsWith('<')) {
+        // Less than
+        filterQuery[key] = { $lt: value.substring(1) };
+      } else if (value.startsWith('!')) {
+        // Not equal
+        filterQuery[key] = { $ne: value.substring(1) };
+      } else if (value === 'true' || value === 'false') {
+        // Boolean values
+        filterQuery[key] = value === 'true';
+      } else if (!isNaN(value) && value !== '') {
+        // Numeric values
+        filterQuery[key] = Number(value);
+      } else if (key.includes('.')) {
+        // Nested field filtering (e.g., permissions.canViewReports=true)
+        filterQuery[key] = value === 'true' ? true : value === 'false' ? false : value;
+      } else {
+        // String values: use regex for partial matching
+        filterQuery[key] = { $regex: value, $options: 'i' };
+      }
     });
-    
+
+    // 4. Add global search across ALL text fields
+    if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+      filterQuery.$or = [
+        { userName: searchRegex },
+        { email: searchRegex },
+        { address: searchRegex },
+        { companyName: searchRegex },
+        { role: searchRegex },
+        { teamName: searchRegex },
+        { employeeId: searchRegex },
+        { jobRole: searchRegex },
+        { branch: searchRegex },
+        { clientId: searchRegex },
+        { department: searchRegex },
+        { viewerPurpose: searchRegex },
+        { 'assignedClients': searchRegex },
+        { 'assignedModules': searchRegex },
+        { 'auditScope': searchRegex }
+      ];
+    }
+
+    // 5. Merge hierarchy + filters
+    const finalQuery = { ...baseQuery, ...filterQuery };
+
+    // 6. Build sort object (supports multiple sort fields)
+    let sortObj = {};
+    if (sort) {
+      // Handle multiple sort fields: "field1:asc,field2:desc"
+      const sortFields = sort.split(',');
+      sortFields.forEach(field => {
+        const [fieldName, order = 'asc'] = field.split(':');
+        sortObj[fieldName] = order.toLowerCase() === 'desc' ? -1 : 1;
+      });
+    } else {
+      // Default sort by createdAt desc
+      sortObj = { createdAt: -1 };
+    }
+
+    // 7. Execute query with pagination
+    const skip = (Number(page) - 1) * Number(limit);
+    const limitNum = Number(limit);
+
+    // Get total count for pagination
+    const total = await User.countDocuments(finalQuery);
+
+    // Fetch paginated results
+    const users = await User.find(finalQuery)
+      .select('-password')
+      .populate('createdBy', 'userName email')
+      .populate('parentUser', 'userName email')
+      .populate('consultantAdminId', 'userName email')
+      .populate('employeeHeadId', 'userName email')
+      .sort(sortObj)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    // 8. Return response with comprehensive metadata
+    res.status(200).json({
+      success: true,
+      message: 'Users fetched successfully',
+      data: {
+        users,
+        pagination: {
+          page: Number(page),
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+          hasNextPage: page < Math.ceil(total / limitNum),
+          hasPrevPage: page > 1
+        },
+        filters: {
+          applied: filters,
+          search: search || null,
+          sort: sortObj
+        }
+      }
+    });
+
   } catch (error) {
-    console.error("Get users error:", error);
-    res.status(500).json({ 
-      message: "Failed to fetch users", 
-      error: error.message 
+    console.error('Get users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
     });
   }
 };
+
 
 async function getConsultantIds(consultantAdminId) {
   const consultants = await User.find({ 
