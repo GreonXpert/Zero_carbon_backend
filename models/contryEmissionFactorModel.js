@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const CountryEmissionFactorSchema = new mongoose.Schema({
-    country: { type: String, required: true },
+    C: { type: String, required: true },
     regionGrid: { type: String, required: true },
     emissionFactor: { type: String, required: true }, // tCO2/MWh
     reference: { type: String, default: "" },
