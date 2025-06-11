@@ -1,29 +1,5 @@
 const mongoose = require("mongoose");
 
-
-// 3. ADD: Notification preferences for users
-const userNotificationPreferences = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  emailNotifications: { type: Boolean, default: true },
-  pushNotifications: { type: Boolean, default: true },
-  priorityFilter: {
-    type: String,
-    enum: ["all", "medium_and_above", "high_and_above", "urgent_only"],
-    default: "all"
-  },
-  categories: {
-    system: { type: Boolean, default: true },
-    reminders: { type: Boolean, default: true },
-    achievements: { type: Boolean, default: true },
-    policy: { type: Boolean, default: true }
-  },
-  quietHours: {
-    enabled: { type: Boolean, default: false },
-    startTime: { type: String, default: "22:00" },
-    endTime: { type: String, default: "08:00" }
-  }
-});
-
 const notificationSchema = new mongoose.Schema(
   {
     // Basic Information
@@ -51,8 +27,8 @@ const notificationSchema = new mongoose.Schema(
     targetUsers: [{ 
       type: mongoose.Schema.Types.ObjectId, 
       ref: "User" 
-    }], // Specific users if needed
-    targetClients: [{ type: String }], // Specific client IDs
+    }], // Specific users
+    targetClients: [{ type: String }], // Specific client IDs (e.g., "Greon001")
     
     // Status Management
     status: {
@@ -70,11 +46,19 @@ const notificationSchema = new mongoose.Schema(
     },
     approvalDate: { type: Date },
     rejectionReason: { type: String },
+    waitlistNotes: { type: String }, // For waitlist status
     
     // Publishing Schedule
     publishDate: { type: Date },
     scheduledPublishDate: { type: Date }, // For 30-minute delay
     publishedAt: { type: Date },
+    
+    // Cancellation tracking
+    cancelledBy: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "User" 
+    },
+    cancelledAt: { type: Date },
     
     // Expiry Settings
     expiryDate: { type: Date },
@@ -98,11 +82,11 @@ const notificationSchema = new mongoose.Schema(
       type: { type: String }
     }],
     
-    // For system notifications (like user status changes)
+    // For system notifications (like user status changes, lead creation, etc.)
     isSystemNotification: { type: Boolean, default: false },
-    systemAction: { type: String }, // e.g., "user_status_changed"
+    systemAction: { type: String }, // e.g., "user_status_changed", "lead_created"
     relatedEntity: {
-      type: { type: String }, // e.g., "user", "client"
+      type: { type: String }, // e.g., "user", "client", "lead"
       id: { type: mongoose.Schema.Types.ObjectId }
     }
   },
@@ -113,9 +97,12 @@ const notificationSchema = new mongoose.Schema(
 notificationSchema.index({ createdBy: 1, status: 1 });
 notificationSchema.index({ targetUserTypes: 1, status: 1 });
 notificationSchema.index({ targetUsers: 1, status: 1 });
+notificationSchema.index({ targetClients: 1, status: 1 });
 notificationSchema.index({ publishDate: 1, status: 1 });
+notificationSchema.index({ scheduledPublishDate: 1, status: 1 });
 notificationSchema.index({ expiryDate: 1, status: 1 });
 notificationSchema.index({ "readBy.user": 1 });
+notificationSchema.index({ isDeleted: 1, status: 1 });
 
 // Virtual for checking if notification is active
 notificationSchema.virtual('isActive').get(function() {
@@ -125,48 +112,94 @@ notificationSchema.virtual('isActive').get(function() {
 });
 
 // Method to check if user can view this notification
+// In models/Notification.js, replace your existing canBeViewedBy with:
 notificationSchema.methods.canBeViewedBy = async function(user) {
-  // If deleted, no one can view
+  // 1. Normalize caller’s ID to a string (handles both user._id and user.id)
+  const userId = (user._id || user.id).toString();
+
+  // 2. Deleted? no one can view
   if (this.isDeleted) return false;
-  
-  // If not published yet, only creator and approvers can view
+
+  // 3. Creator can always view
+  if (this.createdBy && this.createdBy.toString() === userId) {
+    return true;
+  }
+
+  // 4. Not yet published? only certain roles…
   if (this.status !== 'published') {
-    return this.createdBy.toString() === user._id.toString() ||
-           (user.userType === 'super_admin') ||
-           (user.userType === 'consultant_admin' && this.approvalRequired);
+    if (user.userType === 'super_admin') {
+      return true;
+    }
+    if (user.userType === 'consultant_admin' && this.approvalRequired) {
+      const User = mongoose.model('User');
+      const creator = await User.findById(this.createdBy);
+      if (
+        creator &&
+        creator.consultantAdminId &&
+        creator.consultantAdminId.toString() === userId
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
-  
-  // Check if user is in targetUsers
-  if (this.targetUsers.length > 0) {
-    return this.targetUsers.some(targetId => targetId.toString() === user._id.toString());
+
+  // 5. Published → check targeting:
+
+  // 5.a specifically targeted users?
+  if (Array.isArray(this.targetUsers) && this.targetUsers.length > 0) {
+    const isTargeted = this.targetUsers.some(
+      targetId => targetId && targetId.toString() === userId
+    );
+    return isTargeted;
   }
-  
-  // Check if user's type is in targetUserTypes
-  if (this.targetUserTypes.length > 0) {
-    if (!this.targetUserTypes.includes(user.userType)) {
+
+  // 5.b specific user-types?
+  if (Array.isArray(this.targetUserTypes) && this.targetUserTypes.length > 0) {
+    if (this.targetUserTypes.includes(user.userType)) {
+      return true;
+    }
+    // types were specified but user isn’t one of them, and no client fallback → deny
+    if (!Array.isArray(this.targetClients) || this.targetClients.length === 0) {
       return false;
     }
   }
-  
-  // Check if user's client is in targetClients
-  if (this.targetClients.length > 0 && user.clientId) {
+
+  // 5.c specific clients?
+  if (
+    Array.isArray(this.targetClients) &&
+    this.targetClients.length > 0 &&
+    user.clientId
+  ) {
     return this.targetClients.includes(user.clientId);
   }
-  
+
+  // 5.d no targeting at all → global notification
   return true;
 };
 
+
 // Method to mark as read by user
 notificationSchema.methods.markAsReadBy = async function(userId) {
-  const alreadyRead = this.readBy.some(
-    read => read.user.toString() === userId.toString()
+  // Ensure readBy is always an array
+  if (!Array.isArray(this.readBy)) {
+    this.readBy = [];
+  }
+
+  // Check if this user has already read it, guarding against undefined read.user
+  const alreadyRead = this.readBy.some(read =>
+    read.user && read.user.toString() === userId.toString()
   );
-  
+
   if (!alreadyRead) {
-    this.readBy.push({ user: userId, readAt: new Date() });
+    this.readBy.push({
+      user: userId,
+      readAt: new Date()
+    });
     await this.save();
   }
 };
+
 
 // Static method to get notifications for a user
 notificationSchema.statics.getNotificationsForUser = async function(user, options = {}) {
@@ -192,37 +225,26 @@ notificationSchema.statics.getNotificationsForUser = async function(user, option
   // 1. Specifically targeted user
   targetingConditions.push({ targetUsers: user._id });
   
-  // 2. User type is targeted (only if no specific users)
+  // 2. User type is targeted (only if no specific users are targeted)
   targetingConditions.push({
     targetUserTypes: user.userType,
-    $or: [
-      { targetUsers: { $exists: false } },
-      { targetUsers: { $size: 0 } }
-    ]
+    targetUsers: { $size: 0 } // Only apply if no specific users are targeted
   });
   
-  // 3. Client is targeted (only if no specific users/types)
+  // 3. Client is targeted (only if no specific users/types are targeted)
   if (user.clientId) {
     targetingConditions.push({
       targetClients: user.clientId,
-      $or: [
-        { targetUsers: { $exists: false } },
-        { targetUsers: { $size: 0 } }
-      ],
-      $or: [
-        { targetUserTypes: { $exists: false } },
-        { targetUserTypes: { $size: 0 } }
-      ]
+      targetUsers: { $size: 0 }, // Only apply if no specific users are targeted
+      targetUserTypes: { $size: 0 } // Only apply if no user types are targeted
     });
   }
   
   // 4. Global notifications (no targeting specified)
   targetingConditions.push({
-    $and: [
-      { $or: [{ targetUsers: { $exists: false } }, { targetUsers: { $size: 0 } }] },
-      { $or: [{ targetUserTypes: { $exists: false } }, { targetUserTypes: { $size: 0 } }] },
-      { $or: [{ targetClients: { $exists: false } }, { targetClients: { $size: 0 } }] }
-    ]
+    targetUsers: { $size: 0 },
+    targetUserTypes: { $size: 0 },
+    targetClients: { $size: 0 }
   });
   
   const query = {
@@ -237,13 +259,13 @@ notificationSchema.statics.getNotificationsForUser = async function(user, option
   
   const notifications = await this.find(query)
     .populate('createdBy', 'userName email userType')
+    .populate('approvedBy', 'userName email')
     .sort(sortBy)
     .limit(limit)
     .skip(skip);
   
   return notifications;
 };
-
 
 // Static method to schedule auto-deletion
 notificationSchema.statics.scheduleAutoDeletion = async function() {
@@ -264,8 +286,29 @@ notificationSchema.statics.scheduleAutoDeletion = async function() {
       notification.isDeleted = true;
       notification.deletedAt = now;
       await notification.save();
+      
+      console.log(`Auto-deleted notification: ${notification.title}`);
     }
   }
+};
+
+// Static method to get pending notifications count for a consultant admin
+notificationSchema.statics.getPendingApprovalsCount = async function(consultantAdminId) {
+  const User = mongoose.model('User');
+  
+  // Get all consultants under this consultant admin
+  const consultants = await User.find({
+    consultantAdminId: consultantAdminId,
+    userType: "consultant"
+  }).select("_id");
+  
+  const consultantIds = consultants.map(c => c._id);
+  
+  return await this.countDocuments({
+    createdBy: { $in: consultantIds },
+    status: "pending_approval",
+    isDeleted: false
+  });
 };
 
 module.exports = mongoose.model("Notification", notificationSchema);
