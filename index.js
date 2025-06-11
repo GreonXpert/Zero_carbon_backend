@@ -443,6 +443,19 @@ cron.schedule('*/5 * * * *', async () => {
     }
 });
 
+// ... (other requires and setup above)
+
+// Start background scheduler for notifications (runs every minute)
+cron.schedule('*/10 * * * *', async () => {
+  console.log('🔄 Checking for scheduled notifications...');
+  try {
+    await publishScheduledNotifications();
+  } catch (error) {
+    console.error('Error in scheduled notification job:', error);
+  }
+});
+
+
 // Add MQTT status endpoint
 app.get('/api/mqtt/status', (req, res) => {
     if (mqttSubscriber) {

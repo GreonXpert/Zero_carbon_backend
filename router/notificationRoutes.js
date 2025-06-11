@@ -8,26 +8,36 @@ const {
   approveNotification,
   cancelNotification,
   markAsRead,
-  deleteNotification
+  deleteNotification,
+  getNotificationStats,
+  markAllReadHandler
 } = require("../controllers/notificationControllers");
 
 // Apply auth middleware to all routes
 router.use(auth);
 
-// Notification management routes
+// Core notification management routes
 router.post("/", createNotification); // Create new notification
 router.get("/", getNotifications); // Get notifications for current user
-router.patch("/:notificationId/approve", approveNotification); // Approve/Reject notification (Consultant Admin only)
+router.patch("/:notificationId/approve", approveNotification); // Approve/Reject/Waitlist notification (Consultant Admin only)
 router.patch("/:notificationId/cancel", cancelNotification); // Cancel scheduled notification (Super Admin only)
 router.patch("/:notificationId/read", markAsRead); // Mark notification as read
 router.delete("/:notificationId", deleteNotification); // Delete notification
 
-// Additional routes for specific use cases
+// PATCH works as before
+router.patch("/mark-all-read", markAllReadHandler);
+// …and now GET works too
+router.get(  "/mark-all-read", markAllReadHandler); // Mark all notifications as read
+
+// Statistics and analytics
+router.get("/stats", getNotificationStats); // Get notification statistics (Admin only)
+
+// Unread count endpoint
 router.get("/unread-count", async (req, res) => {
   try {
     const Notification = require("../models/Notification");
     
-    // FIXED: More accurate unread count query
+    // Build targeting conditions for accurate unread count
     const targetingConditions = [
       { targetUsers: req.user.id },
       {
@@ -71,7 +81,6 @@ router.get("/unread-count", async (req, res) => {
   }
 });
 
-
 // Get notifications created by current user
 router.get("/my-notifications", async (req, res) => {
   try {
@@ -90,6 +99,7 @@ router.get("/my-notifications", async (req, res) => {
     
     const notifications = await Notification.find(query)
       .populate('approvedBy', 'userName email')
+      .populate('targetUsers', 'userName email')
       .sort('-createdAt')
       .limit(parseInt(limit))
       .skip(parseInt(skip));
@@ -97,7 +107,22 @@ router.get("/my-notifications", async (req, res) => {
     const total = await Notification.countDocuments(query);
     
     res.status(200).json({
-      notifications,
+      notifications: notifications.map(notif => ({
+        id: notif._id,
+        title: notif.title,
+        message: notif.message,
+        priority: notif.priority,
+        status: notif.status,
+        createdAt: notif.createdAt,
+        approvedBy: notif.approvedBy,
+        approvalDate: notif.approvalDate,
+        scheduledPublishDate: notif.scheduledPublishDate,
+        targetSummary: {
+          users: notif.targetUsers.length,
+          clients: notif.targetClients.length,
+          userTypes: notif.targetUserTypes.length
+        }
+      })),
       pagination: {
         total,
         limit: parseInt(limit),
@@ -138,10 +163,21 @@ router.get("/pending-approvals", async (req, res) => {
       isDeleted: false
     })
     .populate('createdBy', 'userName email')
+    .populate('targetUsers', 'userName email')
     .sort('-createdAt');
     
     res.status(200).json({
-      pendingApprovals: pendingNotifications
+      pendingApprovals: pendingNotifications.map(notif => ({
+        id: notif._id,
+        title: notif.title,
+        message: notif.message,
+        priority: notif.priority,
+        createdBy: notif.createdBy,
+        createdAt: notif.createdAt,
+        targetClients: notif.targetClients,
+        targetUsers: notif.targetUsers,
+        waitlistNotes: notif.waitlistNotes
+      }))
     });
   } catch (error) {
     res.status(500).json({
@@ -151,31 +187,118 @@ router.get("/pending-approvals", async (req, res) => {
   }
 });
 
-// Get scheduled notifications (Super Admin only)
+// Get scheduled notifications (Super Admin and Consultant Admin)
 router.get("/scheduled", async (req, res) => {
   try {
-    if (req.user.userType !== "super_admin") {
+    if (!["super_admin", "consultant_admin"].includes(req.user.userType)) {
       return res.status(403).json({
-        message: "Only Super Admin can view scheduled notifications"
+        message: "Only Super Admin and Consultant Admin can view scheduled notifications"
       });
     }
     
     const Notification = require("../models/Notification");
     
-    const scheduledNotifications = await Notification.find({
+    let query = {
       status: "scheduled",
       isDeleted: false
-    })
-    .populate('createdBy', 'userName email userType')
-    .populate('approvedBy', 'userName email')
-    .sort('scheduledPublishDate');
+    };
+    
+    // Consultant admin can only see their team's scheduled notifications
+    if (req.user.userType === "consultant_admin") {
+      const User = require("../models/User");
+      const teamMembers = await User.find({
+        $or: [
+          { _id: req.user.id },
+          { consultantAdminId: req.user.id }
+        ]
+      }).select("_id");
+      
+      query.createdBy = { $in: teamMembers.map(m => m._id) };
+    }
+    
+    const scheduledNotifications = await Notification.find(query)
+      .populate('createdBy', 'userName email userType')
+      .populate('approvedBy', 'userName email')
+      .populate('targetUsers', 'userName email')
+      .sort('scheduledPublishDate');
     
     res.status(200).json({
-      scheduledNotifications
+      scheduledNotifications: scheduledNotifications.map(notif => ({
+        id: notif._id,
+        title: notif.title,
+        message: notif.message,
+        priority: notif.priority,
+        createdBy: notif.createdBy,
+        approvedBy: notif.approvedBy,
+        scheduledPublishDate: notif.scheduledPublishDate,
+        targetSummary: {
+          users: notif.targetUsers.length,
+          clients: notif.targetClients.length,
+          userTypes: notif.targetUserTypes.length
+        }
+      }))
     });
   } catch (error) {
     res.status(500).json({
       message: "Failed to get scheduled notifications",
+      error: error.message
+    });
+  }
+});
+
+
+// Get notification details by ID
+router.get("/:notificationId", async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const Notification = require("../models/Notification");
+    
+    const notification = await Notification.findById(notificationId)
+      .populate('createdBy', 'userName email userType')
+      .populate('approvedBy', 'userName email')
+      .populate('targetUsers', 'userName email');
+    
+    if (!notification) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
+    
+    // Check if user can view this notification
+    const canView = await notification.canBeViewedBy(req.user);
+    if (!canView) {
+      return res.status(403).json({
+        message: "You don't have permission to view this notification"
+      });
+    }
+    
+    res.status(200).json({
+      notification: {
+        id: notification._id,
+        title: notification.title,
+        message: notification.message,
+        priority: notification.priority,
+        status: notification.status,
+        createdBy: notification.createdBy,
+        createdAt: notification.createdAt,
+        approvedBy: notification.approvedBy,
+        approvalDate: notification.approvalDate,
+        rejectionReason: notification.rejectionReason,
+        scheduledPublishDate: notification.scheduledPublishDate,
+        publishedAt: notification.publishedAt,
+        expiryDate: notification.expiryDate,
+        autoDeleteAfterDays: notification.autoDeleteAfterDays,
+        attachments: notification.attachments,
+        targetUsers: notification.targetUsers,
+        targetClients: notification.targetClients,
+        targetUserTypes: notification.targetUserTypes,
+        isRead: notification.readBy.some(read => read.user.toString() === req.user.id),
+        readBy: notification.readBy,
+        isSystemNotification: notification.isSystemNotification,
+        systemAction: notification.systemAction
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Failed to get notification details",
       error: error.message
     });
   }

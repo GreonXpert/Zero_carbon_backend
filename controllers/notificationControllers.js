@@ -1,8 +1,9 @@
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const Client = require("../models/Client");
 const { sendMail } = require("../utils/mail");
 
-// Create notification
+// Create notification with proper business logic
 const createNotification = async (req, res) => {
   try {
     const {
@@ -14,7 +15,8 @@ const createNotification = async (req, res) => {
       targetClients,
       autoDeleteAfterDays,
       expiryDate,
-      attachments
+      attachments,
+      sendToAll // New field for sending to all applicable users
     } = req.body;
     
     // Validate required fields
@@ -32,45 +34,136 @@ const createNotification = async (req, res) => {
       });
     }
     
-    // Validate targets
-    if (!targetUserTypes?.length && !targetUsers?.length && !targetClients?.length) {
-      return res.status(400).json({
-        message: "Please specify at least one target audience"
-      });
-    }
-    
-    // FIXED: Enhanced permission validation
+    // Initialize notification parameters
     let approvalRequired = false;
     let status = "draft";
     let scheduledPublishDate = null;
+    let finalTargetUsers = targetUsers || [];
+    let finalTargetClients = targetClients || [];
+    let finalTargetUserTypes = targetUserTypes || [];
     
-    if (req.user.userType === "consultant") {
-      // Check if targeting client admins - requires approval
-      if (targetUserTypes?.includes("client_admin")) {
+    // Handle different user types with specific business logic
+    switch (req.user.userType) {
+      case "super_admin":
+        // Super Admin can send to anyone immediately
+        status = "published";
+        
+        // If sendToAll is true, target all user types
+        if (sendToAll) {
+          finalTargetUserTypes = [
+            "super_admin", "consultant_admin", "consultant", 
+            "client_admin", "client_employee_head", "employee", 
+            "viewer", "auditor"
+          ];
+        }
+        break;
+        
+      case "consultant_admin":
+        // Get all clients managed by this consultant admin
+        const managedClients = await Client.find({
+          $or: [
+            { "leadInfo.consultantAdminId": req.user.id },
+            { "leadInfo.assignedConsultantId": { $in: await getConsultantIds(req.user.id) } }
+          ],
+          stage: "active"
+        }).select("clientId");
+        
+        const managedClientIds = managedClients.map(c => c.clientId);
+        
+        // Get all consultants under this consultant admin
+        const managedConsultants = await User.find({
+          consultantAdminId: req.user.id,
+          userType: "consultant",
+          isActive: true
+        }).select("_id");
+        
+        const managedConsultantIds = managedConsultants.map(c => c._id);
+        
+        // Validate targets
+        if (targetClients && targetClients.length > 0) {
+          // Check if all target clients are managed by this consultant admin
+          const invalidClients = targetClients.filter(clientId => 
+            !managedClientIds.includes(clientId)
+          );
+          
+          if (invalidClients.length > 0) {
+            return res.status(403).json({
+              message: "You can only send notifications to clients you manage"
+            });
+          }
+          
+          // When consultant admin sends to clients, notify super admin and delay 30 mins
+          scheduledPublishDate = new Date(Date.now() + 30 * 60 * 1000);
+          status = "scheduled";
+          
+          // Send email to super admin
+          await notifySuperAdminAboutClientNotification(req.user, targetClients, title, message);
+        }
+        
+        // If targeting consultants, publish immediately
+        if (targetUsers && targetUsers.length > 0) {
+          const targetingConsultants = targetUsers.some(userId => 
+            managedConsultantIds.some(consultantId => 
+              consultantId.toString() === userId.toString()
+            )
+          );
+          
+          if (targetingConsultants) {
+            status = status === "scheduled" ? status : "published"; // Keep scheduled if already set
+          }
+        }
+        
+        // If sendToAll for consultant admin
+        if (sendToAll) {
+          finalTargetClients = managedClientIds;
+          finalTargetUsers = managedConsultantIds.map(id => id.toString());
+          scheduledPublishDate = new Date(Date.now() + 30 * 60 * 1000);
+          status = "scheduled";
+          await notifySuperAdminAboutClientNotification(req.user, managedClientIds, title, message);
+        }
+        break;
+        
+      case "consultant":
+        // Consultants need approval for all notifications
         approvalRequired = true;
         status = "pending_approval";
-      } else {
-        // All other consultant notifications get 30-minute delay
-        scheduledPublishDate = new Date(Date.now() + 30 * 60 * 1000);
-        status = "scheduled";
-      }
-    } else if (req.user.userType === "consultant_admin") {
-      // Consultant admin notifications get 30-minute delay
-      scheduledPublishDate = new Date(Date.now() + 30 * 60 * 1000);
-      status = "scheduled";
-    } else if (req.user.userType === "super_admin") {
-      // Super admin publishes immediately
-      status = "published";
+        
+        // Get clients assigned to this consultant
+        const assignedClients = await Client.find({
+          "leadInfo.assignedConsultantId": req.user.id,
+          stage: "active"
+        }).select("clientId");
+        
+        const assignedClientIds = assignedClients.map(c => c.clientId);
+        
+        // Validate that consultant only targets their assigned clients
+        if (targetClients && targetClients.length > 0) {
+          const invalidClients = targetClients.filter(clientId => 
+            !assignedClientIds.includes(clientId)
+          );
+          
+          if (invalidClients.length > 0) {
+            return res.status(403).json({
+              message: "You can only send notifications to clients assigned to you"
+            });
+          }
+        }
+        
+        // If sendToAll for consultant
+        if (sendToAll) {
+          finalTargetClients = assignedClientIds;
+        }
+        break;
     }
     
-    // FIXED: Validate auto-delete value
+    // Validate auto-delete value
     if (autoDeleteAfterDays && (autoDeleteAfterDays < 1 || autoDeleteAfterDays > 365)) {
       return res.status(400).json({
         message: "Auto-delete days must be between 1 and 365"
       });
     }
     
-    // FIXED: Validate expiry date
+    // Validate expiry date
     if (expiryDate && new Date(expiryDate) <= new Date()) {
       return res.status(400).json({
         message: "Expiry date must be in the future"
@@ -84,9 +177,9 @@ const createNotification = async (req, res) => {
       priority: priority || "medium",
       createdBy: req.user.id,
       creatorType: req.user.userType,
-      targetUserTypes: targetUserTypes || [],
-      targetUsers: targetUsers || [],
-      targetClients: targetClients || [],
+      targetUserTypes: finalTargetUserTypes,
+      targetUsers: finalTargetUsers,
+      targetClients: finalTargetClients,
       status,
       approvalRequired,
       approvalRequestedAt: approvalRequired ? new Date() : null,
@@ -99,7 +192,7 @@ const createNotification = async (req, res) => {
     
     await notification.save();
     
-    // FIXED: Better email notifications
+    // Send approval email if needed
     if (approvalRequired) {
       const consultantAdmin = await User.findById(req.user.consultantAdminId);
       if (consultantAdmin) {
@@ -109,34 +202,13 @@ const createNotification = async (req, res) => {
           `A notification requires your approval:
 
 Title: ${title}
-From: ${req.user.userName}
-Target: Client Admins
+From: ${req.user.userName} (Consultant)
+Target Clients: ${finalTargetClients.length > 0 ? finalTargetClients.join(', ') : 'None specified'}
 Created: ${new Date().toLocaleString()}
 
-Message Preview: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}
+Message Preview: ${message.substring(0, 200)}${message.length > 200 ? '...' : ''}
 
 Please log in to review and approve/reject this notification.
-
-Best regards,
-ZeroCarbon Team`
-        );
-      }
-    }
-    
-    if (status === "scheduled") {
-      const superAdmin = await User.findOne({ userType: "super_admin" });
-      if (superAdmin) {
-        await sendMail(
-          superAdmin.email,
-          "Scheduled Notification Alert - ZeroCarbon",
-          `A notification has been scheduled:
-
-Title: ${title}
-Created by: ${req.user.userName} (${req.user.userType.replace(/_/g, ' ')})
-Scheduled for: ${scheduledPublishDate.toLocaleString()}
-Target: ${targetUserTypes?.join(', ') || 'Specific users/clients'}
-
-You can cancel this notification within 30 minutes if needed.
 
 Best regards,
 ZeroCarbon Team`
@@ -152,7 +224,12 @@ ZeroCarbon Team`
         status: notification.status,
         scheduledPublishDate: notification.scheduledPublishDate,
         approvalRequired: notification.approvalRequired,
-        autoDeleteAfterDays: notification.autoDeleteAfterDays
+        autoDeleteAfterDays: notification.autoDeleteAfterDays,
+        targetSummary: {
+          users: finalTargetUsers.length,
+          clients: finalTargetClients.length,
+          userTypes: finalTargetUserTypes.length
+        }
       }
     });
     
@@ -165,156 +242,50 @@ ZeroCarbon Team`
   }
 };
 
-// ===========================================
-// 5. ADD: Bulk notification creation for super admin
-// ===========================================
+// Helper function to get consultant IDs under a consultant admin
+async function getConsultantIds(consultantAdminId) {
+  const consultants = await User.find({ 
+    consultantAdminId: consultantAdminId,
+    userType: "consultant"
+  }).select("_id");
+  return consultants.map(c => c._id);
+}
 
-const createBulkNotification = async (req, res) => {
+// Helper function to notify super admin about client notifications
+async function notifySuperAdminAboutClientNotification(consultantAdmin, targetClients, title, message) {
   try {
-    if (req.user.userType !== "super_admin") {
-      return res.status(403).json({
-        message: "Only Super Admin can create bulk notifications"
-      });
-    }
+    const superAdmin = await User.findOne({ userType: "super_admin" });
+    if (!superAdmin) return;
     
-    const {
-      title,
-      message,
-      priority = "medium",
-      sendToAllUsers = false,
-      targetUserTypes = [],
-      excludeUserTypes = [],
-      autoDeleteAfterDays
-    } = req.body;
+    const clientList = Array.isArray(targetClients) ? targetClients.join(', ') : targetClients;
     
-    let finalTargetTypes = [];
+    const emailSubject = "Consultant Admin Created Client Notification - ZeroCarbon";
+    const emailMessage = `
+Dear Super Admin,
+
+A Consultant Admin has created a notification for clients:
+
+Created by: ${consultantAdmin.userName} (${consultantAdmin.email})
+Target Clients: ${clientList}
+Notification Title: ${title}
+Created at: ${new Date().toLocaleString()}
+
+Message Content:
+${message}
+
+This notification will be published automatically in 30 minutes.
+You can cancel it from the system if needed.
+
+Best regards,
+ZeroCarbon System
+    `;
     
-    if (sendToAllUsers) {
-      finalTargetTypes = [
-        "super_admin", "consultant_admin", "consultant", 
-        "client_admin", "client_employee_head", "employee", 
-        "viewer", "auditor"
-      ];
-      
-      // Remove excluded types
-      finalTargetTypes = finalTargetTypes.filter(type => 
-        !excludeUserTypes.includes(type)
-      );
-    } else {
-      finalTargetTypes = targetUserTypes;
-    }
-    
-    const notification = new Notification({
-      title,
-      message,
-      priority,
-      createdBy: req.user.id,
-      creatorType: req.user.userType,
-      targetUserTypes: finalTargetTypes,
-      status: "published",
-      publishedAt: new Date(),
-      autoDeleteAfterDays: autoDeleteAfterDays || null
-    });
-    
-    await notification.save();
-    
-    res.status(201).json({
-      message: "Bulk notification created successfully",
-      notification: {
-        id: notification._id,
-        title: notification.title,
-        targetCount: finalTargetTypes.length
-      }
-    });
-    
+    await sendMail(superAdmin.email, emailSubject, emailMessage);
   } catch (error) {
-    console.error("Create bulk notification error:", error);
-    res.status(500).json({
-      message: "Failed to create bulk notification",
-      error: error.message
-    });
+    console.error("Error notifying super admin:", error);
+    // Don't throw - continue with notification creation
   }
-};
-
-const validateNotificationPermissions = (userType, targetUserTypes, targetClients) => {
-  const permissions = {
-    super_admin: {
-      canTarget: ["super_admin", "consultant_admin", "consultant", "client_admin", "client_employee_head", "employee", "viewer", "auditor"],
-      canTargetAllClients: true
-    },
-    consultant_admin: {
-      canTarget: ["consultant", "client_admin", "client_employee_head", "employee"],
-      canTargetAllClients: false
-    },
-    consultant: {
-      canTarget: ["client_admin", "client_employee_head", "employee"], // client_admin needs approval
-      canTargetAllClients: false
-    }
-  };
-  
-  const userPermissions = permissions[userType];
-  if (!userPermissions) return false;
-  
-  // Check if all target user types are allowed
-  const invalidTargets = targetUserTypes.filter(type => 
-    !userPermissions.canTarget.includes(type)
-  );
-  
-  return {
-    isValid: invalidTargets.length === 0,
-    invalidTargets,
-    needsApproval: userType === "consultant" && targetUserTypes.includes("client_admin")
-  };
-};
-
-const createLeadNotification = async (superAdmin, clientData, reqUser, newClientId, newClientMongoId) => {
-  try {
-    // a) Create Notification
-    const notif = new Notification({
-      title: `Lead Created: ${newClientId}`,
-      message: `
-A new lead has been created by ${reqUser.userName} (${reqUser.userType}):
-• Lead ID: ${newClientId}
-• Company: ${clientData.companyName}
-• Contact Person: ${clientData.contactPersonName}
-• Email: ${clientData.email}
-• Mobile: ${clientData.mobileNumber}
-      `.trim(),
-      priority: "high",
-      createdBy: reqUser.id,
-      creatorType: reqUser.userType,
-      targetUsers: [superAdmin._id],
-      status: "published",
-      publishedAt: new Date(),
-      isSystemNotification: true,
-      systemAction: "lead_created",
-      relatedEntity: {
-        type: "client",
-        id: newClientMongoId
-      }
-    });
-    
-    await notif.save();
-
-    // b) Enqueue email to super_admin
-    await notifySuperAdmin(superAdmin.email, {
-      clientId: newClientId,
-      companyName: clientData.companyName,
-      contactPersonName: clientData.contactPersonName,
-      email: clientData.email,
-      mobileNumber: clientData.mobileNumber,
-      leadSource: clientData.leadSource || "N/A",
-      notes: clientData.notes || "N/A",
-      createdBy: reqUser.userName
-    });
-
-    // (Optional future) Trigger notifyRealTime() here if you want real-time popup
-  } catch (err) {
-    console.error("Failed to create lead notification:", err);
-    // Do not throw — log and continue
-  }
-};
-
+}
 
 // Get notifications for user
 const getNotifications = async (req, res) => {
@@ -339,16 +310,7 @@ const getNotifications = async (req, res) => {
     }
     
     // Get unread count
-    const unreadCount = await Notification.countDocuments({
-      status: 'published',
-      isDeleted: false,
-      'readBy.user': { $ne: req.user.id },
-      $or: [
-        { targetUsers: req.user.id },
-        { targetUserTypes: req.user.userType },
-        { targetClients: req.user.clientId }
-      ]
-    });
+    const unreadCount = await getUnreadCountForUser(req.user);
     
     res.status(200).json({
       message: "Notifications fetched successfully",
@@ -380,6 +342,52 @@ const getNotifications = async (req, res) => {
     });
   }
 };
+
+// Helper function to get unread count
+async function getUnreadCountForUser(user) {
+  const baseQuery = {
+    status: 'published',
+    isDeleted: false,
+    'readBy.user': { $ne: user._id },
+    $or: [
+      { expiryDate: null },
+      { expiryDate: { $gt: new Date() } }
+    ]
+  };
+  
+  // Build targeting conditions
+  const targetingConditions = [];
+  
+  // Specifically targeted user
+  targetingConditions.push({ targetUsers: user._id });
+  
+  // User type targeted
+  targetingConditions.push({
+    targetUserTypes: user.userType,
+    $or: [
+      { targetUsers: { $exists: false } },
+      { targetUsers: { $size: 0 } }
+    ]
+  });
+  
+  // Client targeted
+  if (user.clientId) {
+    targetingConditions.push({
+      targetClients: user.clientId,
+      $and: [
+        { $or: [{ targetUsers: { $exists: false } }, { targetUsers: { $size: 0 } }] },
+        { $or: [{ targetUserTypes: { $exists: false } }, { targetUserTypes: { $size: 0 } }] }
+      ]
+    });
+  }
+  
+  const query = {
+    ...baseQuery,
+    $or: targetingConditions
+  };
+  
+  return await Notification.countDocuments(query);
+}
 
 // Approve/Reject notification (Consultant Admin only)
 const approveNotification = async (req, res) => {
@@ -414,7 +422,7 @@ const approveNotification = async (req, res) => {
     }
     
     if (action === "approve") {
-      // Schedule for 30-minute delay
+      // Schedule for 30-minute delay after approval
       notification.status = "scheduled";
       notification.approvedBy = req.user.id;
       notification.approvalDate = new Date();
@@ -422,22 +430,12 @@ const approveNotification = async (req, res) => {
       
       await notification.save();
       
-      // Notify creator
+      // Notify creator about approval
       await sendMail(
         notification.createdBy.email,
-        "Notification Approved",
-        `Your notification "${notification.title}" has been approved and will be published in 30 minutes.`
+        "Notification Approved - ZeroCarbon",
+        `Your notification "${notification.title}" has been approved by ${req.user.userName} and will be published in 30 minutes.`
       );
-      
-      // Notify super admin
-      const superAdmin = await User.findOne({ userType: "super_admin" });
-      if (superAdmin) {
-        await sendMail(
-          superAdmin.email,
-          "Notification Approved and Scheduled",
-          `A notification has been approved:\n\nTitle: ${notification.title}\nApproved by: ${req.user.userName}\nScheduled for: ${notification.scheduledPublishDate}`
-        );
-      }
       
       res.status(200).json({
         message: "Notification approved and scheduled",
@@ -447,23 +445,34 @@ const approveNotification = async (req, res) => {
     } else if (action === "reject") {
       notification.status = "cancelled";
       notification.rejectionReason = rejectionReason;
+      notification.approvedBy = req.user.id;
+      notification.approvalDate = new Date();
       
       await notification.save();
       
-      // Notify creator
+      // Notify creator about rejection
       await sendMail(
         notification.createdBy.email,
-        "Notification Rejected",
-        `Your notification "${notification.title}" has been rejected.\n\nReason: ${rejectionReason}`
+        "Notification Rejected - ZeroCarbon",
+        `Your notification "${notification.title}" has been rejected by ${req.user.userName}.\n\nReason: ${rejectionReason || 'No reason provided'}`
       );
       
       res.status(200).json({
         message: "Notification rejected"
       });
       
+    } else if (action === "waitlist") {
+      // Keep in pending_approval but add a note
+      notification.waitlistNotes = rejectionReason || "Placed on waitlist for further review";
+      await notification.save();
+      
+      res.status(200).json({
+        message: "Notification placed on waitlist"
+      });
+      
     } else {
       return res.status(400).json({
-        message: "Invalid action. Use 'approve' or 'reject'"
+        message: "Invalid action. Use 'approve', 'reject', or 'waitlist'"
       });
     }
     
@@ -487,7 +496,8 @@ const cancelNotification = async (req, res) => {
       });
     }
     
-    const notification = await Notification.findById(notificationId);
+    const notification = await Notification.findById(notificationId)
+      .populate('createdBy', 'userName email');
     
     if (!notification) {
       return res.status(404).json({ message: "Notification not found" });
@@ -500,14 +510,15 @@ const cancelNotification = async (req, res) => {
     }
     
     notification.status = "cancelled";
+    notification.cancelledBy = req.user.id;
+    notification.cancelledAt = new Date();
     await notification.save();
     
     // Notify creator
-    const creator = await User.findById(notification.createdBy);
-    if (creator) {
+    if (notification.createdBy) {
       await sendMail(
-        creator.email,
-        "Notification Cancelled",
+        notification.createdBy.email,
+        "Notification Cancelled - ZeroCarbon",
         `Your scheduled notification "${notification.title}" has been cancelled by the Super Admin.`
       );
     }
@@ -579,7 +590,7 @@ const deleteNotification = async (req, res) => {
         break;
         
       case "consultant_admin":
-        // Can delete notifications created by their team
+        // Can delete notifications created by their team or themselves
         if (notification.createdBy.toString() === req.user.id) {
           canDelete = true;
         } else {
@@ -589,8 +600,9 @@ const deleteNotification = async (req, res) => {
         break;
         
       case "consultant":
-        // Can only delete their own notifications
-        canDelete = notification.createdBy.toString() === req.user.id;
+        // Can only delete their own notifications that are not yet approved
+        canDelete = notification.createdBy.toString() === req.user.id && 
+                   notification.status === "pending_approval";
         break;
         
       default:
@@ -700,41 +712,72 @@ const createUserStatusNotification = async (user, changedBy, newStatus) => {
     console.error("Create user status notification error:", error);
   }
 };
-// 1. ADD: Notification analytics and reporting
-const getNotificationAnalytics = async (req, res) => {
+
+// Get notification statistics (Admin features)
+const getNotificationStats = async (req, res) => {
   try {
+    // Only admins can view stats
     if (!["super_admin", "consultant_admin"].includes(req.user.userType)) {
       return res.status(403).json({
         message: "Access denied"
       });
     }
     
-    const Notification = require("../models/Notification");
+    let query = {};
     
-    // Get analytics for last 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Consultant admin can only see stats for their team
+    if (req.user.userType === "consultant_admin") {
+      const teamMembers = await User.find({
+        $or: [
+          { _id: req.user.id },
+          { consultantAdminId: req.user.id }
+        ]
+      }).select("_id");
+      
+      query.createdBy = { $in: teamMembers.map(m => m._id) };
+    }
     
-    const analytics = await Notification.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: thirtyDaysAgo },
-          isDeleted: false
-        }
-      },
+    const stats = await Notification.aggregate([
+      { $match: { ...query, isDeleted: false } },
       {
         $group: {
           _id: {
             status: "$status",
-            priority: "$priority",
-            creatorType: "$creatorType"
+            priority: "$priority"
           },
-          count: { $sum: 1 },
-          avgReadTime: {
-            $avg: {
-              $subtract: [
-                { $arrayElemAt: ["$readBy.readAt", 0] },
-                "$publishedAt"
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    const readStats = await Notification.aggregate([
+      { 
+        $match: { 
+          ...query, 
+          status: "published",
+          isDeleted: false 
+        } 
+      },
+      {
+        $project: {
+          totalTargets: { 
+            $add: [
+              { $size: "$targetUsers" },
+              { $size: "$readBy" }
+            ]
+          },
+          readCount: { $size: "$readBy" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          avgReadRate: { 
+            $avg: { 
+              $cond: [
+                { $eq: ["$totalTargets", 0] },
+                0,
+                { $divide: ["$readCount", "$totalTargets"] }
               ]
             }
           }
@@ -743,363 +786,51 @@ const getNotificationAnalytics = async (req, res) => {
     ]);
     
     res.status(200).json({
-      analytics,
-      period: "Last 30 days"
+      stats,
+      readStats: readStats[0] || { avgReadRate: 0 }
     });
     
   } catch (error) {
+    console.error("Get notification stats error:", error);
     res.status(500).json({
-      message: "Failed to get analytics",
+      message: "Failed to get notification statistics",
       error: error.message
     });
   }
 };
-
-// 2. ADD: Notification templates for common use cases
-const notificationTemplates = {
-  system_maintenance: {
-    title: "Scheduled System Maintenance",
-    message: "The ZeroCarbon platform will undergo scheduled maintenance on {date} from {start_time} to {end_time}. During this time, the system may be temporarily unavailable.",
-    priority: "high",
-    autoDeleteAfterDays: 1
-  },
-  data_submission_reminder: {
-    title: "Data Submission Reminder",
-    message: "Reminder: Please submit your monthly carbon footprint data by {due_date}. Late submissions may affect your sustainability reporting.",
-    priority: "medium",
-    autoDeleteAfterDays: 7
-  },
-  policy_update: {
-    title: "Policy Update Notice",
-    message: "Important: Our {policy_name} has been updated. Please review the changes at your earliest convenience.",
-    priority: "high",
-    autoDeleteAfterDays: 30
-  },
-  achievement_milestone: {
-    title: "Sustainability Milestone Achieved!",
-    message: "Congratulations! {client_name} has achieved {milestone}. Keep up the excellent work towards carbon neutrality!",
-    priority: "low",
-    autoDeleteAfterDays: 14
-  }
-};
-
-const createNotificationFromTemplate = async (req, res) => {
+const markAllReadHandler = async (req, res) => {
   try {
-    const { templateName, variables, ...notificationData } = req.body;
-    
-    const template = notificationTemplates[templateName];
-    if (!template) {
-      return res.status(400).json({
-        message: "Template not found"
-      });
-    }
-    
-    // Replace variables in template
-    let title = template.title;
-    let message = template.message;
-    
-    if (variables) {
-      Object.keys(variables).forEach(key => {
-        const regex = new RegExp(`{${key}}`, 'g');
-        title = title.replace(regex, variables[key]);
-        message = message.replace(regex, variables[key]);
-      });
-    }
-    
-    // Create notification with template data
-    const notificationRequest = {
-      ...notificationData,
-      title,
-      message,
-      priority: template.priority,
-      autoDeleteAfterDays: template.autoDeleteAfterDays
-    };
-    
-    req.body = notificationRequest;
-    return createNotification(req, res);
-    
+
+    // find all unread for this user
+    const notifications = await Notification.find({
+      status: 'published',
+      isDeleted: false,
+      'readBy.user': { $ne: req.user.id },
+      $or: [
+        { targetUsers: req.user.id },
+        { targetUserTypes: req.user.userType },
+        { targetClients: req.user.clientId }
+      ]
+    });
+
+    // mark each read
+    await Promise.all(
+      notifications.map(n => n.markAsReadBy(req.user.id))
+    );
+
+    res.status(200).json({
+      message: `Marked ${notifications.length} notifications as read`
+    });
+
   } catch (error) {
     res.status(500).json({
-      message: "Failed to create notification from template",
+      message: "Failed to mark all as read",
       error: error.message
     });
-  }
-};
-
-
-
-// 4. ADD: Notification batch operations
-const batchOperations = {
-  markAllAsRead: async (req, res) => {
-    try {
-      const notifications = await Notification.find({
-        status: 'published',
-        isDeleted: false,
-        'readBy.user': { $ne: req.user.id },
-        $or: [
-          { targetUsers: req.user.id },
-          { targetUserTypes: req.user.userType },
-          { targetClients: req.user.clientId }
-        ]
-      });
-      
-      const updatePromises = notifications.map(notification => 
-        notification.markAsReadBy(req.user.id)
-      );
-      
-      await Promise.all(updatePromises);
-      
-      res.status(200).json({
-        message: `Marked ${notifications.length} notifications as read`
-      });
-      
-    } catch (error) {
-      res.status(500).json({
-        message: "Failed to mark all as read",
-        error: error.message
-      });
-    }
-  },
-  
-  deleteExpired: async (req, res) => {
-    try {
-      if (req.user.userType !== "super_admin") {
-        return res.status(403).json({
-          message: "Only Super Admin can delete expired notifications"
-        });
-      }
-      
-      const result = await Notification.updateMany(
-        {
-          expiryDate: { $lt: new Date() },
-          isDeleted: false
-        },
-        {
-          $set: {
-            isDeleted: true,
-            deletedBy: req.user.id,
-            deletedAt: new Date(),
-            status: "expired"
-          }
-        }
-      );
-      
-      res.status(200).json({
-        message: `Deleted ${result.modifiedCount} expired notifications`
-      });
-      
-    } catch (error) {
-      res.status(500).json({
-        message: "Failed to delete expired notifications",
-        error: error.message
-      });
-    }
-  }
-};
-
-// 5. ADD: Real-time notification delivery (WebSocket)
-const WebSocket = require('ws');
-
-const notifyRealTime = async (notification) => {
-  // This would integrate with your WebSocket server
-  // to send real-time notifications to connected users
-  
-  const targetUsers = await User.find({
-    $or: [
-      { _id: { $in: notification.targetUsers } },
-      { userType: { $in: notification.targetUserTypes } },
-      { clientId: { $in: notification.targetClients } }
-    ],
-    isActive: true
-  });
-  
-  targetUsers.forEach(user => {
-    // Send WebSocket notification to user if they're online
-    // wss.clients.forEach(client => {
-    //   if (client.userId === user._id.toString()) {
-    //     client.send(JSON.stringify({
-    //       type: 'notification',
-    //       data: notification
-    //     }));
-    //   }
-    // });
-  });
-};
-
-// 6. ADD: Enhanced notification validation
-const validateNotificationContent = (title, message) => {
-  const errors = [];
-  
-  if (!title || title.trim().length < 3) {
-    errors.push("Title must be at least 3 characters long");
-  }
-  
-  if (title && title.length > 100) {
-    errors.push("Title must be less than 100 characters");
-  }
-  
-  if (!message || message.trim().length < 10) {
-    errors.push("Message must be at least 10 characters long");
-  }
-  
-  if (message && message.length > 1000) {
-    errors.push("Message must be less than 1000 characters");
-  }
-  
-  // Check for potentially harmful content
-  const forbiddenPatterns = [
-    /script\s*>/i,
-    /javascript:/i,
-    /on\w+\s*=/i
-  ];
-  
-  const contentToCheck = title + " " + message;
-  forbiddenPatterns.forEach(pattern => {
-    if (pattern.test(contentToCheck)) {
-      errors.push("Content contains potentially harmful elements");
-    }
-  });
-  
-  return {
-    isValid: errors.length === 0,
-    errors
-  };
-};
-
-// 7. ADD: Notification performance monitoring
-const logNotificationPerformance = async (notificationId, action, duration) => {
-  const NotificationLog = require("../models/NotificationLog");
-  
-  await NotificationLog.create({
-    notificationId,
-    action, // 'created', 'published', 'read', 'deleted'
-    duration,
-    timestamp: new Date()
-  });
-};
-const createDataSubmissionNotification = async (client, consultantAdmin) => {
-  try {
-
-    // Find super admin
-    const superAdmin = await User.findOne({ userType: "super_admin" });
-    
-    // Create notification for Super Admin
-    const notification = new Notification({
-      title: `Lead Moved to Data Submission: ${client.clientId}`,
-      message: `
-Lead has been moved to data submission stage by ${consultantAdmin.userName}:
-
-• Client ID: ${client.clientId}
-• Company: ${client.leadInfo.companyName}
-• Contact Person: ${client.leadInfo.contactPersonName}
-• Email: ${client.leadInfo.email}
-• Mobile: ${client.leadInfo.mobileNumber}
-• Previous Stage: Lead
-• Current Stage: Data Submission (Registered)
-• Status: Pending
-
-The client has been notified and is ready for data collection process.
-      `.trim(),
-      priority: "medium",
-      createdBy: consultantAdmin.id,
-      creatorType: consultantAdmin.userType,
-      targetUsers: superAdmin ? [superAdmin._id] : [],
-      targetUserTypes: ["super_admin"], // Fallback in case superAdmin not found
-      status: "published",
-      publishedAt: new Date(),
-      isSystemNotification: true,
-      systemAction: "stage_changed",
-      relatedEntity: {
-        type: "client",
-        id: client._id
-      },
-      autoDeleteAfterDays: 30 // Auto-delete after 30 days
-    });
-
-    await notification.save();
-
-    // Also notify the consultant admin's team (consultants under them)
-    const teamConsultants = await User.find({ 
-      consultantAdminId: consultantAdmin.id,
-      userType: "consultant",
-      isActive: true 
-    });
-
-    if (teamConsultants.length > 0) {
-      const teamNotification = new Notification({
-        title: `Team Update: Lead Moved to Data Submission`,
-        message: `
-${consultantAdmin.userName} has moved a lead to data submission stage:
-
-• Client ID: ${client.clientId}
-• Company: ${client.leadInfo.companyName}
-• Contact Person: ${client.leadInfo.contactPersonName}
-
-The client is now ready for the data collection process. Please coordinate with your admin for next steps.
-        `.trim(),
-        priority: "low",
-        createdBy: consultantAdmin.id,
-        creatorType: consultantAdmin.userType,
-        targetUsers: teamConsultants.map(consultant => consultant._id),
-        status: "published",
-        publishedAt: new Date(),
-        isSystemNotification: true,
-        systemAction: "stage_changed",
-        relatedEntity: {
-          type: "client",
-          id: client._id
-        },
-        autoDeleteAfterDays: 14 // Auto-delete after 14 days
-      });
-
-      await teamNotification.save();
-    }
-
-    // Optional: Send email notification to Super Admin
-    if (superAdmin) {
-      await sendMail(
-        superAdmin.email,
-        "Lead Moved to Data Submission - ZeroCarbon",
-        `
-Dear Super Admin,
-
-A lead has been moved to data submission stage:
-
-Client Details:
-• Client ID: ${client.clientId}
-• Company: ${client.leadInfo.companyName}
-• Contact Person: ${client.leadInfo.contactPersonName}
-• Email: ${client.leadInfo.email}
-• Mobile: ${client.leadInfo.mobileNumber}
-
-Action Details:
-• Moved by: ${consultantAdmin.userName} (Consultant Admin)
-• From Stage: Lead
-• To Stage: Data Submission (Registered)
-• Status: Pending
-• Date: ${new Date().toLocaleString()}
-
-The client has been notified and is ready for the data collection process.
-
-Best regards,
-ZeroCarbon System
-        `
-      );
-    }
-
-    console.log(`Data submission notification created for client: ${client.clientId}`);
-    
-  } catch (error) {
-    console.error("Failed to create data submission notification:", error);
-    // Don't throw error - log and continue so the main operation isn't affected
   }
 };
 module.exports = {
   createNotification,
-  createBulkNotification,
-  createLeadNotification,
-  createDataSubmissionNotification,
-  validateNotificationPermissions,
   getNotifications,
   approveNotification,
   cancelNotification,
@@ -1107,10 +838,6 @@ module.exports = {
   deleteNotification,
   publishScheduledNotifications,
   createUserStatusNotification,
-  getNotificationAnalytics,
-  createNotificationFromTemplate,
-  batchOperations,
-  notifyRealTime,
-  validateNotificationContent,
-  logNotificationPerformance
+  getNotificationStats,
+  markAllReadHandler
 };

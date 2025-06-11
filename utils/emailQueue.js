@@ -1,404 +1,270 @@
-// utils/emailQueue.js
-const Queue = require('bull');
-const { sendMail } = require('./mail');
+const Bull = require('bull');
+const { sendMail } = require('../utils/mail');
 
-const emailQueue = new Queue('email', {
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD
-  },
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 2000
-    },
-    removeOnComplete: true,
-    removeOnFail: false
-  }
-});
-
-
-
-// Process consultant notifications
-emailQueue.process('notifyConsultant', async (job) => {
-  const { consultantId, clientId, companyName, contactPersonName, email, mobileNumber } = job.data;
-  
-  const consultant = await User.findById(consultantId).select('email').lean();
-  if (!consultant) return;
-  
-  const subject = "New Lead Assigned";
-  const message = `
-    A new lead has been assigned to you:
-    
-    Client ID: ${clientId}
-    Company: ${companyName}
-    Contact Person: ${contactPersonName}
-    Email: ${email}
-    Mobile: ${mobileNumber}
-    
-    Please follow up with the client.
-  `;
-  
-  await sendMail(consultant.email, subject, message);
-});
-
-// Process deletion emails
-emailQueue.process('sendDeletionEmails', async (job) => {
-  const { recipients, deletedUser, deletedBy, details } = job.data;
-  
-  const subject = `ZeroCarbon - Account Deletion Notice`;
-  let message = `
-    Dear ${deletedUser.userName},
-    
-    Your ZeroCarbon account has been deleted by ${deletedBy.userName} (${deletedBy.userType.replace(/_/g, ' ')}).
-    
-    Account Details:
-    - Username: ${deletedUser.userName}
-    - Email: ${deletedUser.email}
-    - User Type: ${deletedUser.userType.replace(/_/g, ' ')}
-    - Deleted On: ${new Date().toLocaleString()}
-  `;
-  
-  if (details.reassignedTo) {
-    message += `\n\nYour assigned clients have been reassigned to: ${details.reassignedTo}`;
-  }
-  
-  message += `\n\nIf you believe this is an error, please contact your administrator.
-    
-Best regards,
-ZeroCarbon Team`;
-  
-  // Send emails in parallel
-  await Promise.all(
-    recipients.map(recipient => sendMail(recipient, subject, message))
-  );
-});
-
-// Process proposal emails
-emailQueue.process('sendProposalEmail', async (job) => {
-  const { 
-    clientEmail, 
-    proposalNumber, 
-    validUntil, 
-    totalAmount, 
-    totalDataIntegrationPoints,
-    consolidatedData 
-  } = job.data;
-  
-  const subject = "ZeroCarbon - Service Proposal";
-  const message = `
-    Dear Valued Client,
-    
-    We are pleased to present our comprehensive carbon footprint management proposal.
-    
-    Proposal Details:
-    - Proposal Number: ${proposalNumber}
-    - Valid Until: ${validUntil}
-    - Total Amount: ₹${totalAmount}
-    - Data Integration Points: ${totalDataIntegrationPoints}
-    
-    Our solution covers:
-    • ${consolidatedData.scope1.category} (${consolidatedData.scope1.totalDataPoints} data points)
-    • ${consolidatedData.scope2.category} (${consolidatedData.scope2.totalDataPoints} data points)
-    • ${consolidatedData.scope3.category} (${consolidatedData.scope3.totalDataPoints} data points)
-    
-    Please review the proposal and let us know if you have any questions.
-    
-    Best regards,
-    ZeroCarbon Team
-  `;
-  
-  await sendMail(clientEmail, subject, message);
-});
-// Lead Action Email Template
-emailQueue.process('leadActionEmail', async (job) => {
-  const { to, subject, action, client, performedBy, performedByType, reason } = job.data;
-  
-  const actionText = {
-    created: 'created',
-    updated: 'updated',
-    deleted: 'deleted'
-  }[action];
-  
-  let message = `
-Dear Super Admin,
-
-A lead has been ${actionText} in the ZeroCarbon system.
-
-Action Details:
-• Action: Lead ${actionText}
-• Performed by: ${performedBy} (${performedByType})
-• Date: ${new Date().toLocaleString()}
-
-Lead Information:
-• Lead ID: ${client.clientId}
-• Company Name: ${client.companyName}
-• Contact Person: ${client.contactPersonName}
-• Email: ${client.email}
-• Mobile: ${client.mobileNumber}
-`;
-
-  if (action === 'deleted' && reason) {
-    message += `\nDeletion Reason: ${reason}`;
+// Create a Redis-based queue for emails (optional - can work without Redis)
+class EmailQueue {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+    this.retryAttempts = 3;
+    this.retryDelay = 5000; // 5 seconds
+    this.rateLimit = {
+      maxEmails: 10,
+      perMinutes: 1
+    };
+    this.sentEmails = [];
   }
 
-  message += `
+  /**
+   * Add email to queue
+   * @param {String} to - Recipient email
+   * @param {String} subject - Email subject
+   * @param {String} message - Email body
+   * @param {Object} options - Additional options
+   */
+  async addToQueue(to, subject, message, options = {}) {
+    const emailJob = {
+      id: Date.now() + Math.random(),
+      to,
+      subject,
+      message,
+      options,
+      attempts: 0,
+      createdAt: new Date()
+    };
 
-Please review this action in the admin dashboard.
-
-Best regards,
-ZeroCarbon System
-  `.trim();
-
-  await sendMail(to, subject, message);
-});
-
-// Data Submission Email Template
-emailQueue.process('dataSubmissionEmail', async (job) => {
-  const { to, subject, clientId, companyName, submittedBy, dataCompleteness } = job.data;
-  
-  const message = `
-Dear Super Admin,
-
-Client data has been successfully submitted in the ZeroCarbon system.
-
-Submission Details:
-• Client ID: ${clientId}
-• Company Name: ${companyName}
-• Submitted by: ${submittedBy}
-• Data Completeness: ${dataCompleteness}%
-• Submission Date: ${new Date().toLocaleString()}
-
-The client is now ready for the proposal stage.
-
-Best regards,
-ZeroCarbon System
-  `.trim();
-
-  await sendMail(to, subject, message);
-});
-
-// Proposal Action Email Template
-emailQueue.process('proposalActionEmail', async (job) => {
-  const { 
-    to, 
-    subject, 
-    action, 
-    clientId, 
-    companyName, 
-    performedBy,
-    proposalNumber,
-    totalAmount,
-    totalDataIntegrationPoints,
-    reason 
-  } = job.data;
-  
-  const actionMessages = {
-    moved: 'has been moved to the proposal stage',
-    created: 'has received a new proposal',
-    accepted: 'has accepted the proposal',
-    rejected: 'has rejected the proposal'
-  };
-  
-  let message = `
-Dear Super Admin,
-
-Client ${clientId} ${actionMessages[action]}.
-
-Action Details:
-• Action: Proposal ${action}
-• Performed by: ${performedBy}
-• Client: ${companyName}
-• Date: ${new Date().toLocaleString()}
-`;
-
-  if (action === 'created' && proposalNumber) {
-    message += `
+    this.queue.push(emailJob);
     
-Proposal Details:
-• Proposal Number: ${proposalNumber}
-• Total Amount: ₹${totalAmount || 0}
-• Data Integration Points: ${totalDataIntegrationPoints || 0}
-`;
+    // Start processing if not already running
+    if (!this.processing) {
+      this.processQueue();
+    }
+
+    return emailJob.id;
   }
 
-  if (action === 'rejected' && reason) {
-    message += `\nRejection Reason: ${reason}`;
+  /**
+   * Process email queue
+   */
+  async processQueue() {
+    if (this.processing || this.queue.length === 0) {
+      return;
+    }
+
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      // Check rate limit
+      if (this.isRateLimited()) {
+        console.log('Email rate limit reached, waiting...');
+        await this.sleep(60000); // Wait 1 minute
+        continue;
+      }
+
+      const emailJob = this.queue.shift();
+      
+      try {
+        await this.sendEmail(emailJob);
+        this.recordSentEmail();
+        console.log(`Email sent successfully: ${emailJob.subject}`);
+      } catch (error) {
+        console.error(`Failed to send email: ${emailJob.subject}`, error);
+        
+        // Retry logic
+        emailJob.attempts++;
+        if (emailJob.attempts < this.retryAttempts) {
+          console.log(`Retrying email (attempt ${emailJob.attempts + 1}/${this.retryAttempts})`);
+          await this.sleep(this.retryDelay * emailJob.attempts);
+          this.queue.unshift(emailJob); // Add back to front of queue
+        } else {
+          console.error(`Email failed after ${this.retryAttempts} attempts: ${emailJob.subject}`);
+          // Could store failed emails in database for manual review
+        }
+      }
+
+      // Small delay between emails to avoid overwhelming the server
+      await this.sleep(1000);
+    }
+
+    this.processing = false;
   }
 
-  message += `
+  /**
+   * Send individual email
+   */
+  async sendEmail(emailJob) {
+    const { to, subject, message, options } = emailJob;
+    
+    // Add queue metadata to email
+    const enhancedMessage = `${message}\n\n---\nEmail ID: ${emailJob.id}\nQueued at: ${emailJob.createdAt.toLocaleString()}`;
+    
+    return await sendMail(to, subject, enhancedMessage);
+  }
 
-Please review this action in the admin dashboard.
+  /**
+   * Check if rate limited
+   */
+  isRateLimited() {
+    const now = Date.now();
+    const windowStart = now - (this.rateLimit.perMinutes * 60 * 1000);
+    
+    // Remove old entries
+    this.sentEmails = this.sentEmails.filter(timestamp => timestamp > windowStart);
+    
+    return this.sentEmails.length >= this.rateLimit.maxEmails;
+  }
 
-Best regards,
-ZeroCarbon System
-  `.trim();
+  /**
+   * Record sent email for rate limiting
+   */
+  recordSentEmail() {
+    this.sentEmails.push(Date.now());
+  }
 
-  await sendMail(to, subject, message);
-});
+  /**
+   * Sleep utility
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
-// Consultant Assignment Email Template
-emailQueue.process('consultantAssignmentEmail', async (job) => {
-  const { 
-    to, 
-    subject, 
-    consultantName,
-    clientId,
-    companyName,
-    contactPersonName,
-    clientEmail,
-    clientMobile,
-    currentStage,
-    assignedBy
-  } = job.data;
+  /**
+   * Get queue status
+   */
+  getStatus() {
+    return {
+      queueLength: this.queue.length,
+      processing: this.processing,
+      sentInWindow: this.sentEmails.length,
+      rateLimit: this.rateLimit
+    };
+  }
+
+  /**
+   * Clear queue
+   */
+  clearQueue() {
+    this.queue = [];
+    console.log('Email queue cleared');
+  }
+}
+
+// Create singleton instance
+const emailQueue = new EmailQueue();
+
+// Enhanced email sending function with queue
+const queueEmail = async (to, subject, message, options = {}) => {
+  // For high priority emails, send directly
+  if (options.priority === 'high' || options.immediate) {
+    try {
+      await sendMail(to, subject, message);
+      console.log(`High priority email sent immediately: ${subject}`);
+    } catch (error) {
+      console.error(`Failed to send high priority email: ${subject}`, error);
+      // Fall back to queue
+      return emailQueue.addToQueue(to, subject, message, options);
+    }
+  } else {
+    // Add to queue for normal emails
+    return emailQueue.addToQueue(to, subject, message, options);
+  }
+};
+
+// Batch email sending
+const sendBatchEmails = async (recipients, subject, messageTemplate, variables = {}) => {
+  const emailPromises = recipients.map(recipient => {
+    // Personalize message for each recipient
+    let personalizedMessage = messageTemplate;
+    
+    if (recipient.name) {
+      personalizedMessage = personalizedMessage.replace(/{{name}}/g, recipient.name);
+    }
+    if (recipient.email) {
+      personalizedMessage = personalizedMessage.replace(/{{email}}/g, recipient.email);
+    }
+    
+    // Replace any additional variables
+    Object.keys(variables).forEach(key => {
+      const regex = new RegExp(`{{${key}}}`, 'g');
+      personalizedMessage = personalizedMessage.replace(regex, variables[key]);
+    });
+    
+    return queueEmail(
+      recipient.email || recipient,
+      subject,
+      personalizedMessage,
+      { batch: true }
+    );
+  });
   
-  const message = `
-Dear ${consultantName},
+  return Promise.all(emailPromises);
+};
 
-You have been assigned to a new client by ${assignedBy}.
-
-Client Details:
-• Client ID: ${clientId}
-• Company Name: ${companyName}
-• Contact Person: ${contactPersonName}
-• Email: ${clientEmail}
-• Mobile: ${clientMobile}
-• Current Stage: ${currentStage}
-
-Next Steps:
-1. Review the client information in your dashboard
-2. Contact the client to understand their requirements
-3. Guide them through the data submission process
-4. Update the client status as you progress
-
-Please ensure timely follow-up with the client.
-
-Best regards,
-ZeroCarbon Team
-  `.trim();
-
-  await sendMail(to, subject, message);
-});
-
-// Process welcome emails
-emailQueue.process('sendWelcomeEmail', async (job) => {
-  const { to, subject, userName, password, userType } = job.data;
-  
-  const message = `
+// Email templates
+const emailTemplates = {
+  welcomeUser: (userName, userType, credentials) => ({
+    subject: 'Welcome to ZeroCarbon',
+    message: `
 Dear ${userName},
 
 Welcome to ZeroCarbon! Your ${userType.replace(/_/g, ' ')} account has been created successfully.
 
 Login Credentials:
-• Username: ${userName}
-• Email: ${to}
-• Password: ${password}
+• Username: ${credentials.userName}
+• Email: ${credentials.email}
+• Password: ${credentials.password}
 
-Important: Please change your password after your first login for security.
-
-You can access the platform at: ${process.env.FRONTEND_URL || 'https://zerotohero.ebhoom.com'}
-
-Best regards,
-ZeroCarbon Team
-  `.trim();
-  
-  await sendMail(to, subject, message);
-});
-
-// Process client welcome emails
-emailQueue.process('clientWelcomeEmail', async (job) => {
-  const { to, contactName, clientId, password, subscriptionEndDate } = job.data;
-  
-  const message = `
-Dear ${contactName},
-
-Welcome to ZeroCarbon! Your account has been activated successfully.
-
-Login Credentials:
-• Client ID: ${clientId}
-• Email: ${to}
-• Password: ${password}
-
-Your subscription is valid until: ${moment(subscriptionEndDate).format('DD/MM/YYYY')}
-
-Important: Please change your password after your first login.
+Important:
+• Please change your password after your first login
+• Keep your credentials secure and do not share them
+• If you have any issues logging in, please contact your administrator
 
 Best regards,
 ZeroCarbon Team
-  `.trim();
-  
-  await sendMail(to, subject, message);
-});
+    `.trim()
+  }),
 
-// Process notification emails
-emailQueue.process('notificationEmail', async (job) => {
-  const { to, subject, title, message: notificationMessage, priority } = job.data;
-  
-  const priorityEmoji = {
-    low: '🔵',
-    medium: '🟡',
-    high: '🔴',
-    urgent: '🚨'
-  }[priority] || '📢';
-  
-  const message = `
-${priorityEmoji} ${title}
+  passwordReset: (userName, resetLink) => ({
+    subject: 'Password Reset Request - ZeroCarbon',
+    message: `
+Dear ${userName},
 
-${notificationMessage}
+We received a request to reset your password for your ZeroCarbon account.
 
-This is an automated notification from ZeroCarbon.
-To manage your notification preferences, please log in to your account.
+Please click on the link below to reset your password:
+${resetLink}
+
+This link will expire in 15 minutes for security reasons.
+
+If you did not request this password reset, please ignore this email and your password will remain unchanged.
 
 Best regards,
-ZeroCarbon System
-  `.trim();
-  
-  await sendMail(to, subject, message);
-});
+ZeroCarbon Security Team
+    `.trim()
+  }),
 
-// Process data submission stage email
-emailQueue.process('dataSubmissionStageEmail', async (job) => {
-  const { to, contactPersonName, clientId } = job.data;
-  
-  const message = `
-Dear ${contactPersonName},
+  subscriptionReminder: (companyName, daysRemaining, expiryDate) => ({
+    subject: `Subscription Reminder - ${daysRemaining} Days Remaining`,
+    message: `
+Dear ${companyName} Team,
 
-Thank you for your interest in ZeroCarbon services.
+This is a reminder that your ZeroCarbon subscription will expire in ${daysRemaining} days.
 
-To proceed with your carbon footprint assessment, we need some additional information about your company.
+Subscription Details:
+• Expiry Date: ${expiryDate}
+• Days Remaining: ${daysRemaining}
 
-Your Client ID: ${clientId}
-
-Our consultant will contact you shortly to guide you through the data submission process.
+To ensure uninterrupted service, please contact your consultant to renew your subscription.
 
 Best regards,
 ZeroCarbon Team
-  `.trim();
-  
-  await sendMail(to, 'ZeroCarbon - Please Submit Your Company Data', message);
-});
+    `.trim()
+  })
+};
 
-// Error handling for the queue
-emailQueue.on('failed', (job, err) => {
-  console.error(`Email job ${job.id} failed:`, err);
-  console.error('Job data:', job.data);
-});
-
-emailQueue.on('completed', (job) => {
-  console.log(`Email job ${job.id} completed successfully`);
-});
-
-// Clean old jobs periodically
-setInterval(async () => {
-  try {
-    await emailQueue.clean(24 * 60 * 60 * 1000); // Clean jobs older than 24 hours
-  } catch (error) {
-    console.error('Error cleaning email queue:', error);
-  }
-}, 60 * 60 * 1000); // Run every hour
-
-
-
-module.exports = { emailQueue };
+module.exports = {
+  emailQueue,
+  queueEmail,
+  sendBatchEmails,
+  emailTemplates
+};
