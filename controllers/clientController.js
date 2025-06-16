@@ -684,6 +684,36 @@ const submitClientData = async (req, res) => {
         message: "Client is not in data submission stage" 
       });
     }
+      // ─── EMAIL VALIDATION ──────────────────────────────────────────────────
+    // Extract emails from both sources
+    const primaryContactEmail = submissionData?.companyInfo?.primaryContactPerson?.email;
+    const leadInfoEmail = client.leadInfo?.email;
+    
+    // Collect emails to check (remove duplicates and empty values)
+    const emailsToCheck = [...new Set([primaryContactEmail, leadInfoEmail].filter(Boolean))];
+    
+    if (emailsToCheck.length > 0) {
+      // Check if any of these emails already exist in User database
+      const existingUsers = await User.find({
+        email: { $in: emailsToCheck }
+      }).select('email userType clientId');
+      
+      if (existingUsers.length > 0) {
+        // Build detailed error message
+        const conflictDetails = existingUsers.map(user => ({
+          email: user.email,
+          userType: user.userType,
+          clientId: user.clientId
+        }));
+        
+        return res.status(409).json({
+          message: "Email address already exists in user database",
+          conflictingEmails: conflictDetails,
+          details: "The following email(s) are already registered with existing users. Please use different email addresses or contact system administrator."
+        });
+      }
+    }
+    // ─── END EMAIL VALIDATION ──────────────────────────────────────────────
     
     // Update submission data
     client.submissionData = {
