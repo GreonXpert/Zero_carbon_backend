@@ -8,6 +8,8 @@ const moment = require("moment");
 const Notification = require("../models/Notification");
 // Import the notification controller
 const { createUserStatusNotification } = require("./notificationControllers");
+const Flowchart = require('../models/Flowchart');
+
 // Initialize Super Admin Account from Environment Variables
 const initializeSuperAdmin = async () => {
   try {
@@ -232,7 +234,6 @@ const createConsultantAdmin = async (req, res) => {
 };
 
 // Create Consultant (Consultant Admin only)
-// Create Consultant (Consultant Admin only)
 const createConsultant = async (req, res) => {
   try {
     if (!req.user || req.user.userType !== "consultant_admin") {
@@ -249,7 +250,8 @@ const createConsultant = async (req, res) => {
       address,
       employeeId,
       jobRole,
-      branch
+      branch,
+      teamName
     } = req.body;
     
     // Check if user already exists
@@ -276,6 +278,7 @@ const createConsultant = async (req, res) => {
       employeeId,
       jobRole,
       branch,
+      teamName,
       createdBy: req.user.id,
       consultantAdminId: req.user.id,
       permissions: {
@@ -325,7 +328,6 @@ const createConsultant = async (req, res) => {
   }
 };
 
-// Create Client Admin (Automatic on proposal acceptance)
 // Create Client Admin (Automatic on proposal acceptance)
 const createClientAdmin = async (clientId, clientData) => {
   try {
@@ -430,72 +432,70 @@ const createEmployeeHead = async (req, res) => {
         message: "Only Client Admin can create Employee Heads" 
       });
     }
-    
-    const {
-      email,
-      password,
-      contactNumber,
-      userName,
-      address,
-      department
-    } = req.body;
-    
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
-    });
-    
-    if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
-      });
+
+    // Allow bulk or single
+    const payloads = Array.isArray(req.body.employeeHeads)
+      ? req.body.employeeHeads
+      : [req.body];
+
+    const results = { created: [], errors: [] };
+
+    for (const data of payloads) {
+      const { email, password, contactNumber, userName, address, department, location } = data;
+      try {
+        // Check required fields
+        if (!email || !password || !userName) {
+          throw new Error('Missing required fields: email, password, or userName');
+        }
+        // Check uniqueness
+        const exists = await User.findOne({ $or: [{ email }, { userName }] });
+        if (exists) throw new Error('Email or Username already exists');
+
+        const hashed = bcrypt.hashSync(password, 10);
+        const head = new User({
+          email,
+          password: hashed,
+          contactNumber,
+          userName,
+          userType: "client_employee_head",
+          address,
+          companyName: req.user.companyName,
+          clientId: req.user.clientId,
+          department,
+          location,
+          createdBy: req.user.id,
+          parentUser: req.user.id,
+          permissions: {
+            canViewAllClients: false,
+            canManageUsers: true,
+            canManageClients: false,
+            canViewReports: false,
+            canEditBoundaries: false,
+            canSubmitData: false,
+            canAudit: false
+          }
+        });
+        await head.save();
+        results.created.push({ id: head._id, email: head.email, userName: head.userName });
+      } catch (err) {
+        results.errors.push({ input: data, error: err.message });
+      }
     }
-    
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    
-    const employeeHead = new User({
-      email,
-      password: hashedPassword,
-      contactNumber,
-      userName,
-      userType: "client_employee_head",
-      address,
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
-      department,
-      createdBy: req.user.id,
-      parentUser: req.user.id,
-      permissions: {
-        canViewAllClients: false,
-        canManageUsers: true,
-        canManageClients: false,
-        canViewReports: false,
-        canEditBoundaries: false,
-        canSubmitData: false,
-        canAudit: false
-      }
+
+    const statusCode = results.created.length > 0 ? 201 : 400;
+    return res.status(statusCode).json({
+      message: `Employee Head creation completed`,
+      ...results
     });
-    
-    await employeeHead.save();
-    
-    res.status(201).json({
-      message: "Employee Head created successfully",
-      employeeHead: {
-        id: employeeHead._id,
-        email: employeeHead.email,
-        userName: employeeHead.userName,
-        department: employeeHead.department
-      }
-    });
-    
   } catch (error) {
     console.error("Create employee head error:", error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       message: "Failed to create Employee Head", 
       error: error.message 
     });
   }
 };
+
 
 // Create Employee (Employee Head only)
 const createEmployee = async (req, res) => {
@@ -505,74 +505,70 @@ const createEmployee = async (req, res) => {
         message: "Only Employee Head can create Employees" 
       });
     }
-    
-    const {
-      email,
-      password,
-      contactNumber,
-      userName,
-      address,
-      assignedModules
-    } = req.body;
-    
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
-    });
-    
-    if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
-      });
+
+    // Allow bulk or single
+    const payloads = Array.isArray(req.body.employees)
+      ? req.body.employees
+      : [req.body];
+
+    const results = { created: [], errors: [] };
+
+    for (const data of payloads) {
+      const { email, password, contactNumber, userName, address, assignedModules } = data;
+      try {
+        // Check required fields
+        if (!email || !password || !userName) {
+          throw new Error('Missing required fields: email, password, or userName');
+        }
+        // Check uniqueness
+        const exists = await User.findOne({ $or: [{ email }, { userName }] });
+        if (exists) throw new Error('Email or Username already exists');
+
+        const hashed = bcrypt.hashSync(password, 10);
+        const emp = new User({
+          email,
+          password: hashed,
+          contactNumber,
+          userName,
+          userType: "employee",
+          address,
+          companyName: req.user.companyName,
+          clientId: req.user.clientId,
+          department: req.user.department,
+          employeeHeadId: req.user.id,
+          assignedModules,
+          createdBy: req.user.id,
+          parentUser: req.user.id,
+          permissions: {
+            canViewAllClients: false,
+            canManageUsers: false,
+            canManageClients: false,
+            canViewReports: false,
+            canEditBoundaries: false,
+            canSubmitData: true,
+            canAudit: false
+          }
+        });
+        await emp.save();
+        results.created.push({ id: emp._id, email: emp.email, userName: emp.userName });
+      } catch (err) {
+        results.errors.push({ input: data, error: err.message });
+      }
     }
-    
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    
-    const employee = new User({
-      email,
-      password: hashedPassword,
-      contactNumber,
-      userName,
-      userType: "employee",
-      address,
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
-      department: req.user.department,
-      employeeHeadId: req.user.id,
-      assignedModules,
-      createdBy: req.user.id,
-      parentUser: req.user.id,
-      permissions: {
-        canViewAllClients: false,
-        canManageUsers: false,
-        canManageClients: false,
-        canViewReports: false,
-        canEditBoundaries: false,
-        canSubmitData: true,
-        canAudit: false
-      }
+
+    const statusCode = results.created.length > 0 ? 201 : 400;
+    return res.status(statusCode).json({
+      message: `Employee creation completed`,
+      ...results
     });
-    
-    await employee.save();
-    
-    res.status(201).json({
-      message: "Employee created successfully",
-      employee: {
-        id: employee._id,
-        email: employee.email,
-        userName: employee.userName,
-        assignedModules: employee.assignedModules
-      }
-    });
-    
   } catch (error) {
     console.error("Create employee error:", error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       message: "Failed to create Employee", 
       error: error.message 
     });
   }
-};
+};;
 
 // Create Auditor (Client Admin only)
 const createAuditor = async (req, res) => {
@@ -1823,6 +1819,579 @@ const verifyResetToken = async (req, res) => {
   }
 };
 
+// Enhanced userController.js functions for proper assignment management
+
+/**
+ * POST /api/users/assign-head
+ * body: { clientId, nodeId, headId }
+ * └─ Only client_admin can assign an Employee Head to a specific node
+ */
+const assignHeadToNode = async (req, res) => {
+  try {
+    // 1) Authorization check
+    if (req.user.userType !== 'client_admin') {
+      return res.status(403).json({ 
+        message: 'Only Client Admin can assign Employee Heads to nodes' 
+      });
+    }
+
+    const { clientId, nodeId, headId } = req.body;
+
+    // 2) Validate required fields
+    if (!clientId || !nodeId || !headId) {
+      return res.status(400).json({ 
+        message: 'clientId, nodeId, and headId are required' 
+      });
+    }
+
+    // 3) Verify this is the client admin's own organization
+    if (req.user.clientId !== clientId) {
+      return res.status(403).json({ 
+        message: 'You can only assign heads within your own organization' 
+      });
+    }
+
+    // 4) Verify the Employee Head exists and belongs to this organization
+    const employeeHead = await User.findOne({
+      _id: headId,
+      userType: 'client_employee_head',
+      clientId: clientId,
+      isActive: true
+    });
+
+    if (!employeeHead) {
+      return res.status(404).json({ 
+        message: 'Employee Head not found or not in your organization' 
+      });
+    }
+
+    // 5) Fetch the specific node to get its details
+    const flowchart = await Flowchart.findOne(
+      { clientId, 'nodes.id': nodeId },
+      { 'nodes.$': 1 }
+    );
+
+    if (!flowchart || !flowchart.nodes || flowchart.nodes.length === 0) {
+      return res.status(404).json({ 
+        message: 'Flowchart or node not found' 
+      });
+    }
+
+    const node = flowchart.nodes[0];
+    const { nodeType, department, location } = node.details;
+
+    // 6) Check if node already has a head assigned
+    if (node.details.employeeHeadId) {
+      // Remove previous assignment from old head's record
+      await User.updateOne(
+        { _id: node.details.employeeHeadId },
+        {
+          $pull: {
+            assignedModules: {
+              $regex: `.*"nodeId":"${nodeId}".*`
+            }
+          }
+        }
+      );
+    }
+
+    // 7) Update the flowchart to assign the new head
+    const flowResult = await Flowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      { 
+        $set: { 
+          'nodes.$.details.employeeHeadId': headId,
+          'nodes.$.details.lastAssignedAt': new Date(),
+          'nodes.$.details.assignedBy': req.user._id
+        }
+      }
+    );
+
+    if (flowResult.modifiedCount === 0) {
+      return res.status(404).json({ 
+        message: 'Failed to update flowchart - node not found' 
+      });
+    }
+
+    // 8) Update the Employee Head's record
+    const moduleAssignment = {
+      nodeId,
+      nodeType: nodeType || 'unknown',
+      department: department || 'unknown',
+      location: location || 'unknown',
+      assignedAt: new Date(),
+      assignedBy: req.user._id
+    };
+
+    await User.updateOne(
+      { _id: headId },
+      {
+        $addToSet: {
+          assignedModules: JSON.stringify(moduleAssignment)
+        }
+      }
+    );
+
+    console.log(`✅ Employee Head ${employeeHead.userName} assigned to node ${nodeId} by ${req.user.userName}`);
+
+    res.status(200).json({ 
+      message: 'Employee Head successfully assigned to node',
+      assignment: {
+        employeeHead: {
+          id: employeeHead._id,
+          name: employeeHead.userName,
+          email: employeeHead.email
+        },
+        node: {
+          id: nodeId,
+          label: node.label,
+          nodeType,
+          department,
+          location
+        },
+        assignedAt: new Date()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error in assignHeadToNode:', error);
+    res.status(500).json({ 
+      message: 'Error assigning Employee Head to node', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * POST /api/users/assign-scope
+ * body: { clientId, nodeId, scopeIdentifier, employeeIds }
+ * └─ Only the Employee Head assigned to that specific node can assign employees to scope details
+ */
+const assignScope = async (req, res) => {
+  try {
+    // 1) Authorization check
+    if (req.user.userType !== 'client_employee_head') {
+      return res.status(403).json({ 
+        message: 'Only Employee Heads can assign employees to scopes' 
+      });
+    }
+
+    const { clientId, nodeId, scopeIdentifier, employeeIds } = req.body;
+
+    // 2) Validate required fields
+    if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
+      return res.status(400).json({ 
+        message: 'clientId, nodeId, scopeIdentifier, and employeeIds array are required' 
+      });
+    }
+
+    if (employeeIds.length === 0) {
+      return res.status(400).json({ 
+        message: 'At least one employee must be assigned' 
+      });
+    }
+
+    // 3) Verify this is within the head's organization
+    if (req.user.clientId !== clientId) {
+      return res.status(403).json({ 
+        message: 'You can only assign employees within your organization' 
+      });
+    }
+
+    // 4) Fetch the specific node and verify existence
+    const flowchart = await Flowchart.findOne(
+      { clientId, 'nodes.id': nodeId },
+      { 'nodes.$': 1 }
+    );
+
+    if (!flowchart || !flowchart.nodes || flowchart.nodes.length === 0) {
+      return res.status(404).json({ 
+        message: 'Flowchart or node not found' 
+      });
+    }
+
+    const node = flowchart.nodes[0];
+
+    // 5) Verify this Employee Head is assigned to this node
+    const assignedHeadId = node.details && node.details.employeeHeadId
+      ? String(node.details.employeeHeadId)
+      : null;
+    const currentUserId = req.user.id
+      ? String(req.user.id)
+      : null;
+    if (assignedHeadId !== currentUserId) {
+      return res.status(403).json({ 
+        message: 'You are not authorized to manage this node. Only the assigned Employee Head can assign scopes.' 
+      });
+    }
+
+    // 6) Find the specific scope detail
+    const scopeDetail = node.details.scopeDetails.find(
+      scope => scope.scopeIdentifier === scopeIdentifier
+    );
+
+    if (!scopeDetail) {
+      return res.status(404).json({ 
+        message: `Scope detail '${scopeIdentifier}' not found in this node` 
+      });
+    }
+
+    // 7) Verify all employees exist and belong to this organization
+    const employees = await User.find({
+      _id: { $in: employeeIds },
+      userType: 'employee',
+      clientId: clientId,
+      isActive: true
+    });
+
+    if (employees.length !== employeeIds.length) {
+      return res.status(400).json({ 
+        message: 'One or more employees not found or not in your organization' 
+      });
+    }
+
+    // 8) Remove existing assignments for these employees from this scope
+    await Flowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      {
+        $pull: {
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
+            $in: employeeIds 
+          }
+        }
+      },
+      {
+        arrayFilters: [
+          { 'n.id': nodeId },
+          { 's.scopeIdentifier': scopeIdentifier }
+        ]
+      }
+    );
+
+    // 9) Add new assignments to the flowchart
+    const flowResult = await Flowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      {
+        $addToSet: {
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
+            $each: employeeIds 
+          }
+        },
+        $set: {
+          'nodes.$[n].details.scopeDetails.$[s].lastAssignedAt': new Date(),
+          'nodes.$[n].details.scopeDetails.$[s].assignedBy': req.user._id
+        }
+      },
+      {
+        arrayFilters: [
+          { 'n.id': nodeId },
+          { 's.scopeIdentifier': scopeIdentifier }
+        ]
+      }
+    );
+
+    if (flowResult.modifiedCount === 0) {
+      return res.status(500).json({ 
+        message: 'Failed to update flowchart scope assignments' 
+      });
+    }
+
+    // 10) Update each employee's record
+    const scopeAssignment = {
+      nodeId,
+      nodeLabel: node.label,
+      nodeType: node.details.nodeType || 'unknown',
+      department: node.details.department || 'unknown',
+      location: node.details.location || 'unknown',
+      scopeIdentifier: scopeDetail.scopeIdentifier,
+      scopeType: scopeDetail.scopeType,
+      inputType: scopeDetail.inputType,
+      assignedAt: new Date(),
+      assignedBy: req.user._id
+    };
+
+    await User.updateMany(
+      { _id: { $in: employeeIds } },
+      {
+        $set: { 
+          employeeHeadId: req.user._id 
+        },
+        $addToSet: {
+          assignedModules: JSON.stringify(scopeAssignment)
+        }
+      }
+    );
+
+    console.log(`✅ Scope '${scopeIdentifier}' assigned to ${employeeIds.length} employees by ${req.user.userName}`);
+
+    res.status(200).json({ 
+      message: 'Employees successfully assigned to scope',
+      assignment: {
+        scope: {
+          identifier: scopeIdentifier,
+          type: scopeDetail.scopeType,
+          inputType: scopeDetail.inputType
+        },
+        node: {
+          id: nodeId,
+          label: node.label,
+          department: node.details.department,
+          location: node.details.location
+        },
+        employees: employees.map(emp => ({
+          id: emp._id,
+          name: emp.userName,
+          email: emp.email
+        })),
+        assignedBy: req.user.userName,
+        assignedAt: new Date()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error in assignScope:', error);
+    res.status(500).json({ 
+      message: 'Error assigning employees to scope', 
+      error: error.message 
+    });
+  }
+};
+
+
+
+/**
+ * GET /api/users/node-assignments/:clientId
+ * └─ Get all node assignments for a client (Client Admin only)
+ */
+const getNodeAssignments = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Authorization check
+    if (req.user.userType !== 'client_admin' || req.user.clientId !== clientId) {
+      return res.status(403).json({ 
+        message: 'Only Client Admin can view node assignments for their organization' 
+      });
+    }
+
+    // Get flowchart with populated employee head info
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true })
+      .populate('nodes.details.employeeHeadId', 'userName email department location')
+      .populate('nodes.details.scopeDetails.assignedEmployees', 'userName email');
+
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // Format the response
+    const assignments = flowchart.nodes.map(node => ({
+      nodeId: node.id,
+      nodeLabel: node.label,
+      nodeType: node.details.nodeType,
+      department: node.details.department,
+      location: node.details.location,
+      employeeHead: node.details.employeeHeadId ? {
+        id: node.details.employeeHeadId._id,
+        name: node.details.employeeHeadId.userName,
+        email: node.details.employeeHeadId.email
+      } : null,
+      scopeAssignments: node.details.scopeDetails.map(scope => ({
+        scopeIdentifier: scope.scopeIdentifier,
+        scopeType: scope.scopeType,
+        inputType: scope.inputType,
+        assignedEmployees: scope.assignedEmployees || []
+      }))
+    }));
+
+    res.status(200).json({
+      message: 'Node assignments retrieved successfully',
+      clientId,
+      assignments
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting node assignments:', error);
+    res.status(500).json({ 
+      message: 'Error retrieving node assignments', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * GET /api/users/my-assignments
+ * └─ Get assignments for the current user (Employee Head or Employee)
+ */
+const getMyAssignments = async (req, res) => {
+  try {
+    const { userType, clientId, id: userId } = req.user;
+    // Employee Head: list nodes they manage
+    if (userType === 'client_employee_head') {
+      // Find the active flowchart for this client with this head assigned
+      const flowchart = await Flowchart.findOne(
+        {
+          clientId,
+          isActive: true,
+          'nodes.details.employeeHeadId': userId
+        },
+        { nodes: 1 }
+      );
+      let assignments = [];
+      if (flowchart) {
+        // Filter nodes where this head is assigned
+        const assignedNodes = flowchart.nodes.filter(
+          node => String(node.details.employeeHeadId) === userId
+        );
+        // Map to assignment objects
+        assignments = assignedNodes.map(node => ({
+          type: 'node_management',
+          nodeId: node.id,
+          nodeLabel: node.label,
+          nodeType: node.details.nodeType,
+          department: node.details.department,
+          location: node.details.location,
+          scopeCount: node.details.scopeDetails.length,
+          scopes: node.details.scopeDetails.map(scope => ({
+            scopeIdentifier: scope.scopeIdentifier,
+            scopeType: scope.scopeType,
+            inputType: scope.inputType,
+            assignedEmployeeCount: scope.assignedEmployees?.length || 0
+          }))
+        }));
+      }
+      return res.status(200).json({
+        message: 'Assignments retrieved successfully',
+        userType,
+        assignments
+      });
+    }
+
+    // Employee: list scopes they're assigned to
+    if (userType === 'employee') {
+      const flowcharts = await Flowchart.find({ clientId, isActive: true });
+      const assignments = [];
+      flowcharts.forEach(fc => {
+        fc.nodes.forEach(node => {
+          node.details.scopeDetails.forEach(scope => {
+            const assignedIds = (scope.assignedEmployees || []).map(id => String(id));
+            if (assignedIds.includes(userId)) {
+              assignments.push({
+                type: 'scope_work',
+                nodeId: node.id,
+                nodeLabel: node.label,
+                scopeIdentifier: scope.scopeIdentifier,
+                scopeType: scope.scopeType,
+                assignedAt: scope.lastAssignedAt || null
+              });
+            }
+          });
+        });
+      });
+      return res.status(200).json({
+        message: 'Assignments retrieved successfully',
+        userType,
+        assignments
+      });
+    }
+
+    // If neither
+    return res.status(403).json({ message: 'Insufficient permissions' });
+  } catch (error) {
+    console.error('❌ Error retrieving my assignments:', error);
+    res.status(500).json({
+      message: 'Error retrieving assignments',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * DELETE /api/users/remove-assignment
+ * body: { clientId, nodeId, scopeIdentifier?, employeeIds? }
+ * └─ Remove assignments (Node from Head or Employees from Scope)
+ */
+const removeAssignment = async (req, res) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier, employeeIds } = req.body;
+
+    if (!clientId || !nodeId) {
+      return res.status(400).json({ 
+        message: 'clientId and nodeId are required' 
+      });
+    }
+
+    if (req.user.userType === 'client_admin') {
+      // Remove Employee Head from node
+      const result = await Flowchart.updateOne(
+        { clientId, 'nodes.id': nodeId },
+        { 
+          $unset: { 'nodes.$.details.employeeHeadId': "" }
+        }
+      );
+
+      if (result.modifiedCount > 0) {
+        // Remove from user's assigned modules
+        await User.updateMany(
+          { userType: 'client_employee_head', clientId },
+          {
+            $pull: {
+              assignedModules: { $regex: `.*"nodeId":"${nodeId}".*` }
+            }
+          }
+        );
+
+        res.status(200).json({ message: 'Employee Head removed from node' });
+      } else {
+        res.status(404).json({ message: 'Node not found' });
+      }
+
+    } else if (req.user.userType === 'client_employee_head' && scopeIdentifier && employeeIds) {
+      // Remove employees from scope
+      await Flowchart.updateOne(
+        { clientId, 'nodes.id': nodeId },
+        {
+          $pull: {
+            'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
+              $in: employeeIds 
+            }
+          }
+        },
+        {
+          arrayFilters: [
+            { 'n.id': nodeId },
+            { 's.scopeIdentifier': scopeIdentifier }
+          ]
+        }
+      );
+
+      // Remove from employees' assigned modules
+      await User.updateMany(
+        { _id: { $in: employeeIds } },
+        {
+          $pull: {
+            assignedModules: { 
+              $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${scopeIdentifier}".*` 
+            }
+          }
+        }
+      );
+
+      res.status(200).json({ message: 'Employees removed from scope' });
+    } else {
+      res.status(403).json({ message: 'Insufficient permissions' });
+    }
+
+  } catch (error) {
+    console.error('❌ Error removing assignment:', error);
+    res.status(500).json({ 
+      message: 'Error removing assignment', 
+      error: error.message 
+    });
+  }
+};
+
+
+
 module.exports = {
   initializeSuperAdmin,
   login,
@@ -1840,5 +2409,10 @@ module.exports = {
   changePassword,
   forgotPassword,
   resetPassword,
-  verifyResetToken
+  verifyResetToken,
+  assignHeadToNode,
+  assignScope,
+  getNodeAssignments,
+  getMyAssignments,
+  removeAssignment
 };
