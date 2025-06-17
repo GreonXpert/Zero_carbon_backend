@@ -38,6 +38,7 @@ const userSchema = new mongoose.Schema(
     
     // Client Employee Head specific
     department: { type: String },
+    location: { type: String },
     
     // Employee specific
     employeeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
