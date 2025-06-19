@@ -7,6 +7,10 @@ const moment = require("moment");
 const { emailQueue } = require("../utils/emailQueue");
 const { withTimeout } = require('../utils/queueUtils');
 
+// Add these imports at the top of your clientController.js file
+const Flowchart = require("../models/Flowchart");
+const ProcessFlowchart = require("../models/ProcessFlowchart");
+
 const {
   createLeadActionNotification,
   createDataSubmissionNotification,
@@ -19,7 +23,824 @@ const {
   sendConsultantAssignedEmail
 } = require('../utils/emailHelper');
 
+const {
+  emitFlowchartStatusUpdate,
+  emitDataInputPointUpdate,
+  emitNewClientCreated,
+  emitClientStageChange,
+  emitDashboardRefresh
+} = require('../utils/dashboardEmitter');
 
+// ====================================
+// WORKFLOW TRACKING FUNCTIONS
+// Add these functions to your existing clientController.js
+// ====================================
+
+// Update flowchart status
+const updateFlowchartStatus = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId } = req.params;
+    const { status } = req.body;
+    
+    // Validate user is consultant or consultant_admin
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can update flowchart status",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate status
+    if (!['not_started', 'on_going', 'pending', 'completed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value. Must be one of: not_started, on_going, pending, completed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check if consultant is assigned to this client
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Update flowchart status
+    const previousStatus = client.workflowTracking.flowchartStatus;
+    client.workflowTracking.flowchartStatus = status;
+    
+    // Set timestamps
+    if (status === 'on_going' && previousStatus === 'not_started') {
+      client.workflowTracking.flowchartStartedAt = new Date();
+    } else if (status === 'completed') {
+      client.workflowTracking.flowchartCompletedAt = new Date();
+    }
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: `Flowchart status updated to ${status}`,
+      performedBy: req.user.id,
+      notes: `Changed from ${previousStatus} to ${status}`
+    });
+    
+    await client.save();
+    await emitFlowchartStatusUpdate(client, req.user.id);
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "Flowchart status updated successfully",
+      data: {
+        clientId: client.clientId,
+        flowchartStatus: client.workflowTracking.flowchartStatus,
+        flowchartStartedAt: client.workflowTracking.flowchartStartedAt,
+        flowchartCompletedAt: client.workflowTracking.flowchartCompletedAt
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Update flowchart status error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update flowchart status",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Update process flowchart status
+const updateProcessFlowchartStatus = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId } = req.params;
+    const { status } = req.body;
+    
+    // Validate user is consultant or consultant_admin
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can update process flowchart status",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate status
+    if (!['not_started', 'on_going', 'pending', 'completed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value. Must be one of: not_started, on_going, pending, completed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check if consultant is assigned to this client
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Update process flowchart status
+    const previousStatus = client.workflowTracking.processFlowchartStatus;
+    client.workflowTracking.processFlowchartStatus = status;
+    
+    // Set timestamps
+    if (status === 'on_going' && previousStatus === 'not_started') {
+      client.workflowTracking.processFlowchartStartedAt = new Date();
+    } else if (status === 'completed') {
+      client.workflowTracking.processFlowchartCompletedAt = new Date();
+    }
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: `Process flowchart status updated to ${status}`,
+      performedBy: req.user.id,
+      notes: `Changed from ${previousStatus} to ${status}`
+    });
+    
+    await client.save();
+    await emitFlowchartStatusUpdate(client, req.user.id);
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "Process flowchart status updated successfully",
+      data: {
+        clientId: client.clientId,
+        processFlowchartStatus: client.workflowTracking.processFlowchartStatus,
+        processFlowchartStartedAt: client.workflowTracking.processFlowchartStartedAt,
+        processFlowchartCompletedAt: client.workflowTracking.processFlowchartCompletedAt
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Update process flowchart status error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update process flowchart status",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Sync data input points from flowchart
+const syncDataInputPoints = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId } = req.params;
+    
+    // Validate user
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can sync data input points",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client and flowchart
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check permissions
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Active flowchart not found. Please create a flowchart first.",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Clear existing data input points
+    client.workflowTracking.dataInputPoints.manual.inputs = [];
+    client.workflowTracking.dataInputPoints.api.inputs = [];
+    client.workflowTracking.dataInputPoints.iot.inputs = [];
+    
+    // Process flowchart nodes and extract data input points
+    let extractedPoints = {
+      manual: 0,
+      api: 0,
+      iot: 0
+    };
+    
+    flowchart.nodes.forEach(node => {
+      if (node.details && node.details.scopeDetails) {
+        node.details.scopeDetails.forEach(scope => {
+          const basePoint = {
+            nodeId: node.id,
+            scopeIdentifier: scope.scopeIdentifier,
+            status: "not_started",
+            lastUpdatedBy: req.user.id,
+            lastUpdatedAt: new Date()
+          };
+          
+          if (scope.inputType === 'manual') {
+            client.workflowTracking.dataInputPoints.manual.inputs.push({
+              ...basePoint,
+              pointId: `${node.id}_${scope.scopeIdentifier}_manual`,
+              pointName: `${node.label} - ${scope.scopeName || scope.scopeIdentifier}`
+            });
+            extractedPoints.manual++;
+          } else if (scope.inputType === 'API') {
+            client.workflowTracking.dataInputPoints.api.inputs.push({
+              ...basePoint,
+              pointId: `${node.id}_${scope.scopeIdentifier}_api`,
+              endpoint: scope.apiEndpoint || '',
+              connectionStatus: scope.apiStatus ? 'connected' : 'not_connected'
+            });
+            extractedPoints.api++;
+          } else if (scope.inputType === 'IOT') {
+            client.workflowTracking.dataInputPoints.iot.inputs.push({
+              ...basePoint,
+              pointId: `${node.id}_${scope.scopeIdentifier}_iot`,
+              deviceName: scope.iotDeviceName || `Device_${scope.scopeIdentifier}`,
+              deviceId: scope.iotDeviceId || '',
+              connectionStatus: scope.iotStatus ? 'connected' : 'not_connected'
+            });
+            extractedPoints.iot++;
+          }
+        });
+      }
+    });
+    
+    // Update counts
+    client.updateInputPointCounts('manual');
+    client.updateInputPointCounts('api');
+    client.updateInputPointCounts('iot');
+    
+    client.workflowTracking.dataInputPoints.lastSyncedWithFlowchart = new Date();
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: "Data input points synced from flowchart",
+      performedBy: req.user.id,
+      notes: `Extracted ${extractedPoints.manual} manual, ${extractedPoints.api} API, and ${extractedPoints.iot} IoT points. Total: ${client.workflowTracking.dataInputPoints.totalDataPoints}`
+    });
+    
+    await client.save();
+    
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "Data input points synced successfully",
+      data: {
+        clientId: client.clientId,
+        extractedCounts: extractedPoints,
+        dataInputPoints: {
+          manual: {
+            total: client.workflowTracking.dataInputPoints.manual.totalCount,
+            points: client.workflowTracking.dataInputPoints.manual.inputs
+          },
+          api: {
+            total: client.workflowTracking.dataInputPoints.api.totalCount,
+            points: client.workflowTracking.dataInputPoints.api.inputs
+          },
+          iot: {
+            total: client.workflowTracking.dataInputPoints.iot.totalCount,
+            points: client.workflowTracking.dataInputPoints.iot.inputs
+          },
+          totalDataPoints: client.workflowTracking.dataInputPoints.totalDataPoints,
+          lastSyncedAt: client.workflowTracking.dataInputPoints.lastSyncedWithFlowchart
+        }
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Sync data input points error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to sync data input points",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+// Update manual input point status
+const updateManualInputStatus = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId, pointId } = req.params;
+    const { status, trainingCompletedFor } = req.body;
+    
+    // Validate user
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can update input point status",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate status
+    if (!['not_started', 'on_going', 'pending', 'completed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value. Must be one of: not_started, on_going, pending, completed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check permissions
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Find and update manual input point
+    const inputIndex = client.workflowTracking.dataInputPoints.manual.inputs.findIndex(
+      input => input.pointId === pointId
+    );
+    
+    if (inputIndex === -1) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Manual input point not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const previousStatus = client.workflowTracking.dataInputPoints.manual.inputs[inputIndex].status;
+    
+    // Update the input point
+    client.workflowTracking.dataInputPoints.manual.inputs[inputIndex].status = status;
+    client.workflowTracking.dataInputPoints.manual.inputs[inputIndex].lastUpdatedBy = req.user.id;
+    client.workflowTracking.dataInputPoints.manual.inputs[inputIndex].lastUpdatedAt = new Date();
+    
+    if (trainingCompletedFor) {
+      client.workflowTracking.dataInputPoints.manual.inputs[inputIndex].trainingCompletedFor = trainingCompletedFor;
+    }
+    
+    // Update counts
+    client.updateInputPointCounts('manual');
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: `Manual input point ${pointId} status updated`,
+      performedBy: req.user.id,
+      notes: `Status changed from ${previousStatus} to ${status}${trainingCompletedFor ? `. Training completed for: ${trainingCompletedFor}` : ''}`
+    });
+    
+    await client.save();
+    await emitDataInputPointUpdate(client, 'manual', pointId, req.user.id);
+
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "Manual input point status updated successfully",
+      data: {
+        pointId,
+        status,
+        trainingCompletedFor,
+        counts: {
+          total: client.workflowTracking.dataInputPoints.manual.totalCount,
+          completed: client.workflowTracking.dataInputPoints.manual.completedCount,
+          pending: client.workflowTracking.dataInputPoints.manual.pendingCount,
+          onGoing: client.workflowTracking.dataInputPoints.manual.onGoingCount,
+          notStarted: client.workflowTracking.dataInputPoints.manual.notStartedCount
+        }
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Update manual input status error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update manual input status",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Update API input point status
+const updateAPIInputStatus = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId, pointId } = req.params;
+    const { status, connectionStatus } = req.body;
+    
+    // Validate user
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can update input point status",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate status
+    if (!['not_started', 'on_going', 'pending', 'completed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value. Must be one of: not_started, on_going, pending, completed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate connection status if provided
+    if (connectionStatus && !['not_connected', 'testing', 'connected', 'failed'].includes(connectionStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid connection status. Must be one of: not_connected, testing, connected, failed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check permissions
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Find and update API input point
+    const inputIndex = client.workflowTracking.dataInputPoints.api.inputs.findIndex(
+      input => input.pointId === pointId
+    );
+    
+    if (inputIndex === -1) {
+      return res.status(404).json({ 
+        success: false,
+        message: "API input point not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const previousStatus = client.workflowTracking.dataInputPoints.api.inputs[inputIndex].status;
+    const previousConnectionStatus = client.workflowTracking.dataInputPoints.api.inputs[inputIndex].connectionStatus;
+    
+    // Update the input point
+    client.workflowTracking.dataInputPoints.api.inputs[inputIndex].status = status;
+    client.workflowTracking.dataInputPoints.api.inputs[inputIndex].lastUpdatedBy = req.user.id;
+    client.workflowTracking.dataInputPoints.api.inputs[inputIndex].lastUpdatedAt = new Date();
+    
+    if (connectionStatus) {
+      client.workflowTracking.dataInputPoints.api.inputs[inputIndex].connectionStatus = connectionStatus;
+      if (connectionStatus === 'connected' || connectionStatus === 'testing') {
+        client.workflowTracking.dataInputPoints.api.inputs[inputIndex].lastConnectionTest = new Date();
+      }
+    }
+    
+    // Update counts
+    client.updateInputPointCounts('api');
+    
+    // Add timeline entry
+    let notes = `Status changed from ${previousStatus} to ${status}`;
+    if (connectionStatus && connectionStatus !== previousConnectionStatus) {
+      notes += `. Connection status changed from ${previousConnectionStatus} to ${connectionStatus}`;
+    }
+    
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: `API input point ${pointId} updated`,
+      performedBy: req.user.id,
+      notes
+    });
+    
+    await client.save();
+    await emitDataInputPointUpdate(client, 'api', pointId, req.user.id);
+
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "API input point status updated successfully",
+      data: {
+        pointId,
+        status,
+        connectionStatus: client.workflowTracking.dataInputPoints.api.inputs[inputIndex].connectionStatus,
+        lastConnectionTest: client.workflowTracking.dataInputPoints.api.inputs[inputIndex].lastConnectionTest,
+        counts: {
+          total: client.workflowTracking.dataInputPoints.api.totalCount,
+          completed: client.workflowTracking.dataInputPoints.api.completedCount,
+          pending: client.workflowTracking.dataInputPoints.api.pendingCount,
+          onGoing: client.workflowTracking.dataInputPoints.api.onGoingCount,
+          notStarted: client.workflowTracking.dataInputPoints.api.notStartedCount
+        }
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Update API input status error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update API input status",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Update IoT input point status
+const updateIoTInputStatus = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { clientId, pointId } = req.params;
+    const { status, connectionStatus, deviceId } = req.body;
+    
+    // Validate user
+    if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can update input point status",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate status
+    if (!['not_started', 'on_going', 'pending', 'completed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value. Must be one of: not_started, on_going, pending, completed",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Validate connection status if provided
+    if (connectionStatus && !['not_connected', 'configuring', 'connected', 'disconnected'].includes(connectionStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid connection status. Must be one of: not_connected, configuring, connected, disconnected",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Find client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check permissions
+    if (req.user.userType === 'consultant') {
+      if (client.workflowTracking.assignedConsultantId?.toString() !== req.user.id &&
+          client.leadInfo.assignedConsultantId?.toString() !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to this client",
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Find and update IoT input point
+    const inputIndex = client.workflowTracking.dataInputPoints.iot.inputs.findIndex(
+      input => input.pointId === pointId
+    );
+    
+    if (inputIndex === -1) {
+      return res.status(404).json({ 
+        success: false,
+        message: "IoT input point not found",
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const previousStatus = client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].status;
+    const previousConnectionStatus = client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].connectionStatus;
+    const previousDeviceId = client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].deviceId;
+    
+    // Update the input point
+    client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].status = status;
+    client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].lastUpdatedBy = req.user.id;
+    client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].lastUpdatedAt = new Date();
+    
+    if (connectionStatus) {
+      client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].connectionStatus = connectionStatus;
+      if (connectionStatus === 'connected') {
+        client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].lastDataReceived = new Date();
+      }
+    }
+    
+    if (deviceId) {
+      client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].deviceId = deviceId;
+    }
+    
+    // Update counts
+    client.updateInputPointCounts('iot');
+    
+    // Build timeline notes
+    let notes = `Status changed from ${previousStatus} to ${status}`;
+    if (connectionStatus && connectionStatus !== previousConnectionStatus) {
+      notes += `. Connection status changed from ${previousConnectionStatus} to ${connectionStatus}`;
+    }
+    if (deviceId && deviceId !== previousDeviceId) {
+      notes += `. Device ID ${previousDeviceId ? 'updated' : 'set'} to ${deviceId}`;
+    }
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: `IoT input point ${pointId} updated`,
+      performedBy: req.user.id,
+      notes
+    });
+    
+    await client.save();
+    await emitDataInputPointUpdate(client, 'iot', pointId, req.user.id);
+
+    const responseTime = Date.now() - startTime;
+    
+    return res.status(200).json({
+      success: true,
+      message: "IoT input point status updated successfully",
+      data: {
+        pointId,
+        status,
+        connectionStatus: client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].connectionStatus,
+        deviceId: client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].deviceId,
+        lastDataReceived: client.workflowTracking.dataInputPoints.iot.inputs[inputIndex].lastDataReceived,
+        counts: {
+          total: client.workflowTracking.dataInputPoints.iot.totalCount,
+          completed: client.workflowTracking.dataInputPoints.iot.completedCount,
+          pending: client.workflowTracking.dataInputPoints.iot.pendingCount,
+          onGoing: client.workflowTracking.dataInputPoints.iot.onGoingCount,
+          notStarted: client.workflowTracking.dataInputPoints.iot.notStartedCount
+        }
+      },
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Update IoT input status error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update IoT input status",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+
+// Auto-update flowchart status when consultant starts creating
+const autoUpdateFlowchartStatus = async (clientId, userId) => {
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return;
+    
+    // Only update if status is not_started
+    if (client.workflowTracking.flowchartStatus === 'not_started') {
+      client.workflowTracking.flowchartStatus = 'on_going';
+      client.workflowTracking.flowchartStartedAt = new Date();
+      
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "Flowchart creation started",
+        performedBy: userId,
+        notes: "Status automatically updated to on-going"
+      });
+      
+      await client.save();
+      console.log(`Auto-updated flowchart status to on-going for client ${clientId}`);
+    }
+  } catch (error) {
+    console.error("Auto update flowchart status error:", error);
+    // Don't throw error to prevent disrupting the main flow
+  }
+};
+
+// Auto-update process flowchart status when consultant starts creating
+const autoUpdateProcessFlowchartStatus = async (clientId, userId) => {
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return;
+    
+    // Only update if status is not_started
+    if (client.workflowTracking.processFlowchartStatus === 'not_started') {
+      client.workflowTracking.processFlowchartStatus = 'on_going';
+      client.workflowTracking.processFlowchartStartedAt = new Date();
+      
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "Process flowchart creation started",
+        performedBy: userId,
+        notes: "Status automatically updated to on-going"
+      });
+      
+      await client.save();
+      console.log(`Auto-updated process flowchart status to on-going for client ${clientId}`);
+    }
+  } catch (error) {
+    console.error("Auto update process flowchart status error:", error);
+    // Don't throw error to prevent disrupting the main flow
+  }
+};
+
+// ====================================
 // Helper function for pagination with caching
 const getPaginationOptions = (req) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -140,7 +961,7 @@ const createLead = async (req, res) => {
     });
 
     await newClient.save();
-
+    await emitNewClientCreated(newClient, req.user.id);
       try {
        sendLeadCreatedEmail(newClient, req.user.userName);
       console.log(`✉️  Lead creation email queued for super admin (${process.env.SUPER_ADMIN_EMAIL})`);
@@ -616,8 +1437,9 @@ const moveToDataSubmission = async (req, res) => {
       notes: "Client moved to data submission stage",
     });
 
+   const prevStage = client.stage;
     await client.save();
-
+    await emitClientStageChange(client, prevStage, req.user.id);
     // D) Send email to client
     const emailSubject = "ZeroCarbon - Please Submit Your Company Data";
     const emailMessage = `
@@ -1152,7 +1974,9 @@ const moveToProposal = async (req, res) => {
       notes: "Ready for proposal creation",
     });
 
+    const prevStage = client.stage;
     await client.save();
+    await emitClientStageChange(client, prevStage, req.user.id);
 
     return res.status(200).json({
       message: "Client moved to proposal stage",
@@ -2008,7 +2832,20 @@ const assignConsultant = async (req, res) => {
       performedBy: req.user.id,
       notes: `Assigned to ${consultant.userName}`
     });
-    
+            // ========== WORKFLOW TRACKING UPDATE ==========
+        client.workflowTracking.assignedConsultantId = consultantId;
+        client.workflowTracking.consultantAssignedAt   = new Date();
+        // Ensure flowchart & processflowchart start at 'not_started'
+        client.workflowTracking.flowchartStatus          = 'not_started';
+        client.workflowTracking.processFlowchartStatus   = 'not_started';
+        // reset any old data‐points
+        client.workflowTracking.dataInputPoints = {
+          manual: { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          api:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          iot:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          totalDataPoints: 0,
+          lastSyncedWithFlowchart: null
+        };
     await client.save();
     
     // Notify the assigned consultant
@@ -2178,102 +3015,351 @@ const manageSubscription = async (req, res) => {
   }
 };
 
-// Dashboard metrics
+
+
+// Enhanced getDashboardMetrics with real-time updates
 const getDashboardMetrics = async (req, res) => {
   try {
+    // ─── Build base query ────────────────────────────────────────
     let query = { isDeleted: false };
-    
-    // Build query based on user type
-    if (req.user.userType === "consultant_admin") {
-      const consultants = await User.find({ 
-        consultantAdminId: req.user.id 
-      }).select("_id");
-      
+    if (req.user.userType === 'consultant_admin') {
+      const consultants = await User.find({
+        consultantAdminId: req.user.id,
+        userType: 'consultant'
+      }).select('_id');
       const consultantIds = consultants.map(c => c._id);
       consultantIds.push(req.user.id);
-      
       query.$or = [
-        { "leadInfo.consultantAdminId": req.user.id },
-        { "leadInfo.assignedConsultantId": { $in: consultantIds } }
+        { 'leadInfo.consultantAdminId': req.user.id },
+        { 'leadInfo.assignedConsultantId': { $in: consultantIds } }
       ];
-    } else if (req.user.userType === "consultant") {
-      query["leadInfo.assignedConsultantId"] = req.user.id;
-    } else if (!["super_admin"].includes(req.user.userType)) {
-      return res.status(403).json({ 
-        message: "You don't have permission to view dashboard metrics" 
+    } else if (req.user.userType === 'consultant') {
+      query['leadInfo.assignedConsultantId'] = req.user.id;
+    } else if (req.user.userType !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to view dashboard metrics"
       });
     }
-    
-    // Get counts by stage
-    const stageCount = await Client.aggregate([
+    // ────────────────────────────────────────────────────────────────
+
+    // ─── Pagination setup ────────────────────────────────────────
+    const paginationParams = getPaginationOptions(req);
+    const { page, limit, skip } = paginationParams;
+    // ────────────────────────────────────────────────────────────────
+
+    // ─── Aggregated counts (all roles) ──────────────────────────
+    const [
+      totalClients,
+      totalLeadsGenerated,
+      regPending,
+      regSubmitted,
+      regRejected,
+      propPending,
+      propSubmitted,
+      propRejected,
+      activeClients,
+      expiringSoon
+    ] = await Promise.all([
+      Client.countDocuments(query),
+      Client.countDocuments({ ...query, stage: 'lead' }),
+      Client.countDocuments({ ...query, stage: 'registered', status: 'pending' }),
+      Client.countDocuments({ ...query, stage: 'registered', status: 'submitted' }),
+      Client.countDocuments({ ...query, stage: 'registered', status: 'rejected' }),
+      Client.countDocuments({ ...query, stage: 'proposal', status: 'proposal_pending' }),
+      Client.countDocuments({ ...query, stage: 'proposal', status: 'proposal_submitted' }),
+      Client.countDocuments({ ...query, stage: 'proposal', status: 'proposal_rejected' }),
+      Client.countDocuments({ ...query, stage: 'active' }),
+      Client.countDocuments({
+        ...query,
+        stage: 'active',
+        'accountDetails.subscriptionEndDate': {
+          $lte: moment().add(30, 'days').toDate(),
+          $gte: new Date()
+        }
+      })
+    ]);
+
+    // ─── recentActivities ────────────────────────────────────────
+    const recentDocs = await Client.find(query)
+      .select('clientId timeline')
+      .populate('timeline.performedBy', 'userName')
+      .sort({ 'timeline.timestamp': -1 })
+      .limit(10)
+      .lean();
+    const recentActivities = recentDocs.flatMap(doc => {
+      const last = doc.timeline?.slice(-1)[0];
+      return last ? [{
+        clientId:   doc.clientId,
+        action:     last.action,
+        performedBy:last.performedBy?.userName,
+        timestamp:  last.timestamp
+      }] : [];
+    });
+
+    // ─── flowchart/process aggregation ───────────────────────────
+    const [ wfAgg = {} ] = await Client.aggregate([
       { $match: query },
-      {
-        $group: {
-          _id: "$stage",
-          count: { $sum: 1 }
+      { $group: {
+          _id: null,
+          totalFlowchartsNotStarted:        { $sum:{ $cond:[{ $eq:['$workflowTracking.flowchartStatus','not_started']},1,0] } },
+          totalFlowchartsPending:           { $sum:{ $cond:[{ $eq:['$workflowTracking.flowchartStatus','pending']},1,0] } },
+          totalFlowchartsOnGoing:           { $sum:{ $cond:[{ $eq:['$workflowTracking.flowchartStatus','on_going']},1,0] } },
+          totalFlowchartsCompleted:         { $sum:{ $cond:[{ $eq:['$workflowTracking.flowchartStatus','completed']},1,0] } },
+
+          totalProcessFlowchartsNotStarted: { $sum:{ $cond:[{ $eq:['$workflowTracking.processFlowchartStatus','not_started']},1,0] } },
+          totalProcessFlowchartsPending:    { $sum:{ $cond:[{ $eq:['$workflowTracking.processFlowchartStatus','pending']},1,0] } },
+          totalProcessFlowchartsOnGoing:    { $sum:{ $cond:[{ $eq:['$workflowTracking.processFlowchartStatus','on_going']},1,0] } },
+          totalProcessFlowchartsCompleted:  { $sum:{ $cond:[{ $eq:['$workflowTracking.processFlowchartStatus','completed']},1,0] } }
         }
       }
     ]);
-    
-    // Get active subscriptions expiring soon (within 30 days)
-    const expiringSoon = await Client.countDocuments({
-      ...query,
-      stage: "active",
-      "accountDetails.subscriptionEndDate": {
-        $lte: moment().add(30, 'days').toDate(),
-        $gte: new Date()
+
+    // ─── data-input-point aggregation ─────────────────────────────
+    const [ ipAgg = {} ] = await Client.aggregate([
+      { $match: query },
+      { $group: {
+          _id: null,
+          manualTotal:      { $sum:'$workflowTracking.dataInputPoints.manual.totalCount' },
+          manualCompleted:  { $sum:'$workflowTracking.dataInputPoints.manual.completedCount' },
+          manualPending:    { $sum:'$workflowTracking.dataInputPoints.manual.pendingCount' },
+
+          apiTotal:         { $sum:'$workflowTracking.dataInputPoints.api.totalCount' },
+          apiCompleted:     { $sum:'$workflowTracking.dataInputPoints.api.completedCount' },
+          apiPending:       { $sum:'$workflowTracking.dataInputPoints.api.pendingCount' },
+
+          iotTotal:         { $sum:'$workflowTracking.dataInputPoints.iot.totalCount' },
+          iotCompleted:     { $sum:'$workflowTracking.dataInputPoints.iot.completedCount' },
+          iotPending:       { $sum:'$workflowTracking.dataInputPoints.iot.pendingCount' }
+        }
       }
-    });
-    
-    // Get recent activities
-    const recentActivities = await Client.find(query)
-      .select("clientId stage status timeline")
-      .populate("timeline.performedBy", "userName")
-      .sort({ "timeline.timestamp": -1 })
-      .limit(10);
-    
-    // Format recent activities
-    const activities = [];
-    recentActivities.forEach(client => {
-      if (client.timeline.length > 0) {
-        const lastAction = client.timeline[client.timeline.length - 1];
-        activities.push({
-          clientId: client.clientId,
-          action: lastAction.action,
-          performedBy: lastAction.performedBy?.userName,
-          timestamp: lastAction.timestamp
-        });
+    ]);
+
+    // ─── build the aggregated workflowProgress ───────────────────
+    const workflowProgress = {
+      flowcharts: {
+        notStarted: wfAgg.totalFlowchartsNotStarted   || 0,
+        pending:    wfAgg.totalFlowchartsPending      || 0,
+        onGoing:    wfAgg.totalFlowchartsOnGoing      || 0,
+        completed:  wfAgg.totalFlowchartsCompleted    || 0
+      },
+      processFlowcharts: {
+        notStarted: wfAgg.totalProcessFlowchartsNotStarted || 0,
+        pending:    wfAgg.totalProcessFlowchartsPending    || 0,
+        onGoing:    wfAgg.totalProcessFlowchartsOnGoing    || 0,
+        completed:  wfAgg.totalProcessFlowchartsCompleted  || 0
+      },
+      dataInputPoints: {
+        manual: {
+          total:     ipAgg.manualTotal     || 0,
+          completed: ipAgg.manualCompleted || 0,
+          pending:   ipAgg.manualPending   || 0
+        },
+        api: {
+          total:     ipAgg.apiTotal        || 0,
+          completed: ipAgg.apiCompleted    || 0,
+          pending:   ipAgg.apiPending      || 0
+        },
+        iot: {
+          total:     ipAgg.iotTotal        || 0,
+          completed: ipAgg.iotCompleted    || 0,
+          pending:   ipAgg.iotPending      || 0
+        },
+        total: (ipAgg.manualTotal||0) + (ipAgg.apiTotal||0) + (ipAgg.iotTotal||0)
       }
-    });
-    
-    // Calculate conversion rates
-    const totalLeads = stageCount.find(s => s._id === "lead")?.count || 0;
-    const totalActive = stageCount.find(s => s._id === "active")?.count || 0;
-    const conversionRate = totalLeads > 0 ? (totalActive / totalLeads * 100).toFixed(2) : 0;
-    
-    res.status(200).json({
-      message: "Dashboard metrics fetched successfully",
-      metrics: {
-        stageDistribution: stageCount.reduce((acc, curr) => {
-          acc[curr._id] = curr.count;
-          return acc;
-        }, {}),
-        totalClients: stageCount.reduce((sum, curr) => sum + curr.count, 0),
-        activeClients: totalActive,
-        expiringSoon,
-        conversionRate: `${conversionRate}%`,
-        recentActivities: activities
+    };
+
+    const conversionRate = totalClients > 0
+      ? ((activeClients / totalClients) * 100).toFixed(2)
+      : '0';
+
+    // ─── assemble the static metrics block ──────────────────────
+    const metrics = {
+      overview:          { totalClients, totalLeadsGenerated, activeClients },
+      registrationStage: { pending: regPending, submitted: regSubmitted, rejected: regRejected },
+      proposalStage:     { proposal_pending: propPending, proposal_submitted: propSubmitted, proposal_rejected: propRejected },
+      expiringSoon,
+      conversionRate:    `${conversionRate}%`,
+      recentActivities,
+      workflowProgress
+    };
+
+    // ─── consultant_admin: paginated clients + metrics ─────────
+    if (req.user.userType === 'consultant_admin') {
+      // totalClients already = count for pagination
+      const clientDocs = await Client.find(query)
+        .select('clientId workflowTracking accountDetails')
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+      const clientDetails = clientDocs.map(c => {
+        const wt  = c.workflowTracking || {};
+        const dip = wt.dataInputPoints || {};
+        const totalPts  = (dip.manual?.totalCount||0) + (dip.api?.totalCount||0) + (dip.iot?.totalCount||0);
+        const completed = (dip.manual?.completedCount||0) + (dip.api?.completedCount||0) + (dip.iot?.completedCount||0);
+        const remaining = totalPts - completed;
+        const endDate   = c.accountDetails?.subscriptionEndDate;
+        const remDays   = endDate
+          ? Math.max(0, Math.ceil((new Date(endDate) - Date.now())/86400000))
+          : null;
+
+        return {
+          clientId: c.clientId,
+          workflowProgress: {
+            flowchartStatus:        wt.flowchartStatus        || 'not_started',
+            processFlowchartStatus: wt.processFlowchartStatus || 'not_started',
+            dataInputPoints: {
+              manual:   { total: dip.manual?.totalCount||0, completed: dip.manual?.completedCount||0, pending: dip.manual?.pendingCount||0 },
+              api:      { total: dip.api?.totalCount||0,    completed: dip.api?.completedCount||0,    pending: dip.api?.pendingCount||0    },
+              iot:      { total: dip.iot?.totalCount||0,    completed: dip.iot?.completedCount||0,    pending: dip.iot?.pendingCount||0    },
+              overall:  totalPts
+            }
+          },
+          remainingDataPoints:       remaining,
+          remainingSubscriptionDays: remDays
+        };
+      });
+
+      // build pagination metadata
+      const totalPages = Math.ceil(totalClients / limit);
+      const pagination = {
+        currentPage:  page,
+        totalPages,
+        totalItems:   totalClients,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1
+      };
+
+      // emit real-time update
+      if (global.broadcastDashboardUpdate) {
+        await global.broadcastDashboardUpdate(
+          'dashboard_metrics',
+          { metrics, clients: clientDetails, pagination },
+          [ req.user.id ]
+        );
       }
-    });
-    
+
+      return res.status(200).json({
+        success:   true,
+        message:   'Dashboard metrics fetched successfully',
+        metrics,
+        clients:   clientDetails,
+        pagination
+      });
+    }
+
+    // ─── consultant-only: paginated clients + minimal metrics ────
+    if (req.user.userType === 'consultant') {
+      const docs = await Client.find(query)
+        .skip(skip)
+        .limit(limit);
+
+      const data = docs.map(c => {
+        const wf = c.getWorkflowDashboard();
+        const completed = wf.dataInputPoints.manual.completed
+                        + wf.dataInputPoints.api.completed
+                        + wf.dataInputPoints.iot.completed;
+        const remaining = wf.dataInputPoints.overall - completed;
+        const end = c.accountDetails.subscriptionEndDate;
+        const remDays = end ? moment(end).diff(moment(), 'days') : null;
+
+        return {
+          clientId:                c.clientId,
+          workflowProgress:        wf,
+          remainingDataPoints:     remaining,
+          remainingSubscriptionDays: remDays
+        };
+      });
+
+      const totalPages = Math.ceil(totalClients / limit);
+      const pagination = {
+        currentPage:  page,
+        totalPages,
+        totalItems:   totalClients,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1
+      };
+
+      if (global.broadcastDashboardUpdate) {
+        await global.broadcastDashboardUpdate(
+          'dashboard_metrics',
+          { clients: data, pagination },
+          [ req.user.id ]
+        );
+      }
+
+      return res.status(200).json({
+        success:   true,
+        message:   'Consultant dashboard metrics fetched successfully',
+        clients:   data,
+        pagination
+      });
+    }
+
+    // ─── super_admin: paginated clients + metrics ───────────────
+    if (req.user.userType === 'super_admin') {
+      const docs = await Client.find(query)
+        .select('clientId workflowTracking dataInputPoints accountDetails')
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+      const clientList = docs.map(c => {
+        const wt  = c.workflowTracking || {};
+        const dip = wt.dataInputPoints || {};
+        const totalPts     = (dip.manual?.totalCount||0) + (dip.api?.totalCount||0) + (dip.iot?.totalCount||0);
+        const completedPts = (dip.manual?.completedCount||0) + (dip.api?.completedCount||0) + (dip.iot?.completedCount||0);
+        const remaining    = totalPts - completedPts;
+
+        return {
+          clientId:              c.clientId,
+          flowchartStatus:       wt.flowchartStatus        || 'not_started',
+          processFlowchartStatus:wt.processFlowchartStatus || 'not_started',
+          remainingDataPoints:   remaining
+        };
+      });
+
+      const totalPages = Math.ceil(totalClients / limit);
+      const pagination = {
+        currentPage:  page,
+        totalPages,
+        totalItems:   totalClients,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1
+      };
+
+      if (global.broadcastDashboardUpdate) {
+        await global.broadcastDashboardUpdate(
+          'dashboard_metrics',
+          { metrics, clients: clientList, pagination }
+        );
+      }
+
+      return res.status(200).json({
+        success:   true,
+        message:   'Dashboard metrics fetched successfully',
+        metrics,
+        clients:   clientList,
+        pagination
+      });
+    }
+
   } catch (error) {
-    console.error("Get dashboard metrics error:", error);
-    res.status(500).json({ 
-      message: "Failed to fetch dashboard metrics", 
-      error: error.message 
+    console.error('Get dashboard metrics error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch dashboard metrics',
+      error:   error.message
     });
   }
 };
+
+
+
 
 // Check and update expired subscriptions (to be called by cron job)
 const checkExpiredSubscriptions = async () => {
@@ -2362,5 +3448,13 @@ module.exports = {
   assignConsultant,
   manageSubscription,
   getDashboardMetrics,
-  checkExpiredSubscriptions
+  checkExpiredSubscriptions,
+  updateFlowchartStatus,
+  updateProcessFlowchartStatus,
+  syncDataInputPoints,
+  updateManualInputStatus,
+  updateAPIInputStatus,
+  updateIoTInputStatus,
+  autoUpdateFlowchartStatus,
+  autoUpdateProcessFlowchartStatus,
 };
