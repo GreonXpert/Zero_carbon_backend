@@ -14,7 +14,7 @@ const clientR = require("./router/clientR");
 const adminR = require("./router/adminR");
 const authR = require("./router/authR");
 const flowchartR = require("./router/flowchartR");
-const EmissionFactorRoute = require("./router/EmissionFactor");
+const defraDataR = require("./router/defraData");
 const gwpRoutes = require("./router/gwpRoutes");
 const fuelCombustionRoutes = require("./router/fuelCombustionRoutes");
 const CountryemissionFactorRouter = require("./router/countryemissionFactorRouter");
@@ -28,6 +28,7 @@ const EmissionFactorScope3Routes = require('./router/EmissionFactorScope3Routes'
 
 // NEW: Import notification routes (MISSING FROM YOUR CURRENT INDEX.JS)
 const notificationRoutes = require('./router/notificationRoutes');
+const { dataCollectionRouter, iotRouter } = require('./router/dataCollectionRoutes');
 
 // NEW: Import IoT routes and MQTT subscriber
 const iotRoutes = require('./router/iotRoutes');
@@ -37,6 +38,7 @@ const MQTTSubscriber = require('./mqtt/mqttSubscriber');
 const { checkExpiredSubscriptions } = require("./controllers/clientController");
 const { initializeSuperAdmin } = require("./controllers/userController");
 const { publishScheduledNotifications } = require('./controllers/notificationControllers');
+const { scheduleMonthlySummary, checkAndCreateMissedSummaries } = require('./controllers/DataCollection/monthlyDataSummaryController');
 
 // Import models for real-time features
 const User = require('./models/User');
@@ -76,7 +78,7 @@ app.use("/api/clients", clientR);
 app.use("/api/admin", adminR);
 app.use("/api/auth", authR);
 app.use("/api/flowchart", flowchartR);
-app.use("/api", EmissionFactorRoute);
+app.use("/api/defra",defraDataR);
 app.use("/api/gwp", gwpRoutes);
 app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
@@ -91,6 +93,11 @@ app.use('/api', iotRoutes);
 
 // 🚀 ADD NOTIFICATION ROUTES (MISSING IN YOUR ORIGINAL)
 app.use('/api/notifications', notificationRoutes);
+// Data Collection Routes (requires authentication)
+app.use('/api/data-collection', dataCollectionRouter);
+
+// IoT Data Ingestion Route (public endpoint for devices)
+app.use('/api/iot', iotRouter);
 
 // Create HTTP server and bind Socket.io
 const server = http.createServer(app);
@@ -232,7 +239,88 @@ io.on('connection', (socket) => {
             console.error('Error fetching latest IoT data:', error);
         }
     });
+    // 🎯 NEW: Handle dashboard data requests
+    socket.on('requestDashboardData', async (dashboardType) => {
+        try {
+            const { 
+                getDashboardMetrics, 
+                getWorkflowTrackingDashboard, 
+                getOrganizationOverviewDashboard 
+            } = require('./controllers/clientController');
+            
+            // Create a mock request/response object for the controller
+            const mockReq = {
+                user: socket.user,
+                params: {},
+                query: {}
+            };
+            
+            const mockRes = {
+                status: () => mockRes,
+                json: (data) => {
+                    // Emit the dashboard data to the requesting socket
+                    socket.emit('dashboardData', {
+                        type: dashboardType,
+                        data: data,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            };
+            
+            // Call the appropriate dashboard function
+            switch (dashboardType) {
+                case 'metrics':
+                    await getDashboardMetrics(mockReq, mockRes);
+                    break;
+                case 'workflow':
+                    await getWorkflowTrackingDashboard(mockReq, mockRes);
+                    break;
+                case 'organization':
+                    if (socket.user.userType === 'super_admin') {
+                        await getOrganizationOverviewDashboard(mockReq, mockRes);
+                    } else {
+                        socket.emit('dashboardError', { 
+                            message: 'Unauthorized access to organization dashboard' 
+                        });
+                    }
+                    break;
+                default:
+                    socket.emit('dashboardError', { 
+                        message: 'Invalid dashboard type' 
+                    });
+            }
+        } catch (error) {
+            console.error('Error fetching dashboard data:', error);
+            socket.emit('dashboardError', { 
+                message: 'Failed to fetch dashboard data',
+                error: error.message 
+            });
+        }
+    });
     
+    // 🔄 NEW: Handle real-time dashboard subscriptions
+    socket.on('subscribeToDashboard', async (dashboardType) => {
+        try {
+            // Join dashboard-specific room
+            socket.join(`dashboard_${dashboardType}_${socket.userId}`);
+            
+            console.log(`📊 User ${socket.user.userName} subscribed to ${dashboardType} dashboard`);
+            
+            // Send initial dashboard data
+            socket.emit('dashboardSubscribed', {
+                dashboardType,
+                message: `Successfully subscribed to ${dashboardType} dashboard updates`
+            });
+            
+            // Trigger initial data fetch
+            socket.emit('requestDashboardData', dashboardType);
+        } catch (error) {
+            console.error('Error subscribing to dashboard:', error);
+            socket.emit('dashboardError', { 
+                message: 'Failed to subscribe to dashboard updates' 
+            });
+        }
+    });
     // 🔌 Handle disconnect
     socket.on('disconnect', () => {
         console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
@@ -367,8 +455,65 @@ const getUnreadCountForUser = async (user) => {
     }
 };
 
-// 📡 Export broadcast function for use in controllers
+
+// // Schedule monthly summary cron job
+//   scheduleMonthlySummary();
+  
+//   // Check for any missed summaries on startup
+//   await checkAndCreateMissedSummaries();
+
+
+// 🔄 NEW: Real-time Dashboard Update Functions
+const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
+    try {
+        const updateData = {
+            type: updateType,
+            data: data,
+            timestamp: new Date().toISOString()
+        };
+        
+        if (targetUsers.length > 0) {
+            // Send to specific users
+            targetUsers.forEach(userId => {
+                io.to(`user_${userId}`).emit('dashboard_update', updateData);
+            });
+        } else {
+            // Broadcast to all relevant users based on update type
+            switch (updateType) {
+                case 'workflow_tracking':
+                    // Send to consultants, consultant admins, and super admins
+                    io.to('userType_super_admin').emit('dashboard_update', updateData);
+                    io.to('userType_consultant_admin').emit('dashboard_update', updateData);
+                    io.to('userType_consultant').emit('dashboard_update', updateData);
+                    break;
+                    
+                case 'organization_overview':
+                    // Send only to super admins
+                    io.to('userType_super_admin').emit('dashboard_update', updateData);
+                    break;
+                    
+                case 'dashboard_metrics':
+                    // Send to all admin types
+                    io.to('userType_super_admin').emit('dashboard_update', updateData);
+                    io.to('userType_consultant_admin').emit('dashboard_update', updateData);
+                    io.to('userType_consultant').emit('dashboard_update', updateData);
+                    break;
+            }
+        }
+        
+        console.log(`📊 Dashboard update broadcasted: ${updateType}`);
+    } catch (error) {
+        console.error('Error broadcasting dashboard update:', error);
+    }
+};
+
+// Export broadcast functions for use in controllers
 global.broadcastNotification = broadcastNotification;
+global.broadcastDashboardUpdate = broadcastDashboardUpdate;
+global.getUnreadCountForUser = getUnreadCountForUser;
+global.getTargetUsersForNotification = getTargetUsersForNotification;
+
+
 
 // Initialize MQTT subscriber variable
 let mqttSubscriber = null;
@@ -403,11 +548,34 @@ connectDB().then(() => {
     
     // Run subscription check on startup
     checkExpiredSubscriptions();
+
     
+    // **NEW**: Schedule your monthly summary cron job
+    scheduleMonthlySummary();
+
+   // Kick off missed‐summaries check in the background
+    (async () => {
+      try {
+        await checkAndCreateMissedSummaries();
+        console.log('✅ Missed summaries check complete');
+      } catch (err) {
+        console.error('❌ Error back‐filling summaries:', err);
+      }
+    })();
+    // Initialize MQTT Subscriber
+    global.mqttSubscriber = new MQTTSubscriber();
+    
+    // Schedule cron jobs
+    // Check expired subscriptions daily at 2 AM
+    cron.schedule('0 2 * * *', async () => {
+      console.log('🔄 Running daily subscription check...');
+      await checkExpiredSubscriptions();
+    });
 }).catch((error) => {
     console.error('❌ Database connection failed:', error);
     process.exit(1);
 });
+
 
 // 🔄 Enhanced scheduled notifications with real-time broadcasting
 cron.schedule('*/5 * * * *', async () => {
