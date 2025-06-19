@@ -8,20 +8,27 @@ const {
   getLeads,
   moveToDataSubmission,
   submitClientData,
-    updateClientData,     
+  updateClientData,     
   deleteClientData,
   getClientSubmissionData,     
   moveToProposal,
   createProposal,
-   editProposal,
-   deleteProposal,
+  editProposal,
+  deleteProposal,
   updateProposalStatus,
-   getClientProposalData,
+  getClientProposalData,
   getClients,
   getClientById,
   assignConsultant,
   manageSubscription,
-  getDashboardMetrics
+  getDashboardMetrics,
+  updateFlowchartStatus,
+  updateProcessFlowchartStatus,
+  syncDataInputPoints,
+  updateManualInputStatus,
+  updateAPIInputStatus,
+  updateIoTInputStatus,
+   
 } = require("../controllers/clientController");
 
 // Apply auth middleware to all routes
@@ -62,7 +69,23 @@ router.patch("/:clientId/subscription", manageSubscription); // Manage subscript
 
 // General Routes
 router.get("/", getClients); // Get all clients (filtered by permissions)
-router.get("/dashboard-metrics", getDashboardMetrics); // Get dashboard metrics
 router.get("/:clientId", getClientById); // Get single client details
+
+// Stage 5 Consultant work
+
+// Flowchart Status Management
+router.patch("/:clientId/workflow/flowchart-status", updateFlowchartStatus); // Update flowchart status (consultant/consultant_admin only)
+router.patch("/:clientId/workflow/process-flowchart-status", updateProcessFlowchartStatus); // Update process flowchart status
+
+// Data Input Points Management
+router.post("/:clientId/workflow/sync-data-points", syncDataInputPoints); // Sync data input points from flowchart
+
+//  Individual Input Point Status Updates
+router.patch("/:clientId/workflow/manual-input/:pointId", updateManualInputStatus); // Update manual input status with training info
+router.patch("/:clientId/workflow/api-input/:pointId", updateAPIInputStatus); // Update API input status with connection info
+router.patch("/:clientId/workflow/iot-input/:pointId", updateIoTInputStatus); // Update IoT input status with device info
+
+// Dashboard endpoints
+router.get("/dashboard/metrics", getDashboardMetrics); // Get dashboard metrics
 
 module.exports = router;
