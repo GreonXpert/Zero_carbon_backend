@@ -476,7 +476,7 @@ const createEmployeeHead = async (req, res) => {
           }
         });
         await head.save();
-        results.created.push({ id: head._id, email: head.email, userName: head.userName });
+        results.created.push({ id: head._id, email: head.email, userName: head.userName, department: head.department, location: head.location });
       } catch (err) {
         results.errors.push({ input: data, error: err.message });
       }
