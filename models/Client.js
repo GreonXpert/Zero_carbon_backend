@@ -1,6 +1,63 @@
 const mongoose = require("mongoose");
 
+// Sub-schema for data input points
+const DataInputPointSchema = new mongoose.Schema({
+  pointId: { type: String, required: true },
+  pointName: { type: String, required: true },
+  nodeId: { type: String }, // Reference to flowchart node
+  scopeIdentifier: { type: String }, // Reference to scope within node
+  status: {
+    type: String,
+    enum: ["not_started", "on_going", "pending", "completed"],
+    default: "not_started"
+  },
+  trainingCompletedFor: { type: String }, // For manual inputs - employee name/ID
+  lastUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  lastUpdatedAt: { type: Date }
+});
 
+// Sub-schema for API input points
+const APIInputPointSchema = new mongoose.Schema({
+  pointId: { type: String, required: true },
+  endpoint: { type: String, required: true },
+  nodeId: { type: String },
+  scopeIdentifier: { type: String },
+  status: {
+    type: String,
+    enum: ["not_started", "on_going", "pending", "completed"],
+    default: "not_started"
+  },
+  connectionStatus: {
+    type: String,
+    enum: ["not_connected", "testing", "connected", "failed"],
+    default: "not_connected"
+  },
+  lastConnectionTest: { type: Date },
+  lastUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  lastUpdatedAt: { type: Date }
+});
+
+// Sub-schema for IoT input points
+const IoTInputPointSchema = new mongoose.Schema({
+  pointId: { type: String, required: true },
+  deviceName: { type: String, required: true },
+  deviceId: { type: String },
+  nodeId: { type: String },
+  scopeIdentifier: { type: String },
+  status: {
+    type: String,
+    enum: ["not_started", "on_going", "pending", "completed"],
+    default: "not_started"
+  },
+  connectionStatus: {
+    type: String,
+    enum: ["not_connected", "configuring", "connected", "disconnected"],
+    default: "not_connected"
+  },
+  lastDataReceived: { type: Date },
+  lastUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  lastUpdatedAt: { type: Date }
+});
 
 const clientSchema = new mongoose.Schema(
   {
@@ -34,7 +91,69 @@ const clientSchema = new mongoose.Schema(
       ],
       default: "contacted"
     },
-    
+
+    // Workflow tracking fields
+    workflowTracking: {
+      // Flowchart status
+      flowchartStatus: {
+        type: String,
+        enum: ["not_started", "on_going", "pending", "completed"],
+        default: "not_started"
+      },
+      flowchartStartedAt: { type: Date },
+      flowchartCompletedAt: { type: Date },
+      
+      // Process flowchart status
+      processFlowchartStatus: {
+        type: String,
+        enum: ["not_started", "on_going", "pending", "completed"],
+        default: "not_started"
+      },
+      processFlowchartStartedAt: { type: Date },
+      processFlowchartCompletedAt: { type: Date },
+      
+      // Assigned consultant
+      assignedConsultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      consultantAssignedAt: { type: Date },
+      
+      // Data input points tracking
+      dataInputPoints: {
+        // Manual input points
+        manual: {
+          inputs: [DataInputPointSchema],
+          totalCount: { type: Number, default: 0 },
+          completedCount: { type: Number, default: 0 },
+          pendingCount: { type: Number, default: 0 },
+          onGoingCount: { type: Number, default: 0 },
+          notStartedCount: { type: Number, default: 0 }
+        },
+        
+        // API input points
+        api: {
+          inputs: [APIInputPointSchema],
+          totalCount: { type: Number, default: 0 },
+          completedCount: { type: Number, default: 0 },
+          pendingCount: { type: Number, default: 0 },
+          onGoingCount: { type: Number, default: 0 },
+          notStartedCount: { type: Number, default: 0 }
+        },
+        
+        // IoT input points
+        iot: {
+          inputs: [IoTInputPointSchema],
+          totalCount: { type: Number, default: 0 },
+          completedCount: { type: Number, default: 0 },
+          pendingCount: { type: Number, default: 0 },
+          onGoingCount: { type: Number, default: 0 },
+          notStartedCount: { type: Number, default: 0 }
+        },
+        
+        // Overall summary
+        totalDataPoints: { type: Number, default: 0 },
+        lastSyncedWithFlowchart: { type: Date }
+      }
+    },
+
     // Stage 1: Lead Information
     leadInfo: {
       companyName: { type: String, required: true },
@@ -419,6 +538,10 @@ clientSchema.index({ "leadInfo.email": 1 });
 clientSchema.index({ "leadInfo.consultantAdminId": 1 });
 clientSchema.index({ stage: 1, status: 1 });
 clientSchema.index({ "accountDetails.subscriptionEndDate": 1 });
+clientSchema.index({ "workflowTracking.assignedConsultantId": 1 });
+clientSchema.index({ "workflowTracking.flowchartStatus": 1 });
+clientSchema.index({ "workflowTracking.processFlowchartStatus": 1 });
+
 
 // Counter Schema for ClientID generation
 const counterSchema = new mongoose.Schema({
@@ -463,6 +586,36 @@ clientSchema.methods.calculateDataCompleteness = function() {
   });
   
   return Math.round((completedFields / requiredFields.length) * 100);
+};
+// Helper method to update input point counts
+clientSchema.methods.updateInputPointCounts = function(type) {
+  const section = this.workflowTracking.dataInputPoints[type];
+  const inputs = section.inputs || [];
+
+  section.totalCount     = inputs.length;
+  section.completedCount = inputs.filter(p => p.status === 'completed').length;
+  section.pendingCount   = inputs.filter(p => p.status === 'pending').length;
+  section.onGoingCount   = inputs.filter(p => p.status === 'on_going').length;
+  section.notStartedCount= inputs.filter(p => p.status === 'not_started').length;
+
+  // Recalculate overall
+  this.workflowTracking.dataInputPoints.totalDataPoints =
+    this.workflowTracking.dataInputPoints.manual.totalCount +
+    this.workflowTracking.dataInputPoints.api.totalCount +
+    this.workflowTracking.dataInputPoints.iot.totalCount;
+};
+clientSchema.methods.getWorkflowDashboard = function() {
+  const w = this.workflowTracking;
+  return {
+    flowchartStatus: w.flowchartStatus,
+    processFlowchartStatus: w.processFlowchartStatus,
+    dataInputPoints: {
+      manual:   { total: w.dataInputPoints.manual.totalCount,   completed: w.dataInputPoints.manual.completedCount,   pending: w.dataInputPoints.manual.pendingCount },
+      api:      { total: w.dataInputPoints.api.totalCount,      completed: w.dataInputPoints.api.completedCount,      pending: w.dataInputPoints.api.pendingCount },
+      iot:      { total: w.dataInputPoints.iot.totalCount,      completed: w.dataInputPoints.iot.completedCount,      pending: w.dataInputPoints.iot.pendingCount },
+      overall:  w.dataInputPoints.totalDataPoints
+    }
+  };
 };
 
 module.exports = mongoose.model("Client", clientSchema);
