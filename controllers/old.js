@@ -318,3 +318,295 @@ exports.calculateAndSaveEmission = async (req, res) => {
     });
   }
 };
+
+
+
+// Save Manual Data Entry (will be aggregated monthly)
+const saveManualData = async (req, res) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier } = req.params;
+    const { date: rawDateInput, time: rawTimeInput, dataValues, emissionFactor } = req.body;
+    
+    // Check permissions for manual data operations
+    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'manual_data');
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied', 
+        reason: permissionCheck.reason 
+      });
+    }
+    
+    // Find scope configuration
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+    
+    let scopeConfig = null;
+    for (const node of flowchart.nodes) {
+      if (node.id === nodeId) {
+        const scope = node.details.scopeDetails.find(
+          s => s.scopeIdentifier === scopeIdentifier
+        );
+        if (scope && scope.inputType === 'manual') {
+          scopeConfig = scope;
+          break;
+        }
+      }
+    }
+    
+    if (!scopeConfig) {
+      return res.status(400).json({ message: 'Invalid manual scope configuration' });
+    }
+    
+    // Process date/time
+    const rawDate = rawDateInput || moment().format('DD/MM/YYYY');
+    const rawTime = rawTimeInput || moment().format('HH:mm:ss');
+    
+    const dateMoment = moment(rawDate, 'DD/MM/YYYY', true);
+    const timeMoment = moment(rawTime, 'HH:mm:ss', true);
+    
+    if (!dateMoment.isValid() || !timeMoment.isValid()) {
+      return res.status(400).json({ message: 'Invalid date/time format' });
+    }
+    
+    const formattedDate = dateMoment.format('DD:MM:YYYY');
+    const formattedTime = timeMoment.format('HH:mm:ss');
+    
+    const [day, month, year] = formattedDate.split(':').map(Number);
+    const [hour, minute, second] = formattedTime.split(':').map(Number);
+    const timestamp = new Date(year, month - 1, day, hour, minute, second);
+    
+    // Ensure dataValues is a Map
+    let dataMap;
+    try {
+      dataMap = ensureDataIsMap(dataValues);
+    } catch (error) {
+      return res.status(400).json({ 
+        message: 'Invalid format: Please update dataValues to be key-value structured for cumulative tracking.',
+        error: error.message 
+      });
+    }
+    
+    // Create data entry (no cumulative calculation for manual - will be done monthly)
+    const entry = new DataEntry({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      scopeType: scopeConfig.scopeType,
+      inputType: 'manual',
+      date: formattedDate,
+      time: formattedTime,
+      timestamp,
+      dataValues: dataMap,
+      emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
+      sourceDetails: {
+        uploadedBy: req.user._id
+      },
+      isEditable: true,
+      processingStatus: 'processed'
+    });
+    
+    await entry.save();
+    
+    // Update collection config
+    const collectionConfig = await DataCollectionConfig.findOneAndUpdate(
+      { clientId, nodeId, scopeIdentifier },
+      {
+        $setOnInsert: {
+          scopeType: scopeConfig.scopeType,
+          inputType: 'manual',
+          collectionFrequency: scopeConfig.collectionFrequency || 'monthly',
+          createdBy: req.user._id
+        }
+      },
+      { upsert: true, new: true }
+    );
+    
+    collectionConfig.updateCollectionStatus(entry._id, timestamp);
+    await collectionConfig.save();
+    
+    // Emit real-time update
+    emitDataUpdate('manual-data-saved', {
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      dataId: entry._id,
+      timestamp,
+      dataValues: Object.fromEntries(entry.dataValues)
+    });
+    
+    res.status(201).json({
+      message: 'Manual data saved successfully',
+      dataId: entry._id
+    });
+    
+  } catch (error) {
+    console.error('Save manual data error:', error);
+    res.status(500).json({ 
+      message: 'Failed to save manual data', 
+      error: error.message 
+    });
+  }
+};
+
+
+
+// Upload CSV Data (will be aggregated monthly)
+const uploadCSVData = async (req, res) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier } = req.params;
+    
+    // Check permissions for CSV upload operations
+    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'csv_upload');
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied', 
+        reason: permissionCheck.reason 
+      });
+    }
+    
+    if (!req.file) {
+      return res.status(400).json({ message: 'No CSV file uploaded' });
+    }
+    
+    // Find scope configuration
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+    
+    let scopeConfig = null;
+    for (const node of flowchart.nodes) {
+      if (node.id === nodeId) {
+        const scope = node.details.scopeDetails.find(
+          s => s.scopeIdentifier === scopeIdentifier
+        );
+        if (scope && scope.inputType === 'manual') {
+          scopeConfig = scope;
+          break;
+        }
+      }
+    }
+    
+    if (!scopeConfig) {
+      return res.status(400).json({ message: 'Invalid manual scope configuration for CSV upload' });
+    }
+    
+    // Process CSV file
+    const csvData = await csvtojson().fromFile(req.file.path);
+    
+    if (!csvData || csvData.length === 0) {
+      return res.status(400).json({ message: 'CSV file is empty or invalid' });
+    }
+    
+    // Validate required columns
+    const requiredColumns = ['date', 'time'];
+    const firstRow = csvData[0];
+    const missingColumns = requiredColumns.filter(col => !(col in firstRow));
+    
+    if (missingColumns.length > 0) {
+      return res.status(400).json({ 
+        message: `Missing required columns: ${missingColumns.join(', ')}` 
+      });
+    }
+    
+    // Process each row
+    const dataEntries = [];
+    const savedEntries = [];
+    
+    for (const row of csvData) {
+      const rawDate = row.date || moment().format('DD/MM/YYYY');
+      const rawTime = row.time || moment().format('HH:mm:ss');
+      
+      const dateMoment = moment(rawDate, 'DD/MM/YYYY', true);
+      const timeMoment = moment(rawTime, 'HH:mm:ss', true);
+      
+      if (!dateMoment.isValid() || !timeMoment.isValid()) {
+        continue; // Skip invalid rows
+      }
+      
+      const formattedDate = dateMoment.format('DD:MM:YYYY');
+      const formattedTime = timeMoment.format('HH:mm:ss');
+      
+      const [day, month, year] = formattedDate.split(':').map(Number);
+      const [hour, minute, second] = formattedTime.split(':').map(Number);
+      const timestamp = new Date(year, month - 1, day, hour, minute, second);
+      
+      // Extract data values (exclude metadata fields)
+      const dataObj = { ...row };
+      delete dataObj.date;
+      delete dataObj.time;
+      delete dataObj.scopeIdentifier;
+      delete dataObj.clientId;
+      delete dataObj.scopeType;
+      delete dataObj.emissionFactor;
+      
+      // Convert to Map
+      const dataMap = new Map(Object.entries(dataObj));
+      
+      const entry = new DataEntry({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        scopeType: scopeConfig.scopeType,
+        inputType: 'manual',
+        date: formattedDate,
+        time: formattedTime,
+        timestamp,
+        dataValues: dataMap,
+        emissionFactor: row.emissionFactor || scopeConfig.emissionFactor || '',
+        sourceDetails: {
+          fileName: req.file.originalname,
+          uploadedBy: req.user._id
+        },
+        isEditable: true,
+        processingStatus: 'processed'
+      });
+      
+      const savedEntry = await entry.save();
+      savedEntries.push(savedEntry);
+    }
+    
+    // Update collection config
+    if (savedEntries.length > 0) {
+      const latestEntry = savedEntries[savedEntries.length - 1];
+      const collectionConfig = await DataCollectionConfig.findOne({
+        clientId,
+        nodeId,
+        scopeIdentifier
+      });
+      
+      if (collectionConfig) {
+        collectionConfig.updateCollectionStatus(latestEntry._id, latestEntry.timestamp);
+        await collectionConfig.save();
+      }
+    }
+    
+    // Delete uploaded file
+    const fs = require('fs');
+    fs.unlinkSync(req.file.path);
+    
+    // Emit real-time update
+    emitDataUpdate('csv-data-uploaded', {
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      count: savedEntries.length,
+      dataIds: savedEntries.map(e => e._id)
+    });
+    
+    res.status(201).json({
+      message: 'CSV data uploaded successfully',
+      count: savedEntries.length,
+      dataIds: savedEntries.map(e => e._id)
+    });
+    
+  } catch (error) {
+    console.error('Upload CSV error:', error);
+    res.status(500).json({ 
+      message: 'Failed to upload CSV data', 
+      error: error.message 
+    });
+  }
+};

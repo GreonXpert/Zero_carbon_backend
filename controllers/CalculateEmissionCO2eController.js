@@ -4,7 +4,7 @@ const csvtojson = require("csvtojson");
 const CalculateEmissionCO2e = require("../models/CalculateEmissionCO2e");
 const Flowchart             = require("../models/Flowchart");
 const FuelCombustion        = require("../models/FuelCombustion");
-const EmissionFactor        = require("../models/EmissionFactor");
+const EmissionFactor        = require("../models/DefraData");
 const emissionFactor2 = require("../models/contryEmissionFactorModel");
 const emissionFactor3 = require("../models/EmissionFactorScope3");
 

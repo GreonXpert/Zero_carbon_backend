@@ -1,508 +1,1084 @@
-// controllers/flowchartController.js (UPDATED WITH VALIDATION INTEGRATION)
 const Flowchart = require('../models/Flowchart');
+const Client = require('../models/Client');
+const User = require('../models/User');
 const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+const Notification   = require('../models/Notification');
+
+// Add this import at the top of flowchartController.js:
+const { autoUpdateFlowchartStatus } = require('./clientController');
+
 
 // ============================================================================
-// VALIDATION FUNCTIONS - These will be used in multiple places
+// PERMISSION HELPERS
 // ============================================================================
 
-// Enhanced validation function for flowchart scope details
-// Supports multiple scopes of the same type within a single node
-function validateScopeDetails(scopeDetails) {
+// Check if user can create/edit flowchart for a client
+const canManageFlowchart = async (user, clientId, flowchart = null) => {
+  // Super admin can manage all
+  if (user.userType === 'super_admin') {
+    return { allowed: true, reason: 'Super admin access' };
+  }
+
+  // Get client details
+  const client = await Client.findOne({ clientId });
+  if (!client) {
+    return { allowed: false, reason: 'Client not found' };
+  }
+
+  // Consultant Admin: Can manage if they created the lead
+  if (user.userType === 'consultant_admin') {
+    if (client.leadInfo?.createdBy?.toString() === user._id.toString()) {
+        return { allowed: true, reason: 'Consultant admin who created lead' };
+    }
+    
+    // Also check if any consultant under them is assigned
+    const consultantsUnderAdmin = await User.find({
+      consultantAdminId: user.id,
+      userType: 'consultant'
+    }).select('_id');
+    
+    const consultantIds = consultantsUnderAdmin.map(c => c._id.toString());
+     if (client.leadInfo?.assignedConsultantId &&
+        consultantIds.includes(client.leadInfo.assignedConsultantId.toString())) {
+        return { allowed: true, reason: 'Client assigned to consultant under this admin' };
+    }
+    
+    return { allowed: false, reason: 'Not authorized for this client' };
+  }
+
+  // Consultant: Can manage if they are assigned to this client
+  if (user.userType === 'consultant') {
+    if (client.leadInfo.assignedConsultantId?.toString() === user.id) {
+      return { allowed: true, reason: 'Assigned consultant' };
+    }
+    return { allowed: false, reason: 'Not assigned to this client' };
+  }
+
+  return { allowed: false, reason: 'Insufficient permissions' };
+};
+
+// Check if user can view flowchart
+const canViewFlowchart = async (user, clientId) => {
+  // Super admin can view all
+  if (user.userType === 'super_admin') {
+    return { allowed: true, fullAccess: true };
+  }
+
+  // Check if user can manage (creators can always view)
+  const manageCheck = await canManageFlowchart(user, clientId);
+  if (manageCheck.allowed) {
+    return { allowed: true, fullAccess: true };
+  }
+
+  // Client admin can view their own flowchart
+  if (user.userType === 'client_admin' && user.clientId === clientId) {
+    return { allowed: true, fullAccess: true };
+  }
+
+  // Employee head can view with department/location restrictions
+  if (user.userType === 'client_employee_head' && user.clientId === clientId) {
+    return { 
+      allowed: true, 
+      fullAccess: false,
+      restrictions: {
+        department: user.department,
+        location: user.location
+      }
+    };
+  }
+
+  // Employees, auditors, viewers can view if they belong to the client
+  if (['employee', 'auditor', 'viewer'].includes(user.userType) && user.clientId === clientId) {
+    return { allowed: true, fullAccess: false };
+  }
+
+  return { allowed: false };
+};
+
+// Enhanced validation for scope details (excerpt from flowchartController.js)
+const validateScopeDetails = (scopeDetails, nodeId) => {
   if (!Array.isArray(scopeDetails)) {
     throw new Error("scopeDetails must be an array");
   }
 
-  // Track scope types for reporting
-  const scopeCounts = {};
-
+  // Check for unique identifiers within this node
+  const identifiers = new Set();
+  const scopeTypeCounts = {
+    'Scope 1': 0,
+    'Scope 2': 0,
+    'Scope 3': 0
+  };
+  
   scopeDetails.forEach((scope, index) => {
-    const { scopeType } = scope;
+    // Check required common fields
+    if (!scope.scopeIdentifier || scope.scopeIdentifier.trim() === '') {
+      throw new Error(`Scope at index ${index} must have a scopeIdentifier (unique name)`);
+    }
     
-    if (!scopeType) {
-      throw new Error(`Scope at index ${index} must have a scopeType`);
+    if (identifiers.has(scope.scopeIdentifier)) {
+      throw new Error(`Duplicate scopeIdentifier "${scope.scopeIdentifier}" in node ${nodeId}`);
+    }
+    identifiers.add(scope.scopeIdentifier);
+
+    if (!scope.scopeType) {
+      throw new Error(`Scope "${scope.scopeIdentifier}" must have a scopeType`);
+    }
+
+    if (!['Scope 1', 'Scope 2', 'Scope 3'].includes(scope.scopeType)) {
+      throw new Error(`Invalid scopeType "${scope.scopeType}" for scope "${scope.scopeIdentifier}"`);
+    }
+
+    if (!scope.inputType) {
+      throw new Error(`Scope "${scope.scopeIdentifier}" must have an inputType (manual/IOT/API)`);
+    }
+
+    if (!['manual', 'IOT', 'API'].includes(scope.inputType)) {
+      throw new Error(`Invalid inputType "${scope.inputType}" for scope "${scope.scopeIdentifier}". Must be manual, IOT, or API`);
     }
 
     // Count scope types
-    scopeCounts[scopeType] = (scopeCounts[scopeType] || 0) + 1;
+    scopeTypeCounts[scope.scopeType]++;
 
-    switch (scopeType) {
+    // Validate based on scope type
+    switch (scope.scopeType) {
       case "Scope 1":
-        // Validate Scope 1 required fields
-        if (!scope.emissionFactor || !scope.activity || !scope.fuel || !scope.units) {
-          throw new Error(`Scope 1 at index ${index} requires: emissionFactor, activity, fuel, units`);
+        if (!scope.emissionFactor || !scope.categoryName || !scope.activity || !scope.fuel || !scope.units) {
+          throw new Error(`Scope 1 "${scope.scopeIdentifier}" requires: emissionFactor, categoryName, activity, fuel, units`);
         }
         
-        if (!["IPCC", "DEFRA"].includes(scope.emissionFactor)) {
-          throw new Error(`Scope 1 emissionFactor must be "IPCC" or "DEFRA"`);
+        // Updated validation to include Custom and other emission factors
+        if (!['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom'].includes(scope.emissionFactor)) {
+          throw new Error(`Scope 1 "${scope.scopeIdentifier}" emissionFactor must be one of: IPCC, DEFRA, EPA, EmissionFactorHub, or Custom`);
+        }
+
+        // Validate custom emission factor if selected
+        if (scope.emissionFactor === 'Custom') {
+          if (!scope.customEmissionFactor) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" with Custom emission factor must have customEmissionFactor object`);
+          }
+          
+          const { CO2, CH4, N2O, CO2e } = scope.customEmissionFactor;
+          
+          // At least one emission factor must be provided
+          if (CO2 === null && CH4 === null && N2O === null && CO2e === null) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" with Custom emission factor must have at least one of CO2, CH4, N2O, or CO2e values`);
+          }
+          
+          // Validate that provided values are numbers
+          if (CO2 !== null && (typeof CO2 !== 'number' || CO2 < 0)) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CO2 emission factor must be a non-negative number`);
+          }
+          if (CH4 !== null && (typeof CH4 !== 'number' || CH4 < 0)) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CH4 emission factor must be a non-negative number`);
+          }
+          if (N2O !== null && (typeof N2O !== 'number' || N2O < 0)) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" N2O emission factor must be a non-negative number`);
+          }
+          if (CO2e !== null && (typeof CO2e !== 'number' || CO2e < 0)) {
+            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CO2e emission factor must be a non-negative number`);
+          }
+        }
+
+        // Validate API endpoint if API input type
+        if (scope.inputType === 'API' && !scope.apiEndpoint) {
+          throw new Error(`Scope 1 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
+        }
+
+        // Validate IOT device ID if IOT input type
+        if (scope.inputType === 'IOT' && !scope.iotDeviceId) {
+          throw new Error(`Scope 1 "${scope.scopeIdentifier}" with IOT input type must have iotDeviceId`);
         }
         break;
 
       case "Scope 2":
-        // Validate Scope 2 required fields
         if (!scope.country || !scope.regionGrid) {
-          throw new Error(`Scope 2 at index ${index} requires: country, regionGrid`);
+          throw new Error(`Scope 2 "${scope.scopeIdentifier}" requires: country, regionGrid`);
         }
         
-        if (!scope.units || !["kWh", "MWh", "kwh", "mwh"].includes(scope.units.toLowerCase())) {
-          console.warn(`Scope 2 should typically use kWh or MWh units, got: ${scope.units}`);
+        if (scope.electricityUnit && !['kWh', 'MWh', 'GWh'].includes(scope.electricityUnit)) {
+          throw new Error(`Invalid electricity unit "${scope.electricityUnit}" for scope "${scope.scopeIdentifier}"`);
+        }
+
+        // Validate API/IOT fields if applicable
+        if (scope.inputType === 'API' && !scope.apiEndpoint) {
+          throw new Error(`Scope 2 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
+        }
+
+        if (scope.inputType === 'IOT' && !scope.iotDeviceId) {
+          throw new Error(`Scope 2 "${scope.scopeIdentifier}" with IOT input type must have iotDeviceId`);
         }
         break;
 
       case "Scope 3":
-        // Validate Scope 3 required fields
-        if (!scope.category || !scope.activityDescription || !scope.itemName || !scope.units) {
-          throw new Error(`Scope 3 at index ${index} requires: category, activityDescription, itemName, units`);
+        if (!scope.scope3Category || !scope.activityDescription || !scope.itemName || !scope.scope3Unit) {
+          throw new Error(`Scope 3 "${scope.scopeIdentifier}" requires: scope3Category, activityDescription, itemName, scope3Unit`);
+        }
+
+        // Validate API fields if applicable (Scope 3 typically doesn't use IOT)
+        if (scope.inputType === 'API' && !scope.apiEndpoint) {
+          throw new Error(`Scope 3 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
         }
         break;
 
       default:
-        throw new Error(`Unsupported scopeType: ${scopeType}. Supported: Scope 1, Scope 2, Scope 3`);
+        throw new Error(`Invalid scopeType: ${scope.scopeType}`);
     }
   });
 
-  // Log scope distribution for debugging
-  console.log(`📊 Scope distribution:`, scopeCounts);
-  
-  return scopeCounts;
-}
-
-// Helper function to get scope summary for a node
-function getScopeSummary(scopeDetails) {
-  const summary = {
-    total: scopeDetails.length,
-    byType: {},
-    details: []
+  return {
+    isValid: true,
+    counts: scopeTypeCounts,
+    totalScopes: scopeDetails.length
   };
-
-  scopeDetails.forEach((scope, index) => {
-    const type = scope.scopeType;
-    if (!summary.byType[type]) {
-      summary.byType[type] = [];
-    }
-    
-    summary.byType[type].push({
-      index,
-      description: `${type} - ${scope.emissionFactor || scope.country || scope.category || 'Unknown'}`
-    });
-    
-    summary.details.push({
-      index,
-      scopeType: type,
-      identifier: scope.emissionFactor || `${scope.country}-${scope.regionGrid}` || scope.category,
-      activity: scope.activity || scope.activityDescription || 'N/A'
-    });
-  });
-
-  return summary;
-}
+};
 
 // ============================================================================
-// MAIN FLOWCHART FUNCTIONS - Now using validation
+// MAIN CONTROLLERS
 // ============================================================================
 
-// Save or update entire flowchart
+// Create or Update Flowchart
 const saveFlowchart = async (req, res) => {
-  const { userId, flowchartData } = req.body;
-
-  // Validate incoming payload
-  if (!userId || !flowchartData || !Array.isArray(flowchartData.nodes) || !Array.isArray(flowchartData.edges)) {
-    return res.status(400).json({ message: 'Missing required fields: userId, flowchartData.nodes or flowchartData.edges' });
-  }
-
   try {
-    // Default flags for API and IoT
-    const defaultDetailFields = {
-      apiStatus: false,
-      apiEndpoint: '',
-      iotStatus: false,
-    };
+    const { clientId, flowchartData } = req.body;
 
-    // Find existing or create new
-    const existing = await Flowchart.findOne({ userId });
-
-    // Normalize nodes WITH VALIDATION
-    const normalizedNodes = flowchartData.nodes.map((node) => {
-      const details = typeof node.details === 'object' && node.details !== null ? node.details : {};
-      
-      // 🔥 USE VALIDATION HERE - Validate scopeDetails if present
-      if (details.scopeDetails && Array.isArray(details.scopeDetails) && details.scopeDetails.length > 0) {
-        try {
-          console.log(`🔍 Validating scopes for node ${node.id} (${node.label})`);
-          const scopeCounts = validateScopeDetails(details.scopeDetails);
-          console.log(`✅ Node ${node.id} validation passed. Scope counts:`, scopeCounts);
-        } catch (error) {
-          console.error(`❌ Node ${node.id} validation failed:`, error.message);
-          throw new Error(`Node ${node.id} (${node.label}) validation failed: ${error.message}`);
-        }
-      }
-
-      return {
-        id: node.id,
-        label: node.label,
-        position: node.position,
-        parentNode: node.parentNode || null,
-        details: {
-          ...defaultDetailFields,
-          ...details,
-        },
-      };
-    });
-
-    // Normalize edges
-    const normalizedEdges = flowchartData.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-    }));
-
-    if (existing) {
-      existing.nodes = normalizedNodes;
-      existing.edges = normalizedEdges;
-      await existing.save();
-      console.log(`✅ Flowchart updated for user ${userId}`);
-      return res.status(200).json({ message: 'Flowchart updated successfully' });
-    } else {
-      const created = new Flowchart({
-        userId,
-        nodes: normalizedNodes,
-        edges: normalizedEdges,
+    // 1) Basic request validation
+    if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
+      return res.status(400).json({
+        message: 'Missing required fields: clientId or flowchartData.nodes'
       });
-      await created.save();
-      console.log(`✅ New flowchart created for user ${userId}`);
-      return res.status(200).json({ message: 'Flowchart saved successfully' });
     }
-  } catch (err) {
-    console.error('❌ Error saving flowchart:', err);
-    return res.status(500).json({ 
-      message: 'Flowchart validation failed', 
-      error: err.message 
-    });
-  }
-};
-
-// Update Flowchart for a specific user
-const updateFlowchartUser = async (req, res) => {
-  try {
-    const userId = req.user._id;
-    const { nodes, edges } = req.body;
-    
-    console.log("🔄 Updating flowchart for user:", userId);
-
-    // Find the flowchart for the user
-    const flowchart = await Flowchart.findOne({ userId });
-
-    if (!flowchart) {
-      return res.status(404).json({ message: "Flowchart not found for this user" });
+   
+      // Auto-update client workflow status when consultant starts creating process flowchart
+    if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      await autoUpdateFlowchartStatus(clientId, req.user._id);
     }
 
-    // 🔥 VALIDATE NODES BEFORE UPDATING
-    if (Array.isArray(nodes)) {
-      for (const node of nodes) {
-        if (node.details?.scopeDetails && Array.isArray(node.details.scopeDetails) && node.details.scopeDetails.length > 0) {
-          try {
-            console.log(`🔍 Validating scopes for node ${node.id} during update`);
-            validateScopeDetails(node.details.scopeDetails);
-            console.log(`✅ Node ${node.id} validation passed during update`);
-          } catch (error) {
-            console.error(`❌ Node ${node.id} validation failed during update:`, error.message);
-            return res.status(400).json({
-              message: `Node ${node.id} validation failed: ${error.message}`,
-              nodeLabel: node.label || 'Unknown'
-            });
-          }
-        }
-      }
+    // 2) Verify the client actually exists
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
     }
 
-    // Update the flowchart nodes and edges
-    flowchart.nodes = nodes;
-    flowchart.edges = edges;
-
-    // Save the updated flowchart
-    await flowchart.save();
-
-    console.log(`✅ Flowchart updated successfully for user ${userId}`);
-    res.status(200).json({ message: "Flowchart updated successfully", flowchart });
-  } catch (error) {
-    console.error("❌ Error updating flowchart:", error);
-    res.status(500).json({ message: "Failed to update flowchart", error: error.message });
-  }
-};
-
-// Admin: update single node or entire flowchart
-const updateFlowchartAdmin = async (req, res) => {
-  try {
-    const { userId, nodeId, updatedData, nodes, edges } = req.body;
-    
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid userId format" });
-    }
-    
-    const uid = new mongoose.Types.ObjectId(userId);
-    const fc = await Flowchart.findOne({ userId: uid });
-    if (!fc) return res.status(404).json({ message: "Flowchart not found for this user" });
-
-    // Single-node update
-    if (nodeId && updatedData) {
-      const nodeIndex = fc.nodes.findIndex(n => n.id === nodeId);
-      if (nodeIndex === -1) {
-        return res.status(404).json({ message: "Node not found" });
-      }
-
-      // 🔥 VALIDATE SCOPE DETAILS IF UPDATING THEM
-      if (updatedData.details?.scopeDetails && Array.isArray(updatedData.details.scopeDetails)) {
-        try {
-          console.log(`🔍 Admin validating scopes for node ${nodeId}`);
-          validateScopeDetails(updatedData.details.scopeDetails);
-          console.log(`✅ Admin validation passed for node ${nodeId}`);
-        } catch (error) {
-          console.error(`❌ Admin validation failed for node ${nodeId}:`, error.message);
-          return res.status(400).json({
-            message: `Node ${nodeId} validation failed: ${error.message}`
-          });
-        }
-      }
-
-      const node = fc.nodes[nodeIndex];
-      node.label = updatedData.label ?? node.label;
-      node.details = updatedData.details ?? node.details;
-      if (updatedData.position) node.position = updatedData.position;
-      
-      await fc.save();
-      return res.status(200).json({ message: "Node updated successfully", node });
+    // 3) Role check
+    if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)) {
+      return res.status(403).json({
+        message: 'Only Super Admin, Consultant Admin, and Consultants can manage flowcharts'
+      });
     }
 
-    // Bulk update: replace all nodes & edges
-    if (Array.isArray(nodes) && Array.isArray(edges)) {
-      // 🔥 VALIDATE ALL NODES BEFORE BULK UPDATE
-      for (const node of nodes) {
-        if (node.details?.scopeDetails && Array.isArray(node.details.scopeDetails) && node.details.scopeDetails.length > 0) {
-          try {
-            console.log(`🔍 Admin bulk validating scopes for node ${node.id}`);
-            validateScopeDetails(node.details.scopeDetails);
-          } catch (error) {
-            console.error(`❌ Admin bulk validation failed for node ${node.id}:`, error.message);
-            return res.status(400).json({
-              message: `Bulk update validation failed for node ${node.id}: ${error.message}`,
-              nodeLabel: node.label || 'Unknown'
-            });
-          }
-        }
-      }
-
-      fc.nodes = nodes;
-      fc.edges = edges;
-      await fc.save();
-      return res.status(200).json({ message: "Flowchart updated successfully", flowchart: fc });
+    // 4) Permission check
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({
+        message: 'Permission denied',
+        reason: perm.reason
+      });
     }
 
-    return res.status(400).json({ message: "Missing parameters for update" });
-  } catch (err) {
-    console.error("❌ Error updating flowchart:", err);
-    return res.status(500).json({ message: "Failed to update flowchart", error: err.message });
-  }
-};
-
-// Get flowchart with scope summary
-const getFlowchartWithScopeSummary = async (req, res) => {
-  try {
-    const { userId } = req.params;
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Valid userId is required.' });
-    }
-    
-    const fc = await Flowchart.findOne({ userId });
-    if (!fc) return res.status(404).json({ message: 'Flowchart not found.' });
-
-    // 🔥 USE getScopeSummary HERE
-    const enhancedNodes = fc.nodes.map((node) => {
-      const baseNode = {
-        id: node.id,
-        data: { label: node.label, details: node.details || {} },
-        position: node.position,
-        ...(node.parentNode ? { parentNode: node.parentNode } : {}),
+    // 5) Normalize & validate nodes
+const normalizedNodes = flowchartData.nodes.map(node => {
+  const d = node.details || {};
+  
+  if (Array.isArray(d.scopeDetails) && d.scopeDetails.length) {
+    validateScopeDetails(d.scopeDetails, node.id);
+    d.scopeDetails = d.scopeDetails.map(scope => {
+      // First create the normalized scope object with all existing fields
+      const normalizedScope = {
+        scopeIdentifier:      scope.scopeIdentifier.trim(),
+        scopeType:            scope.scopeType,
+        inputType:            scope.inputType          || 'manual',
+        apiStatus:            scope.apiStatus          || false,
+        apiEndpoint:          scope.apiEndpoint        || '',
+        iotStatus:            scope.iotStatus          || false,
+        iotDeviceId:          scope.iotDeviceId        || '',
+        emissionFactor:       scope.emissionFactor     || '',
+        categoryName:         scope.categoryName       || '',
+        activity:             scope.activity           || '',
+        fuel:                 scope.fuel               || '',
+        units:                scope.units              || '',
+        country:              scope.country            || '',
+        regionGrid:           scope.regionGrid         || '',
+        electricityUnit:      scope.electricityUnit    || '',
+        scope3Category:       scope.scope3Category     || '',
+        activityDescription:  scope.activityDescription|| '',
+        itemName:             scope.itemName           || '',
+        scope3Unit:           scope.scope3Unit         || '',
+        description:          scope.description        || '',
+        source:               scope.source             || '',
+        reference:            scope.reference          || '',
+        collectionFrequency:  scope.collectionFrequency|| 'monthly',
+        additionalInfo:       scope.additionalInfo     || {}
       };
-
-      // Add scope summary if scopeDetails exist
-      if (node.details?.scopeDetails && Array.isArray(node.details.scopeDetails) && node.details.scopeDetails.length > 0) {
-        try {
-          const scopeSummary = getScopeSummary(node.details.scopeDetails);
-          baseNode.scopeSummary = scopeSummary;
-          console.log(`📊 Generated scope summary for node ${node.id}:`, scopeSummary);
-        } catch (error) {
-          console.warn(`⚠️ Could not generate scope summary for node ${node.id}:`, error.message);
-          baseNode.scopeSummary = null;
-        }
+      
+      // Handle custom emission factor if emission factor is 'Custom'
+      if (scope.emissionFactor === 'Custom' && scope.scopeType === 'Scope 1') {
+        normalizedScope.customEmissionFactor = {
+          CO2:  scope.customEmissionFactor?.CO2  ?? null,
+          CH4:  scope.customEmissionFactor?.CH4  ?? null,
+          N2O:  scope.customEmissionFactor?.N2O  ?? null,
+          CO2e: scope.customEmissionFactor?.CO2e ?? null,
+          unit: scope.customEmissionFactor?.unit || ''
+        };
+      } else {
+        // Initialize empty custom emission factor for non-custom cases
+        normalizedScope.customEmissionFactor = {
+          CO2: null,
+          CH4: null,
+          N2O: null,
+          CO2e: null,
+          unit: ''
+        };
       }
-
-      return baseNode;
+      
+      return normalizedScope;
     });
+  }
 
-    res.status(200).json({
-      nodes: enhancedNodes,
-      edges: fc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+  return {
+    id:         node.id,
+    label:      node.label,
+    position:   node.position,
+    parentNode: node.parentNode || null,
+    details: {
+      nodeType:          d.nodeType          || '',
+      department:        d.department        || '',
+      location:          d.location          || '',
+      employeeHeadId:    d.employeeHeadId    || null,  // Don't forget this field if it exists
+      scopeDetails:      d.scopeDetails      || [],
+      additionalDetails: d.additionalDetails || {}
+    }
+  };
+});
+
+    // 6) Normalize edges & auto-generate missing IDs
+    let normalizedEdges = [];
+    if (flowchartData.edges && Array.isArray(flowchartData.edges) && flowchartData.edges.length > 0) {
+      normalizedEdges = flowchartData.edges
+        .map(e => ({
+          id:     e.id     || uuidv4(),
+          source: e.source,
+          target: e.target
+        }))
+        .filter(edge => edge.source && edge.target);
+    }
+
+        
+    // 7) Create vs. Update
+    let flowchart = await Flowchart.findOne({ clientId });
+    let isNew = false;
+
+    if (flowchart) {
+      // **UPDATE** existing flowchart
+      flowchart.nodes          = normalizedNodes;
+      flowchart.edges          = normalizedEdges;
+      flowchart.lastModifiedBy = req.user._id;
+      flowchart.version       += 1;
+      await flowchart.save();
+    } else {
+      // **CREATE** new flowchart
+      isNew = true;
+      flowchart = new Flowchart({
+        clientId,
+        createdBy:      req.user._id,
+        creatorType:    req.user.userType,
+        lastModifiedBy: req.user._id,
+        nodes:          normalizedNodes,
+        edges:          normalizedEdges
+      });
+      await flowchart.save();
+    }
+    // Auto‐start flowchart status
+        if (['consultant','consultant_admin'].includes(req.user.userType)) {
+          await Client.findOneAndUpdate(
+            { clientId },
+            { 
+              $set: {
+                'workflowTracking.flowchartStatus': 'on_going',
+                'workflowTracking.flowchartStartedAt': new Date()
+              }
+            }
+          );
+        }
+
+    // 8) Send notifications to all client_admins of this client
+    const clientAdmins = await User.find({
+      userType: 'client_admin',
+      clientId
     });
-  } catch (err) {
-    console.error('❌ Error fetching flowchart with scope summary:', err);
-    res.status(500).json({ message: 'Server error fetching flowchart.' });
+    for (const admin of clientAdmins) {
+      await Notification.create({
+        title:           isNew
+                           ? `Flowchart Created for ${clientId}`
+                           : `Flowchart Updated for ${clientId}`,
+        message:         isNew
+                           ? `A new flowchart was created for client ${clientId} by ${req.user.userName}.`
+                           : `The flowchart for client ${clientId} was updated by ${req.user.userName}.`,
+        priority:        isNew ? 'medium' : 'medium',
+        createdBy:       req.user._id,
+        creatorType:     req.user.userType,
+        targetUsers:     [admin._id],
+        targetClients:   [clientId],
+        status:          'published',
+        publishedAt:     new Date(),
+        isSystemNotification: true,
+        systemAction:    isNew ? 'flowchart_created' : 'flowchart_updated',
+        relatedEntity:   { type: 'flowchart', id: flowchart._id }
+      });
+    }
+
+    // 9) Respond
+    if (isNew) {
+      return res.status(201).json({
+        message:     'Flowchart created successfully',
+        flowchartId: flowchart._id
+      });
+    } else {
+      return res.status(200).json({
+        message:     'Flowchart updated successfully',
+        version:     flowchart.version,
+        flowchartId: flowchart._id
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error saving flowchart:', error);
+
+    // Handle Mongo duplicate-key
+    if (error.code === 11000) {
+      return res.status(400).json({
+        message: 'Duplicate key error - check for duplicate identifiers',
+        error:   error.message,
+        details:'This might be caused by duplicate edge IDs or scope identifiers'
+      });
+    }
+
+    return res.status(500).json({
+      message: 'Failed to save flowchart',
+      error:   error.message
+    });
   }
 };
 
-// ============================================================================
-// EXISTING FUNCTIONS (unchanged)
-// ============================================================================
-
-// Get by admin: all nodes & edges
+// Get single Flowchart with proper permissions
 const getFlowchart = async (req, res) => {
   try {
-    const { userId } = req.params;
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Valid userId is required.' });
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'clientId is required' });
     }
-    const fc = await Flowchart.findOne({ userId });
-    if (!fc) return res.status(404).json({ message: 'Flowchart not found.' });
 
-    res.status(200).json({
-      nodes: fc.nodes.map((n) => ({
-        id: n.id,
-        data: { label: n.label, details: n.details || {} },
-        position: n.position,
-        ...(n.parentNode ? { parentNode: n.parentNode } : {}),
-      })),
-      edges: fc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-    });
-  } catch (err) {
-    console.error('Error fetching flowchart:', err);
-    res.status(500).json({ message: 'Server error fetching flowchart.' });
-  }
-};
+    // Check view permissions
+    const permissionCheck = await canViewFlowchart(req.user, clientId);
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ 
+        message: 'You do not have permission to view this flowchart' 
+      });
+    }
 
-// Get for authenticated user
-const getFlowchartUser = async (req, res) => {
-  try {
-    const uid = req.user._id;
-    const fc = await Flowchart.findOne({ userId: uid });
-    if (!fc) return res.status(200).json({ nodes: [], edges: [] });
-
-    res.status(200).json({
-      nodes: fc.nodes.map((n) => ({
-        id: n.id,
-        data: { label: n.label, details: n.details || {} },
-        position: n.position,
-        ...(n.parentNode ? { parentNode: n.parentNode } : {}),
-      })),
-      edges: fc.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-    });
-  } catch (err) {
-    console.error('Error fetching flowchart user:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-const deleteFlowchartUser = async (req, res, next) => {
-  const userId = req.user._id;
-  const { nodeId } = req.body;
-  console.log("nodeid:", nodeId);
-  
-  try {
-    // Find the flowchart for the user
-    const flowchart = await Flowchart.findOne({ userId });
+    // Find flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true })
+      .populate('createdBy', 'userName email userType')
+      .populate('lastModifiedBy', 'userName email');
 
     if (!flowchart) {
       return res.status(404).json({ message: 'Flowchart not found' });
     }
 
-    // Filter out the node to delete and its edges
-    flowchart.nodes = flowchart.nodes.filter((node) => node.id !== nodeId);
-    flowchart.edges = flowchart.edges.filter(
-      (edge) => edge.source !== nodeId && edge.target !== nodeId
-    );
+    // Filter nodes based on permissions
+    let filteredNodes = flowchart.nodes;
+    
+    // Employee heads see only their department/location nodes
+    if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
+      filteredNodes = flowchart.nodes.filter(node => {
+        return node.details.department === req.user.department ||
+               node.details.location === req.user.location;
+      });
+    }
 
-    // Save updated flowchart
+    // Employees see limited scope details
+    if (req.user.userType === 'employee' && !permissionCheck.fullAccess) {
+      filteredNodes = flowchart.nodes.map(node => ({
+        ...node.toObject(),
+        details: {
+          ...node.details,
+          scopeDetails: node.details.scopeDetails.map(scope => ({
+            scopeIdentifier: scope.scopeIdentifier,
+            scopeType: scope.scopeType,
+            dataCollectionType: scope.dataCollectionType
+            // Hide sensitive emission details
+          }))
+        }
+      }));
+    }
+
+    // Format response
+    const response = {
+      clientId: flowchart.clientId,
+      createdBy: flowchart.createdBy,
+      creatorType: flowchart.creatorType,
+      lastModifiedBy: flowchart.lastModifiedBy,
+      version: flowchart.version,
+      createdAt: flowchart.createdAt,
+      updatedAt: flowchart.updatedAt,
+      nodes: filteredNodes.map(n => ({
+        id: n.id,
+        data: { 
+          label: n.label, 
+          details: n.details 
+        },
+        position: n.position,
+        ...(n.parentNode ? { parentNode: n.parentNode } : {})
+      })),
+      edges: flowchart.edges.map(e => ({
+        id: e.id,
+        source: e.source,
+        target: e.target
+      })),
+      permissions: {
+        canEdit: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType),
+        canDelete: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType)
+      }
+    };
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error('Error fetching flowchart:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch flowchart', 
+      error: error.message 
+    });
+  }
+};
+
+// Get All Flowcharts based on user hierarchy
+const getAllFlowcharts = async (req, res) => {
+  try {
+    let query = { isActive: true };
+    const { page = 1, limit = 10, search, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+
+    // Build query based on user type
+    switch (req.user.userType) {
+      case 'super_admin':
+        // Super admin sees all flowcharts
+        // No additional query filters needed
+        break;
+
+      case 'consultant_admin':
+        // Get all consultants under this admin
+        const consultantsUnderAdmin = await User.find({
+          consultantAdminId: req.user.id,
+          userType: 'consultant'
+        }).select('_id');
+        
+        const consultantIds = consultantsUnderAdmin.map(c => c._id);
+        
+        // Get all clients created by this consultant admin or assigned to their consultants
+        const clients = await Client.find({
+          $or: [
+            { 'leadInfo.createdBy': req.user.id },
+            { 'leadInfo.assignedConsultantId': { $in: consultantIds } }
+          ]
+        }).select('clientId');
+        
+        const clientIds = clients.map(c => c.clientId);
+        
+        // Filter flowcharts by these client IDs
+        query.clientId = { $in: clientIds };
+        break;
+
+      case 'consultant':
+        // Get clients assigned to this consultant
+        const assignedClients = await Client.find({
+          'leadInfo.assignedConsultantId': req.user.id
+        }).select('clientId');
+        
+        const assignedClientIds = assignedClients.map(c => c.clientId);
+        
+        // Filter flowcharts by assigned client IDs
+        query.clientId = { $in: assignedClientIds };
+        break;
+
+      case 'client_admin':
+        // Client admin can only see their own client's flowchart
+        query.clientId = req.user.clientId;
+        break;
+
+      default:
+        // Other user types shouldn't access this endpoint
+        return res.status(403).json({ 
+          message: 'You do not have permission to view flowcharts' 
+        });
+    }
+
+    // Add search functionality
+    if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+      query.$or = [
+        { clientId: searchRegex },
+        { 'nodes.label': searchRegex }
+      ];
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sortOptions = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+
+    // Get total count
+    const total = await Flowchart.countDocuments(query);
+
+    // Fetch flowcharts with pagination
+    const flowcharts = await Flowchart.find(query)
+      .populate('createdBy', 'userName email userType')
+      .populate('lastModifiedBy', 'userName email')
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    // Get client details for each flowchart
+    const clientIds = [...new Set(flowcharts.map(f => f.clientId))];
+    const clients = await Client.find({ 
+      clientId: { $in: clientIds } 
+    }).select('clientId leadInfo.companyName stage status');
+
+    // Create client map for quick lookup
+    const clientMap = {};
+    clients.forEach(client => {
+      clientMap[client.clientId] = {
+        companyName: client.leadInfo.companyName,
+        stage: client.stage,
+        status: client.status
+      };
+    });
+
+    // Format response with client details
+    const formattedFlowcharts = flowcharts.map(flowchart => ({
+      _id: flowchart._id,
+      clientId: flowchart.clientId,
+      clientDetails: clientMap[flowchart.clientId] || {},
+      createdBy: flowchart.createdBy,
+      creatorType: flowchart.creatorType,
+      lastModifiedBy: flowchart.lastModifiedBy,
+      version: flowchart.version,
+      nodeCount: flowchart.nodes.length,
+      edgeCount: flowchart.edges.length,
+      scopeSummary: {
+        'Scope 1': flowchart.nodes.reduce((count, node) => 
+          count + node.details.scopeDetails.filter(s => s.scopeType === 'Scope 1').length, 0),
+        'Scope 2': flowchart.nodes.reduce((count, node) => 
+          count + node.details.scopeDetails.filter(s => s.scopeType === 'Scope 2').length, 0),
+        'Scope 3': flowchart.nodes.reduce((count, node) => 
+          count + node.details.scopeDetails.filter(s => s.scopeType === 'Scope 3').length, 0)
+      },
+      createdAt: flowchart.createdAt,
+      updatedAt: flowchart.updatedAt
+    }));
+
+    // Response
+    res.status(200).json({
+      success: true,
+      message: 'Flowcharts fetched successfully',
+      data: {
+        flowcharts: formattedFlowcharts,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+          hasNextPage: page < Math.ceil(total / parseInt(limit)),
+          hasPrevPage: page > 1
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching all flowcharts:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch flowcharts', 
+      error: error.message 
+    });
+  }
+};
+
+// Delete Flowchart (soft delete)
+// Delete Flowchart (soft delete)
+const deleteFlowchart = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Only super_admin, consultant_admin, consultant
+    if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)) {
+      return res.status(403).json({ 
+        message: 'Only Super Admin, Consultant Admin, and Consultants can delete flowcharts' 
+      });
+    }
+
+    // Permission check
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied', 
+        reason: perm.reason 
+      });
+    }
+
+    // Find the active flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // Soft delete
+    flowchart.isActive       = false;
+    flowchart.lastModifiedBy = req.user._id;
     await flowchart.save();
 
-    res.status(200).json({ message: 'Node and associated edges deleted successfully', flowchart });
+    // Notify all client_admins for this client
+    const clientAdmins = await User.find({ 
+      userType: 'client_admin', 
+      clientId 
+    });
+    for (const admin of clientAdmins) {
+      await Notification.create({
+        title:           `Flowchart Deleted: ${clientId}`,
+        message:         `The flowchart for client ${clientId} was deleted by ${req.user.userName}.`,
+        priority:        'high',
+        createdBy:       req.user._id,
+        creatorType:     req.user.userType,
+        targetUsers:     [admin._id],
+        targetClients:   [clientId],
+        status:          'published',
+        publishedAt:     new Date(),
+        isSystemNotification: true,
+        systemAction:    'flowchart_deleted',
+        relatedEntity:   { type: 'flowchart', id: flowchart._id }
+      });
+    }
+
+    console.log(`✅ Flowchart soft-deleted for ${clientId} by ${req.user.userName}`);
+    return res.status(200).json({ message: 'Flowchart deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting flowchart:', error);
+    return res.status(500).json({ 
+      message: 'Failed to delete flowchart', 
+      error: error.message 
+    });
+  }
+};
+// Delete specific node in flowchart
+const deleteFlowchartNode = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+
+    // Permission check
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied', 
+        reason: perm.reason 
+      });
+    }
+
+    // Find active flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // Locate node
+    const nodeIndex = flowchart.nodes.findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found' });
+    }
+
+    // Remove node and any edges tied to it
+    flowchart.nodes.splice(nodeIndex, 1);
+    flowchart.edges = flowchart.edges.filter(
+      e => e.source !== nodeId && e.target !== nodeId
+    );
+
+    flowchart.lastModifiedBy = req.user.id;
+    flowchart.version += 1;
+    await flowchart.save();
+
+    res.status(200).json({ message: 'Node deleted successfully' });
   } catch (error) {
     console.error('Error deleting node:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ 
+      message: 'Failed to delete node', 
+      error: error.message 
+    });
   }
 };
 
-// Admin: delete single node
-const deleteFlowchartAdmin = async (req, res) => {
+// Restore Flowchart
+// Restore soft-deleted flowchart, with conflict check
+const restoreFlowchart = async (req, res) => {
   try {
-    const userId = req.body.userId || req.query.userId;
-    const nodeId = req.body.nodeId || req.query.nodeId;
-    if (!userId || !nodeId) {
-      return res.status(400).json({ message: "Missing userId or nodeId" });
-    }
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid userId format" });
-    }
-    const uid = new mongoose.Types.ObjectId(userId);
-    const fc = await Flowchart.findOne({ userId: uid });
-    if (!fc) return res.status(404).json({ message: "Flowchart not found" });
+    const { clientId } = req.params;
 
-    fc.nodes = fc.nodes.filter(n => n.id !== nodeId);
-    fc.edges = fc.edges.filter(e => e.source !== nodeId && e.target !== nodeId);
-    await fc.save();
+    // Only super_admin, consultant_admin, consultant
+    if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)) {
+      return res.status(403).json({ 
+        message: 'Only Super Admin, Consultant Admin, and Consultants can restore flowcharts' 
+      });
+    }
 
-    return res.status(200).json({ message: "Node and associated edges deleted successfully", flowchart: fc });
-  } catch (err) {
-    console.error("Error deleting node:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    // Permission check
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied', 
+        reason: perm.reason 
+      });
+    }
+
+    // Conflict: if there's already an active flowchart for this client
+    const existingActive = await Flowchart.findOne({ clientId, isActive: true });
+    if (existingActive) {
+      return res.status(409).json({
+        message: 'Conflict: an active flowchart already exists for this client'
+      });
+    }
+
+    // Find the soft-deleted flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: false });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'No deleted flowchart to restore' });
+    }
+
+    // Restore
+    flowchart.isActive       = true;
+    flowchart.lastModifiedBy = req.user.id;
+    flowchart.version       += 1;
+    await flowchart.save();
+
+    res.status(200).json({ 
+      message: 'Flowchart restored successfully' 
+    });
+
+  } catch (error) {
+    console.error('Error restoring flowchart:', error);
+    res.status(500).json({ 
+      message: 'Failed to restore flowchart', 
+      error: error.message 
+    });
   }
 };
 
-const connectApi = async (req, res) => {
-  const { userId, nodeId, endpoint } = req.body;
-  if (!mongoose.Types.ObjectId.isValid(userId)) {
-    return res.status(400).json({ message: "Invalid userId." });
+
+// Get Flowchart Summary (for dashboards)
+const getFlowchartSummary = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    const permissionCheck = await canViewFlowchart(req.user, clientId);
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied' 
+      });
+    }
+
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // Calculate summary
+    const summary = {
+      clientId: flowchart.clientId,
+      totalNodes: flowchart.nodes.length,
+      totalEdges: flowchart.edges.length,
+      nodesByDepartment: {},
+      nodesByLocation: {},
+      scopesSummary: {
+        'Scope 1': 0,
+        'Scope 2': 0,
+        'Scope 3': 0
+      },
+      dataCollectionMethods: {
+        manual: 0,
+        IOT: 0,
+        API: 0
+      },
+      emissionFactors: {
+        IPCC: 0,
+        DEFRA: 0
+      }
+    };
+
+    // Apply restrictions for employee heads
+    let nodesToAnalyze = flowchart.nodes;
+    if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
+      nodesToAnalyze = flowchart.nodes.filter(node => {
+        return node.details.department === req.user.department ||
+               node.details.location === req.user.location;
+      });
+    }
+
+    nodesToAnalyze.forEach(node => {
+      // Count by department
+      if (node.details.department) {
+        summary.nodesByDepartment[node.details.department] = 
+          (summary.nodesByDepartment[node.details.department] || 0) + 1;
+      }
+
+      // Count by location
+      if (node.details.location) {
+        summary.nodesByLocation[node.details.location] = 
+          (summary.nodesByLocation[node.details.location] || 0) + 1;
+      }
+
+      // Count scopes and collection methods
+      node.details.scopeDetails.forEach(scope => {
+        summary.scopesSummary[scope.scopeType]++;
+        summary.dataCollectionMethods[scope.dataCollectionType]++;
+        
+        // Count emission factors for Scope 1
+        if (scope.scopeType === 'Scope 1' && scope.emissionFactor) {
+          summary.emissionFactors[scope.emissionFactor]++;
+        }
+      });
+    });
+
+    res.status(200).json({
+      success: true,
+      data: summary
+    });
+  } catch (error) {
+    console.error('Error getting flowchart summary:', error);
+    res.status(500).json({ 
+      message: 'Failed to get summary', 
+      error: error.message 
+    });
   }
-  const fc = await Flowchart.findOne({ userId });
-  if (!fc) return res.status(404).json({ message: "Flowchart not found." });
-
-  const idx = fc.nodes.findIndex(n => n.id === nodeId);
-  if (idx < 0) return res.status(404).json({ message: "Node not found." });
-
-  fc.nodes[idx].details.apiStatus = true;
-  fc.nodes[idx].details.apiEndpoint = endpoint;
-  fc.markModified(`nodes.${idx}.details`);
-
-  await fc.save();
-  return res.status(200).json({ message: "API connected on node." });
 };
 
-const disconnectApi = async (req, res) => {
-  const { userId, nodeId } = req.body;
-  if (!mongoose.Types.ObjectId.isValid(userId)) {
-    return res.status(400).json({ message: "Invalid userId." });
+// In the updateFlowchartNode function, ensure custom emission factors are handled
+// This is a modification to the existing updateFlowchartNode function
+
+const updateFlowchartNode = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+    const { nodeData } = req.body;
+
+    // Check permissions
+    const permissionCheck = await canManageFlowchart(req.user, clientId);
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ 
+        message: 'Permission denied',
+        reason: permissionCheck.reason 
+      });
+    }
+
+    // Find flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // Find node index
+    const nodeIndex = flowchart.nodes.findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found' });
+    }
+
+    // Validate and normalize scope details if updating
+    if (nodeData.details?.scopeDetails) {
+      try {
+        validateScopeDetails(nodeData.details.scopeDetails, nodeId);
+        
+        // Normalize the scope details with custom emission factor support
+        nodeData.details.scopeDetails = nodeData.details.scopeDetails.map(scope => {
+          const normalizedScope = {
+            scopeIdentifier:      scope.scopeIdentifier.trim(),
+            scopeType:            scope.scopeType,
+            inputType:            scope.inputType          || 'manual',
+            apiStatus:            scope.apiStatus          || false,
+            apiEndpoint:          scope.apiEndpoint        || '',
+            iotStatus:            scope.iotStatus          || false,
+            iotDeviceId:          scope.iotDeviceId        || '',
+            emissionFactor:       scope.emissionFactor     || '',
+            categoryName:         scope.categoryName       || '',
+            activity:             scope.activity           || '',
+            fuel:                 scope.fuel               || '',
+            units:                scope.units              || '',
+            country:              scope.country            || '',
+            regionGrid:           scope.regionGrid         || '',
+            electricityUnit:      scope.electricityUnit    || '',
+            scope3Category:       scope.scope3Category     || '',
+            activityDescription:  scope.activityDescription|| '',
+            itemName:             scope.itemName           || '',
+            scope3Unit:           scope.scope3Unit         || '',
+            description:          scope.description        || '',
+            source:               scope.source             || '',
+            reference:            scope.reference          || '',
+            collectionFrequency:  scope.collectionFrequency|| 'monthly',
+            additionalInfo:       scope.additionalInfo     || {},
+            assignedEmployees:    scope.assignedEmployees  || []
+          };
+          
+          // Handle custom emission factor
+          if (scope.emissionFactor === 'Custom' && scope.scopeType === 'Scope 1') {
+            normalizedScope.customEmissionFactor = {
+              CO2:  scope.customEmissionFactor?.CO2  ?? null,
+              CH4:  scope.customEmissionFactor?.CH4  ?? null,
+              N2O:  scope.customEmissionFactor?.N2O  ?? null,
+              CO2e: scope.customEmissionFactor?.CO2e ?? null,
+              unit: scope.customEmissionFactor?.unit || ''
+            };
+          } else {
+            normalizedScope.customEmissionFactor = {
+              CO2: null,
+              CH4: null,
+              N2O: null,
+              CO2e: null,
+              unit: ''
+            };
+          }
+          
+          return normalizedScope;
+        });
+      } catch (error) {
+        return res.status(400).json({
+          message: `Node validation failed: ${error.message}`
+        });
+      }
+    }
+
+    // Update node
+    flowchart.nodes[nodeIndex] = {
+      ...flowchart.nodes[nodeIndex].toObject(),
+      ...nodeData,
+      id: nodeId // Ensure ID doesn't change
+    };
+
+    flowchart.lastModifiedBy = req.user._id;
+    flowchart.version += 1;
+    await flowchart.save();
+
+    res.status(200).json({ 
+      message: 'Node updated successfully',
+      node: flowchart.nodes[nodeIndex]
+    });
+  } catch (error) {
+    console.error('Error updating node:', error);
+    res.status(500).json({ 
+      message: 'Failed to update node', 
+      error: error.message 
+    });
   }
-  const fc = await Flowchart.findOne({ userId });
-  if (!fc) return res.status(404).json({ message: "Flowchart not found." });
-
-  const node = fc.nodes.find(n => n.id === nodeId);
-  if (!node) return res.status(404).json({ message: "Node not found." });
-
-  node.details.apiStatus = false;
-  node.details.apiEndpoint = "";
-  await fc.save();
-  return res.status(200).json({ message: "API disconnected on node." });
 };
 
 module.exports = {
   saveFlowchart,
   getFlowchart,
-  getFlowchartUser,
-  getFlowchartWithScopeSummary, // 🔥 NEW FUNCTION
-  updateFlowchartUser,
-  updateFlowchartAdmin,
-  deleteFlowchartUser,
-  deleteFlowchartAdmin,
-  connectApi,
-  disconnectApi,
-  // Export utility functions for reuse
-  validateScopeDetails,
-  getScopeSummary
+  getAllFlowcharts,
+  deleteFlowchart,
+  deleteFlowchartNode,
+  restoreFlowchart,
+  getFlowchartSummary,
+  updateFlowchartNode
 };
