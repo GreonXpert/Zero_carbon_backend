@@ -2794,6 +2794,7 @@ const getClientById = async (req, res) => {
 };
 
 // Update client assignment
+// Update client assignment
 const assignConsultant = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -2824,6 +2825,15 @@ const assignConsultant = async (req, res) => {
       });
     }
     
+    // Check if there was a previously assigned consultant to remove this client from their list
+    if (client.leadInfo.assignedConsultantId) {
+      await User.findByIdAndUpdate(
+        client.leadInfo.assignedConsultantId,
+        { $pull: { assignedClients: clientId } }
+      );
+    }
+    
+    // Update client with new consultant
     client.leadInfo.assignedConsultantId = consultantId;
     client.timeline.push({
       stage: client.stage,
@@ -2832,21 +2842,31 @@ const assignConsultant = async (req, res) => {
       performedBy: req.user.id,
       notes: `Assigned to ${consultant.userName}`
     });
-            // ========== WORKFLOW TRACKING UPDATE ==========
-        client.workflowTracking.assignedConsultantId = consultantId;
-        client.workflowTracking.consultantAssignedAt   = new Date();
-        // Ensure flowchart & processflowchart start at 'not_started'
-        client.workflowTracking.flowchartStatus          = 'not_started';
-        client.workflowTracking.processFlowchartStatus   = 'not_started';
-        // reset any old data‐points
-        client.workflowTracking.dataInputPoints = {
-          manual: { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
-          api:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
-          iot:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
-          totalDataPoints: 0,
-          lastSyncedWithFlowchart: null
-        };
+    
+    // ========== WORKFLOW TRACKING UPDATE ==========
+    client.workflowTracking.assignedConsultantId = consultantId;
+    client.workflowTracking.consultantAssignedAt = new Date();
+    // Ensure flowchart & processflowchart start at 'not_started'
+    client.workflowTracking.flowchartStatus = 'not_started';
+    client.workflowTracking.processFlowchartStatus = 'not_started';
+    // reset any old data‐points
+    client.workflowTracking.dataInputPoints = {
+      manual: { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+      api:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+      iot:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+      totalDataPoints: 0,
+      lastSyncedWithFlowchart: null
+    };
+    
     await client.save();
+    
+    // Update consultant's assignedClients array
+    // Using $addToSet to avoid duplicates
+    await User.findByIdAndUpdate(
+      consultantId,
+      { $addToSet: { assignedClients: clientId } },
+      { new: true }
+    );
     
     // Notify the assigned consultant
     const emailSubject = "New Client Assignment";
