@@ -869,26 +869,206 @@ const restoreFlowchart = async (req, res) => {
 };
 
 
-// Get Flowchart Summary (for dashboards)
+// Get Flowchart Summary (for dashboards) - Supports both consolidated and single client
 const getFlowchartSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
+    
+    // Check if this is a request for consolidated summary
+    // This handles both /summary route and cases where clientId might be undefined
+    if (!clientId || clientId === 'summary') {
+      return getConsolidatedSummary(req, res);
+    }
+    
+    // Otherwise, return single client summary
+    return getSingleClientSummary(req, res, clientId);
+    
+  } catch (error) {
+    console.error('Error getting flowchart summary:', error);
+    res.status(500).json({ 
+      message: 'Failed to get summary', 
+      error: error.message 
+    });
+  }
+};
 
-    const permissionCheck = await canViewFlowchart(req.user, clientId);
-    if (!permissionCheck.allowed) {
+// Helper function for single client summary
+const getSingleClientSummary = async (req, res, clientId) => {
+  const permissionCheck = await canViewFlowchart(req.user, clientId);
+  if (!permissionCheck.allowed) {
+    return res.status(403).json({ 
+      message: 'Permission denied' 
+    });
+  }
+
+  const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+  if (!flowchart) {
+    return res.status(404).json({ message: 'Flowchart not found' });
+  }
+
+  // Get client details
+  const client = await Client.findOne({ clientId })
+    .populate('leadInfo.createdBy', 'userName userType')
+    .populate('leadInfo.assignedConsultantId', 'userName');
+
+  // Calculate summary
+  const summary = {
+    clientId: flowchart.clientId,
+    clientName: client?.leadInfo?.companyName || 'Unknown',
+    totalNodes: flowchart.nodes.length,
+    totalEdges: flowchart.edges.length,
+    nodesByDepartment: {},
+    nodesByLocation: {},
+    scopesSummary: {
+      'Scope 1': 0,
+      'Scope 2': 0,
+      'Scope 3': 0
+    },
+    dataCollectionMethods: {
+      manual: 0,
+      IOT: 0,
+      API: 0
+    },
+    emissionFactors: {
+      IPCC: 0,
+      DEFRA: 0,
+      EPA: 0,
+      EmissionFactorHub: 0,
+      Custom: 0
+    },
+    createdAt: flowchart.createdAt,
+    updatedAt: flowchart.updatedAt,
+    version: flowchart.version
+  };
+
+  // Add creator info for super admin
+  if (req.user.userType === 'super_admin') {
+    summary.createdBy = {
+      userName: client?.leadInfo?.createdBy?.userName,
+      userType: client?.leadInfo?.createdBy?.userType
+    };
+    summary.assignedConsultant = client?.leadInfo?.assignedConsultantId?.userName;
+  }
+
+  // Apply restrictions for employee heads
+  let nodesToAnalyze = flowchart.nodes;
+  if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
+    nodesToAnalyze = flowchart.nodes.filter(node => {
+      return node.details.department === req.user.department ||
+             node.details.location === req.user.location;
+    });
+  }
+
+  nodesToAnalyze.forEach(node => {
+    // Count by department
+    if (node.details.department) {
+      summary.nodesByDepartment[node.details.department] = 
+        (summary.nodesByDepartment[node.details.department] || 0) + 1;
+    }
+
+    // Count by location
+    if (node.details.location) {
+      summary.nodesByLocation[node.details.location] = 
+        (summary.nodesByLocation[node.details.location] || 0) + 1;
+    }
+
+    // Count scopes and collection methods
+    node.details.scopeDetails.forEach(scope => {
+      summary.scopesSummary[scope.scopeType]++;
+      summary.dataCollectionMethods[scope.inputType]++; // Fixed: was scope.dataCollectionType
+      
+      // Count emission factors for Scope 1
+      if (scope.scopeType === 'Scope 1' && scope.emissionFactor) {
+        summary.emissionFactors[scope.emissionFactor]++;
+      }
+    });
+  });
+
+  res.status(200).json({
+    success: true,
+    data: summary
+  });
+};
+
+// Helper function for consolidated summary
+const getConsolidatedSummary = async (req, res) => {
+  let query = { isActive: true };
+  let clientQuery = {};
+
+  // Build query based on user type
+  switch (req.user.userType) {
+    case 'super_admin':
+      // Super admin sees all flowcharts
+      break;
+
+    case 'consultant_admin':
+      // Get all consultants under this admin
+      const consultantsUnderAdmin = await User.find({
+        consultantAdminId: req.user._id,
+        userType: 'consultant'
+      }).select('_id');
+      
+      const consultantIds = consultantsUnderAdmin.map(c => c._id);
+      
+      // Get all clients created by this consultant admin or assigned to their consultants
+      clientQuery = {
+        $or: [
+          { 'leadInfo.createdBy': req.user._id },
+          { 'leadInfo.assignedConsultantId': { $in: consultantIds } }
+        ]
+      };
+      break;
+
+    case 'consultant':
+      // Get clients assigned to this consultant
+      clientQuery = {
+        'leadInfo.assignedConsultantId': req.user._id
+      };
+      break;
+
+    default:
       return res.status(403).json({ 
-        message: 'Permission denied' 
+        message: 'You do not have permission to view consolidated summary' 
       });
-    }
+  }
 
-    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
-    if (!flowchart) {
-      return res.status(404).json({ message: 'Flowchart not found' });
-    }
+  // Get eligible clients
+  const clients = await Client.find(clientQuery)
+    .populate('leadInfo.createdBy', 'userName userType')
+    .populate('leadInfo.assignedConsultantId', 'userName');
+  
+  const clientIds = clients.map(c => c.clientId);
+  
+  // Update query for flowcharts
+  if (req.user.userType !== 'super_admin') {
+    query.clientId = { $in: clientIds };
+  }
 
-    // Calculate summary
-    const summary = {
+  // Fetch all accessible flowcharts
+  const flowcharts = await Flowchart.find(query)
+    .populate('createdBy', 'userName userType')
+    .populate('lastModifiedBy', 'userName');
+
+  // Create client map for quick lookup
+  const clientMap = {};
+  clients.forEach(client => {
+    clientMap[client.clientId] = client;
+  });
+
+  // Initialize consolidated summary
+  const consolidatedSummary = {
+    totalFlowcharts: flowcharts.length,
+    flowchartsByClient: []
+  };
+
+  // Process each flowchart
+  flowcharts.forEach(flowchart => {
+    const client = clientMap[flowchart.clientId];
+    
+    // Create client-specific summary with all details
+    const clientSummary = {
       clientId: flowchart.clientId,
+      clientName: client?.leadInfo?.companyName || 'Unknown',
       totalNodes: flowchart.nodes.length,
       totalEdges: flowchart.edges.length,
       nodesByDepartment: {},
@@ -905,56 +1085,91 @@ const getFlowchartSummary = async (req, res) => {
       },
       emissionFactors: {
         IPCC: 0,
-        DEFRA: 0
-      }
+        DEFRA: 0,
+        EPA: 0,
+        EmissionFactorHub: 0,
+        Custom: 0
+      },
+      createdAt: flowchart.createdAt,
+      updatedAt: flowchart.updatedAt,
+      version: flowchart.version
     };
 
-    // Apply restrictions for employee heads
-    let nodesToAnalyze = flowchart.nodes;
-    if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
-      nodesToAnalyze = flowchart.nodes.filter(node => {
-        return node.details.department === req.user.department ||
-               node.details.location === req.user.location;
-      });
+    // Add creator info for super admin
+    if (req.user.userType === 'super_admin') {
+      clientSummary.createdBy = {
+        userName: client?.leadInfo?.createdBy?.userName,
+        userType: client?.leadInfo?.createdBy?.userType
+      };
+      clientSummary.assignedConsultant = client?.leadInfo?.assignedConsultantId?.userName;
     }
 
-    nodesToAnalyze.forEach(node => {
+    // Process nodes for this specific flowchart
+    flowchart.nodes.forEach(node => {
       // Count by department
       if (node.details.department) {
-        summary.nodesByDepartment[node.details.department] = 
-          (summary.nodesByDepartment[node.details.department] || 0) + 1;
+        clientSummary.nodesByDepartment[node.details.department] = 
+          (clientSummary.nodesByDepartment[node.details.department] || 0) + 1;
       }
 
       // Count by location
       if (node.details.location) {
-        summary.nodesByLocation[node.details.location] = 
-          (summary.nodesByLocation[node.details.location] || 0) + 1;
+        clientSummary.nodesByLocation[node.details.location] = 
+          (clientSummary.nodesByLocation[node.details.location] || 0) + 1;
       }
 
       // Count scopes and collection methods
       node.details.scopeDetails.forEach(scope => {
-        summary.scopesSummary[scope.scopeType]++;
-        summary.dataCollectionMethods[scope.dataCollectionType]++;
+        clientSummary.scopesSummary[scope.scopeType]++;
+        clientSummary.dataCollectionMethods[scope.inputType]++;
         
         // Count emission factors for Scope 1
         if (scope.scopeType === 'Scope 1' && scope.emissionFactor) {
-          summary.emissionFactors[scope.emissionFactor]++;
+          clientSummary.emissionFactors[scope.emissionFactor]++;
         }
       });
     });
 
-    res.status(200).json({
-      success: true,
-      data: summary
+    consolidatedSummary.flowchartsByClient.push(clientSummary);
+  });
+
+  // Optionally add overall statistics
+  if (flowcharts.length > 0) {
+    // Calculate overall totals
+    let overallTotals = {
+      totalNodes: 0,
+      totalEdges: 0,
+      totalScopes: {
+        'Scope 1': 0,
+        'Scope 2': 0,
+        'Scope 3': 0
+      }
+    };
+
+    consolidatedSummary.flowchartsByClient.forEach(client => {
+      overallTotals.totalNodes += client.totalNodes;
+      overallTotals.totalEdges += client.totalEdges;
+      overallTotals.totalScopes['Scope 1'] += client.scopesSummary['Scope 1'];
+      overallTotals.totalScopes['Scope 2'] += client.scopesSummary['Scope 2'];
+      overallTotals.totalScopes['Scope 3'] += client.scopesSummary['Scope 3'];
     });
-  } catch (error) {
-    console.error('Error getting flowchart summary:', error);
-    res.status(500).json({ 
-      message: 'Failed to get summary', 
-      error: error.message 
-    });
+
+    consolidatedSummary.overallStatistics = {
+      averageNodesPerFlowchart: Math.round(overallTotals.totalNodes / flowcharts.length),
+      averageEdgesPerFlowchart: Math.round(overallTotals.totalEdges / flowcharts.length),
+      totalScopes: overallTotals.totalScopes
+    };
   }
+
+  res.status(200).json({
+    success: true,
+    data: consolidatedSummary
+  });
 };
+
+
+
+
 
 // In the updateFlowchartNode function, ensure custom emission factors are handled
 // This is a modification to the existing updateFlowchartNode function
@@ -1080,5 +1295,6 @@ module.exports = {
   deleteFlowchartNode,
   restoreFlowchart,
   getFlowchartSummary,
+  getConsolidatedSummary,
   updateFlowchartNode
 };
