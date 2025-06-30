@@ -213,6 +213,155 @@ const emitDashboardRefresh = async (userIds = [], dashboardTypes = ['metrics', '
     }
   }
 };
+// Add this function to handle real-time client updates after any client modification
+// NEW: Enhanced client list update function
+const emitClientListUpdate = async (client, action, userId) => {
+  if (!global.io) return;
+  
+  try {
+    // Determine affected users based on client data
+    const affectedUserIds = new Set();
+    
+    // Add the user who made the change
+    affectedUserIds.add(userId);
+    
+    // Add consultant admin
+    if (client.leadInfo.consultantAdminId) {
+      affectedUserIds.add(client.leadInfo.consultantAdminId.toString());
+      
+      // Get all consultants under this admin
+      const consultants = await User.find({
+        consultantAdminId: client.leadInfo.consultantAdminId,
+        userType: 'consultant'
+      }).select('_id');
+      
+      consultants.forEach(c => affectedUserIds.add(c._id.toString()));
+    }
+    
+    // Add assigned consultants
+    if (client.leadInfo.assignedConsultantId) {
+      affectedUserIds.add(client.leadInfo.assignedConsultantId.toString());
+    }
+    
+    if (client.workflowTracking?.assignedConsultantId) {
+      affectedUserIds.add(client.workflowTracking.assignedConsultantId.toString());
+    }
+    
+    // Add client users if client is active
+    if (client.stage === 'active' && client.clientId) {
+      const clientUsers = await User.find({
+        clientId: client.clientId,
+        isActive: true
+      }).select('_id');
+      
+      clientUsers.forEach(u => affectedUserIds.add(u._id.toString()));
+    }
+    
+    // Get all super admins
+    const superAdmins = await User.find({
+      userType: 'super_admin',
+      isActive: true
+    }).select('_id');
+    
+    superAdmins.forEach(sa => affectedUserIds.add(sa._id.toString()));
+    
+    // Prepare client data for emission
+    const clientData = {
+      _id: client._id,
+      clientId: client.clientId,
+      stage: client.stage,
+      status: client.status,
+      leadInfo: {
+        companyName: client.leadInfo.companyName,
+        contactPersonName: client.leadInfo.contactPersonName,
+        email: client.leadInfo.email,
+        mobileNumber: client.leadInfo.mobileNumber
+      },
+      workflowTracking: client.stage === 'active' ? {
+        flowchartStatus: client.workflowTracking?.flowchartStatus,
+        processFlowchartStatus: client.workflowTracking?.processFlowchartStatus
+      } : undefined,
+      accountDetails: client.stage === 'active' ? {
+        subscriptionStatus: client.accountDetails?.subscriptionStatus,
+        subscriptionEndDate: client.accountDetails?.subscriptionEndDate,
+        activeUsers: client.accountDetails?.activeUsers
+      } : undefined,
+      updatedAt: client.updatedAt
+    };
+    
+    // Emit to each affected user
+    for (const affectedUserId of affectedUserIds) {
+      global.io.to(`user_${affectedUserId}`).emit('client_list_update', {
+        action: action, // 'created', 'updated', 'deleted', 'stage_changed'
+        client: clientData,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Also emit to user type rooms
+    global.io.to('userType_super_admin').emit('client_list_update', {
+      action: action,
+      client: clientData,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (client.leadInfo.consultantAdminId) {
+      global.io.to('userType_consultant_admin').emit('client_list_update', {
+        action: action,
+        client: clientData,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error emitting client list update:', error);
+  }
+};
+
+// NEW: Batch update for multiple clients
+const emitBatchClientUpdate = async (clientIds, action, userId) => {
+  if (!global.io || !clientIds.length) return;
+  
+  try {
+    const clients = await Client.find({
+      _id: { $in: clientIds },
+      isDeleted: false
+    }).populate('leadInfo.consultantAdminId leadInfo.assignedConsultantId workflowTracking.assignedConsultantId', '_id');
+    
+    for (const client of clients) {
+      await emitClientListUpdate(client, action, userId);
+    }
+  } catch (error) {
+    console.error('Error emitting batch client update:', error);
+  }
+};
+
+// NEW: Emit filtered client list update
+const emitFilteredClientListUpdate = async (filters = {}, userIds = []) => {
+  if (!global.io) return;
+  
+  try {
+    const { stage, status, search } = filters;
+    const updateData = {
+      type: 'client_list_filter_update',
+      filters: { stage, status, search },
+      timestamp: new Date().toISOString()
+    };
+    
+    if (userIds.length > 0) {
+      userIds.forEach(userId => {
+        global.io.to(`user_${userId}`).emit('client_filter_update', updateData);
+      });
+    } else {
+      // Emit to all admin users
+      global.io.to('userType_super_admin').emit('client_filter_update', updateData);
+      global.io.to('userType_consultant_admin').emit('client_filter_update', updateData);
+      global.io.to('userType_consultant').emit('client_filter_update', updateData);
+    }
+  } catch (error) {
+    console.error('Error emitting filtered client list update:', error);
+  }
+};
 
 // Usage Examples in your controller functions:
 
@@ -238,5 +387,8 @@ module.exports = {
   emitDataInputPointUpdate,
   emitNewClientCreated,
   emitClientStageChange,
-  emitDashboardRefresh
+  emitDashboardRefresh,
+  emitClientListUpdate,
+  emitBatchClientUpdate,
+  emitFilteredClientListUpdate
 };

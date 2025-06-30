@@ -24,12 +24,96 @@ const {
 } = require('../utils/emailHelper');
 
 const {
-  emitFlowchartStatusUpdate,
+ emitFlowchartStatusUpdate,
   emitDataInputPointUpdate,
   emitNewClientCreated,
   emitClientStageChange,
-  emitDashboardRefresh
+  emitDashboardRefresh,
+  emitClientListUpdate,
+  emitBatchClientUpdate,
+  emitFilteredClientListUpdate
 } = require('../utils/dashboardEmitter');
+
+
+// Additional helper function to emit targeted updates based on filters
+const emitTargetedClientUpdate = async (client, action, userId, additionalFilters = {}) => {
+    try {
+        // Get all users who might be viewing this client
+        const affectedUsers = await getAffectedUsers(client);
+        
+        // Emit update with filters
+        for (const affectedUserId of affectedUsers) {
+            if (global.io) {
+                global.io.to(`user_${affectedUserId}`).emit('targeted_client_update', {
+                    action: action,
+                    client: {
+                        _id: client._id,
+                        clientId: client.clientId,
+                        stage: client.stage,
+                        status: client.status,
+                        leadInfo: {
+                            companyName: client.leadInfo.companyName
+                        }
+                    },
+                    filters: additionalFilters,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+    } catch (error) {
+        console.error('Error emitting targeted client update:', error);
+    }
+};
+
+// Helper function to determine affected users
+const getAffectedUsers = async (client) => {
+    const affectedUsers = new Set();
+    
+    // Add consultant admin
+    if (client.leadInfo.consultantAdminId) {
+        affectedUsers.add(client.leadInfo.consultantAdminId.toString());
+    }
+    
+    // Add assigned consultants
+    if (client.leadInfo.assignedConsultantId) {
+        affectedUsers.add(client.leadInfo.assignedConsultantId.toString());
+    }
+    
+    if (client.workflowTracking?.assignedConsultantId) {
+        affectedUsers.add(client.workflowTracking.assignedConsultantId.toString());
+    }
+    
+    // Add all consultants under the consultant admin
+    if (client.leadInfo.consultantAdminId) {
+        const consultants = await User.find({
+            consultantAdminId: client.leadInfo.consultantAdminId,
+            userType: 'consultant',
+            isActive: true
+        }).select('_id');
+        
+        consultants.forEach(c => affectedUsers.add(c._id.toString()));
+    }
+    
+    // Add client users if active
+    if (client.stage === 'active' && client.clientId) {
+        const clientUsers = await User.find({
+            clientId: client.clientId,
+            isActive: true
+        }).select('_id');
+        
+        clientUsers.forEach(u => affectedUsers.add(u._id.toString()));
+    }
+    
+    // Add all super admins
+    const superAdmins = await User.find({
+        userType: 'super_admin',
+        isActive: true
+    }).select('_id');
+    
+    superAdmins.forEach(sa => affectedUsers.add(sa._id.toString()));
+    
+    return Array.from(affectedUsers);
+};
 
 // ====================================
 // WORKFLOW TRACKING FUNCTIONS
@@ -962,6 +1046,7 @@ const createLead = async (req, res) => {
 
     await newClient.save();
     await emitNewClientCreated(newClient, req.user.id);
+    await emitClientListUpdate(newClient, 'created', req.user.id);
       try {
        sendLeadCreatedEmail(newClient, req.user.userName);
       console.log(`✉️  Lead creation email queued for super admin (${process.env.SUPER_ADMIN_EMAIL})`);
@@ -1139,6 +1224,9 @@ const updateLead = async (req, res) => {
     // 10) Save changes
     await client.save();
 
+    // ADD THIS: Emit real-time update
+    await emitClientListUpdate(client, 'updated', req.user.id);
+
     return res.status(200).json({
       message: "Lead updated successfully",
       lead: {
@@ -1231,6 +1319,9 @@ const deleteLead = async (req, res) => {
     }
 
     await client.save();
+
+    // ADD THIS: Emit real-time update
+    await emitClientListUpdate(client, 'deleted', req.user.id);
 
     // H) Notify super_admin: create Notification + email
     const superAdmin = await User.findOne({
@@ -1439,7 +1530,10 @@ const moveToDataSubmission = async (req, res) => {
 
    const prevStage = client.stage;
     await client.save();
-    await emitClientStageChange(client, prevStage, req.user.id);
+    // ADD THIS: Emit real-time updates
+    await emitClientStageChange(client, previousStage, req.user.id);
+    await emitClientListUpdate(client, 'stage_changed', req.user.id);
+
     // D) Send email to client
     const emailSubject = "ZeroCarbon - Please Submit Your Company Data";
     const emailMessage = `
@@ -1976,7 +2070,9 @@ const moveToProposal = async (req, res) => {
 
     const prevStage = client.stage;
     await client.save();
-    await emitClientStageChange(client, prevStage, req.user.id);
+    // ADD THIS: Emit real-time updates
+    await emitClientStageChange(client, previousStage, req.user.id);
+    await emitClientListUpdate(client, 'stage_changed', req.user.id);
 
     return res.status(200).json({
       message: "Client moved to proposal stage",
@@ -2613,6 +2709,11 @@ const updateProposalStatus = async (req, res) => {
       }
 
       await client.save();
+          // ADD THIS: Emit real-time updates
+        if (decision === "accept") {
+            await emitClientStageChange(client, "proposal", req.user.id);
+        }
+        await emitClientListUpdate(client, 'updated', req.user.id);
 
       return res.status(200).json({
         message: "Proposal accepted and client account activated",
@@ -2659,10 +2760,11 @@ const updateProposalStatus = async (req, res) => {
 };
 
 // Get Clients based on user permissions
+// Updated getClients function with real-time support
 const getClients = async (req, res) => {
   try {
     let query = { isDeleted: false };
-    const { stage, status, search } = req.query;
+    const { stage, status, search, page = 1, limit = 10 } = req.query;
     
     // Build query based on user type
     switch (req.user.userType) {
@@ -2681,13 +2783,17 @@ const getClients = async (req, res) => {
         
         query.$or = [
           { "leadInfo.consultantAdminId": req.user.id },
-          { "leadInfo.assignedConsultantId": { $in: consultantIds } }
+          { "leadInfo.assignedConsultantId": { $in: consultantIds } },
+          { "workflowTracking.assignedConsultantId": { $in: consultantIds } }
         ];
         break;
         
       case "consultant":
         // Can see assigned clients
-        query["leadInfo.assignedConsultantId"] = req.user.id;
+        query.$or = [
+          { "leadInfo.assignedConsultantId": req.user.id },
+          { "workflowTracking.assignedConsultantId": req.user.id }
+        ];
         break;
         
       case "client_admin":
@@ -2707,31 +2813,106 @@ const getClients = async (req, res) => {
     if (stage) query.stage = stage;
     if (status) query.status = status;
     if (search) {
-      query.$or = [
-        { clientId: { $regex: search, $options: 'i' } },
-        { "leadInfo.companyName": { $regex: search, $options: 'i' } },
-        { "leadInfo.email": { $regex: search, $options: 'i' } }
+      query.$and = [
+        ...(query.$and || []),
+        {
+          $or: [
+            { clientId: { $regex: search, $options: 'i' } },
+            { "leadInfo.companyName": { $regex: search, $options: 'i' } },
+            { "leadInfo.email": { $regex: search, $options: 'i' } }
+          ]
+        }
       ];
     }
+    
+    // Calculate pagination
+    const skip = (page - 1) * limit;
+    const total = await Client.countDocuments(query);
     
     const clients = await Client.find(query)
       .populate("leadInfo.consultantAdminId", "userName email")
       .populate("leadInfo.assignedConsultantId", "userName email")
-      .sort({ createdAt: -1 });
+      .populate("workflowTracking.assignedConsultantId", "userName email")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    // Format response data
+    const responseData = {
+      clients: clients.map(client => ({
+        _id: client._id,
+        clientId: client.clientId,
+        stage: client.stage,
+        status: client.status,
+        leadInfo: {
+          companyName: client.leadInfo.companyName,
+          contactPersonName: client.leadInfo.contactPersonName,
+          email: client.leadInfo.email,
+          mobileNumber: client.leadInfo.mobileNumber,
+          consultantAdmin: client.leadInfo.consultantAdminId ? {
+            id: client.leadInfo.consultantAdminId._id,
+            name: client.leadInfo.consultantAdminId.userName,
+            email: client.leadInfo.consultantAdminId.email
+          } : null,
+          assignedConsultant: client.leadInfo.assignedConsultantId ? {
+            id: client.leadInfo.assignedConsultantId._id,
+            name: client.leadInfo.assignedConsultantId.userName,
+            email: client.leadInfo.assignedConsultantId.email
+          } : null
+        },
+        workflowTracking: client.stage === 'active' ? {
+          flowchartStatus: client.workflowTracking?.flowchartStatus,
+          processFlowchartStatus: client.workflowTracking?.processFlowchartStatus,
+          assignedConsultant: client.workflowTracking?.assignedConsultantId ? {
+            id: client.workflowTracking.assignedConsultantId._id,
+            name: client.workflowTracking.assignedConsultantId.userName,
+            email: client.workflowTracking.assignedConsultantId.email
+          } : null
+        } : undefined,
+        accountDetails: client.stage === 'active' ? {
+          subscriptionStatus: client.accountDetails?.subscriptionStatus,
+          subscriptionEndDate: client.accountDetails?.subscriptionEndDate,
+          activeUsers: client.accountDetails?.activeUsers
+        } : undefined,
+        createdAt: client.createdAt,
+        updatedAt: client.updatedAt
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1
+      }
+    };
+    
+    // Emit real-time update to the requesting user
+    if (global.io) {
+      global.io.to(`user_${req.user.id}`).emit('clients_data', {
+        type: 'clients_list',
+        data: responseData,
+        timestamp: new Date().toISOString()
+      });
+    }
     
     res.status(200).json({
+      success: true,
       message: "Clients fetched successfully",
-      clients
+      ...responseData
     });
     
   } catch (error) {
     console.error("Get clients error:", error);
     res.status(500).json({ 
+      success: false,
       message: "Failed to fetch clients", 
       error: error.message 
     });
   }
 };
+
+
 
 // Get single client details
 const getClientById = async (req, res) => {
@@ -2867,7 +3048,17 @@ const assignConsultant = async (req, res) => {
       { $addToSet: { assignedClients: clientId } },
       { new: true }
     );
+    // ADD THIS: Emit real-time updates
+    await emitClientListUpdate(client, 'updated', req.user.id);
     
+    // Notify the newly assigned consultant
+    if (global.io) {
+        global.io.to(`user_${consultantId}`).emit('new_client_assignment', {
+            clientId: client.clientId,
+            companyName: client.leadInfo.companyName,
+            timestamp: new Date().toISOString()
+        });
+    }
     // Notify the assigned consultant
     const emailSubject = "New Client Assignment";
     const emailMessage = `
@@ -3016,7 +3207,10 @@ const manageSubscription = async (req, res) => {
     }
     
     await client.save();
-    
+
+    // ADD THIS: Emit real-time updates
+    await emitClientListUpdate(client, 'updated', req.user.id);
+
     res.status(200).json({
       message: `Subscription ${action} successful`,
       subscription: {
@@ -3389,7 +3583,8 @@ const checkExpiredSubscriptions = async () => {
       "accountDetails.subscriptionEndDate": { $lte: new Date() },
       "accountDetails.subscriptionStatus": "active"
     });
-    
+      const updatedClientIds =[];
+      
     for (const client of expiredClients) {
       // Check if in grace period (30 days)
       const daysSinceExpiry = moment().diff(
@@ -3436,8 +3631,16 @@ const checkExpiredSubscriptions = async () => {
         performedBy: null,
         notes: "Automatic system update"
       });
+
+    
       
       await client.save();
+      updatedClientIds.push(client._id);
+      
+       // ADD THIS: Batch emit updates
+    if (updatedClientIds.length > 0) {
+        await emitBatchClientUpdate(updatedClientIds, 'updated', null);
+    }
     }
     
     console.log(`Processed ${expiredClients.length} expired subscriptions`);

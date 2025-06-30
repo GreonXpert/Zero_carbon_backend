@@ -326,6 +326,278 @@ io.on('connection', (socket) => {
         console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
         connectedUsers.delete(socket.userId);
     });
+
+     // 🔄 Handle real-time client list requests
+    socket.on('requestClients', async (filters = {}) => {
+        try {
+            const { getClients } = require('./controllers/clientController');
+            
+            // Create mock request/response objects
+            const mockReq = {
+                user: socket.user,
+                query: filters // { stage, status, search, page, limit }
+            };
+            
+            const mockRes = {
+                status: () => mockRes,
+                json: (data) => {
+                    // Emit the clients data to the requesting socket
+                    socket.emit('clients_data', {
+                        type: 'clients_list',
+                        data: data,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            };
+            
+            // Call getClients with mock objects
+            await getClients(mockReq, mockRes);
+            
+        } catch (error) {
+            console.error('Error fetching clients:', error);
+            socket.emit('clientsError', { 
+                message: 'Failed to fetch clients',
+                error: error.message 
+            });
+        }
+    });
+    
+    // 📊 Subscribe to client list updates
+    socket.on('subscribeToClients', async (filters = {}) => {
+        try {
+            // Join client updates room based on user type
+            const roomName = `clients_${socket.userType}_${socket.userId}`;
+            socket.join(roomName);
+            
+            // If filters are provided, join filtered room
+            if (filters.stage || filters.status) {
+                const filterRoom = `clients_filtered_${JSON.stringify(filters)}_${socket.userId}`;
+                socket.join(filterRoom);
+            }
+            
+            console.log(`📋 User ${socket.user.userName} subscribed to client updates`);
+            
+            socket.emit('clientsSubscribed', {
+                message: 'Successfully subscribed to client updates',
+                filters: filters
+            });
+            
+            // Send initial client data
+            socket.emit('requestClients', filters);
+            
+        } catch (error) {
+            console.error('Error subscribing to clients:', error);
+            socket.emit('clientsError', { 
+                message: 'Failed to subscribe to client updates' 
+            });
+        }
+    });
+    
+    // 🔄 Unsubscribe from client updates
+    socket.on('unsubscribeFromClients', () => {
+        try {
+            // Leave all client-related rooms
+            const rooms = Array.from(socket.rooms);
+            rooms.forEach(room => {
+                if (room.startsWith('clients_')) {
+                    socket.leave(room);
+                }
+            });
+            
+            socket.emit('clientsUnsubscribed', {
+                message: 'Successfully unsubscribed from client updates'
+            });
+            
+        } catch (error) {
+            console.error('Error unsubscribing from clients:', error);
+        }
+    });
+    
+    // 🔍 Handle client search
+    socket.on('searchClients', async (searchQuery) => {
+        try {
+            const Client = require('./models/Client');
+            const User = require('./models/User');
+            
+            let query = { isDeleted: false };
+            
+            // Apply user-based filtering
+            switch (socket.user.userType) {
+                case "super_admin":
+                    // Can search all clients
+                    break;
+                    
+                case "consultant_admin":
+                    const consultants = await User.find({ 
+                        consultantAdminId: socket.user._id 
+                    }).select("_id");
+                    
+                    const consultantIds = consultants.map(c => c._id);
+                    consultantIds.push(socket.user._id);
+                    
+                    query.$or = [
+                        { "leadInfo.consultantAdminId": socket.user._id },
+                        { "leadInfo.assignedConsultantId": { $in: consultantIds } },
+                        { "workflowTracking.assignedConsultantId": { $in: consultantIds } }
+                    ];
+                    break;
+                    
+                case "consultant":
+                    query.$or = [
+                        { "leadInfo.assignedConsultantId": socket.user._id },
+                        { "workflowTracking.assignedConsultantId": socket.user._id }
+                    ];
+                    break;
+                    
+                case "client_admin":
+                case "auditor":
+                case "viewer":
+                    query.clientId = socket.user.clientId;
+                    break;
+                    
+                default:
+                    socket.emit('searchResults', { clients: [] });
+                    return;
+            }
+            
+            // Add search criteria
+            if (searchQuery) {
+                query.$and = [
+                    ...(query.$and || []),
+                    {
+                        $or: [
+                            { clientId: { $regex: searchQuery, $options: 'i' } },
+                            { "leadInfo.companyName": { $regex: searchQuery, $options: 'i' } },
+                            { "leadInfo.email": { $regex: searchQuery, $options: 'i' } },
+                            { "leadInfo.contactPersonName": { $regex: searchQuery, $options: 'i' } }
+                        ]
+                    }
+                ];
+            }
+            
+            const clients = await Client.find(query)
+                .populate("leadInfo.consultantAdminId", "userName email")
+                .populate("leadInfo.assignedConsultantId", "userName email")
+                .select("clientId leadInfo.companyName leadInfo.email stage status")
+                .limit(20)
+                .sort({ createdAt: -1 });
+            
+            socket.emit('searchResults', {
+                clients: clients,
+                query: searchQuery,
+                timestamp: new Date().toISOString()
+            });
+            
+        } catch (error) {
+            console.error('Error searching clients:', error);
+            socket.emit('searchError', { 
+                message: 'Failed to search clients' 
+            });
+        }
+    });
+    
+    // 📊 Get client statistics
+    socket.on('requestClientStats', async () => {
+        try {
+            const Client = require('./models/Client');
+            let query = { isDeleted: false };
+            
+            // Apply user-based filtering (same as above)
+            // ... (use the same filtering logic as in requestClients)
+            
+            const stats = await Client.aggregate([
+                { $match: query },
+                {
+                    $group: {
+                        _id: null,
+                        total: { $sum: 1 },
+                        byStage: {
+                            $push: "$stage"
+                        },
+                        byStatus: {
+                            $push: "$status"
+                        }
+                    }
+                },
+                {
+                    $project: {
+                        total: 1,
+                        stages: {
+                            lead: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStage",
+                                        cond: { $eq: ["$$this", "lead"] }
+                                    }
+                                }
+                            },
+                            registered: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStage",
+                                        cond: { $eq: ["$$this", "registered"] }
+                                    }
+                                }
+                            },
+                            proposal: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStage",
+                                        cond: { $eq: ["$$this", "proposal"] }
+                                    }
+                                }
+                            },
+                            active: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStage",
+                                        cond: { $eq: ["$$this", "active"] }
+                                    }
+                                }
+                            }
+                        },
+                        statuses: {
+                            pending: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStatus",
+                                        cond: { $eq: ["$$this", "pending"] }
+                                    }
+                                }
+                            },
+                            in_progress: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStatus",
+                                        cond: { $eq: ["$$this", "in_progress"] }
+                                    }
+                                }
+                            },
+                            completed: {
+                                $size: {
+                                    $filter: {
+                                        input: "$byStatus",
+                                        cond: { $eq: ["$$this", "completed"] }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]);
+            
+            socket.emit('clientStats', {
+                stats: stats[0] || { total: 0, stages: {}, statuses: {} },
+                timestamp: new Date().toISOString()
+            });
+            
+        } catch (error) {
+            console.error('Error fetching client stats:', error);
+            socket.emit('statsError', { 
+                message: 'Failed to fetch client statistics' 
+            });
+        }
+    });
 });
 
 // 🌐 Make io globally accessible for notifications
