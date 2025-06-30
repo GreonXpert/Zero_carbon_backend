@@ -189,6 +189,19 @@ const updateFlowchartStatus = async (req, res) => {
     
     await client.save();
     await emitFlowchartStatusUpdate(client, req.user.id);
+    
+     if (client.stage === 'active') {
+        await emitTargetedClientUpdate(
+            client, 
+            'workflow_updated', 
+            req.user.id,
+            { 
+                stage: 'active',
+                workflowStatus: status 
+            }
+        );
+    }
+    
     const responseTime = Date.now() - startTime;
     
     return res.status(200).json({
@@ -987,14 +1000,30 @@ const createLead = async (req, res) => {
       mobileNumber,
       leadSource,
       notes,
-      assignedConsultantId
+      assignedConsultantId,
+      salesPersonName,
+      salesPersonEmployeeId,
+      referenceName,
+      referenceContactNumber,
+      eventName,
+      eventPlace,
     } = req.body;
     // Validate required fields
     const requiredFields = { companyName, contactPersonName, email, mobileNumber };
     const missingFields = Object.entries(requiredFields)
       .filter(([_, value]) => !value)
       .map(([key]) => key);
-    
+
+    //Conditional Validation 
+    if(leadSource === 'sales Team'){
+      if(!salesPersonName || !salesPersonEmployeeId) missingFields.push("salesPersonName or salesPersonEmployeeId")
+    }
+    if(leadSource === 'reference'){
+      if (!referenceName || !referenceContactNumber) missingFields.push("referenceName or referenceContactNumber")
+    }
+    if(leadSource === 'event'){
+      if(!eventName || !eventPlace) missingFields.push("eventName or eventDate ")
+    }
     if (missingFields.length > 0) {
       return res.status(400).json({
         success: false,
@@ -1029,6 +1058,12 @@ const createLead = async (req, res) => {
         email,
         mobileNumber,
         leadSource,
+        salesPersonName: leadSource === 'sales Team' ? salesPersonName : undefined,
+        salesPersonEmployeeId: leadSource === 'sales Team' ? salesPersonEmployeeId : undefined,
+        referenceName: leadSource === 'reference' ? referenceName : undefined,
+        referenceContactNumber : leadSource === "reference" ? referenceContactNumber : undefined,
+        eventName: leadSource === 'event' ? eventName : undefined,
+        eventPlace: leadSource === 'event' ? eventPlace : undefined,
         notes,
         consultantAdminId: req.user.id,
         assignedConsultantId: assignedConsultantId || null,
@@ -1179,7 +1214,13 @@ const updateLead = async (req, res) => {
       "mobileNumber",
       "leadSource",
       "notes",
-      "assignedConsultantId"
+      "assignedConsultantId",
+      "salesPersonName",
+      "salesPersonEmployeeId",
+      "referenceName",
+      "referenceContactNumber",
+      "eventName",
+      "eventPlace"
     ];
 
     // 7) Apply only those subfields if present
@@ -1189,6 +1230,50 @@ const updateLead = async (req, res) => {
       }
     });
 
+    //8) Now enforce mutual exclusivity and auto-switching 
+      //helper 
+      const li = client.leadInfo;
+
+
+     if (updateData.leadInfo.leadSource) {
+      //user explicitly set leadSource
+      const src = updateData.leadInfo.leadSource;
+      if (src !== 'sales Team') {
+        li.salesPersonName = undefined;
+        li.salesPersonEmployeeId = undefined;
+      }
+      if (src !== 'reference') {
+        li.referenceName = undefined;
+        li.referenceContactNumber = undefined;
+      }
+      if (src !== 'event') {
+        li.eventName = undefined;
+        li.eventPlace = undefined;
+      }
+      else if (updateData.leadInfo.salesPersonName || updateData.leadInfo.salesPersonEmployeeId) {
+        //user is updating sales fields -> promote to sales Team
+        li.leadSource = 'sales Team';
+        li.referenceName = undefined;
+        li.referenceContactNumber = undefined;
+        li.eventName = undefined;
+        li.eventPlace = undefined;
+      } else if (updateData.leadInfo.referenceName || updateData.leadInfo.referenceContactNumber) {
+        //user is updating reference fields -> promote to reference
+        li.leadSource = 'reference';
+        li.salesPersonName = undefined;
+        li.salesPersonEmployeeId = undefined;
+        li.eventName = undefined;
+        li.eventPlace = undefined;
+      }
+      else if (updateData.leadInfo.eventName || updateData.leadInfo.eventPlace) {
+        //user is updating event fields -> promote to event
+        li.leadSource = 'event';
+        li.salesPersonName = undefined;
+        li.salesPersonEmployeeId = undefined;
+        li.referenceName = undefined;
+        li.referenceContactNumber = undefined;
+      }
+    }
     // 8) If assignedConsultantId changed, notify that consultant
     if (updateData.leadInfo.assignedConsultantId && 
         updateData.leadInfo.assignedConsultantId !== client.leadInfo.assignedConsultantId?.toString()) {
@@ -1731,6 +1816,24 @@ const updateClientData = async (req, res) => {
     });
 
     await client.save();
+
+    // Regular update
+    await emitClientListUpdate(client, 'updated', req.user.id);
+
+    // ADD THIS: Targeted update for users viewing registered clients
+    if (client.stage === 'registered') {
+        await emitTargetedClientUpdate(
+            client,
+            'data_submission_updated',
+            req.user.id,
+            {
+                stage: 'registered',
+                hasDataSubmission: true,
+                dataCompleteness: calculateDataCompleteness(client)
+            }
+        );
+    }
+
 
     return res.status(200).json({
       message: "Client submission data updated successfully",
@@ -2849,6 +2952,13 @@ const getClients = async (req, res) => {
           contactPersonName: client.leadInfo.contactPersonName,
           email: client.leadInfo.email,
           mobileNumber: client.leadInfo.mobileNumber,
+          leadSource: client.leadInfo.leadSource,
+            salesPersonName:        client.leadInfo.salesPersonName,
+            salesPersonEmployeeId:  client.leadInfo.salesPersonEmployeeId,
+            referenceName:          client.leadInfo.referenceName,
+            referenceContactNumber: client.leadInfo.referenceContactNumber,
+            eventName:              client.leadInfo.eventName,
+            eventPlace:             client.leadInfo.eventPlace,
           consultantAdmin: client.leadInfo.consultantAdminId ? {
             id: client.leadInfo.consultantAdminId._id,
             name: client.leadInfo.consultantAdminId.userName,
@@ -3038,7 +3148,8 @@ const assignConsultant = async (req, res) => {
       totalDataPoints: 0,
       lastSyncedWithFlowchart: null
     };
-    
+     const previousConsultantId = client.leadInfo.assignedConsultantId;
+
     await client.save();
     
     // Update consultant's assignedClients array
@@ -3051,6 +3162,31 @@ const assignConsultant = async (req, res) => {
     // ADD THIS: Emit real-time updates
     await emitClientListUpdate(client, 'updated', req.user.id);
     
+     // ADD THIS: Targeted updates for specific consultant views
+    // Notify users viewing the previous consultant's clients
+    if (previousConsultantId) {
+        await emitTargetedClientUpdate(
+            client,
+            'consultant_unassigned',
+            req.user.id,
+            {
+                consultantId: previousConsultantId.toString(),
+                action: 'removed'
+            }
+        );
+    }
+    
+    // Notify users viewing the new consultant's clients
+    await emitTargetedClientUpdate(
+        client,
+        'consultant_assigned',
+        req.user.id,
+        {
+            consultantId: consultantId,
+            action: 'added'
+        }
+    );
+
     // Notify the newly assigned consultant
     if (global.io) {
         global.io.to(`user_${consultantId}`).emit('new_client_assignment', {
@@ -3210,6 +3346,19 @@ const manageSubscription = async (req, res) => {
 
     // ADD THIS: Emit real-time updates
     await emitClientListUpdate(client, 'updated', req.user.id);
+
+    // ADD THIS: Targeted update for users viewing clients by subscription status
+    await emitTargetedClientUpdate(
+        client,
+        'subscription_changed',
+        req.user.id,
+        {
+            stage: 'active',
+            subscriptionStatus: client.accountDetails.subscriptionStatus,
+            previousStatus: previousStatus
+        }
+    );
+
 
     res.status(200).json({
       message: `Subscription ${action} successful`,
