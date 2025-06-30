@@ -45,7 +45,7 @@ const ScopeDetailSchema = new mongoose.Schema({
   // Scope 1 specific fields
   emissionFactor: { 
     type: String,
-    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', ''],
+    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub','Custom', ''],
     default: '',
     description: 'Emission factor standard used'
   },
