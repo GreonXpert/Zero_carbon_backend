@@ -160,7 +160,19 @@ const clientSchema = new mongoose.Schema(
       contactPersonName: { type: String, required: true },
       email: { type: String, required: true },
       mobileNumber: { type: String, required: true },
-      leadSource: { type: String },
+      leadSource: { 
+        type: String,
+        enum: ["online ads", "sales Team", "reference",'website','event'],
+
+       },
+      // ⬇️ New fields for conditional sources
+      salesPersonName: { type: String },
+      salesPersonEmployeeId: { type: String },
+      referenceName:       { type: String },
+      referenceContactNumber: { type: String },
+      eventName: { type: String },
+      eventPlace: { type: String },
+
       consultantAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       assignedConsultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
