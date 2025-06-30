@@ -15,6 +15,7 @@ const ScopeDetailSchema = new mongoose.Schema({
     enum: ['Scope 1', 'Scope 2', 'Scope 3']
   },
   
+  
   // Input type for this specific scope detail
   inputType: {
     type: String,
@@ -41,7 +42,11 @@ const ScopeDetailSchema = new mongoose.Schema({
     type: String, 
     default: '' 
   },
-  
+  calculationModel:{
+    type: String,
+    enum:['tier 1', 'tier 2', 'tier 3'],
+    default: 'tier 1',
+  },
   // Scope 1 specific fields
   emissionFactor: { 
     type: String,
