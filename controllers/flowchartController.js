@@ -308,6 +308,7 @@ const normalizedNodes = flowchartData.nodes.map(node => {
         source:               scope.source             || '',
         reference:            scope.reference          || '',
         collectionFrequency:  scope.collectionFrequency|| 'monthly',
+        calculationModel:   scope.calculationModel     || 'tier 1',
         additionalInfo:       scope.additionalInfo     || {}
       };
       
@@ -1231,6 +1232,7 @@ const updateFlowchartNode = async (req, res) => {
             source:               scope.source             || '',
             reference:            scope.reference          || '',
             collectionFrequency:  scope.collectionFrequency|| 'monthly',
+            calculationModel:   scope.calculationModel     || 'tier 1',
             additionalInfo:       scope.additionalInfo     || {},
             assignedEmployees:    scope.assignedEmployees  || []
           };
