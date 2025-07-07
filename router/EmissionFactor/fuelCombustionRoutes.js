@@ -1,6 +1,6 @@
 // routes/fuelCombustionRoutes.js
 const express = require('express');
-const fuelCombustionController = require('../controllers/fuelCombustionController');
+const fuelCombustionController = require('../../controllers/EmissionFactor/fuelCombustionController');
 
 
 const router = express.Router();

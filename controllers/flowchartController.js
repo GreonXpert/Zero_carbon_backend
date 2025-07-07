@@ -4,6 +4,7 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const Notification   = require('../models/Notification');
+const { fetchEmissionFactorValues } = require('../utils/emissionFactorHelpers'); 
 
 // Add this import at the top of flowchartController.js:
 const { autoUpdateFlowchartStatus } = require('./clientController');
@@ -28,28 +29,28 @@ const canManageFlowchart = async (user, clientId, flowchart = null) => {
 
   // Consultant Admin: Can manage if they created the lead
   if (user.userType === 'consultant_admin') {
-    if (client.leadInfo?.createdBy?.toString() === user._id.toString()) {
-        return { allowed: true, reason: 'Consultant admin who created lead' };
+    const createdBy = client.leadInfo?.createdBy;
+    if (createdBy && user._id && createdBy.toString() === user._id.toString()) {
+      return { allowed: true, reason: 'Consultant admin who created lead' };
     }
-    
+
     // Also check if any consultant under them is assigned
     const consultantsUnderAdmin = await User.find({
       consultantAdminId: user.id,
       userType: 'consultant'
     }).select('_id');
-    
     const consultantIds = consultantsUnderAdmin.map(c => c._id.toString());
-     if (client.leadInfo?.assignedConsultantId &&
-        consultantIds.includes(client.leadInfo.assignedConsultantId.toString())) {
-        return { allowed: true, reason: 'Client assigned to consultant under this admin' };
+    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+    if (assignedConsultantId && consultantIds.includes(assignedConsultantId.toString())) {
+      return { allowed: true, reason: 'Client assigned to consultant under this admin' };
     }
-    
     return { allowed: false, reason: 'Not authorized for this client' };
   }
 
   // Consultant: Can manage if they are assigned to this client
   if (user.userType === 'consultant') {
-    if (client.leadInfo.assignedConsultantId?.toString() === user.id) {
+    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+    if (assignedConsultantId && user.id && assignedConsultantId.toString() === user.id.toString()) {
       return { allowed: true, reason: 'Assigned consultant' };
     }
     return { allowed: false, reason: 'Not assigned to this client' };
@@ -57,6 +58,7 @@ const canManageFlowchart = async (user, clientId, flowchart = null) => {
 
   return { allowed: false, reason: 'Insufficient permissions' };
 };
+
 
 // Check if user can view flowchart
 const canViewFlowchart = async (user, clientId) => {
@@ -233,15 +235,48 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
   };
 };
 
+
+async function fetchEmissionFactor(req, res) {
+  try {
+    const { database, params } = req.body;
+
+    if (!database || typeof database !== 'string') {
+      return res.status(400).json({ success: false, message: 'Missing or invalid "database"' });
+    }
+    if (!params || typeof params !== 'object') {
+      return res.status(400).json({ success: false, message: 'Missing or invalid "params"' });
+    }
+
+    const data = await fetchEmissionFactorValues(database, params);
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error('Error in fetchEmissionFactor:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+
+
 // ============================================================================
 // MAIN CONTROLLERS
 // ============================================================================
 
 // Create or Update Flowchart
+// Create or Update Flowchart
 const saveFlowchart = async (req, res) => {
   try {
     const { clientId, flowchartData } = req.body;
 
+    // 0) Check if user is authenticated and has required fields
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({
+        message: 'Authentication required - user information missing'
+      });
+    }
+
+    // Ensure we have a consistent userId
+    const userId = req.user._id || req.user.id;
+    
     // 1) Basic request validation
     if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
       return res.status(400).json({
@@ -249,9 +284,9 @@ const saveFlowchart = async (req, res) => {
       });
     }
    
-      // Auto-update client workflow status when consultant starts creating process flowchart
+    // Auto-update client workflow status when consultant starts creating process flowchart
     if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
-      await autoUpdateFlowchartStatus(clientId, req.user._id);
+      await autoUpdateFlowchartStatus(clientId, userId);
     }
 
     // 2) Verify the client actually exists
@@ -277,80 +312,165 @@ const saveFlowchart = async (req, res) => {
     }
 
     // 5) Normalize & validate nodes
-const normalizedNodes = flowchartData.nodes.map(node => {
-  const d = node.details || {};
-  
-  if (Array.isArray(d.scopeDetails) && d.scopeDetails.length) {
-    validateScopeDetails(d.scopeDetails, node.id);
-    d.scopeDetails = d.scopeDetails.map(scope => {
-      // First create the normalized scope object with all existing fields
-      const normalizedScope = {
-        scopeIdentifier:      scope.scopeIdentifier.trim(),
-        scopeType:            scope.scopeType,
-        inputType:            scope.inputType          || 'manual',
-        apiStatus:            scope.apiStatus          || false,
-        apiEndpoint:          scope.apiEndpoint        || '',
-        iotStatus:            scope.iotStatus          || false,
-        iotDeviceId:          scope.iotDeviceId        || '',
-        emissionFactor:       scope.emissionFactor     || '',
-        categoryName:         scope.categoryName       || '',
-        activity:             scope.activity           || '',
-        fuel:                 scope.fuel               || '',
-        units:                scope.units              || '',
-        country:              scope.country            || '',
-        regionGrid:           scope.regionGrid         || '',
-        electricityUnit:      scope.electricityUnit    || '',
-        scope3Category:       scope.scope3Category     || '',
-        activityDescription:  scope.activityDescription|| '',
-        itemName:             scope.itemName           || '',
-        scope3Unit:           scope.scope3Unit         || '',
-        description:          scope.description        || '',
-        source:               scope.source             || '',
-        reference:            scope.reference          || '',
-        collectionFrequency:  scope.collectionFrequency|| 'monthly',
-        calculationModel:   scope.calculationModel     || 'tier 1',
-        additionalInfo:       scope.additionalInfo     || {}
-      };
+    const normalizedNodes = flowchartData.nodes.map(node => {
+      const d = node.details || {};
       
-      // Handle custom emission factor if emission factor is 'Custom'
-      if (scope.emissionFactor === 'Custom' && scope.scopeType === 'Scope 1') {
-        normalizedScope.customEmissionFactor = {
-          CO2:  scope.customEmissionFactor?.CO2  ?? null,
-          CH4:  scope.customEmissionFactor?.CH4  ?? null,
-          N2O:  scope.customEmissionFactor?.N2O  ?? null,
-          CO2e: scope.customEmissionFactor?.CO2e ?? null,
-          unit: scope.customEmissionFactor?.unit || ''
-        };
-      } else {
-        // Initialize empty custom emission factor for non-custom cases
-        normalizedScope.customEmissionFactor = {
-          CO2: null,
-          CH4: null,
-          N2O: null,
-          CO2e: null,
-          unit: ''
-        };
-      }
-      
-      return normalizedScope;
-    });
-  }
+      if (Array.isArray(d.scopeDetails) && d.scopeDetails.length) {
+        validateScopeDetails(d.scopeDetails, node.id);
+        d.scopeDetails = d.scopeDetails.map(scope => {
+          // First create the normalized scope object with all existing fields
+          const normalizedScope = {
+            scopeIdentifier:      scope.scopeIdentifier.trim(),
+            scopeType:            scope.scopeType,
+            inputType:            scope.inputType          || 'manual',
+            apiStatus:            scope.apiStatus          || false,
+            apiEndpoint:          scope.apiEndpoint        || '',
+            iotStatus:            scope.iotStatus          || false,
+            iotDeviceId:          scope.iotDeviceId        || '',
+            emissionFactor:       scope.emissionFactor     || '',
+            categoryName:         scope.categoryName       || '',
+            activity:             scope.activity           || '',
+            fuel:                 scope.fuel               || '',
+            units:                scope.units              || '',
+            country:              scope.country            || '',
+            regionGrid:           scope.regionGrid         || '',
+            electricityUnit:      scope.electricityUnit    || '',
+            scope3Category:       scope.scope3Category     || '',
+            activityDescription:  scope.activityDescription|| '',
+            itemName:             scope.itemName           || '',
+            scope3Unit:           scope.scope3Unit         || '',
+            description:          scope.description        || '',
+            source:               scope.source             || '',
+            reference:            scope.reference          || '',
+            collectionFrequency:  scope.collectionFrequency|| 'monthly',
+            calculationModel:     scope.calculationModel  || 'tier 1',
+            additionalInfo:       scope.additionalInfo     || {}
+          };
+          
+          // Handle custom emission factor if emission factor is 'Custom'
+          if (scope.emissionFactor === 'Custom') {
+            normalizedScope.customEmissionFactor = {
+              CO2:  scope.customEmissionFactor?.CO2  ?? null,
+              CH4:  scope.customEmissionFactor?.CH4  ?? null,
+              N2O:  scope.customEmissionFactor?.N2O  ?? null,
+              CO2e: scope.customEmissionFactor?.CO2e ?? null,
+              unit: scope.customEmissionFactor?.unit || ''
+            };
+          } else {
+            // Initialize empty custom emission factor for non-custom cases
+            normalizedScope.customEmissionFactor = {
+              CO2: null,
+              CH4: null,
+              N2O: null,
+              CO2e: null,
+              unit: ''
+            };
+          }
+          
+          // ───── UPDATED: Dynamic emissionFactorValues based on emissionFactor choice ─────
+          const validSources = ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom','Country'];
+          
+          // Initialize empty emissionFactorValues structure
+          normalizedScope.emissionFactorValues = {
+            defraData: {},
+            ipccData: {},
+            epaData: {},
+            countryData: {},
+            customEmissionFactor: normalizedScope.customEmissionFactor,
+            dataSource: validSources.includes(scope.emissionFactor) ? scope.emissionFactor : undefined,
+            lastUpdated: new Date()
+          };
 
-  return {
-    id:         node.id,
-    label:      node.label,
-    position:   node.position,
-    parentNode: node.parentNode || null,
-    details: {
-      nodeType:          d.nodeType          || '',
-      department:        d.department        || '',
-      location:          d.location          || '',
-      employeeHeadId:    d.employeeHeadId    || null,  // Don't forget this field if it exists
-      scopeDetails:      d.scopeDetails      || [],
-      additionalDetails: d.additionalDetails || {}
-    }
-  };
-});
+          // Populate only the relevant data based on emissionFactor choice
+          if (scope.emissionFactor === 'DEFRA') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const defraSource = scope.emissionFactorValues?.defraData || scope;
+            normalizedScope.emissionFactorValues.defraData = {
+              scope:   defraSource.scope    || '',
+              level1:  defraSource.level1   || '',
+              level2:  defraSource.level2   || '',
+              level3:  defraSource.level3   || '',
+              level4:  defraSource.level4   || '',
+              columnText: defraSource.columnText || '',
+              uom:     defraSource.uom      || '',
+              ghgUnits: Array.isArray(defraSource.ghgUnits) 
+                ? defraSource.ghgUnits
+                : (defraSource.ghgUnit && defraSource.ghgConversionFactor != null)
+                  ? [{ unit: defraSource.ghgUnit, ghgconversionFactor: defraSource.ghgConversionFactor }]
+                  : []
+            };
+          } else if (scope.emissionFactor === 'IPCC') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const ipccSource = scope.emissionFactorValues?.ipccData || scope;
+            normalizedScope.emissionFactorValues.ipccData = {
+              level1:         ipccSource.level1           || '',
+              level2:         ipccSource.level2           || '',
+              level3:         ipccSource.level3           || '',
+              cpool:          ipccSource.cpool || ipccSource.Cpool || '',
+              typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
+              unit:           ipccSource.unit || ipccSource.Unit || '',
+              value:          ipccSource.value ?? ipccSource.Value ?? null,
+              description:    ipccSource.description || ipccSource.Description || ''
+            };
+          } else if (scope.emissionFactor === 'EPA') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const epaSource = scope.emissionFactorValues?.epaData || scope;
+            normalizedScope.emissionFactorValues.epaData = {
+              scopeEPA:       epaSource.scopeEPA        || '',
+              level1EPA:      epaSource.level1EPA       || '',
+              level2EPA:      epaSource.level2EPA       || '',
+              level3EPA:      epaSource.level3EPA       || '',
+              level4EPA:      epaSource.level4EPA       || '',
+              columnTextEPA:  epaSource.columnTextEPA   || '',
+              uomEPA:         epaSource.uomEPA          || '',
+              ghgUnitsEPA: Array.isArray(epaSource.ghgUnitsEPA)
+                ? epaSource.ghgUnitsEPA
+                : (epaSource.ghgUnitEPA && epaSource.ghgConversionFactorEPA != null)
+                  ? [{ unit: epaSource.ghgUnitEPA, ghgconversionFactor: epaSource.ghgConversionFactorEPA }]
+                  : []
+            };
+          } else if (scope.emissionFactor === 'Country') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const countrySource = scope.emissionFactorValues?.countryData || scope;
+            normalizedScope.emissionFactorValues.countryData = {
+              C:             countrySource.C || countrySource.country || '',
+              regionGrid:    countrySource.regionGrid       || '',
+              emissionFactor:countrySource.emissionFactor   || '',
+              reference:     countrySource.reference        || '',
+              unit:          countrySource.unit             || '',
+              yearlyValues:  Array.isArray(countrySource.yearlyValues)
+                ? countrySource.yearlyValues.map(yv => ({
+                    from:        yv.from,
+                    to:          yv.to,
+                    periodLabel: yv.periodLabel,
+                    value:       yv.value
+                  }))
+                : []
+            };
+          }
+          // If emissionFactor is Custom, customEmissionFactor is already handled above
+          // If emissionFactor is EmissionFactorHub or other, keep empty structures
+          
+          // ───────────────────────────────────────────────
+          return normalizedScope;
+        });
+      }
+
+      return {
+        id:         node.id,
+        label:      node.label,
+        position:   node.position,
+        parentNode: node.parentNode || null,
+        details: {
+          nodeType:          d.nodeType          || '',
+          department:        d.department        || '',
+          location:          d.location          || '',
+          employeeHeadId:    d.employeeHeadId    || null,  // Don't forget this field if it exists
+          scopeDetails:      d.scopeDetails      || [],
+          additionalDetails: d.additionalDetails || {}
+        }
+      };
+    });
 
     // 6) Normalize edges & auto-generate missing IDs
     let normalizedEdges = [];
@@ -364,7 +484,6 @@ const normalizedNodes = flowchartData.nodes.map(node => {
         .filter(edge => edge.source && edge.target);
     }
 
-        
     // 7) Create vs. Update
     let flowchart = await Flowchart.findOne({ clientId });
     let isNew = false;
@@ -373,7 +492,7 @@ const normalizedNodes = flowchartData.nodes.map(node => {
       // **UPDATE** existing flowchart
       flowchart.nodes          = normalizedNodes;
       flowchart.edges          = normalizedEdges;
-      flowchart.lastModifiedBy = req.user._id;
+      flowchart.lastModifiedBy = userId;
       flowchart.version       += 1;
       await flowchart.save();
     } else {
@@ -381,51 +500,59 @@ const normalizedNodes = flowchartData.nodes.map(node => {
       isNew = true;
       flowchart = new Flowchart({
         clientId,
-        createdBy:      req.user._id,
+        createdBy:      userId,
         creatorType:    req.user.userType,
-        lastModifiedBy: req.user._id,
+        lastModifiedBy: userId,
         nodes:          normalizedNodes,
         edges:          normalizedEdges
       });
       await flowchart.save();
     }
+    
     // Auto‐start flowchart status
-        if (['consultant','consultant_admin'].includes(req.user.userType)) {
-          await Client.findOneAndUpdate(
-            { clientId },
-            { 
-              $set: {
-                'workflowTracking.flowchartStatus': 'on_going',
-                'workflowTracking.flowchartStartedAt': new Date()
-              }
-            }
-          );
+    if (['consultant','consultant_admin'].includes(req.user.userType)) {
+      await Client.findOneAndUpdate(
+        { clientId },
+        { 
+          $set: {
+            'workflowTracking.flowchartStatus': 'on_going',
+            'workflowTracking.flowchartStartedAt': new Date()
+          }
         }
+      );
+    }
 
     // 8) Send notifications to all client_admins of this client
-    const clientAdmins = await User.find({
-      userType: 'client_admin',
-      clientId
-    });
-    for (const admin of clientAdmins) {
-      await Notification.create({
-        title:           isNew
-                           ? `Flowchart Created for ${clientId}`
-                           : `Flowchart Updated for ${clientId}`,
-        message:         isNew
-                           ? `A new flowchart was created for client ${clientId} by ${req.user.userName}.`
-                           : `The flowchart for client ${clientId} was updated by ${req.user.userName}.`,
-        priority:        isNew ? 'medium' : 'medium',
-        createdBy:       req.user._id,
-        creatorType:     req.user.userType,
-        targetUsers:     [admin._id],
-        targetClients:   [clientId],
-        status:          'published',
-        publishedAt:     new Date(),
-        isSystemNotification: true,
-        systemAction:    isNew ? 'flowchart_created' : 'flowchart_updated',
-        relatedEntity:   { type: 'flowchart', id: flowchart._id }
+    try {
+      const clientAdmins = await User.find({
+        userType: 'client_admin',
+        clientId
       });
+      
+      for (const admin of clientAdmins) {
+        await Notification.create({
+          title:           isNew
+                             ? `Flowchart Created for ${clientId}`
+                             : `Flowchart Updated for ${clientId}`,
+          message:         isNew
+                             ? `A new flowchart was created for client ${clientId} by ${req.user.userName}.`
+                             : `The flowchart for client ${clientId} was updated by ${req.user.userName}.`,
+          priority:        isNew ? 'medium' : 'medium',
+          createdBy:       userId, // Using consistent userId
+          creatorType:     req.user.userType,
+          targetUsers:     [admin._id || admin.id], // Handle both _id and id
+          targetClients:   [clientId],
+          status:          'published',
+          publishedAt:     new Date(),
+          isSystemNotification: true,
+          systemAction:    isNew ? 'flowchart_created' : 'flowchart_updated',
+          relatedEntity:   { type: 'flowchart', id: flowchart._id }
+        });
+      }
+    } catch (notificationError) {
+      console.error('❌ Error creating notifications:', notificationError);
+      // Don't fail the entire operation if notifications fail
+      // Just log the error and continue
     }
 
     // 9) Respond
@@ -1180,6 +1307,16 @@ const updateFlowchartNode = async (req, res) => {
     const { clientId, nodeId } = req.params;
     const { nodeData } = req.body;
 
+    // Check if user is authenticated and has required fields
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({
+        message: 'Authentication required - user information missing'
+      });
+    }
+
+    // Ensure we have a consistent userId
+    const userId = req.user._id || req.user.id;
+
     // Check permissions
     const permissionCheck = await canManageFlowchart(req.user, clientId);
     if (!permissionCheck.allowed) {
@@ -1206,7 +1343,7 @@ const updateFlowchartNode = async (req, res) => {
       try {
         validateScopeDetails(nodeData.details.scopeDetails, nodeId);
         
-        // Normalize the scope details with custom emission factor support
+        // Normalize the scope details with dynamic emission factor support
         nodeData.details.scopeDetails = nodeData.details.scopeDetails.map(scope => {
           const normalizedScope = {
             scopeIdentifier:      scope.scopeIdentifier.trim(),
@@ -1232,7 +1369,7 @@ const updateFlowchartNode = async (req, res) => {
             source:               scope.source             || '',
             reference:            scope.reference          || '',
             collectionFrequency:  scope.collectionFrequency|| 'monthly',
-            calculationModel:   scope.calculationModel     || 'tier 1',
+            calculationModel:     scope.calculationModel  || 'tier 1',
             additionalInfo:       scope.additionalInfo     || {},
             assignedEmployees:    scope.assignedEmployees  || []
           };
@@ -1256,6 +1393,92 @@ const updateFlowchartNode = async (req, res) => {
             };
           }
           
+          // ───── UPDATED: Dynamic emissionFactorValues based on emissionFactor choice ─────
+          const validSources = ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom','Country'];
+          
+          // Initialize empty emissionFactorValues structure (this clears old data)
+          normalizedScope.emissionFactorValues = {
+            defraData: {},
+            ipccData: {},
+            epaData: {},
+            countryData: {},
+            customEmissionFactor: normalizedScope.customEmissionFactor,
+            dataSource: validSources.includes(scope.emissionFactor) ? scope.emissionFactor : undefined,
+            lastUpdated: new Date()
+          };
+
+          // Populate only the relevant data based on emissionFactor choice
+          if (scope.emissionFactor === 'DEFRA') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const defraSource = scope.emissionFactorValues?.defraData || scope;
+            normalizedScope.emissionFactorValues.defraData = {
+              scope:   defraSource.scope    || '',
+              level1:  defraSource.level1   || '',
+              level2:  defraSource.level2   || '',
+              level3:  defraSource.level3   || '',
+              level4:  defraSource.level4   || '',
+              columnText: defraSource.columnText || '',
+              uom:     defraSource.uom      || '',
+              ghgUnits: Array.isArray(defraSource.ghgUnits) 
+                ? defraSource.ghgUnits
+                : (defraSource.ghgUnit && defraSource.ghgConversionFactor != null)
+                  ? [{ unit: defraSource.ghgUnit, ghgconversionFactor: defraSource.ghgConversionFactor }]
+                  : []
+            };
+          } else if (scope.emissionFactor === 'IPCC') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const ipccSource = scope.emissionFactorValues?.ipccData || scope;
+            normalizedScope.emissionFactorValues.ipccData = {
+              level1:         ipccSource.level1           || '',
+              level2:         ipccSource.level2           || '',
+              level3:         ipccSource.level3           || '',
+              cpool:          ipccSource.cpool || ipccSource.Cpool || '',
+              typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
+              unit:           ipccSource.unit || ipccSource.Unit || '',
+              value:          ipccSource.value ?? ipccSource.Value ?? null,
+              description:    ipccSource.description || ipccSource.Description || ''
+            };
+          } else if (scope.emissionFactor === 'EPA') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const epaSource = scope.emissionFactorValues?.epaData || scope;
+            normalizedScope.emissionFactorValues.epaData = {
+              scopeEPA:       epaSource.scopeEPA        || '',
+              level1EPA:      epaSource.level1EPA       || '',
+              level2EPA:      epaSource.level2EPA       || '',
+              level3EPA:      epaSource.level3EPA       || '',
+              level4EPA:      epaSource.level4EPA       || '',
+              columnTextEPA:  epaSource.columnTextEPA   || '',
+              uomEPA:         epaSource.uomEPA          || '',
+              ghgUnitsEPA: Array.isArray(epaSource.ghgUnitsEPA)
+                ? epaSource.ghgUnitsEPA
+                : (epaSource.ghgUnitEPA && epaSource.ghgConversionFactorEPA != null)
+                  ? [{ unit: epaSource.ghgUnitEPA, ghgconversionFactor: epaSource.ghgConversionFactorEPA }]
+                  : []
+            };
+          } else if (scope.emissionFactor === 'Country') {
+            // Check if data comes from emissionFactorValues or direct fields
+            const countrySource = scope.emissionFactorValues?.countryData || scope;
+            normalizedScope.emissionFactorValues.countryData = {
+              C:             countrySource.C || countrySource.country || '',
+              regionGrid:    countrySource.regionGrid       || '',
+              emissionFactor:countrySource.emissionFactor   || '',
+              reference:     countrySource.reference        || '',
+              unit:          countrySource.unit             || '',
+              yearlyValues:  Array.isArray(countrySource.yearlyValues)
+                ? countrySource.yearlyValues.map(yv => ({
+                    from:        yv.from,
+                    to:          yv.to,
+                    periodLabel: yv.periodLabel,
+                    value:       yv.value
+                  }))
+                : []
+            };
+          }
+          // If emissionFactor is Custom, customEmissionFactor is already handled above
+          // If emissionFactor is EmissionFactorHub or other, keep empty structures
+          
+          // ───────────────────────────────────────────────
+          
           return normalizedScope;
         });
       } catch (error) {
@@ -1272,7 +1495,7 @@ const updateFlowchartNode = async (req, res) => {
       id: nodeId // Ensure ID doesn't change
     };
 
-    flowchart.lastModifiedBy = req.user._id;
+    flowchart.lastModifiedBy = userId;
     flowchart.version += 1;
     await flowchart.save();
 
@@ -1298,5 +1521,6 @@ module.exports = {
   restoreFlowchart,
   getFlowchartSummary,
   getConsolidatedSummary,
-  updateFlowchartNode
+  updateFlowchartNode,
+  fetchEmissionFactor,
 };

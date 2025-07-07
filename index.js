@@ -14,17 +14,20 @@ const clientR = require("./router/clientR");
 const adminR = require("./router/adminR");
 const authR = require("./router/authR");
 const flowchartR = require("./router/flowchartR");
-const defraDataR = require("./router/defraData");
+const defraDataR = require("./router/EmissionFactor/defraData");
 const gwpRoutes = require("./router/gwpRoutes");
-const fuelCombustionRoutes = require("./router/fuelCombustionRoutes");
-const CountryemissionFactorRouter = require("./router/countryemissionFactorRouter");
+const fuelCombustionRoutes = require("./router/EmissionFactor/fuelCombustionRoutes");
+const CountryemissionFactorRouter = require("./router/EmissionFactor/countryemissionFactorRouter");
 const CalculateEmissionCO2eRouter = require("./router/CalculateEmissionCO2eRoute");
 const TotalEmissionCO2eControllerRouter = require("./router/TotalEmissionCO2eControllerRoute");
 const CalculationOfElectricityRouter = require("./router/CalculationOfElectricityRouter");
 const TotalEmissionElectricityRouter = require("./router/TotalEmissionElectricityRouter");
 const processFlowR = require("./router/processflowR");
 const dataEntryRoutes = require('./router/dataEntryRoutes');
-const EmissionFactorScope3Routes = require('./router/EmissionFactorScope3Routes');
+const EmissionFactorScope3Routes = require('./router/EmissionFactor/EmissionFactorScope3Routes');
+const ipccDataRoutes = require('./router/EmissionFactor/ipccDataRoutes');
+const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
+const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
 
 // NEW: Import notification routes (MISSING FROM YOUR CURRENT INDEX.JS)
 const notificationRoutes = require('./router/notificationRoutes');
@@ -90,6 +93,9 @@ app.use("/api/processflow", processFlowR);
 app.use('/api/data-entry', dataEntryRoutes);
 app.use('/api/scope3-emission-factors', EmissionFactorScope3Routes);
 app.use('/api', iotRoutes);
+app.use('/api/ipcc',ipccDataRoutes);
+app.use('/api/epa', EPADataRoutes);
+app.use('/api/emission-factors', emissionFactorRoutes);
 
 // 🚀 ADD NOTIFICATION ROUTES (MISSING IN YOUR ORIGINAL)
 app.use('/api/notifications', notificationRoutes);

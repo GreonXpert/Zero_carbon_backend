@@ -981,6 +981,7 @@ async function handleConsultantAdminDeletion(userToDelete, deletedBy, reassignTo
       }
       
       details.preDeletionTasks = async () => {
+        // 1. Update Client collection - reassign consultant
         await Client.updateMany(
           { "leadInfo.assignedConsultantId": userToDelete._id },
           { 
@@ -991,14 +992,83 @@ async function handleConsultantAdminDeletion(userToDelete, deletedBy, reassignTo
                 status: "reassigned",
                 action: "Consultant reassigned due to deletion",
                 performedBy: deletedBy.id,
-                notes: `Reassigned from ${userToDelete.userName} to ${newConsultant.userName}`
+                notes: `Reassigned from ${userToDelete.userName} to ${newConsultant.userName}`,
+                timestamp: new Date()
               }
             }
           }
         );
+
+        // 2. Get the list of clientIds being reassigned
+        const clientIds = assignedClients.map(client => client.clientId);
+
+        // 3. Update the NEW consultant's assignedClients array and hasAssignedClients flag
+        await User.findByIdAndUpdate(
+          reassignToConsultantId,
+          { 
+            $addToSet: { assignedClients: { $each: clientIds } },
+            $set: { hasAssignedClients: true }
+          }
+        );
+
+        // 4. Remove clients from the OLD consultant's assignedClients array
+        await User.findByIdAndUpdate(
+          userToDelete._id,
+          { 
+            $pullAll: { assignedClients: clientIds },
+            $set: { hasAssignedClients: false }
+          }
+        );
+
+        // 5. Update consultant history in all affected clients
+        for (const client of assignedClients) {
+          // Mark previous assignment as inactive in consultant history
+          const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
+            h => h.consultantId.toString() === userToDelete._id.toString() && h.isActive
+          );
+          
+          if (previousHistoryIndex !== -1) {
+            await Client.updateOne(
+              { 
+                _id: client._id,
+                "leadInfo.consultantHistory.consultantId": userToDelete._id,
+                "leadInfo.consultantHistory.isActive": true
+              },
+              {
+                $set: {
+                  "leadInfo.consultantHistory.$.isActive": false,
+                  "leadInfo.consultantHistory.$.unassignedAt": new Date(),
+                  "leadInfo.consultantHistory.$.unassignedBy": deletedBy.id,
+                  "leadInfo.consultantHistory.$.reasonForChange": "Consultant deleted - reassigned"
+                }
+              }
+            );
+          }
+
+          // Add new consultant to history
+          await Client.updateOne(
+            { _id: client._id },
+            {
+              $push: {
+                "leadInfo.consultantHistory": {
+                  consultantId: reassignToConsultantId,
+                  consultantName: newConsultant.userName,
+                  employeeId: newConsultant.employeeId,
+                  assignedAt: new Date(),
+                  assignedBy: deletedBy.id,
+                  reasonForChange: "Reassigned due to consultant deletion",
+                  isActive: true
+                }
+              }
+            }
+          );
+        }
+
+        console.log(`✅ Successfully reassigned ${clientIds.length} clients from ${userToDelete.userName} to ${newConsultant.userName}`);
       };
       
       details.reassignedTo = newConsultant.userName;
+      details.reassignedClientsCount = assignedClients.length;
     }
     
     details.canDelete = true;

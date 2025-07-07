@@ -1,4 +1,4 @@
-const EmissionFactorScope3 = require('../models/EmissionFactorScope3');
+const EmissionFactorScope3 = require('../../models/EmissionFactor/EmissionFactorScope3');
 
 
 

@@ -35,6 +35,12 @@ const userSchema = new mongoose.Schema(
     jobRole: { type: String },
     branch: { type: String },
     consultantAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+    
+    // ADD THIS NEW FIELD:
+    assignedClients: [{ type: String }], // Array of clientIds (this already exists)
+    // ADD THIS NEW FIELD FOR CONSULTANT:
+    hasAssignedClients: { type: Boolean, default: false },
     
     // Client Employee Head specific
     department: { type: String },

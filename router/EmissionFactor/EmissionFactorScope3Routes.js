@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const emissionFactorScope3Controller = require('../controllers/EmissionFactorScope3Controller');
+const emissionFactorScope3Controller = require('../../controllers/EmissionFactor/EmissionFactorScope3Controller');
 
 // Configure multer for CSV file uploads
 const storage = multer.diskStorage({

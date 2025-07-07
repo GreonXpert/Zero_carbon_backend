@@ -8,7 +8,7 @@ const {
     deleteEmissionFactor,
     bulkImportCountryEmissionFactors,
     downloadCountryEmissionFactorsTemplate
-} = require('../controllers/countryEmissionFactorController');
+} = require('../../controllers/EmissionFactor/countryEmissionFactorController');
 const multer = require('multer');
 const path = require('path');
 
