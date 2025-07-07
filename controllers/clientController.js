@@ -3320,6 +3320,7 @@ const manageSubscription = async (req, res) => {
     }
     
     const client = await Client.findOne({ clientId });
+    const previousStatus = client.accountDetails.subscriptionStatus;
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
