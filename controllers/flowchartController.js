@@ -4,7 +4,6 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const Notification   = require('../models/Notification');
-const { fetchEmissionFactorValues } = require('../utils/emissionFactorHelpers'); 
 
 // Add this import at the top of flowchartController.js:
 const { autoUpdateFlowchartStatus } = require('./clientController');
@@ -236,24 +235,6 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
 };
 
 
-async function fetchEmissionFactor(req, res) {
-  try {
-    const { database, params } = req.body;
-
-    if (!database || typeof database !== 'string') {
-      return res.status(400).json({ success: false, message: 'Missing or invalid "database"' });
-    }
-    if (!params || typeof params !== 'object') {
-      return res.status(400).json({ success: false, message: 'Missing or invalid "params"' });
-    }
-
-    const data = await fetchEmissionFactorValues(database, params);
-    return res.status(200).json({ success: true, data });
-  } catch (err) {
-    console.error('Error in fetchEmissionFactor:', err);
-    return res.status(500).json({ success: false, message: err.message });
-  }
-}
 
 
 
@@ -1522,5 +1503,4 @@ module.exports = {
   getFlowchartSummary,
   getConsolidatedSummary,
   updateFlowchartNode,
-  fetchEmissionFactor,
 };
