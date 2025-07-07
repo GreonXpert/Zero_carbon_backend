@@ -9,7 +9,6 @@ const {
   getConsolidatedSummary,
   updateFlowchartNode,
   restoreFlowchart,
-  fetchEmissionFactor
  
 } = require('../controllers/flowchartController');
 // CHANGED: Use the same auth middleware as other routes
@@ -37,10 +36,6 @@ router.delete('/:clientId/node/:nodeId', deleteFlowchartNode);
 router.patch('/:clientId/node/:nodeId', updateFlowchartNode); 
 router.patch('/:clientId/restore', restoreFlowchart); 
 
-// Emission factor operations
-router.get('/emission-factor',
-  checkRole(['consultant','consultant_admin','super_admin']),
-  fetchEmissionFactor); // Fetch emission
 
 
 
