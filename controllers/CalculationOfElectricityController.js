@@ -1,5 +1,5 @@
 const CalculationOfElectricity = require('../models/CalculationOfElectricity');
-const CountryEmissionFactor = require('../models/contryEmissionFactorModel');
+const CountryEmissionFactor = require('../models/EmissionFactor/contryEmissionFactorModel');
 const moment = require('moment');
 const mongoose = require('mongoose');
 

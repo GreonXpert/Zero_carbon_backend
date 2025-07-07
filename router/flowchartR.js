@@ -8,25 +8,40 @@ const {
   getFlowchartSummary,
   getConsolidatedSummary,
   updateFlowchartNode,
-  restoreFlowchart
+  restoreFlowchart,
+  fetchEmissionFactor
+ 
 } = require('../controllers/flowchartController');
-const { authenticate } = require('../utils/authenticate');
+// CHANGED: Use the same auth middleware as other routes
+const { auth, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(authenticate);
+router.use(auth); // CHANGED: Use proper auth middleware
 
-router.get('/summary',      getFlowchartSummary); // Get flowchart summary for all clients
-router.get('/:clientId/summary', getFlowchartSummary);       // Get flowchart summary
+// Define roles that can access emission factor data
+const viewRoles = ['consultant', 'consultant_admin', 'super_admin', 'client_admin', 'employee_head', 'employee'];
+const editRoles = ['consultant_admin', 'super_admin'];
+
+// Summary routes
+router.get('/summary', getConsolidatedSummary); 
+router.get('/:clientId/summary', getFlowchartSummary); 
 
 // Flowchart operations
-router.post('/save', saveFlowchart);                          // Create/Update flowchart
-router.get('/all', getAllFlowcharts);                        // Get all flowcharts (hierarchy-based)
-router.get('/:clientId', getFlowchart);                      // Get single flowchart
-router.delete('/:clientId', deleteFlowchart);                // Delete flowchart
-router.delete('/:clientId/node/:nodeId', deleteFlowchartNode); // Delete specific node (soft delete)
-router.patch('/:clientId/node/:nodeId', updateFlowchartNode); // Update specific node
-router.patch('/:clientId/restore', restoreFlowchart);      // Restore deleted flowchart (super admin only)
+router.post('/save', saveFlowchart); 
+router.get('/all', getAllFlowcharts); 
+router.get('/:clientId', getFlowchart); 
+router.delete('/:clientId', deleteFlowchart); 
+router.delete('/:clientId/node/:nodeId', deleteFlowchartNode); 
+router.patch('/:clientId/node/:nodeId', updateFlowchartNode); 
+router.patch('/:clientId/restore', restoreFlowchart); 
+
+// Emission factor operations
+router.get('/emission-factor',
+  checkRole(['consultant','consultant_admin','super_admin']),
+  fetchEmissionFactor); // Fetch emission
+
+
 
 module.exports = router;

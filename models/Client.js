@@ -177,7 +177,21 @@ const clientSchema = new mongoose.Schema(
       assignedConsultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
       createdAt: { type: Date, default: Date.now },
-      notes: { type: String }
+      notes: { type: String },
+
+      // ADD THESE NEW FIELDS:
+       hasAssignedConsultant: { type: Boolean, default: false },
+       consultantHistory: [{
+       consultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+       consultantName: { type: String },
+       employeeId: { type: String },
+       assignedAt: { type: Date },
+       unassignedAt: { type: Date },
+       assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+       unassignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+       reasonForChange: { type: String },
+       isActive: { type: Boolean, default: true }
+      }]
     },
     
     // Stage 2: Registration/Data Submission (GHG Form Data)

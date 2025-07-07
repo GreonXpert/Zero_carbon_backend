@@ -28,6 +28,9 @@ const {
   updateManualInputStatus,
   updateAPIInputStatus,
   updateIoTInputStatus,
+  getConsultantHistory,
+  changeConsultant,
+  removeConsultant
    
 } = require("../controllers/clientController");
 
@@ -64,7 +67,9 @@ router.patch("/:clientId/proposal-status", updateProposalStatus); // Accept/Reje
 router.get("/:clientId/proposal-data", getClientProposalData); // Get proposal data for a client
 
 // Client Management (Stage 4)
-router.patch("/:clientId/assign-consultant", assignConsultant); // Assign consultant
+router.patch("/:clientId/assign-consultant", assignConsultant); // Assign consultant (existing)
+router.patch("/:clientId/change-consultant", changeConsultant); // Change consultant (new)
+router.patch("/:clientId/remove-consultant", removeConsultant); // Remove consultant (new)
 router.patch("/:clientId/subscription", manageSubscription); // Manage subscription
 
 // General Routes
@@ -87,5 +92,12 @@ router.patch("/:clientId/workflow/iot-input/:pointId", updateIoTInputStatus); //
 
 // Dashboard endpoints
 router.get("/dashboard/metrics", getDashboardMetrics); // Get dashboard metrics
+
+
+// Add this route with your other routes:
+router.get("/:clientId/consultant-history", getConsultantHistory); // Get consultant assignment history
+
+
+
 
 module.exports = router;

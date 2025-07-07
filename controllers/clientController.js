@@ -2812,11 +2812,7 @@ const updateProposalStatus = async (req, res) => {
       }
 
       await client.save();
-          // ADD THIS: Emit real-time updates
-        if (decision === "accept") {
-            await emitClientStageChange(client, "proposal", req.user.id);
-        }
-        await emitClientListUpdate(client, 'updated', req.user.id);
+        
 
       return res.status(200).json({
         message: "Proposal accepted and client account activated",
@@ -2839,7 +2835,11 @@ const updateProposalStatus = async (req, res) => {
       });
 
       await client.save();
-
+  // ADD THIS: Emit real-time updates
+        if (decision === "accept") {
+            await emitClientStageChange(client, "proposal", req.user.id);
+        }
+        await emitClientListUpdate(client, 'updated', req.user.id);
       return res.status(200).json({
         message: "Proposal rejected",
         client: {
@@ -3089,7 +3089,7 @@ const getClientById = async (req, res) => {
 const assignConsultant = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { consultantId } = req.body;
+    const { consultantId, reasonForChange } = req.body;
     
     // Only consultant admin can assign consultants
     if (req.user.userType !== "consultant_admin") {
@@ -3116,22 +3116,73 @@ const assignConsultant = async (req, res) => {
       });
     }
     
-    // Check if there was a previously assigned consultant to remove this client from their list
-    if (client.leadInfo.assignedConsultantId) {
+    // Store previous consultant info for history and notifications
+    const previousConsultantId = client.leadInfo.assignedConsultantId;
+    let wasAlreadyAssigned = false;
+    
+    // Check if consultant is already assigned to this client
+    if (previousConsultantId && previousConsultantId.toString() === consultantId) {
+      wasAlreadyAssigned = true;
+      return res.status(400).json({
+        message: "This consultant is already assigned to this client",
+        alreadyAssigned: true,
+        client: {
+          clientId: client.clientId,
+          assignedConsultant: {
+            id: consultant._id,
+            name: consultant.userName,
+            employeeId: consultant.employeeId
+          }
+        }
+      });
+    }
+    
+    // Handle previous consultant unassignment
+    if (previousConsultantId) {
+      // Remove client from previous consultant's assignedClients array
       await User.findByIdAndUpdate(
-        client.leadInfo.assignedConsultantId,
-        { $pull: { assignedClients: clientId } }
+        previousConsultantId,
+        { 
+          $pull: { assignedClients: clientId },
+          $set: { hasAssignedClients: false } // Will be updated correctly below
+        }
       );
+      
+      // Update consultant history - mark previous assignment as inactive
+      const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
+        h => h.consultantId.toString() === previousConsultantId.toString() && h.isActive
+      );
+      
+      if (previousHistoryIndex !== -1) {
+        client.leadInfo.consultantHistory[previousHistoryIndex].isActive = false;
+        client.leadInfo.consultantHistory[previousHistoryIndex].unassignedAt = new Date();
+        client.leadInfo.consultantHistory[previousHistoryIndex].unassignedBy = req.user.id;
+        client.leadInfo.consultantHistory[previousHistoryIndex].reasonForChange = reasonForChange || "Reassigned to new consultant";
+      }
     }
     
     // Update client with new consultant
     client.leadInfo.assignedConsultantId = consultantId;
+    client.leadInfo.hasAssignedConsultant = true;
+    
+    // Add new consultant to history
+    client.leadInfo.consultantHistory.push({
+      consultantId: consultantId,
+      consultantName: consultant.userName,
+      employeeId: consultant.employeeId,
+      assignedAt: new Date(),
+      assignedBy: req.user.id,
+      reasonForChange: reasonForChange || "Initial assignment",
+      isActive: true
+    });
+    
+    // Add timeline entry
     client.timeline.push({
       stage: client.stage,
       status: client.status,
-      action: "Consultant assigned",
+      action: wasAlreadyAssigned ? "Consultant reassigned" : "Consultant assigned",
       performedBy: req.user.id,
-      notes: `Assigned to ${consultant.userName}`
+      notes: `${wasAlreadyAssigned ? 'Reassigned' : 'Assigned'} to ${consultant.userName} (${consultant.employeeId})`
     });
     
     // ========== WORKFLOW TRACKING UPDATE ==========
@@ -3148,23 +3199,38 @@ const assignConsultant = async (req, res) => {
       totalDataPoints: 0,
       lastSyncedWithFlowchart: null
     };
-     const previousConsultantId = client.leadInfo.assignedConsultantId;
-
+    
     await client.save();
     
-    // Update consultant's assignedClients array
-    // Using $addToSet to avoid duplicates
+    // Update new consultant's assignedClients array and hasAssignedClients flag
     await User.findByIdAndUpdate(
       consultantId,
-      { $addToSet: { assignedClients: clientId } },
+      { 
+        $addToSet: { assignedClients: clientId },
+        $set: { hasAssignedClients: true }
+      },
       { new: true }
     );
-    // ADD THIS: Emit real-time updates
-    await emitClientListUpdate(client, 'updated', req.user.id);
     
-     // ADD THIS: Targeted updates for specific consultant views
-    // Notify users viewing the previous consultant's clients
+    // Update previous consultant's hasAssignedClients flag
     if (previousConsultantId) {
+      const previousConsultantClients = await User.findById(previousConsultantId).select('assignedClients');
+      if (previousConsultantClients && previousConsultantClients.assignedClients.length === 0) {
+        await User.findByIdAndUpdate(
+          previousConsultantId,
+          { $set: { hasAssignedClients: false } }
+        );
+      }
+    }
+    
+    // ADD THIS: Emit real-time updates (keep existing real-time functionality)
+    if (typeof emitClientListUpdate === 'function') {
+      await emitClientListUpdate(client, 'updated', req.user.id);
+    }
+    
+    // ADD THIS: Targeted updates for specific consultant views
+    // Notify users viewing the previous consultant's clients
+    if (previousConsultantId && typeof emitTargetedClientUpdate === 'function') {
         await emitTargetedClientUpdate(
             client,
             'consultant_unassigned',
@@ -3177,15 +3243,17 @@ const assignConsultant = async (req, res) => {
     }
     
     // Notify users viewing the new consultant's clients
-    await emitTargetedClientUpdate(
-        client,
-        'consultant_assigned',
-        req.user.id,
-        {
-            consultantId: consultantId,
-            action: 'added'
-        }
-    );
+    if (typeof emitTargetedClientUpdate === 'function') {
+        await emitTargetedClientUpdate(
+            client,
+            'consultant_assigned',
+            req.user.id,
+            {
+                consultantId: consultantId,
+                action: 'added'
+            }
+        );
+    }
 
     // Notify the newly assigned consultant
     if (global.io) {
@@ -3195,29 +3263,37 @@ const assignConsultant = async (req, res) => {
             timestamp: new Date().toISOString()
         });
     }
-    // Notify the assigned consultant
-    const emailSubject = "New Client Assignment";
+    
+    // Notify the assigned consultant via email
+    const emailSubject = wasAlreadyAssigned ? "Client Reassignment" : "New Client Assignment";
     const emailMessage = `
-      You have been assigned to a new client:
+      You have been ${wasAlreadyAssigned ? 'reassigned' : 'assigned'} to a client:
       
       Client ID: ${clientId}
       Company: ${client.leadInfo.companyName}
       Current Stage: ${client.stage}
+      ${reasonForChange ? `Reason: ${reasonForChange}` : ''}
       
       Please review the client details and take appropriate action.
     `;
     
-    await sendMail(consultant.email, emailSubject, emailMessage);
+    if (typeof sendMail === 'function') {
+      await sendMail(consultant.email, emailSubject, emailMessage);
+    }
     
     res.status(200).json({
-      message: "Consultant assigned successfully",
+      message: wasAlreadyAssigned ? "Consultant reassigned successfully" : "Consultant assigned successfully",
+      alreadyAssigned: wasAlreadyAssigned,
       client: {
         clientId: client.clientId,
+        hasAssignedConsultant: client.leadInfo.hasAssignedConsultant,
         assignedConsultant: {
           id: consultant._id,
           name: consultant.userName,
-          email: consultant.email
-        }
+          email: consultant.email,
+          employeeId: consultant.employeeId
+        },
+        consultantHistory: client.leadInfo.consultantHistory
       }
     });
     
@@ -3799,6 +3875,481 @@ const checkExpiredSubscriptions = async () => {
   }
 };
 
+
+// Get consultant assignment history for a client
+const getConsultantHistory = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    const client = await Client.findOne({ clientId })
+      .populate('leadInfo.consultantHistory.consultantId', 'userName email employeeId')
+      .populate('leadInfo.consultantHistory.assignedBy', 'userName email')
+      .populate('leadInfo.consultantHistory.unassignedBy', 'userName email');
+    
+    if (!client) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+    
+    // Check permissions (same as getClientById)
+    let hasAccess = false;
+    switch (req.user.userType) {
+      case "super_admin":
+        hasAccess = true;
+        break;
+      case "consultant_admin":
+        hasAccess = client.leadInfo.consultantAdminId._id.toString() === req.user.id;
+        break;
+      case "consultant":
+        hasAccess = client.leadInfo.assignedConsultantId?._id.toString() === req.user.id;
+        break;
+      default:
+        hasAccess = false;
+    }
+    
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        message: "You don't have permission to view this client's consultant history" 
+      });
+    }
+    
+    res.status(200).json({
+      message: "Consultant history fetched successfully",
+      clientId: client.clientId,
+      companyName: client.leadInfo.companyName,
+      hasAssignedConsultant: client.leadInfo.hasAssignedConsultant,
+      currentConsultant: client.leadInfo.assignedConsultantId,
+      consultantHistory: client.leadInfo.consultantHistory
+    });
+    
+  } catch (error) {
+    console.error("Get consultant history error:", error);
+    res.status(500).json({ 
+      message: "Failed to fetch consultant history", 
+      error: error.message 
+    });
+  }
+};
+
+// Add this function to your clientController.js
+
+/**
+ * Change Consultant - Remove current consultant and assign new one
+ * PATCH /api/clients/:clientId/change-consultant
+ * Only consultant_admin can change consultants
+ * Body: { newConsultantId, reasonForChange }
+ */
+const changeConsultant = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { newConsultantId, reasonForChange } = req.body;
+    
+    // Validation
+    if (!newConsultantId || !reasonForChange) {
+      return res.status(400).json({ 
+        message: "New consultant ID and reason for change are required" 
+      });
+    }
+    
+    // Only consultant admin can change consultants
+    if (req.user.userType !== "consultant_admin") {
+      return res.status(403).json({ 
+        message: "Only Consultant Admins can change consultants" 
+      });
+    }
+    
+    // Find the client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+    
+    // Check if client belongs to this consultant admin
+    if (client.leadInfo.consultantAdminId._id.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        message: "You can only change consultants for your own clients" 
+      });
+    }
+    
+    // Check if client currently has a consultant assigned
+    const currentConsultantId = client.leadInfo.assignedConsultantId;
+    if (!currentConsultantId) {
+      return res.status(400).json({ 
+        message: "No consultant is currently assigned to this client" 
+      });
+    }
+    
+    // Verify new consultant belongs to this consultant admin
+    const newConsultant = await User.findOne({
+      _id: newConsultantId,
+      userType: "consultant",
+      consultantAdminId: req.user.id,
+      isActive: true
+    });
+    
+    if (!newConsultant) {
+      return res.status(400).json({ 
+        message: "Invalid consultant or consultant not under your management" 
+      });
+    }
+    
+    // Check if new consultant is same as current consultant
+    if (currentConsultantId.toString() === newConsultantId) {
+      return res.status(400).json({
+        message: "The selected consultant is already assigned to this client"
+      });
+    }
+    
+    // Get current consultant details for history
+    const currentConsultant = await User.findById(currentConsultantId);
+    
+    // === STEP 1: Remove current consultant ===
+    
+    // Remove client from current consultant's assignedClients array
+    await User.findByIdAndUpdate(
+      currentConsultantId,
+      { 
+        $pull: { assignedClients: clientId }
+      }
+    );
+    
+    // Update current consultant's hasAssignedClients flag
+    const currentConsultantClients = await User.findById(currentConsultantId).select('assignedClients');
+    if (currentConsultantClients && currentConsultantClients.assignedClients.length === 0) {
+      await User.findByIdAndUpdate(
+        currentConsultantId,
+        { $set: { hasAssignedClients: false } }
+      );
+    }
+    
+    // Mark previous assignment as inactive in consultant history
+    const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
+      h => h.consultantId.toString() === currentConsultantId.toString() && h.isActive
+    );
+    
+    if (previousHistoryIndex !== -1) {
+      client.leadInfo.consultantHistory[previousHistoryIndex].isActive = false;
+      client.leadInfo.consultantHistory[previousHistoryIndex].unassignedAt = new Date();
+      client.leadInfo.consultantHistory[previousHistoryIndex].unassignedBy = req.user.id;
+      client.leadInfo.consultantHistory[previousHistoryIndex].reasonForChange = reasonForChange;
+    }
+    
+    // === STEP 2: Assign new consultant ===
+    
+    // Update client with new consultant
+    client.leadInfo.assignedConsultantId = newConsultantId;
+    client.leadInfo.hasAssignedConsultant = true;
+    
+    // Add new consultant to history
+    client.leadInfo.consultantHistory.push({
+      consultantId: newConsultantId,
+      consultantName: newConsultant.userName,
+      employeeId: newConsultant.employeeId,
+      assignedAt: new Date(),
+      assignedBy: req.user.id,
+      reasonForChange: reasonForChange,
+      isActive: true
+    });
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: "Consultant changed",
+      performedBy: req.user.id,
+      notes: `Changed from ${currentConsultant?.userName || 'Unknown'} to ${newConsultant.userName}. Reason: ${reasonForChange}`
+    });
+    
+    // ========== WORKFLOW TRACKING UPDATE ==========
+    if (client.workflowTracking) {
+      client.workflowTracking.assignedConsultantId = newConsultantId;
+      client.workflowTracking.consultantAssignedAt = new Date();
+      
+      // Reset workflow status if client is in workflow stage
+      if (client.stage === 'active_client') {
+        client.workflowTracking.flowchartStatus = 'not_started';
+        client.workflowTracking.processFlowchartStatus = 'not_started';
+        
+        // Reset data input points
+        client.workflowTracking.dataInputPoints = {
+          manual: { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          api:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          iot:    { inputs: [], totalCount:0, completedCount:0, pendingCount:0, onGoingCount:0, notStartedCount:0 },
+          totalDataPoints: 0,
+          lastSyncedWithFlowchart: null
+        };
+      }
+    }
+    
+    await client.save();
+    
+    // Update new consultant's assignedClients array and hasAssignedClients flag
+    await User.findByIdAndUpdate(
+      newConsultantId,
+      { 
+        $addToSet: { assignedClients: clientId },
+        $set: { hasAssignedClients: true }
+      }
+    );
+    
+    // === NOTIFICATIONS ===
+    
+    // Notify the previously assigned consultant
+    if (currentConsultant && global.io) {
+      global.io.to(`user_${currentConsultantId}`).emit('consultant_unassigned', {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        reason: reasonForChange,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Notify the newly assigned consultant
+    if (global.io) {
+      global.io.to(`user_${newConsultantId}`).emit('consultant_assigned', {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        previousConsultant: currentConsultant?.userName || 'Unknown',
+        reason: reasonForChange,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Send email notifications
+    try {
+      // Email to new consultant
+      const newConsultantEmailSubject = "New Client Assignment";
+      const newConsultantEmailMessage = `
+        You have been assigned to a new client:
+        
+        Client ID: ${clientId}
+        Company: ${client.leadInfo.companyName}
+        Current Stage: ${client.stage}
+        Previous Consultant: ${currentConsultant?.userName || 'Unknown'}
+        Reason for Change: ${reasonForChange}
+        
+        Please review the client details and take appropriate action.
+      `;
+      
+      if (typeof sendMail === 'function') {
+        await sendMail(newConsultant.email, newConsultantEmailSubject, newConsultantEmailMessage);
+      }
+      
+      // Email to previous consultant
+      if (currentConsultant) {
+        const prevConsultantEmailSubject = "Client Reassignment Notification";
+        const prevConsultantEmailMessage = `
+          You have been unassigned from the following client:
+          
+          Client ID: ${clientId}
+          Company: ${client.leadInfo.companyName}
+          New Consultant: ${newConsultant.userName}
+          Reason for Change: ${reasonForChange}
+          
+          Please ensure all client materials are properly handed over.
+        `;
+        
+        if (typeof sendMail === 'function') {
+          await sendMail(currentConsultant.email, prevConsultantEmailSubject, prevConsultantEmailMessage);
+        }
+      }
+    } catch (emailError) {
+      console.error("Warning: Could not send email notifications:", emailError);
+      // Continue with the response even if email fails
+    }
+    
+    // Emit real-time updates for dashboard
+    if (typeof emitClientListUpdate === 'function') {
+      await emitClientListUpdate(client, 'consultant_changed', req.user.id);
+    }
+    
+    res.status(200).json({
+      message: "Consultant changed successfully",
+      client: {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        stage: client.stage,
+        previousConsultant: {
+          id: currentConsultantId,
+          name: currentConsultant?.userName || 'Unknown',
+          employeeId: currentConsultant?.employeeId || 'Unknown'
+        },
+        newConsultant: {
+          id: newConsultant._id,
+          name: newConsultant.userName,
+          employeeId: newConsultant.employeeId
+        },
+        reasonForChange: reasonForChange
+      }
+    });
+    
+  } catch (error) {
+    console.error("Change consultant error:", error);
+    res.status(500).json({ 
+      message: "Failed to change consultant", 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Remove Consultant - Remove current consultant without assigning new one
+ * PATCH /api/clients/:clientId/remove-consultant
+ * Only consultant_admin can remove consultants
+ * Body: { reasonForRemoval }
+ */
+const removeConsultant = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { reasonForRemoval } = req.body;
+    
+    // Validation
+    if (!reasonForRemoval) {
+      return res.status(400).json({ 
+        message: "Reason for removal is required" 
+      });
+    }
+    
+    // Only consultant admin can remove consultants
+    if (req.user.userType !== "consultant_admin") {
+      return res.status(403).json({ 
+        message: "Only Consultant Admins can remove consultants" 
+      });
+    }
+    
+    // Find the client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+    
+    // Check if client belongs to this consultant admin
+    if (client.leadInfo.consultantAdminId._id.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        message: "You can only remove consultants from your own clients" 
+      });
+    }
+    
+    // Check if client currently has a consultant assigned
+    const currentConsultantId = client.leadInfo.assignedConsultantId;
+    if (!currentConsultantId) {
+      return res.status(400).json({ 
+        message: "No consultant is currently assigned to this client" 
+      });
+    }
+    
+    // Get current consultant details for history
+    const currentConsultant = await User.findById(currentConsultantId);
+    
+    // Remove client from current consultant's assignedClients array
+    await User.findByIdAndUpdate(
+      currentConsultantId,
+      { 
+        $pull: { assignedClients: clientId }
+      }
+    );
+    
+    // Update current consultant's hasAssignedClients flag
+    const currentConsultantClients = await User.findById(currentConsultantId).select('assignedClients');
+    if (currentConsultantClients && currentConsultantClients.assignedClients.length === 0) {
+      await User.findByIdAndUpdate(
+        currentConsultantId,
+        { $set: { hasAssignedClients: false } }
+      );
+    }
+    
+    // Mark assignment as inactive in consultant history
+    const historyIndex = client.leadInfo.consultantHistory.findIndex(
+      h => h.consultantId.toString() === currentConsultantId.toString() && h.isActive
+    );
+    
+    if (historyIndex !== -1) {
+      client.leadInfo.consultantHistory[historyIndex].isActive = false;
+      client.leadInfo.consultantHistory[historyIndex].unassignedAt = new Date();
+      client.leadInfo.consultantHistory[historyIndex].unassignedBy = req.user.id;
+      client.leadInfo.consultantHistory[historyIndex].reasonForChange = reasonForRemoval;
+    }
+    
+    // Remove consultant from client
+    client.leadInfo.assignedConsultantId = null;
+    client.leadInfo.hasAssignedConsultant = false;
+    
+    // Add timeline entry
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: "Consultant removed",
+      performedBy: req.user.id,
+      notes: `Removed ${currentConsultant?.userName || 'Unknown'} from client. Reason: ${reasonForRemoval}`
+    });
+    
+    // Clear workflow tracking consultant
+    if (client.workflowTracking) {
+      client.workflowTracking.assignedConsultantId = null;
+    }
+    
+    await client.save();
+    
+    // Notify the removed consultant
+    if (currentConsultant && global.io) {
+      global.io.to(`user_${currentConsultantId}`).emit('consultant_removed', {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        reason: reasonForRemoval,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Send email notification to removed consultant
+    try {
+      if (currentConsultant && typeof sendMail === 'function') {
+        const emailSubject = "Client Assignment Removed";
+        const emailMessage = `
+          You have been removed from the following client:
+          
+          Client ID: ${clientId}
+          Company: ${client.leadInfo.companyName}
+          Reason for Removal: ${reasonForRemoval}
+          
+          Please ensure all client materials are properly returned.
+        `;
+        
+        await sendMail(currentConsultant.email, emailSubject, emailMessage);
+      }
+    } catch (emailError) {
+      console.error("Warning: Could not send email notification:", emailError);
+    }
+    
+    // Emit real-time updates
+    if (typeof emitClientListUpdate === 'function') {
+      await emitClientListUpdate(client, 'consultant_removed', req.user.id);
+    }
+    
+    res.status(200).json({
+      message: "Consultant removed successfully",
+      client: {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        stage: client.stage,
+        removedConsultant: {
+          id: currentConsultantId,
+          name: currentConsultant?.userName || 'Unknown',
+          employeeId: currentConsultant?.employeeId || 'Unknown'
+        },
+        reasonForRemoval: reasonForRemoval
+      }
+    });
+    
+  } catch (error) {
+    console.error("Remove consultant error:", error);
+    res.status(500).json({ 
+      message: "Failed to remove consultant", 
+      error: error.message 
+    });
+  }
+};
+
+
+
 module.exports = {
   createLead,
   updateLead,
@@ -3829,4 +4380,7 @@ module.exports = {
   updateIoTInputStatus,
   autoUpdateFlowchartStatus,
   autoUpdateProcessFlowchartStatus,
+  getConsultantHistory,
+  changeConsultant,
+  removeConsultant
 };

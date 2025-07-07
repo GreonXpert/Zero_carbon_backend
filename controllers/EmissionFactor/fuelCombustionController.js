@@ -1,5 +1,5 @@
-const FuelCombustion = require('../models/FuelCombustion');
-const GWP = require('../models/GWP'); // To fetch GWP values
+const FuelCombustion = require('../../models/EmissionFactor/FuelCombustion');
+const GWP = require('../../models/GWP'); // To fetch GWP values
 const csvtojson = require('csvtojson');
 
 

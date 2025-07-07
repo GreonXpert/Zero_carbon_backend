@@ -1,4 +1,4 @@
-const EmissionFactor = require('../models/contryEmissionFactorModel');
+const EmissionFactor = require('../../models/EmissionFactor/contryEmissionFactorModel');
 const csvtojson = require('csvtojson');
 const fs = require('fs');
 

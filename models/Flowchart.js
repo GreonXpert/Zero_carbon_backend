@@ -54,34 +54,83 @@ const ScopeDetailSchema = new mongoose.Schema({
     default: '',
     description: 'Emission factor standard used'
   },
-  // Custom emission factor fields (only used when emissionFactor is 'Custom')
-  customEmissionFactor: {
-    CO2: {
-      type: Number,
-      default: null,
-      description: 'Custom CO2 emission factor value'
-    },
-    CH4: {
-      type: Number,
-      default: null,
-      description: 'Custom CH4 emission factor value'
-    },
-    N2O: {
-      type: Number,
-      default: null,
-      description: 'Custom N2O emission factor value'
-    },
-    CO2e: {
-      type: Number,
-      default: null,
-      description: 'Custom CO2e emission factor value'
-    },
-    unit: {
-      type: String,
-      default: '',
-      description: 'Unit for custom emission factors (e.g., kg CO2e/unit)'
-    }
+  // After the customEmissionFactor field, add:
+emissionFactorValues: {
+  // For DEFRA
+  defraData: {
+    scope: { type: String },
+    level1: { type: String },
+    level2: { type: String },
+    level3: { type: String },
+    level4: { type: String },
+    columnText: { type: String },
+    uom: { type: String },
+    ghgUnits: [{ 
+      unit: { type: String },
+      ghgconversionFactor: { type: Number }
+    }],
+   
   },
+  
+  // For IPCC
+  ipccData: {
+    level1: { type: String },
+    level2: { type: String },
+    level3: { type: String },
+    cpool: { type: String },
+    typeOfParameter: { type: String },
+    unit: { type: String },
+    value: { type: Number },
+    description: { type: String }
+  },
+  
+  // For EPA
+  epaData: {
+    scopeEPA: { type: String },
+    level1EPA: { type: String },
+    level2EPA: { type: String },
+    level3EPA: { type: String },
+    level4EPA: { type: String },
+    columnTextEPA: { type: String },
+    uomEPA: { type: String },
+    ghgUnitsEPA: [{
+      unit: { type: String },
+      ghgconversionFactor: { type: Number }
+    }],
+    
+  },
+   countryData: {
+      C: String,
+      regionGrid: String,
+      emissionFactor: String,
+      reference: String,
+      unit: String,
+      yearlyValues: [{
+        from: String,       // dd/mm/yyyy
+        to: String,         // dd/mm/yyyy
+        periodLabel: String,
+        value: Number
+      }]
+    },
+
+     customEmissionFactor: {
+      CO2:  { type: Number, default: null },
+      CH4:  { type: Number, default: null },
+      N2O:  { type: Number, default: null },
+      CO2e: { type: Number, default: null },
+      unit: { type: String, default: '' }
+    },
+
+  
+  // Common metadata
+  dataSource: {
+    type: String,
+    enum: ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom'],
+    description: 'Source database for emission factor'
+  },
+  lastUpdated: { type: Date, default: Date.now }
+},
+ 
   
   categoryName: { 
     type: String,
