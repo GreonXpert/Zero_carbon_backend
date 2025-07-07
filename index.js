@@ -11,8 +11,6 @@ const jwt = require("jsonwebtoken");
 // Import Routes
 const userR = require("./router/userR");
 const clientR = require("./router/clientR");
-const adminR = require("./router/adminR");
-const authR = require("./router/authR");
 const flowchartR = require("./router/flowchartR");
 const defraDataR = require("./router/EmissionFactor/defraData");
 const gwpRoutes = require("./router/gwpRoutes");
@@ -78,8 +76,6 @@ app.use(cors({
 // Routes
 app.use("/api/users", userR);
 app.use("/api/clients", clientR);
-app.use("/api/admin", adminR);
-app.use("/api/auth", authR);
 app.use("/api/flowchart", flowchartR);
 app.use("/api/defra",defraDataR);
 app.use("/api/gwp", gwpRoutes);
