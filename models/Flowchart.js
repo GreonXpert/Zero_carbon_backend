@@ -66,7 +66,11 @@ emissionFactorValues: {
     uom: { type: String },
     ghgUnits: [{ 
       unit: { type: String },
-      ghgconversionFactor: { type: Number }
+      ghgconversionFactor: { type: Number },
+      gwpValue: { type: Number, default: 0 },
+      gwpSearchField: { type: String, default: null },
+      gwpLastUpdated: { type: Date, default: null }
+
     }],
    
   },
@@ -80,7 +84,10 @@ emissionFactorValues: {
     typeOfParameter: { type: String },
     unit: { type: String },
     value: { type: Number },
-    description: { type: String }
+    description: { type: String },
+    gwpValue: { type: Number, default: 0 },
+      gwpSearchField: { type: String, default: null },
+      gwpLastUpdated: { type: Date, default: null }
   },
   
   // For EPA
@@ -94,7 +101,10 @@ emissionFactorValues: {
     uomEPA: { type: String },
     ghgUnitsEPA: [{
       unit: { type: String },
-      ghgconversionFactor: { type: Number }
+      ghgconversionFactor: { type: Number },
+       gwpValue: { type: Number, default: 0 },
+      gwpSearchField: { type: String, default: null },
+      gwpLastUpdated: { type: Date, default: null }
     }],
     
   },
@@ -117,9 +127,40 @@ emissionFactorValues: {
       CH4:  { type: Number, default: null },
       N2O:  { type: Number, default: null },
       CO2e: { type: Number, default: null },
-      unit: { type: String, default: '' }
-    },
+      unit: { type: String, default: '' },
+      // Process Emission value 
+      industryAverageEmissionFactor: { type: Number, default: null },
+      stoichiometicFactor: { type: Number, default: null },
+      conversionEfficiency: { type: Number, default: null },
+     
 
+      // fugitive emission Factor Values 
+      chargeType: { type: String, default: '' },
+      leakageRate: { type: Number, default: null },
+      Gwp_refrigerant: { type: Number, default: '' },
+      GWP_fugitiveEmission: { type: Number, default: null },
+
+      // GWP values for custom emission factors
+      CO2_gwp: { type: Number, default: 0 },
+      CH4_gwp: { type: Number, default: 0 },
+      N2O_gwp: { type: Number, default: 0 },
+      gwpLastUpdated: { type: Date, default: null }
+    },
+  // Emission factor value // For EmissionFactorHub
+    emissionFactorHubData: {
+      factorId: { type: String },
+      factorName: { type: String },
+      category: { type: String },
+      subcategory: { type: String },
+      unit: { type: String },
+      value: { type: Number },
+      source: { type: String },
+      reference: { type: String },
+      // ADD GWP VALUE FOR EMISSIONFACTORHUB
+      gwpValue: { type: Number, default: 0 },
+      gwpSearchField: { type: String, default: null },
+      gwpLastUpdated: { type: Date, default: null }
+    },
   
   // Common metadata
   dataSource: {
@@ -129,7 +170,17 @@ emissionFactorValues: {
   },
   lastUpdated: { type: Date, default: Date.now }
 },
- 
+  // Add these two new fields for uncertainty values
+  UAD: {
+    type: Number,
+    default: 0,
+    description: 'Activity Data Uncertainty percentage'
+  },
+  UEF: {
+    type: Number,
+    default: 0,
+    description: 'Emission Factor Uncertainty percentage'
+  },
   
   categoryName: { 
     type: String,
