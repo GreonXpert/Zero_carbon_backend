@@ -325,7 +325,10 @@ const saveFlowchart = async (req, res) => {
             reference:            scope.reference          || '',
             collectionFrequency:  scope.collectionFrequency|| 'monthly',
             calculationModel:     scope.calculationModel  || 'tier 1',
-            additionalInfo:       scope.additionalInfo     || {}
+            additionalInfo:       scope.additionalInfo     || {},
+            assignedEmployees:    scope.assignedEmployees  || [],
+            UAD:                  scope.UAD                || 0,
+            UEF:                  scope.UEF                || 0
           };
           
           // Handle custom emission factor if emission factor is 'Custom'
@@ -335,7 +338,21 @@ const saveFlowchart = async (req, res) => {
               CH4:  scope.customEmissionFactor?.CH4  ?? null,
               N2O:  scope.customEmissionFactor?.N2O  ?? null,
               CO2e: scope.customEmissionFactor?.CO2e ?? null,
-              unit: scope.customEmissionFactor?.unit || ''
+              unit: scope.customEmissionFactor?.unit || '',
+              // Process Emission Factor 
+              industryAverageEmissionFactor:scope.customEmissionFactor?.industryAverageEmissionFactor || null,
+              stoichiometicFactor: scope.customEmissionFactor?.stoichiometicFactor || null,
+              conversionEfficiency: scope.customEmissionFactor?.conversionEfficiency || null,
+
+              // fugitive emission Factor Values 
+              chargeType: scope.customEmissionFactor?.chargeType || '',
+              leakageRate: scope.customEmissionFactor?.leakageRate || null,
+              Gwp_refrigerant: scope.customEmissionFactor?.Gwp_refrigerant || null,
+              GWP_fugitiveEmission: scope.customEmissionFactor?.GWP_fugitiveEmission || null,
+
+              CO2_gwp: scope.customEmissionFactor?.CO2_gwp ?? 0,
+              CH4_gwp: scope.customEmissionFactor?.CH4_gwp ?? 0,
+              N2O_gwp: scope.customEmissionFactor?.N2O_gwp ?? 0,
             };
           } else {
             // Initialize empty custom emission factor for non-custom cases
@@ -378,7 +395,10 @@ const saveFlowchart = async (req, res) => {
                 ? defraSource.ghgUnits
                 : (defraSource.ghgUnit && defraSource.ghgConversionFactor != null)
                   ? [{ unit: defraSource.ghgUnit, ghgconversionFactor: defraSource.ghgConversionFactor }]
-                  : []
+                  : [],
+              gwpValue: defraSource.gwpValue || 0,
+              gwpSearchField: defraSource.gwpSearchField || null,
+              gwpLastUpdated: defraSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'IPCC') {
             // Check if data comes from emissionFactorValues or direct fields
@@ -391,7 +411,10 @@ const saveFlowchart = async (req, res) => {
               typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
               unit:           ipccSource.unit || ipccSource.Unit || '',
               value:          ipccSource.value ?? ipccSource.Value ?? null,
-              description:    ipccSource.description || ipccSource.Description || ''
+              description:    ipccSource.description || ipccSource.Description || '',
+              gwpValue: ipccSource.gwpValue || 0,
+              gwpSearchField:ipccSource.gwpSearchField || null,
+              gwpLastUpdated: ipccSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'EPA') {
             // Check if data comes from emissionFactorValues or direct fields
@@ -408,7 +431,10 @@ const saveFlowchart = async (req, res) => {
                 ? epaSource.ghgUnitsEPA
                 : (epaSource.ghgUnitEPA && epaSource.ghgConversionFactorEPA != null)
                   ? [{ unit: epaSource.ghgUnitEPA, ghgconversionFactor: epaSource.ghgConversionFactorEPA }]
-                  : []
+                  : [],
+              gwpValue:epaSource.gwpValue || 0,
+              gwpSearchField: epaSource.gwpSearchField || null,
+              gwpLastUpdated:epaSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'Country') {
             // Check if data comes from emissionFactorValues or direct fields
@@ -427,6 +453,34 @@ const saveFlowchart = async (req, res) => {
                     value:       yv.value
                   }))
                 : []
+            };
+          }else if (scope.emissionFactor === 'EmissionFactorHub') {
+            const hubSource = scope.emissionFactorValues?.emissionFactorHubData || scope;
+            normalizedScope.emissionFactorValues.emissionFactorHubData = {
+              factorId:    hubSource.factorId    || '',
+              factorName:  hubSource.factorName  || '',
+              category:    hubSource.category    || '',
+              subcategory: hubSource.subcategory || '',
+              unit:        hubSource.unit        || '',
+              value:       hubSource.value       || 0,
+              source:      hubSource.source      || '',
+              reference:   hubSource.reference   || '',
+              // Initialize GWP fields
+              gwpValue: 0,
+              gwpSearchField: null,
+              gwpLastUpdated: null
+            };
+          }
+
+          // Handle custom emission factor with GWP fields
+          if (scope.emissionFactor === 'Custom') {
+            normalizedScope.emissionFactorValues.customEmissionFactor = {
+              ...normalizedScope.customEmissionFactor,
+              // Initialize custom GWP fields
+              CO2_gwp: 0,
+              CH4_gwp: 0,
+              N2O_gwp: 0,
+              gwpLastUpdated: null
             };
           }
           // If emissionFactor is Custom, customEmissionFactor is already handled above
@@ -1352,17 +1406,35 @@ const updateFlowchartNode = async (req, res) => {
             collectionFrequency:  scope.collectionFrequency|| 'monthly',
             calculationModel:     scope.calculationModel  || 'tier 1',
             additionalInfo:       scope.additionalInfo     || {},
-            assignedEmployees:    scope.assignedEmployees  || []
+            assignedEmployees:    scope.assignedEmployees  || [],
+            UAD:                  scope.UAD                || 0,
+            UEF:                  scope.UEF                || 0
           };
           
           // Handle custom emission factor
-          if (scope.emissionFactor === 'Custom' && scope.scopeType === 'Scope 1') {
+          if (scope.emissionFactor === 'Custom') {
             normalizedScope.customEmissionFactor = {
               CO2:  scope.customEmissionFactor?.CO2  ?? null,
               CH4:  scope.customEmissionFactor?.CH4  ?? null,
               N2O:  scope.customEmissionFactor?.N2O  ?? null,
               CO2e: scope.customEmissionFactor?.CO2e ?? null,
-              unit: scope.customEmissionFactor?.unit || ''
+              unit: scope.customEmissionFactor?.unit || '',
+               // Process Emission Factor 
+              industryAverageEmissionFactor:scope.customEmissionFactor?.industryAverageEmissionFactor || null,
+              stoichiometicFactor: scope.customEmissionFactor?.stoichiometicFactor || null,
+              conversionEfficiency: scope.customEmissionFactor?.conversionEfficiency || null,
+
+              // fugitive emission Factor Values 
+              chargeType: scope.customEmissionFactor?.chargeType || '',
+              leakageRate: scope.customEmissionFactor?.leakageRate || null,
+              Gwp_refrigerant: scope.customEmissionFactor?.Gwp_refrigerant || null,
+              GWP_fugitiveEmission: scope.customEmissionFactor?.GWP_fugitiveEmission || null,
+              // GWP value
+              CO2_gwp: scope.customEmissionFactor?.CO2_gwp ?? 0,
+              CH4_gwp: scope.customEmissionFactor?.CH4_gwp ?? 0,
+              N2O_gwp: scope.customEmissionFactor?.N2O_gwp ?? 0,
+
+              
             };
           } else {
             normalizedScope.customEmissionFactor = {
@@ -1404,7 +1476,10 @@ const updateFlowchartNode = async (req, res) => {
                 ? defraSource.ghgUnits
                 : (defraSource.ghgUnit && defraSource.ghgConversionFactor != null)
                   ? [{ unit: defraSource.ghgUnit, ghgconversionFactor: defraSource.ghgConversionFactor }]
-                  : []
+                  : [],
+              gwpValue: defraSource.gwpValue || 0,
+              gwpSearchField: defraSource.gwpSearchField || null,
+              gwpLastUpdated: defraSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'IPCC') {
             // Check if data comes from emissionFactorValues or direct fields
@@ -1417,7 +1492,10 @@ const updateFlowchartNode = async (req, res) => {
               typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
               unit:           ipccSource.unit || ipccSource.Unit || '',
               value:          ipccSource.value ?? ipccSource.Value ?? null,
-              description:    ipccSource.description || ipccSource.Description || ''
+              description:    ipccSource.description || ipccSource.Description || '',
+              gwpValue: ipccSource.gwpValue || 0,
+              gwpSearchField:ipccSource.gwpSearchField || null,
+              gwpLastUpdated: ipccSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'EPA') {
             // Check if data comes from emissionFactorValues or direct fields
@@ -1434,7 +1512,10 @@ const updateFlowchartNode = async (req, res) => {
                 ? epaSource.ghgUnitsEPA
                 : (epaSource.ghgUnitEPA && epaSource.ghgConversionFactorEPA != null)
                   ? [{ unit: epaSource.ghgUnitEPA, ghgconversionFactor: epaSource.ghgConversionFactorEPA }]
-                  : []
+                  : [],
+               gwpValue:epaSource.gwpValue || 0,
+              gwpSearchField: epaSource.gwpSearchField || null,
+              gwpLastUpdated:epaSource.gwpLastUpdated || null
             };
           } else if (scope.emissionFactor === 'Country') {
             // Check if data comes from emissionFactorValues or direct fields
