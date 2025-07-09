@@ -3,6 +3,181 @@ const IPCCData = require('../../models/EmissionFactor/IPCCData');
 const DefraData = require('../../models/EmissionFactor/DefraData');
 // Make sure you create & export your CountryEmissionFactor model at models/EmissionFactor/CountryEmissionFactor.js
 const CountryEF = require('../../models/EmissionFactor/contryEmissionFactorModel');
+const GWP  =require('../../models/GWP');
+
+// Enhanced helper function with better matching and fallback options
+async function getLatestGWPValue(chemicalUnit) {
+  try {
+    if (!chemicalUnit) return 0;
+
+    // Clean and normalize the unit/chemical name for better matching
+    const normalizedUnit = chemicalUnit.toString().trim().toLowerCase();
+
+    // Try exact match first
+    let gwpData = await GWP.findOne({
+      $or: [ 
+        { chemicalFormula: { $regex: new RegExp(`^${normalizedUnit}$`, 'i') } },
+        { chemicalName: { $regex: new RegExp(`^${normalizedUnit}$`, 'i') } }
+      ]
+    });
+
+    // If no exact match, try partial matching for compound names
+    if (!gwpData) {
+      // For cases like "Natural gas" -> search for "CH4" or "Methane"
+      const chemicalMappings = {
+        'natural gas': ['CH4', 'Methane'],
+        'coal': ['CO2', 'Carbon dioxide'],
+        'diesel': ['CO2', 'Carbon dioxide'],
+        'gasoline': ['CO2', 'Carbon dioxide'],
+        'petrol': ['CO2', 'Carbon dioxide'],
+        'lng': ['CH4', 'Methane'],
+        'lpg': ['C3H8', 'Propane', 'C4H10', 'Butane'],
+        'butane': ['C4H10', 'Butane'],
+        'propane': ['C3H8', 'Propane'],
+        'methane': ['CH4', 'Methane'],
+        'carbon dioxide': ['CO2'],
+        'nitrous oxide': ['N2O'],
+        'refrigerant': ['HFC', 'R-134a', 'R-410A']
+      };
+
+      const mappedChemicals = chemicalMappings[normalizedUnit];
+      if (mappedChemicals) {
+        for (const chemical of mappedChemicals) {
+          gwpData = await GWP.findOne({
+            $or: [
+              { chemicalFormula: { $regex: new RegExp(`^${chemical}$`, 'i') } },
+              { chemicalName: { $regex: new RegExp(`^${chemical}$`, 'i') } }
+            ]
+          });
+          if (gwpData) break;
+        }
+      }
+    }
+
+    // If still no match, try fuzzy search
+    if (!gwpData) {
+      gwpData = await GWP.findOne({
+        $or: [
+          { chemicalFormula: { $regex: new RegExp(normalizedUnit, 'i') } },
+          { chemicalName: { $regex: new RegExp(normalizedUnit, 'i') } }
+        ]
+      });
+    }
+
+    if (!gwpData) {
+      console.log(`No GWP data found for: ${chemicalUnit}`);
+      return 0;
+    }
+
+    // Get the latest AR assessment (AR6 is currently latest, AR7 will be next)
+    const assessments = gwpData.assessments;
+    if (!assessments || assessments.size === 0) {
+      return 0;
+    }
+
+    // Priority order: AR7 > AR6 > AR5 > AR4 (for future-proofing)
+    const priorityOrder = ['AR7', 'AR6', 'AR5', 'AR4'];
+
+    for (const ar of priorityOrder) {
+      if (assessments.has(ar)) {
+        console.log(`Found GWP value for ${chemicalUnit} in ${ar}: ${assessments.get(ar)}`);
+        return assessments.get(ar);
+      }
+    }
+
+    // If no AR assessments found, return the first available GWP value
+    const firstValue = assessments.values().next().value;
+    return firstValue || 0;
+  } catch (error) {
+    console.error('Error fetching GWP value:', error);
+    return 0;
+  }
+}
+
+// Enhanced function to add GWP values to emission factor data
+// Updated to use level2 for IPCC and level3EPA for EPA
+async function enhanceDataWithGWP(data, source) {
+  try {
+    const enhancedData = await Promise.all(data.map(async (item) => {
+      const itemObj = item.toObject ? item.toObject() : item;
+      let gwpValue = 0;
+      let gwpSearchField = null; // Track which field was used for GWP search
+      
+      try {
+        switch (source) {
+          case 'EPA':
+            // For EPA, use level3EPA to get GWP value (primary)
+            if (itemObj.level3EPA) {
+              gwpValue = await getLatestGWPValue(itemObj.level3EPA);
+              gwpSearchField = 'level3EPA';
+            }
+            // Fallback to ghgUnitEPA if level3EPA doesn't yield results
+            if (gwpValue === 0 && itemObj.ghgUnitEPA) {
+              gwpValue = await getLatestGWPValue(itemObj.ghgUnitEPA);
+              gwpSearchField = 'ghgUnitEPA';
+            }
+            // Additional fallback to level2EPA
+            if (gwpValue === 0 && itemObj.level2EPA) {
+              gwpValue = await getLatestGWPValue(itemObj.level2EPA);
+              gwpSearchField = 'level2EPA';
+            }
+            break;
+            
+          case 'DEFRA':
+            // For DEFRA, use ghgUnit to get GWP value
+            if (itemObj.ghgUnit) {
+              gwpValue = await getLatestGWPValue(itemObj.ghgUnit);
+              gwpSearchField = 'ghgUnit';
+            }
+            break;
+            
+          case 'IPCC':
+            // For IPCC, use level2 to get GWP value (primary)
+            if (itemObj.level2) {
+              gwpValue = await getLatestGWPValue(itemObj.level2);
+              gwpSearchField = 'level2';
+            }
+            // Fallback to Unit if level2 doesn't yield results
+            if (gwpValue === 0 && itemObj.Unit) {
+              gwpValue = await getLatestGWPValue(itemObj.Unit);
+              gwpSearchField = 'Unit';
+            }
+            // Additional fallback to level3
+            if (gwpValue === 0 && itemObj.level3) {
+              gwpValue = await getLatestGWPValue(itemObj.level3);
+              gwpSearchField = 'level3';
+            }
+            break;
+            
+          case 'Country':
+            // For Country, no GWP values needed - skip GWP processing
+            gwpValue = 0;
+            gwpSearchField = null;
+            break;
+            
+          default:
+            gwpValue = 0;
+        }
+      } catch (error) {
+        console.error(`Error getting GWP for item ${itemObj._id}:`, error);
+        gwpValue = 0;
+      }
+      
+      // Add GWP value and metadata to the item
+      return {
+        ...itemObj,
+        gwpValue: gwpValue,
+        gwpSearchField: gwpSearchField, // Track which field was used for matching
+        gwpLastUpdated: new Date().toISOString()
+      };
+    }));
+    
+    return enhancedData;
+  } catch (error) {
+    console.error('Error enhancing data with GWP:', error);
+    return data;
+  }
+}
 
 exports.getEmissionFactors = async (req, res) => {
   try {
@@ -12,6 +187,7 @@ exports.getEmissionFactors = async (req, res) => {
       limit = 50,
       sortBy = 'createdAt',    // field to sort by
       order = 'desc',          // asc or desc
+      includeGWP = 'true',     // New parameter to control GWP inclusion
       ...filters               // all other query params used for filtering
     } = req.query;
 
@@ -20,9 +196,12 @@ exports.getEmissionFactors = async (req, res) => {
     const skip = (pgNum - 1) * limNum;
     const sortOrder = order === 'asc' ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
+    const shouldIncludeGWP = includeGWP === 'true';
 
     let Model;
     let query = {};
+    let useAggregate = false;
+    let pipeline = [];
 
     switch (source) {
       case 'EPA':
@@ -60,13 +239,14 @@ exports.getEmissionFactors = async (req, res) => {
         if (filters.ghgUnit)  query.ghgUnit  = filters.ghgUnit;
         break;
 
-        case 'Country':
+      case 'Country':
         Model = CountryEF;
         useAggregate = true;
 
-        // Build $match for top‐level country filters
-        const match = {};                              // ← no ": any" here
-        if (filters.C)              match.C              = new RegExp(filters.C, 'i');
+        // Build $match for top‐level country filters (using correct field names from DB)
+        const match = {};
+        if (filters.country)        match.country        = new RegExp(filters.country, 'i');
+        if (filters.C)              match.country        = new RegExp(filters.C, 'i'); // Support both C and country
         if (filters.regionGrid)     match.regionGrid     = new RegExp(filters.regionGrid, 'i');
         if (filters.emissionFactor) match.emissionFactor = new RegExp(filters.emissionFactor, 'i');
         if (filters.reference)      match.reference      = new RegExp(filters.reference, 'i');
@@ -85,13 +265,14 @@ exports.getEmissionFactors = async (req, res) => {
           },
           { $group: {
               _id: '$_id',
-              C:               { $first: '$C' },
+              country:         { $first: '$country' },
               regionGrid:      { $first: '$regionGrid' },
               emissionFactor:  { $first: '$emissionFactor' },
               reference:       { $first: '$reference' },
               unit:            { $first: '$unit' },
               yearlyValues:    { $push: '$yearlyValues' },
-              createdAt:       { $first: '$createdAt' }
+              createdAt:       { $first: '$createdAt' },
+              updatedAt:       { $first: '$updatedAt' }
             }
           },
           { $sort: sort },
@@ -100,29 +281,71 @@ exports.getEmissionFactors = async (req, res) => {
         ];
         break;
 
-
       default:
         return res.status(400).json({ success: false, error: 'Invalid source parameter' });
     }
 
-    const total = await Model.countDocuments(query);
-    const data = await Model.find(query)
-      .sort(sort)
-      .skip(skip)
-      .limit(limNum);
+    let data;
+    let total;
+
+    if (useAggregate) {
+      // For Country data using aggregation
+      const totalPipeline = [...pipeline];
+      // Remove skip and limit for total count
+      const countPipeline = totalPipeline.slice(0, -3); // Remove sort, skip, limit
+      countPipeline.push({ $count: "total" });
+      
+      const totalResult = await Model.aggregate(countPipeline);
+      total = totalResult.length > 0 ? totalResult[0].total : 0;
+      
+      data = await Model.aggregate(pipeline);
+    } else {
+      // For other sources using regular find
+      total = await Model.countDocuments(query);
+      data = await Model.find(query)
+        .sort(sort)
+        .skip(skip)
+        .limit(limNum);
+    }
+
+    // Enhance data with GWP values if requested
+    let enhancedData = data;
+    if (shouldIncludeGWP && data.length > 0) {
+      try {
+        enhancedData = await enhanceDataWithGWP(data, source);
+        console.log(`Enhanced ${enhancedData.length} records with GWP values for source: ${source}`);
+      } catch (error) {
+        console.error('Error enhancing data with GWP values:', error);
+        // Continue with original data if GWP enhancement fails
+        enhancedData = data;
+      }
+    }
 
     return res.status(200).json({
       success: true,
-      data,
+      data: enhancedData,
       pagination: {
         total,
         page: pgNum,
         pages: Math.ceil(total / limNum),
         limit: limNum
+      },
+      gwpInfo: shouldIncludeGWP ? {
+        included: true,
+        lastUpdated: new Date().toISOString(),
+        note: "GWP values are fetched from the latest available AR assessment (AR6 currently, AR7 when available)",
+        searchStrategy: {
+          EPA: "Primary: level3EPA, Fallback: ghgUnitEPA, level2EPA",
+          IPCC: "Primary: level2, Fallback: Unit, level3",
+          DEFRA: "Primary: ghgUnit",
+          Country: "No GWP values - Country emission factors don't require GWP"
+        }
+      } : {
+        included: false
       }
     });
   } catch (err) {
-    console.error(err);
+    console.error('Error in getEmissionFactors:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
