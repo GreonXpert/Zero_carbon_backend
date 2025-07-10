@@ -364,6 +364,7 @@ exports.getDistinctValues = async (req, res) => {
 
     let Model;
     let allowedKeys = [];
+    let fieldKey = key;
 
     switch (source) {
       case 'EPA':
@@ -395,7 +396,7 @@ exports.getDistinctValues = async (req, res) => {
       case 'Country':
         Model = CountryEF;
         allowedKeys = [
-          'C','regionGrid','emissionFactor',
+          'C','country','regionGrid','emissionFactor',
           'reference','unit','yearlyValues', 
           'yearlyValues.from', 'yearlyValues.to'
         ];
@@ -412,7 +413,11 @@ exports.getDistinctValues = async (req, res) => {
 
     if (source === 'Country') {
       // 1) all {from,to} pairs
-      if (key === 'yearlyValues') {
+       if (key === 'C') {
+        fieldKey = 'country';
+      }
+
+      if (fieldKey === 'yearlyValues') {
         const pairs = await Model.aggregate([
           { $unwind: '$yearlyValues' },
           { $group: { 
@@ -426,8 +431,8 @@ exports.getDistinctValues = async (req, res) => {
       }
 
       // 2) distinct "from" dates
-      if (key === 'yearlyValues.from' || key === 'yearlyValues.to') {
-        const path = key.split('.')[1]; // "from" or "to"
+      if (fieldKey === 'yearlyValues.from' || key === 'yearlyValues.to') {
+        const path = fieldKey.split('.')[1]; // "from" or "to"
         const docs = await Model.aggregate([
           { $unwind: '$yearlyValues' },
           { $group: { _id: `$yearlyValues.${path}` } },
@@ -440,7 +445,8 @@ exports.getDistinctValues = async (req, res) => {
     }
 
     // Fetch distinct values and sort alphabetically
-    const values = await Model.distinct(key);
+    const values = await Model.distinct(fieldKey);
+    //const values = await Model.distinct(fieldKey);
     values.sort((a, b) => {
       if (a == null) return 1;
       if (b == null) return -1;
