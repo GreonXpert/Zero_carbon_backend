@@ -165,7 +165,7 @@ emissionFactorValues: {
   // Common metadata
   dataSource: {
     type: String,
-    enum: ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom', 'Country','country' ''],
+    enum: ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom', 'Country','country', ''],
     description: 'Source database for emission factor'
   },
   lastUpdated: { type: Date, default: Date.now }
