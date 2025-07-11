@@ -71,7 +71,29 @@ const canViewFlowchart = async (user, clientId) => {
   if (manageCheck.allowed) {
     return { allowed: true, fullAccess: true };
   }
+  //  // Consultant Admin: view if any of their consultants is assigned to this client
+  // if (user.userType === 'consultant_admin') {
+  //   const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId');
+  //   if (client?.leadInfo?.assignedConsultantId) {
+  //     // get all consultants under this admin
+  //     const subCons = await User.find({
+  //       consultantAdminId: user.id,
+  //       userType: 'consultant'
+  //     }).select('_id');
+  //     const subIds = subCons.map(c => c._id.toString());
+  //     if (subIds.includes(client.leadInfo.assignedConsultantId.toString())) {
+  //       return { allowed: true, fullAccess: true };
+  //     }
+  //   }
+  // }
 
+  // // Consultant: view if they are the assigned consultant
+  // if (user.userType === 'consultant') {
+  //   const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId');
+  //   if (client?.leadInfo?.assignedConsultantId?.toString() === user.id.toString()) {
+  //     return { allowed: true, fullAccess: true };
+  //   }
+  // }
   // Client admin can view their own flowchart
   if (user.userType === 'client_admin' && user.clientId === clientId) {
     return { allowed: true, fullAccess: true };
