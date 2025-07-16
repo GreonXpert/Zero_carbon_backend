@@ -176,32 +176,29 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
         }
 
         // Validate custom emission factor if selected
-        if (scope.emissionFactor === 'Custom') {
-          if (!scope.customEmissionFactor) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" with Custom emission factor must have customEmissionFactor object`);
-          }
-          
-          const { CO2, CH4, N2O, CO2e } = scope.customEmissionFactor;
-          
-          // At least one emission factor must be provided
-          if (CO2 === null && CH4 === null && N2O === null && CO2e === null) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" with Custom emission factor must have at least one of CO2, CH4, N2O, or CO2e values`);
-          }
-          
-          // Validate that provided values are numbers
-          if (CO2 !== null && (typeof CO2 !== 'number' || CO2 < 0)) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CO2 emission factor must be a non-negative number`);
-          }
-          if (CH4 !== null && (typeof CH4 !== 'number' || CH4 < 0)) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CH4 emission factor must be a non-negative number`);
-          }
-          if (N2O !== null && (typeof N2O !== 'number' || N2O < 0)) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" N2O emission factor must be a non-negative number`);
-          }
-          if (CO2e !== null && (typeof CO2e !== 'number' || CO2e < 0)) {
-            throw new Error(`Scope 1 "${scope.scopeIdentifier}" CO2e emission factor must be a non-negative number`);
-          }
+             if (scope.emissionFactor === 'Custom') {
+        // must exist inside emissionFactorValues.customEmissionFactor
+        const cef = scope.emissionFactorValues?.customEmissionFactor;
+        if (!cef || typeof cef !== 'object') {
+          throw new Error(
+            `Scope 1 "${scope.scopeIdentifier}" with Custom emission factor `
+             `must have an emissionFactorValues.customEmissionFactor object`
+          );
         }
+
+        // if they supply any numeric field, ensure it's non-negative
+        ['CO2','CH4','N2O','CO2e','leakageRate','Gwp_refrigerant'].forEach(key => {
+          const v = cef[key];
+          if (v != null && (typeof v !== 'number' || v < 0)) {
+            throw new Error(
+              `Scope 1 "${scope.scopeIdentifier}" `
+               `emissionFactorValues.customEmissionFactor.${key} `
+               `must be a non-negative number`
+            );
+          }
+        });
+      }
+
 
         // Validate API endpoint if API input type
         if (scope.inputType === 'API' && !scope.apiEndpoint) {
@@ -355,37 +352,50 @@ const saveFlowchart = async (req, res) => {
           
           // Handle custom emission factor if emission factor is 'Custom'
           if (scope.emissionFactor === 'Custom') {
-            normalizedScope.customEmissionFactor = {
-              CO2:  scope.customEmissionFactor?.CO2  ?? null,
-              CH4:  scope.customEmissionFactor?.CH4  ?? null,
-              N2O:  scope.customEmissionFactor?.N2O  ?? null,
-              CO2e: scope.customEmissionFactor?.CO2e ?? null,
-              unit: scope.customEmissionFactor?.unit || '',
-              // Process Emission Factor 
-              industryAverageEmissionFactor:scope.customEmissionFactor?.industryAverageEmissionFactor || null,
-              stoichiometicFactor: scope.customEmissionFactor?.stoichiometicFactor || null,
-              conversionEfficiency: scope.customEmissionFactor?.conversionEfficiency || null,
+           // prefer nested emissionFactorValues.customEmissionFactor if it exists
+           const rawCEF = scope.emissionFactorValues?.customEmissionFactor 
+                        || scope.customEmissionFactor 
+                        || {};
+           normalizedScope.customEmissionFactor = {
+             CO2:  rawCEF.CO2  ?? null,
+             CH4:  rawCEF.CH4  ?? null,
+             N2O:  rawCEF.N2O  ?? null,
+             CO2e: rawCEF.CO2e ?? null,
+             unit: rawCEF.unit || '',
 
-              // fugitive emission Factor Values 
-              chargeType: scope.customEmissionFactor?.chargeType || '',
-              leakageRate: scope.customEmissionFactor?.leakageRate || null,
-              Gwp_refrigerant: scope.customEmissionFactor?.Gwp_refrigerant || null,
-              GWP_fugitiveEmission: scope.customEmissionFactor?.GWP_fugitiveEmission || null,
+             // Process-level fields
+             industryAverageEmissionFactor: rawCEF.industryAverageEmissionFactor || null,
+             stoichiometicFactor:           rawCEF.stoichiometicFactor || null,
+             conversionEfficiency:          rawCEF.conversionEfficiency || null,
 
-              CO2_gwp: scope.customEmissionFactor?.CO2_gwp ?? 0,
-              CH4_gwp: scope.customEmissionFactor?.CH4_gwp ?? 0,
-              N2O_gwp: scope.customEmissionFactor?.N2O_gwp ?? 0,
-            };
-          } else {
-            // Initialize empty custom emission factor for non-custom cases
-            normalizedScope.customEmissionFactor = {
-              CO2: null,
-              CH4: null,
-              N2O: null,
-              CO2e: null,
-              unit: ''
-            };
-          }
+             // Fugitive-emission fields
+             chargeType:     rawCEF.chargeType    || '',
+             leakageRate:    rawCEF.leakageRate   ?? null,
+             // handle both possible spellings:
+             Gwp_refrigerant: rawCEF.Gwp_refrigerent 
+                            ?? rawCEF.Gwp_refrigerant 
+                            ?? null,
+             GWP_fugitiveEmission: rawCEF.GWP_fugitiveEmission ?? null,
+             GWP_SF6:rawCEF.GWP_SF6 ?? null,
+             EmissionFactorFugitiveCH4Leak: rawCEF.EmissionFactorFugitiveCH4Leak ?? null,
+             GWP_CH4_leak:rawCEF.GWP_CH4_leak ?? null,
+             EmissionFactorFugitiveCH4Component:rawCEF.EmissionFactorFugitiveCH4Component ?? null,
+             GWP_CH4_Component:rawCEF.GWP_CH4_Component ?? null,
+
+             // GWP override fields
+             CO2_gwp: rawCEF.CO2_gwp ?? null,
+             CH4_gwp: rawCEF.CH4_gwp ?? null,
+             N2O_gwp: rawCEF.N2O_gwp ?? null
+           };
+         } else {
+           normalizedScope.customEmissionFactor = {
+             CO2: null,
+             CH4: null,
+             N2O: null,
+             CO2e: null,
+             unit: ''
+           };
+         }
           
           // ───── UPDATED: Dynamic emissionFactorValues based on emissionFactor choice ─────
           const validSources = ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom','Country'];
@@ -495,16 +505,16 @@ const saveFlowchart = async (req, res) => {
           }
 
           // Handle custom emission factor with GWP fields
-          if (scope.emissionFactor === 'Custom') {
-            normalizedScope.emissionFactorValues.customEmissionFactor = {
-              ...normalizedScope.customEmissionFactor,
-              // Initialize custom GWP fields
-              CO2_gwp: 0,
-              CH4_gwp: 0,
-              N2O_gwp: 0,
-              gwpLastUpdated: null
-            };
-          }
+          // if (scope.emissionFactor === 'Custom') {
+          //   normalizedScope.emissionFactorValues.customEmissionFactor = {
+          //     ...normalizedScope.customEmissionFactor,
+          //     // Initialize custom GWP fields
+          //     CO2_gwp: 0,
+          //     CH4_gwp: 0,
+          //     N2O_gwp: 0,
+          //     gwpLastUpdated: null
+          //   };
+          // }
           // If emissionFactor is Custom, customEmissionFactor is already handled above
           // If emissionFactor is EmissionFactorHub or other, keep empty structures
           
