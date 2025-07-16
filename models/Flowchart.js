@@ -139,11 +139,20 @@ emissionFactorValues: {
       leakageRate: { type: Number, default: null },
       Gwp_refrigerant: { type: Number, default: '' },
       GWP_fugitiveEmission: { type: Number, default: null },
+      //fugitive emisson Activity === SF6
+      GWP_SF6: {type:Number, default: null},
+      //fugitive emission Activity === CH4_leaks
+      EmissionFactorFugitiveCH4Leak:{ type: Number, default: null },
+      GWP_CH4_leak: { type: Number, default: null },
+      EmissionFactorFugitiveCH4Component: { type: Number, default: null },
+      GWP_CH4_Component : { type: Number, default: null },
+
+
 
       // GWP values for custom emission factors
-      CO2_gwp: { type: Number, default: 0 },
-      CH4_gwp: { type: Number, default: 0 },
-      N2O_gwp: { type: Number, default: 0 },
+      CO2_gwp: { type: Number, default: null },
+      CH4_gwp: { type: Number, default: null },
+      N2O_gwp: { type: Number, default: null },
       gwpLastUpdated: { type: Date, default: null }
     },
   // Emission factor value // For EmissionFactorHub
