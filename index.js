@@ -22,18 +22,19 @@ const CalculationOfElectricityRouter = require("./router/CalculationOfElectricit
 const TotalEmissionElectricityRouter = require("./router/TotalEmissionElectricityRouter");
 const processFlowR = require("./router/processflowR");
 const dataEntryRoutes = require('./router/dataEntryRoutes');
-const EmissionFactorScope3Routes = require('./router/EmissionFactor/EmissionFactorScope3Routes');
+const EmissionFactorHub = require('./router/EmissionFactor/EmissionFactorHubRoutes');
 const ipccDataRoutes = require('./router/EmissionFactor/ipccDataRoutes');
 const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
 const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
+const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
 
-// NEW: Import notification routes (MISSING FROM YOUR CURRENT INDEX.JS)
+// Import notification routes
 const notificationRoutes = require('./router/notificationRoutes');
 const { dataCollectionRouter, iotRouter } = require('./router/dataCollectionRoutes');
 
-// NEW: Import IoT routes and MQTT subscriber
+// Import IoT routes and MQTT subscriber
 const iotRoutes = require('./router/iotRoutes');
-const MQTTSubscriber = require('./mqtt/mqttSubscriber');
+// const MQTTSubscriber = require('./mqtt/mqttSubscriber');
 
 // Import controllers
 const { checkExpiredSubscriptions } = require("./controllers/clientController");
@@ -41,12 +42,13 @@ const { initializeSuperAdmin } = require("./controllers/userController");
 const { publishScheduledNotifications } = require('./controllers/notificationControllers');
 const { scheduleMonthlySummary, checkAndCreateMissedSummaries } = require('./controllers/DataCollection/monthlyDataSummaryController');
 
+// 🆕 Import summary controller
+const calculationSummaryController = require('./controllers/Calculation/CalculationSummary');
+const dataCollectionController = require('./controllers/dataCollectionController');
+
 // Import models for real-time features
 const User = require('./models/User');
 const Notification = require('./models/Notification');
-
-
-
 
 dotenv.config();
 
@@ -69,15 +71,11 @@ app.use(cors({
     credentials: true,
 }));
 
-
-
-
-
 // Routes
 app.use("/api/users", userR);
 app.use("/api/clients", clientR);
 app.use("/api/flowchart", flowchartR);
-app.use("/api/defra",defraDataR);
+app.use("/api/defra", defraDataR);
 app.use("/api/gwp", gwpRoutes);
 app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
@@ -87,18 +85,16 @@ app.use("/api", CalculationOfElectricityRouter);
 app.use("/api", TotalEmissionElectricityRouter);
 app.use("/api/processflow", processFlowR);
 app.use('/api/data-entry', dataEntryRoutes);
-app.use('/api/scope3-emission-factors', EmissionFactorScope3Routes);
+app.use('/api/emission-factor-hub', EmissionFactorHub);
 app.use('/api', iotRoutes);
-app.use('/api/ipcc',ipccDataRoutes);
+app.use('/api/ipcc', ipccDataRoutes);
 app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
+app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
 
-// 🚀 ADD NOTIFICATION ROUTES (MISSING IN YOUR ORIGINAL)
+// Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);
-// Data Collection Routes (requires authentication)
 app.use('/api/data-collection', dataCollectionRouter);
-
-// IoT Data Ingestion Route (public endpoint for devices)
 app.use('/api/iot', iotRouter);
 
 // Create HTTP server and bind Socket.io
@@ -109,6 +105,10 @@ const io = socketIo(server, {
     credentials: true
   }
 });
+
+// 🆕 Set socket.io instance in controllers
+dataCollectionController.setSocketIO(io);
+calculationSummaryController.setSocketIO(io);
 
 // 🔐 Socket.IO Authentication Middleware
 io.use(async (socket, next) => {
@@ -142,7 +142,7 @@ io.use(async (socket, next) => {
 // 📊 Track connected users
 const connectedUsers = new Map();
 
-// 🔄 Enhanced Socket.IO connection handling with Real-time Notifications
+// 🔄 Enhanced Socket.IO connection handling with Real-time Notifications and Summaries
 io.on('connection', (socket) => {
     console.log(`🔌 Client connected: ${socket.user.userName} (${socket.id})`);
     
@@ -173,6 +173,116 @@ io.on('connection', (socket) => {
             type: socket.user.userType
         },
         timestamp: new Date().toISOString()
+    });
+
+    // 🆕 Handle joining summary-specific rooms
+    socket.on('join-summary-room', (clientId) => {
+        socket.join(`summaries-${clientId}`);
+        console.log(`📊 Socket ${socket.id} joined summary room: summaries-${clientId}`);
+        
+        socket.emit('summary-connection-status', {
+            status: 'connected',
+            clientId,
+            timestamp: new Date(),
+            message: 'Successfully connected to summary updates'
+        });
+    });
+
+    // 🆕 Handle summary subscription requests
+    socket.on('subscribe-to-summaries', async (data) => {
+        try {
+            const { clientId, periodTypes = ['monthly', 'yearly', 'all-time'] } = data;
+            
+            // Join the summary room
+            socket.join(`summaries-${clientId}`);
+            
+            // Send current summary data
+            const EmissionSummary = require('./models/EmissionSummary');
+            const summaries = {};
+            
+            for (const periodType of periodTypes) {
+                const query = { clientId, 'period.type': periodType };
+                
+                if (periodType === 'monthly') {
+                    const now = new Date();
+                    query['period.year'] = now.getFullYear();
+                    query['period.month'] = now.getMonth() + 1;
+                } else if (periodType === 'yearly') {
+                    query['period.year'] = new Date().getFullYear();
+                }
+                
+                const summary = await EmissionSummary.findOne(query).lean();
+                if (summary) {
+                    summaries[periodType] = {
+                        totalEmissions: summary.totalEmissions,
+                        byScope: summary.byScope,
+                        lastCalculated: summary.metadata.lastCalculated
+                    };
+                }
+            }
+            
+            socket.emit('initial-summary-data', {
+                clientId,
+                summaries,
+                timestamp: new Date()
+            });
+            
+        } catch (error) {
+            console.error('Error in subscribe-to-summaries:', error);
+            socket.emit('summary-error', {
+                error: 'Failed to subscribe to summaries',
+                details: error.message
+            });
+        }
+    });
+
+    // 🆕 Handle real-time summary calculation requests
+    socket.on('calculate-summary', async (data) => {
+        try {
+            const { clientId, periodType = 'monthly', year, month } = data;
+            
+            console.log(`📊 Real-time summary calculation requested for client: ${clientId}`);
+            
+            // Trigger summary calculation
+            const { recalculateAndSaveSummary } = calculationSummaryController;
+            const summary = await recalculateAndSaveSummary(
+                clientId, 
+                periodType, 
+                year, 
+                month
+            );
+            
+            if (summary) {
+                // Emit updated summary to all clients in the room
+                io.to(`summaries-${clientId}`).emit('summary-calculated', {
+                    clientId,
+                    summaryId: summary._id,
+                    period: summary.period,
+                    totalEmissions: summary.totalEmissions,
+                    byScope: summary.byScope,
+                    timestamp: new Date()
+                });
+                
+                // Send success confirmation to requesting client
+                socket.emit('summary-calculation-complete', {
+                    success: true,
+                    summaryId: summary._id,
+                    message: 'Summary calculated successfully'
+                });
+            } else {
+                socket.emit('summary-calculation-complete', {
+                    success: false,
+                    message: 'No data found for the specified period'
+                });
+            }
+            
+        } catch (error) {
+            console.error('Error in calculate-summary:', error);
+            socket.emit('summary-calculation-error', {
+                error: 'Failed to calculate summary',
+                details: error.message
+            });
+        }
     });
     
     // 📨 Send initial notification data
@@ -241,7 +351,8 @@ io.on('connection', (socket) => {
             console.error('Error fetching latest IoT data:', error);
         }
     });
-    // 🎯 NEW: Handle dashboard data requests
+
+    // 🎯 Handle dashboard data requests
     socket.on('requestDashboardData', async (dashboardType) => {
         try {
             const { 
@@ -300,7 +411,7 @@ io.on('connection', (socket) => {
         }
     });
     
-    // 🔄 NEW: Handle real-time dashboard subscriptions
+    // 🔄 Handle real-time dashboard subscriptions
     socket.on('subscribeToDashboard', async (dashboardType) => {
         try {
             // Join dashboard-specific room
@@ -323,13 +434,8 @@ io.on('connection', (socket) => {
             });
         }
     });
-    // 🔌 Handle disconnect
-    socket.on('disconnect', () => {
-        console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
-        connectedUsers.delete(socket.userId);
-    });
 
-     // 🔄 Handle real-time client list requests
+    // 🔄 Handle real-time client list requests
     socket.on('requestClients', async (filters = {}) => {
         try {
             const { getClients } = require('./controllers/clientController');
@@ -419,7 +525,6 @@ io.on('connection', (socket) => {
     socket.on('searchClients', async (searchQuery) => {
         try {
             const Client = require('./models/Client');
-            const User = require('./models/User');
             
             let query = { isDeleted: false };
             
@@ -504,8 +609,7 @@ io.on('connection', (socket) => {
             const Client = require('./models/Client');
             let query = { isDeleted: false };
             
-            // Apply user-based filtering (same as above)
-            // ... (use the same filtering logic as in requestClients)
+            // Apply user-based filtering similar to above...
             
             const stats = await Client.aggregate([
                 { $match: query },
@@ -513,12 +617,8 @@ io.on('connection', (socket) => {
                     $group: {
                         _id: null,
                         total: { $sum: 1 },
-                        byStage: {
-                            $push: "$stage"
-                        },
-                        byStatus: {
-                            $push: "$status"
-                        }
+                        byStage: { $push: "$stage" },
+                        byStatus: { $push: "$status" }
                     }
                 },
                 {
@@ -599,6 +699,42 @@ io.on('connection', (socket) => {
                 message: 'Failed to fetch client statistics' 
             });
         }
+    });
+
+    // Handle data collection events
+    socket.on('request-data-status', async (clientId) => {
+        try {
+            // Get real-time data collection status
+            const DataCollectionConfig = require('./models/DataCollectionConfig');
+            const configs = await DataCollectionConfig.find({ clientId }).lean();
+            
+            socket.emit('data-status-update', {
+                clientId,
+                configs,
+                timestamp: new Date()
+            });
+        } catch (error) {
+            console.error('Error getting data status:', error);
+            socket.emit('data-status-error', error.message);
+        }
+    });
+
+    // Handle leaving rooms
+    socket.on('leave-client-room', (clientId) => {
+        socket.leave(`client-${clientId}`);
+        socket.leave(`summaries-${clientId}`);
+        console.log(`📡 Socket ${socket.id} left rooms for client: ${clientId}`);
+    });
+
+    // 🔌 Handle disconnect
+    socket.on('disconnect', () => {
+        console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
+        connectedUsers.delete(socket.userId);
+    });
+
+    // 🆕 Handle ping for connection health check
+    socket.on('ping', () => {
+        socket.emit('pong', { timestamp: new Date() });
     });
 });
 
@@ -729,15 +865,7 @@ const getUnreadCountForUser = async (user) => {
     }
 };
 
-
-// // Schedule monthly summary cron job
-//   scheduleMonthlySummary();
-  
-//   // Check for any missed summaries on startup
-//   await checkAndCreateMissedSummaries();
-
-
-// 🔄 NEW: Real-time Dashboard Update Functions
+// 🔄 Real-time Dashboard Update Functions
 const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
     try {
         const updateData = {
@@ -755,19 +883,16 @@ const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
             // Broadcast to all relevant users based on update type
             switch (updateType) {
                 case 'workflow_tracking':
-                    // Send to consultants, consultant admins, and super admins
                     io.to('userType_super_admin').emit('dashboard_update', updateData);
                     io.to('userType_consultant_admin').emit('dashboard_update', updateData);
                     io.to('userType_consultant').emit('dashboard_update', updateData);
                     break;
                     
                 case 'organization_overview':
-                    // Send only to super admins
                     io.to('userType_super_admin').emit('dashboard_update', updateData);
                     break;
                     
                 case 'dashboard_metrics':
-                    // Send to all admin types
                     io.to('userType_super_admin').emit('dashboard_update', updateData);
                     io.to('userType_consultant_admin').emit('dashboard_update', updateData);
                     io.to('userType_consultant').emit('dashboard_update', updateData);
@@ -787,10 +912,55 @@ global.broadcastDashboardUpdate = broadcastDashboardUpdate;
 global.getUnreadCountForUser = getUnreadCountForUser;
 global.getTargetUsersForNotification = getTargetUsersForNotification;
 
-
+// 🆕 Periodic summary health check and updates
+setInterval(async () => {
+  try {
+    const now = new Date();
+    
+    // Check for clients that need summary updates
+    const DataEntry = require('./models/DataEntry');
+    const recentEntries = await DataEntry.find({
+      timestamp: { $gte: new Date(now.getTime() - 60 * 60 * 1000) }, // Last hour
+      calculatedEmissions: { $exists: true },
+      summaryUpdateStatus: { $ne: 'completed' }
+    }).distinct('clientId');
+    
+    if (recentEntries.length > 0) {
+      console.log(`🔄 Found ${recentEntries.length} clients needing summary updates`);
+      
+      for (const clientId of recentEntries) {
+        try {
+          // Update current month summary
+          const { recalculateAndSaveSummary } = calculationSummaryController;
+          const monthlySummary = await recalculateAndSaveSummary(
+            clientId,
+            'monthly',
+            now.getFullYear(),
+            now.getMonth() + 1
+          );
+          
+          if (monthlySummary) {
+            // Emit update to connected clients
+            io.to(`summaries-${clientId}`).emit('summary-auto-updated', {
+              clientId,
+              summaryId: monthlySummary._id,
+              period: monthlySummary.period,
+              totalEmissions: monthlySummary.totalEmissions,
+              timestamp: new Date()
+            });
+          }
+        } catch (clientError) {
+          console.error(`Error updating summary for client ${clientId}:`, clientError);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in periodic summary check:', error);
+  }
+}, 5 * 60 * 1000); // Every 5 minutes
 
 // Initialize MQTT subscriber variable
-let mqttSubscriber = null;
+// let mqttSubscriber = null;
 
 // Connect to Database and start services
 connectDB().then(() => {
@@ -799,20 +969,20 @@ connectDB().then(() => {
     // Initialize Super Admin account
     initializeSuperAdmin();
     
-    // Start MQTT subscriber after database connection
-    console.log('🚀 Starting MQTT subscriber...');
-    mqttSubscriber = new MQTTSubscriber();
-    mqttSubscriber.connect();
+    // // Start MQTT subscriber after database connection
+    // console.log('🚀 Starting MQTT subscriber...');
+    // mqttSubscriber = new MQTTSubscriber();
+    // mqttSubscriber.connect();
     
     // Add MQTT status tracking
-    setInterval(() => {
-        if (mqttSubscriber) {
-            const status = mqttSubscriber.getStatus();
-            if (!status.connected) {
-                console.log('⚠️ MQTT subscriber disconnected, attempting reconnect...');
-            }
-        }
-    }, 30000);
+    // setInterval(() => {
+    //     if (mqttSubscriber) {
+    //         const status = mqttSubscriber.getStatus();
+    //         if (!status.connected) {
+    //             console.log('⚠️ MQTT subscriber disconnected, attempting reconnect...');
+    //         }
+    //     }
+    // }, 30000);
     
     // Schedule cron job to check expired subscriptions daily at midnight
     cron.schedule('0 0 * * *', () => {
@@ -822,25 +992,24 @@ connectDB().then(() => {
     
     // Run subscription check on startup
     checkExpiredSubscriptions();
-
     
-    // **NEW**: Schedule your monthly summary cron job
+    // Schedule monthly summary cron job
     scheduleMonthlySummary();
 
-   // Kick off missed‐summaries check in the background
+    // Kick off missed summaries check in the background
     (async () => {
       try {
         await checkAndCreateMissedSummaries();
         console.log('✅ Missed summaries check complete');
       } catch (err) {
-        console.error('❌ Error back‐filling summaries:', err);
+        console.error('❌ Error back-filling summaries:', err);
       }
     })();
+    
     // Initialize MQTT Subscriber
-    global.mqttSubscriber = new MQTTSubscriber();
+    // global.mqttSubscriber = new MQTTSubscriber();
     
     // Schedule cron jobs
-    // Check expired subscriptions daily at 2 AM
     cron.schedule('0 2 * * *', async () => {
       console.log('🔄 Running daily subscription check...');
       await checkExpiredSubscriptions();
@@ -849,7 +1018,6 @@ connectDB().then(() => {
     console.error('❌ Database connection failed:', error);
     process.exit(1);
 });
-
 
 // 🔄 Enhanced scheduled notifications with real-time broadcasting
 cron.schedule('*/5 * * * *', async () => {
@@ -885,9 +1053,7 @@ cron.schedule('*/5 * * * *', async () => {
     }
 });
 
-// ... (other requires and setup above)
-
-// Start background scheduler for notifications (runs every minute)
+// Start background scheduler for notifications
 cron.schedule('*/10 * * * *', async () => {
   console.log('🔄 Checking for scheduled notifications...');
   try {
@@ -897,131 +1063,131 @@ cron.schedule('*/10 * * * *', async () => {
   }
 });
 
-
-// Add MQTT status endpoint
-app.get('/api/mqtt/status', (req, res) => {
-    if (mqttSubscriber) {
-        const status = mqttSubscriber.getStatus();
-        res.json({
-            success: true,
-            mqtt: status,
-            timestamp: new Date().toISOString()
-        });
-    } else {
-        res.status(503).json({
-            success: false,
-            message: 'MQTT subscriber not initialized',
-            timestamp: new Date().toISOString()
-        });
-    }
-});
+// // Add MQTT status endpoint
+// app.get('/api/mqtt/status', (req, res) => {
+//     if (mqttSubscriber) {
+//         const status = mqttSubscriber.getStatus();
+//         res.json({
+//             success: true,
+//             mqtt: status,
+//             timestamp: new Date().toISOString()
+//         });
+//     } else {
+//         res.status(503).json({
+//             success: false,
+//             message: 'MQTT subscriber not initialized',
+//             timestamp: new Date().toISOString()
+//         });
+//     }
+// });
 
 // 📊 Real-time system status endpoint
-app.get('/api/system/status', (req, res) => {
-    const mongoose = require('mongoose');
-    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-    const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
+// app.get('/api/system/status', (req, res) => {
+//     const mongoose = require('mongoose');
+//     const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+//     const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
     
-    res.json({
-        success: true,
-        status: 'healthy',
-        services: {
-            database: dbStatus,
-            mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
-            socketio: 'running',
-            connectedUsers: connectedUsers.size
-        },
-        realtime: {
-            connectedUsers: Array.from(connectedUsers.values()).map(conn => ({
-                userId: conn.user._id,
-                userName: conn.user.userName,
-                userType: conn.user.userType,
-                connectedAt: conn.connectedAt
-            }))
-        },
-        timestamp: new Date().toISOString()
-    });
-});
+//     res.json({
+//         success: true,
+//         status: 'healthy',
+//         services: {
+//             database: dbStatus,
+//             mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
+//             socketio: 'running',
+//             connectedUsers: connectedUsers.size
+//         },
+//         realtime: {
+//             connectedUsers: Array.from(connectedUsers.values()).map(conn => ({
+//                 userId: conn.user._id,
+//                 userName: conn.user.userName,
+//                 userType: conn.user.userType,
+//                 connectedAt: conn.connectedAt
+//             }))
+//         },
+//         timestamp: new Date().toISOString()
+//     });
+// });
 
 // Health check endpoint
-app.get('/api/health', async (req, res) => {
-    try {
-        const mongoose = require('mongoose');
-        const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-        const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
+// app.get('/api/health', async (req, res) => {
+//     try {
+//         const mongoose = require('mongoose');
+//         const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+//         const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
         
-        res.json({
-            success: true,
-            status: 'healthy',
-            services: {
-                database: dbStatus,
-                mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
-                socketio: 'running'
-            },
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            status: 'unhealthy',
-            error: error.message,
-            timestamp: new Date().toISOString()
-        });
-    }
-});
+//         res.json({
+//             success: true,
+//             status: 'healthy',
+//             services: {
+//                 database: dbStatus,
+//                 mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
+//                 socketio: 'running'
+//             },
+//             timestamp: new Date().toISOString()
+//         });
+//     } catch (error) {
+//         res.status(500).json({
+//             success: false,
+//             status: 'unhealthy',
+//             error: error.message,
+//             timestamp: new Date().toISOString()
+//         });
+//     }
+// });
 
-// Graceful shutdown
-const gracefulShutdown = () => {
-    console.log('\n🛑 Received shutdown signal, closing gracefully...');
+// // Graceful shutdown
+// const gracefulShutdown = () => {
+//     console.log('\n🛑 Received shutdown signal, closing gracefully...');
     
-    // Close MQTT connection
-    if (mqttSubscriber) {
-        mqttSubscriber.disconnect();
-        console.log('✅ MQTT subscriber disconnected');
-    }
+//     // Close MQTT connection
+//     if (mqttSubscriber) {
+//         mqttSubscriber.disconnect();
+//         console.log('✅ MQTT subscriber disconnected');
+//     }
     
-    // Close Socket.IO server
-    io.close(() => {
-        console.log('✅ Socket.IO server closed');
-    });
+//     // Close Socket.IO server
+//     io.close(() => {
+//         console.log('✅ Socket.IO server closed');
+//     });
     
-    // Close HTTP server
-    server.close(() => {
-        console.log('✅ HTTP server closed');
-        process.exit(0);
-    });
+//     // Close HTTP server
+//     server.close(() => {
+//         console.log('✅ HTTP server closed');
+//         process.exit(0);
+//     });
     
-    // Force close after 10 seconds
-    setTimeout(() => {
-        console.log('⚠️ Forcing shutdown after timeout');
-        process.exit(1);
-    }, 10000);
-};
+//     // Force close after 10 seconds
+//     setTimeout(() => {
+//         console.log('⚠️ Forcing shutdown after timeout');
+//         process.exit(1);
+//     }, 10000);
+// };
 
-// Handle shutdown signals
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+// // Handle shutdown signals
+// process.on('SIGINT', gracefulShutdown);
+// process.on('SIGTERM', gracefulShutdown);
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught Exception:', error);
-    gracefulShutdown();
-});
+// // Handle uncaught exceptions
+// process.on('uncaughtException', (error) => {
+//     console.error('❌ Uncaught Exception:', error);
+//     gracefulShutdown();
+// });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-    gracefulShutdown();
-});
+// process.on('unhandledRejection', (reason, promise) => {
+//     console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+//     gracefulShutdown();
+// });
 
 // Start Server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
-    console.log(`📡 Socket.IO server running with authentication`);
-    console.log(`📨 Real-time notifications enabled`);
-    console.log(`🔗 MQTT broker: 13.233.116.100:1883`);
-    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`📊 System status: http://localhost:${PORT}/api/system/status`);
+    // console.log(`📡 Socket.IO server running with authentication`);
+    // console.log(`📨 Real-time notifications enabled`);
+    // console.log(`📊 Real-time summary updates enabled`);
+    // console.log(`🔗 MQTT broker: 13.233.116.100:1883`);
+    // console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+    // console.log(`📊 System status: http://localhost:${PORT}/api/system/status`);
 });
 
 module.exports = { app, server, io };

@@ -92,11 +92,9 @@ const DataEntrySchema = new mongoose.Schema({
   // Timestamp information
   date: { 
     type: String, 
-    required: true 
   }, // Format: "DD:MM:YYYY"
   time: { 
     type: String, 
-    required: true 
   }, // Format: "HH:mm:ss"
   timestamp: { 
     type: Date, 
@@ -161,7 +159,7 @@ const DataEntrySchema = new mongoose.Schema({
   // Emission factor
   emissionFactor: {
     type: String,
-    enum: ['IPCC', 'DEFRA', ''],
+    enum: ['IPCC', 'DEFRA', 'EPA', 'Custom', 'Country', 'EmissionFactorHub'],
     default: ''
   },
   
@@ -216,6 +214,93 @@ const DataEntrySchema = new mongoose.Schema({
     consistency: { type: Number, min: 0, max: 100 },
     timeliness: { type: Number, min: 0, max: 100 }
   },
+
+  // Emission calculation results
+calculatedEmissions: {
+  incoming: {
+    type: Map,
+    of: {
+      CO2: Number,
+      CH4: Number,
+      N2O: Number,
+      CO2e: Number,
+      emission: Number, // For process emissions
+      combinedUncertainty: Number,
+      CO2eWithUncertainty: Number,
+      emissionWithUncertainty: Number // For process emissions
+    }
+  },
+  cumulative: {
+    type: Map,
+    of: {
+      CO2: Number,
+      CH4: Number,
+      N2O: Number,
+      CO2e: Number,
+      emission: Number, // For process emissions
+      combinedUncertainty: Number,
+      CO2eWithUncertainty: Number,
+      emissionWithUncertainty: Number // For process emissions
+    }
+  },
+  metadata: {
+    scopeType: String,
+    category: String,
+    tier: String,
+    emissionFactorSource: String,
+    UAD: Number,
+    UEF: Number,
+    gwpValues: {
+      CO2: Number,
+      CH4: Number,
+      N2O: Number,
+      refrigerant: Number
+    }
+  }
+},
+
+// Emission calculation tracking
+emissionCalculationStatus: {
+  type: String,
+  enum: ['pending', 'processing', 'completed', 'failed', 'error'],
+  default: 'pending'
+},
+
+emissionCalculatedAt: {
+  type: Date
+},
+
+emissionCalculationError: {
+  type: String
+},
+
+lastCalculated: {
+  type: Date
+},
+
+// Emission factor tracking (for audit trail)
+appliedEmissionFactors: {
+  source: {
+    type: String,
+    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country']
+  },
+  values: {
+    CO2: Number,
+    CH4: Number,
+    N2O: Number
+  },
+  appliedAt: Date
+},
+
+// Total emissions summary (for quick access)
+emissionsSummary: {
+  totalCO2: Number,
+  totalCH4: Number,
+  totalN2O: Number,
+  totalCO2e: Number,
+  totalCO2eWithUncertainty: Number,
+  unit: String
+},
   
   // Approval workflow (for sensitive data)
   approvalStatus: {
@@ -250,7 +335,10 @@ const DataEntrySchema = new mongoose.Schema({
   notes: String,
   externalId: String, // For external system integration
   
-}, {
+},
+
+
+{
   timestamps: true,
   collection: 'dataentries'
 });

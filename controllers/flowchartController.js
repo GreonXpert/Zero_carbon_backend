@@ -231,8 +231,8 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
         break;
 
       case "Scope 3":
-        if (!scope.scope3Category || !scope.activityDescription || !scope.itemName || !scope.scope3Unit) {
-          throw new Error(`Scope 3 "${scope.scopeIdentifier}" requires: scope3Category, activityDescription, itemName, scope3Unit`);
+        if (!scope.categoryName || !scope.activity  ) {
+          throw new Error(`Scope 3 "${scope.scopeIdentifier}" requires: category and activity`);
         }
 
         // Validate API fields if applicable (Scope 3 typically doesn't use IOT)
@@ -335,10 +335,10 @@ const saveFlowchart = async (req, res) => {
             country:              scope.country            || '',
             regionGrid:           scope.regionGrid         || '',
             electricityUnit:      scope.electricityUnit    || '',
-            scope3Category:       scope.scope3Category     || '',
-            activityDescription:  scope.activityDescription|| '',
+            
+            
             itemName:             scope.itemName           || '',
-            scope3Unit:           scope.scope3Unit         || '',
+            
             description:          scope.description        || '',
             source:               scope.source             || '',
             reference:            scope.reference          || '',
@@ -375,6 +375,10 @@ const saveFlowchart = async (req, res) => {
              Gwp_refrigerant: rawCEF.Gwp_refrigerent 
                             ?? rawCEF.Gwp_refrigerant 
                             ?? null,
+
+              // Scope 3 - Upstream Leased Assets
+            //  BuildingTotalS1_S2:rawCEF.BuildingTotalS1_S2 ?? rawCEF.BuildingTotalS1_S2 ?? null,
+
              GWP_fugitiveEmission: rawCEF.GWP_fugitiveEmission ?? null,
              GWP_SF6:rawCEF.GWP_SF6 ?? null,
              EmissionFactorFugitiveCH4Leak: rawCEF.EmissionFactorFugitiveCH4Leak ?? null,
@@ -489,10 +493,10 @@ const saveFlowchart = async (req, res) => {
           }else if (scope.emissionFactor === 'EmissionFactorHub') {
             const hubSource = scope.emissionFactorValues?.emissionFactorHubData || scope;
             normalizedScope.emissionFactorValues.emissionFactorHubData = {
-              factorId:    hubSource.factorId    || '',
-              factorName:  hubSource.factorName  || '',
-              category:    hubSource.category    || '',
-              subcategory: hubSource.subcategory || '',
+              scope:    hubSource.scope    || '',
+              category:  hubSource.category  || '',
+              activity:    hubSource.category    || '',
+              itemName: hubSource.itemName || '',
               unit:        hubSource.unit        || '',
               value:       hubSource.value       || 0,
               source:      hubSource.source      || '',
@@ -1428,10 +1432,7 @@ const updateFlowchartNode = async (req, res) => {
             country:              scope.country            || '',
             regionGrid:           scope.regionGrid         || '',
             electricityUnit:      scope.electricityUnit    || '',
-            scope3Category:       scope.scope3Category     || '',
-            activityDescription:  scope.activityDescription|| '',
             itemName:             scope.itemName           || '',
-            scope3Unit:           scope.scope3Unit         || '',
             description:          scope.description        || '',
             source:               scope.source             || '',
             reference:            scope.reference          || '',

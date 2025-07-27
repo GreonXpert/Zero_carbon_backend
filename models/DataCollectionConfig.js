@@ -33,7 +33,7 @@ const DataCollectionConfigSchema = new Schema({
   collectionFrequency: {
     type: String,
     enum: ['real-time', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'],
-    required: true
+    // required: true
   },
   
   // Connection details

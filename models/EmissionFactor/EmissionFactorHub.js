@@ -1,12 +1,17 @@
 const mongoose = require('mongoose');
 
-const EmissionFactorScope3Schema = new mongoose.Schema({
+const EmissionFactorHubSchema = new mongoose.Schema({
+  scope:{
+     type: String,
+    required: true,
+    trim: true
+  },
   category: {
     type: String,
     required: true,
     trim: true
   },
-  activityDescription: {
+  activity: {
     type: String,
     required: true,
     trim: true
@@ -43,7 +48,7 @@ const EmissionFactorScope3Schema = new mongoose.Schema({
   'other'
 ]
   },
-  emissionFactor: {
+  Co2e: {
     type: Number,
     required: true,
     min: 0
@@ -77,8 +82,8 @@ const EmissionFactorScope3Schema = new mongoose.Schema({
 });
 
 // Create compound index for efficient searching
-EmissionFactorScope3Schema.index({ category: 1, activityDescription: 1, itemName: 1 });
-EmissionFactorScope3Schema.index({ category: 1 });
-EmissionFactorScope3Schema.index({ itemName: 1 });
+EmissionFactorHubSchema.index({ category: 1, activity: 1, itemName: 1 });
+EmissionFactorHubSchema.index({ category: 1 });
+EmissionFactorHubSchema.index({ itemName: 1 });
 
-module.exports = mongoose.model('EmissionFactorScope3', EmissionFactorScope3Schema);
+module.exports = mongoose.model('EmissionFactorHub', EmissionFactorHubSchema);
