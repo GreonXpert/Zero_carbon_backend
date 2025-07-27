@@ -154,7 +154,20 @@ async function enhanceDataWithGWP(data, source) {
             gwpValue = 0;
             gwpSearchField = null;
             break;
-            
+          
+          case 'emissionFactorHub':
+          // Use 'itemName' or 'unit' as the best guess
+          if (itemObj.itemName) {
+            gwpValue = await getLatestGWPValue(itemObj.itemName);
+            gwpSearchField = 'itemName';
+          }
+
+          if (gwpValue === 0 && itemObj.unit) {
+            gwpValue = await getLatestGWPValue(itemObj.unit);
+            gwpSearchField = 'unit';
+          }
+
+          break;  
           default:
             gwpValue = 0;
         }
@@ -280,6 +293,26 @@ exports.getEmissionFactors = async (req, res) => {
           { $limit: limNum }
         ];
         break;
+      
+      case 'emissionFactorHub':
+  Model = require('../../models/EmissionFactor/EmissionFactorHub');
+   if (filters.scope)    query.scope    = new RegExp(filters.scope, 'i');
+  if (filters.category)    query.category    = new RegExp(filters.category, 'i');
+  if (filters.activity)    query.activity    = new RegExp(filters.activity, 'i');
+  if (filters.itemName)    query.itemName    = new RegExp(filters.itemName, 'i');
+  if (filters.unit)        query.unit        = filters.unit.toLowerCase();
+  if (filters.region)      query.region      = new RegExp(filters.region, 'i');
+  if (filters.source)      query.source      = new RegExp(filters.source, 'i');
+  if (filters.reference)   query.reference   = new RegExp(filters.reference, 'i');
+  if (filters.year)        query.year        = parseInt(filters.year);
+
+  // Handle numeric range filters
+  if (filters.minCo2e || filters.maxCo2e) {
+    query.Co2e = {};
+    if (filters.minCo2e) query.Co2e.$gte = parseFloat(filters.minCo2e);
+    if (filters.maxCo2e) query.Co2e.$lte = parseFloat(filters.maxCo2e);
+  }
+  break;
 
       default:
         return res.status(400).json({ success: false, error: 'Invalid source parameter' });
@@ -338,7 +371,8 @@ exports.getEmissionFactors = async (req, res) => {
           EPA: "Primary: level3EPA, Fallback: ghgUnitEPA, level2EPA",
           IPCC: "Primary: level2, Fallback: Unit, level3",
           DEFRA: "Primary: ghgUnit",
-          Country: "No GWP values - Country emission factors don't require GWP"
+          Country: "No GWP values - Country emission factors don't require GWP",
+          emissionFactorHub: "Primary: categoryName, Fallback: CO2e"
         }
       } : {
         included: false
@@ -401,7 +435,15 @@ exports.getDistinctValues = async (req, res) => {
           'yearlyValues.from', 'yearlyValues.to'
         ];
         break;
-
+      
+      case 'emissionFactorHub':
+      Model = require('../../models/EmissionFactor/EmissionFactorHub');
+        allowedKeys = [
+        'scope',
+        'category', 'activity', 'itemName', 'unit', 
+        'source', 'reference', 'year', 'region', 'notes'
+        ];
+        break;
       default:
         return res.status(400).json({ success: false, error: 'Invalid source parameter' });
     }

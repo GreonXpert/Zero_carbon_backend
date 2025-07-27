@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const emissionFactorScope3Controller = require('../../controllers/EmissionFactor/EmissionFactorScope3Controller');
+const EmissionFactorHubController = require('../../controllers/EmissionFactor/EmissionFactorHubController');
+const {auth,checkRole} = require ('../../middleware/auth');
 
 // Configure multer for CSV file uploads
 const storage = multer.diskStorage({
@@ -36,41 +37,50 @@ const upload = multer({
   }
 });
 
+// Apply authentication to all routes
+router.use(auth)
+
+// Define roles that can view data 
+const viewRoles = ['consultant','consultant_admin','super_admin',]
+const editRoles = ['consultant_admin','super_admin']
+
 // Routes for Scope 3 Emission Factors
 
 // POST /api/scope3-emission-factors/add - Add new Scope 3 emission factor
-router.post('/add', emissionFactorScope3Controller.addEmissionFactorScope3);
+router.post('/add', checkRole(...editRoles),EmissionFactorHubController.addEmissionFactorHub);
 
 // GET /api/scope3-emission-factors/all - Get all Scope 3 emission factors
-router.get('/all', emissionFactorScope3Controller.getAllEmissionFactorsScope3);
-
-// GET /api/scope3-emission-factors/filter - Filter/Search Scope 3 emission factors
-router.get('/filter', emissionFactorScope3Controller.filterEmissionFactorsScope3);
+router.get('/all',checkRole(...viewRoles), EmissionFactorHubController.getAllEmissionFactorsHub);
 
 // GET /api/scope3-emission-factors/categories - Get unique categories (with query parameter support)
-router.get('/keys', emissionFactorScope3Controller.getUniqueCategories);
+router.get('/keys',checkRole(...viewRoles), EmissionFactorHubController.getUniqueFieldValues);
+
+// GET /api/scope3-emission-factors/filter - Filter/Search Scope 3 emission factors
+router.get('/filter',checkRole(...viewRoles), EmissionFactorHubController.filterEmissionFactorsHub);
+
+
 
 // GET /api/scope3-emission-factors/items - Get items by category and activity
-router.get('/items', emissionFactorScope3Controller.getItemsByCategoryAndActivity);
+router.get('/items',checkRole(...viewRoles), EmissionFactorHubController.getItemsByCategoryAndActivity);
 
 
 
 // GET /api/scope3-emission-factors/activities/:category - Get activities by category
-router.get('/activities/:category', emissionFactorScope3Controller.getActivitiesByCategory);
+router.get('/activities/:category',checkRole(...viewRoles), EmissionFactorHubController.getActivitiesByCategory);
 
 // GET /api/scope3-emission-factors/csv-template - Download CSV template
-router.get('/csv-template', emissionFactorScope3Controller.downloadCSVTemplate);
+router.get('/csv-template',checkRole(...editRoles), EmissionFactorHubController.downloadCSVTemplate);
 
 // POST /api/scope3-emission-factors/bulk-import - Bulk import emission factors (CSV upload or manual data)
-router.post('/bulk-import', upload.single('csvFile'), emissionFactorScope3Controller.bulkImportEmissionFactorsScope3);
+router.post('/bulk-import', upload.single('csvFile'),checkRole(...editRoles), EmissionFactorHubController.bulkImportEmissionFactorsHub);
 
 // GET /api/scope3-emission-factors/:id - Get Scope 3 emission factor by ID
-router.get('/:id', emissionFactorScope3Controller.getEmissionFactorScope3ById);
+router.get('/:id', checkRole(...viewRoles),EmissionFactorHubController.getEmissionFactorHubById);
 
 // PUT /api/scope3-emission-factors/update/:id - Update Scope 3 emission factor by ID
-router.put('/update/:id', emissionFactorScope3Controller.updateEmissionFactorScope3);
+router.put('/update/:id',checkRole(...editRoles), EmissionFactorHubController.updateEmissionFactorHub);
 
 // DELETE /api/scope3-emission-factors/delete/:id - Delete Scope 3 emission factor by ID
-router.delete('/delete/:id', emissionFactorScope3Controller.deleteEmissionFactorScope3);
+router.delete('/delete/:id',checkRole(...editRoles), EmissionFactorHubController.deleteEmissionFactorHub);
 
 module.exports = router;

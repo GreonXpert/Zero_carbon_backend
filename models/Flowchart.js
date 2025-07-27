@@ -147,7 +147,9 @@ emissionFactorValues: {
       EmissionFactorFugitiveCH4Component: { type: Number, default: null },
       GWP_CH4_Component : { type: Number, default: null },
 
+      //Scope 3 - Upstream Leased Assests 
 
+      // BuildingTotalS1_S2:  { type: Number, default: null },
 
       // GWP values for custom emission factors
       CO2_gwp: { type: Number, default: null },
@@ -157,10 +159,10 @@ emissionFactorValues: {
     },
   // Emission factor value // For EmissionFactorHub
     emissionFactorHubData: {
-      factorId: { type: String },
-      factorName: { type: String },
+      scope:{type:String},
       category: { type: String },
-      subcategory: { type: String },
+      activity: { type: String },
+      itemName: {type: String},
       unit: { type: String },
       value: { type: Number },
       source: { type: String },
@@ -218,17 +220,7 @@ emissionFactorValues: {
     description: 'Electricity consumption unit'
   },
   
-  // Scope 3 specific fields
-  scope3Category: { 
-    type: String,
-    description: 'Scope 3 category (e.g., Purchased goods and services)'
-  },
-  activityDescription: { type: String },
-  itemName: { type: String },
-  scope3Unit: { 
-    type: String,
-    description: 'Unit for Scope 3 (e.g., kg, tonnes, dollars)'
-  },
+  
   
   // Common fields
   description: { type: String },

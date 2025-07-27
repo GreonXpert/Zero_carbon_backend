@@ -1,16 +1,15 @@
-const EmissionFactorScope3 = require('../../models/EmissionFactor/EmissionFactorScope3');
+const EmissionFactorHub = require('../../models/EmissionFactor/EmissionFactorHub');
 
-
-
-// Add new Scope 3 emission factor
-exports.addEmissionFactorScope3 = async (req, res) => {
+// Add new emission factor
+exports.addEmissionFactorHub = async (req, res) => {
   try {
     const {
+      scope,
       category,
-      activityDescription,
+      activity,
       itemName,
       unit,
-      emissionFactor,
+      Co2e,
       source,
       reference,
       year,
@@ -19,16 +18,17 @@ exports.addEmissionFactorScope3 = async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!category || !activityDescription || !itemName || !unit || !emissionFactor || !source) {
+    if (!category || !activity || !itemName || !unit || !Co2e || !source) {
       return res.status(400).json({
-        message: 'Required fields: category, activityDescription, itemName, unit, emissionFactor, source'
+        message: 'Required fields: category, activity, itemName, unit, Co2e, source'
       });
     }
 
     // Check if entry already exists
-    const existingEntry = await EmissionFactorScope3.findOne({
+    const existingEntry = await EmissionFactorHub.findOne({
+      scope:scope.trim(),
       category: category.trim(),
-      activityDescription: activityDescription.trim(),
+      activity: activity.trim(),
       itemName: itemName.trim(),
       unit: unit.toLowerCase()
     });
@@ -40,12 +40,13 @@ exports.addEmissionFactorScope3 = async (req, res) => {
     }
 
     // Create new emission factor
-    const newEmissionFactor = new EmissionFactorScope3({
+    const newEmissionFactor = new EmissionFactorHub({
+      scope:scope.trim(),
       category: category.trim(),
-      activityDescription: activityDescription.trim(),
+      activity: activity.trim(),
       itemName: itemName.trim(),
       unit: unit.toLowerCase(),
-      emissionFactor,
+      Co2e,
       source: source.trim(),
       reference: reference ? reference.trim() : '',
       year: year || new Date().getFullYear(),
@@ -56,22 +57,20 @@ exports.addEmissionFactorScope3 = async (req, res) => {
     const savedEmissionFactor = await newEmissionFactor.save();
 
     res.status(201).json({
-      message: 'Scope 3 emission factor added successfully',
+      message: 'Emission factor added successfully',
       data: savedEmissionFactor
     });
   } catch (error) {
-    console.error('Error adding Scope 3 emission factor:', error);
+    console.error('Error adding emission factor:', error);
     res.status(500).json({
-      message: 'Failed to add Scope 3 emission factor',
+      message: 'Failed to add emission factor',
       error: error.message
     });
   }
 };
 
-
-
-// Get all Scope 3 emission factors
-exports.getAllEmissionFactorsScope3 = async (req, res) => {
+// Get all emission factors
+exports.getAllEmissionFactorsHub = async (req, res) => {
   try {
     const { page = 1, limit = 50, sortBy = 'createdAt', order = 'desc' } = req.query;
     
@@ -81,15 +80,15 @@ exports.getAllEmissionFactorsScope3 = async (req, res) => {
       sort: { [sortBy]: order === 'desc' ? -1 : 1 }
     };
 
-    const emissionFactors = await EmissionFactorScope3.find()
+    const emissionFactors = await EmissionFactorHub.find()
       .sort(options.sort)
       .limit(options.limit * 1)
       .skip((options.page - 1) * options.limit);
 
-    const total = await EmissionFactorScope3.countDocuments();
+    const total = await EmissionFactorHub.countDocuments();
 
     res.status(200).json({
-      message: 'Scope 3 emission factors fetched successfully',
+      message: 'Emission factors fetched successfully',
       data: emissionFactors,
       pagination: {
         currentPage: options.page,
@@ -99,49 +98,50 @@ exports.getAllEmissionFactorsScope3 = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching Scope 3 emission factors:', error);
+    console.error('Error fetching emission factors:', error);
     res.status(500).json({
-      message: 'Failed to fetch Scope 3 emission factors',
+      message: 'Failed to fetch emission factors',
       error: error.message
     });
   }
 };
 
-// Get Scope 3 emission factor by ID
-exports.getEmissionFactorScope3ById = async (req, res) => {
+// Get emission factor by ID
+exports.getEmissionFactorHubById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const emissionFactor = await EmissionFactorScope3.findById(id);
+    const emissionFactor = await EmissionFactorHub.findById(id);
 
     if (!emissionFactor) {
       return res.status(404).json({
-        message: 'Scope 3 emission factor not found'
+        message: 'Emission factor not found'
       });
     }
 
     res.status(200).json({
-      message: 'Scope 3 emission factor fetched successfully',
+      message: 'Emission factor fetched successfully',
       data: emissionFactor
     });
   } catch (error) {
-    console.error('Error fetching Scope 3 emission factor by ID:', error);
+    console.error('Error fetching emission factor by ID:', error);
     res.status(500).json({
-      message: 'Failed to fetch Scope 3 emission factor',
+      message: 'Failed to fetch emission factor',
       error: error.message
     });
   }
 };
 
-// Update Scope 3 emission factor by ID
-exports.updateEmissionFactorScope3 = async (req, res) => {
+// Update emission factor by ID
+exports.updateEmissionFactorHub = async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
 
     // Clean up string fields
+    if (updateData.scope) updateData.scope = updateData.scope.trim();
     if (updateData.category) updateData.category = updateData.category.trim();
-    if (updateData.activityDescription) updateData.activityDescription = updateData.activityDescription.trim();
+    if (updateData.activity) updateData.activity = updateData.activity.trim();
     if (updateData.itemName) updateData.itemName = updateData.itemName.trim();
     if (updateData.unit) updateData.unit = updateData.unit.toLowerCase();
     if (updateData.source) updateData.source = updateData.source.trim();
@@ -149,7 +149,7 @@ exports.updateEmissionFactorScope3 = async (req, res) => {
     if (updateData.region) updateData.region = updateData.region.trim();
     if (updateData.notes) updateData.notes = updateData.notes.trim();
 
-    const updatedEmissionFactor = await EmissionFactorScope3.findByIdAndUpdate(
+    const updatedEmissionFactor = await EmissionFactorHub.findByIdAndUpdate(
       id,
       updateData,
       { new: true, runValidators: true }
@@ -157,62 +157,63 @@ exports.updateEmissionFactorScope3 = async (req, res) => {
 
     if (!updatedEmissionFactor) {
       return res.status(404).json({
-        message: 'Scope 3 emission factor not found'
+        message: 'Emission factor not found'
       });
     }
 
     res.status(200).json({
-      message: 'Scope 3 emission factor updated successfully',
+      message: 'Emission factor updated successfully',
       data: updatedEmissionFactor
     });
   } catch (error) {
-    console.error('Error updating Scope 3 emission factor:', error);
+    console.error('Error updating emission factor:', error);
     res.status(500).json({
-      message: 'Failed to update Scope 3 emission factor',
+      message: 'Failed to update emission factor',
       error: error.message
     });
   }
 };
 
-// Delete Scope 3 emission factor by ID
-exports.deleteEmissionFactorScope3 = async (req, res) => {
+// Delete emission factor by ID
+exports.deleteEmissionFactorHub = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const deletedEmissionFactor = await EmissionFactorScope3.findByIdAndDelete(id);
+    const deletedEmissionFactor = await EmissionFactorHub.findByIdAndDelete(id);
 
     if (!deletedEmissionFactor) {
       return res.status(404).json({
-        message: 'Scope 3 emission factor not found'
+        message: 'Emission factor not found'
       });
     }
 
     res.status(200).json({
-      message: 'Scope 3 emission factor deleted successfully',
+      message: 'Emission factor deleted successfully',
       data: deletedEmissionFactor
     });
   } catch (error) {
-    console.error('Error deleting Scope 3 emission factor:', error);
+    console.error('Error deleting emission factor:', error);
     res.status(500).json({
-      message: 'Failed to delete Scope 3 emission factor',
+      message: 'Failed to delete emission factor',
       error: error.message
     });
   }
 };
 
-// Filter/Search Scope 3 emission factors
-exports.filterEmissionFactorsScope3 = async (req, res) => {
+// Filter/Search emission factors
+exports.filterEmissionFactorsHub = async (req, res) => {
   try {
     const {
+      scope,
       category,
-      activityDescription,
+      activity,
       itemName,
       unit,
       region,
       year,
       source,
-      minEmissionFactor,
-      maxEmissionFactor,
+      minCo2e,
+      maxCo2e,
       page = 1,
       limit = 50
     } = req.query;
@@ -220,11 +221,16 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
     // Build filter object
     const filter = {};
 
+    
+    if (scope) {
+      filter.scope = { $regex: scope, $options: 'i' };
+    }
+
     if (category) {
       filter.category = { $regex: category, $options: 'i' };
     }
-    if (activityDescription) {
-      filter.activityDescription = { $regex: activityDescription, $options: 'i' };
+    if (activity) {
+      filter.activity = { $regex: activity, $options: 'i' };
     }
     if (itemName) {
       filter.itemName = { $regex: itemName, $options: 'i' };
@@ -241,10 +247,10 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
     if (source) {
       filter.source = { $regex: source, $options: 'i' };
     }
-    if (minEmissionFactor || maxEmissionFactor) {
-      filter.emissionFactor = {};
-      if (minEmissionFactor) filter.emissionFactor.$gte = parseFloat(minEmissionFactor);
-      if (maxEmissionFactor) filter.emissionFactor.$lte = parseFloat(maxEmissionFactor);
+    if (minCo2e || maxCo2e) {
+      filter.Co2e = {};
+      if (minCo2e) filter.Co2e.$gte = parseFloat(minCo2e);
+      if (maxCo2e) filter.Co2e.$lte = parseFloat(maxCo2e);
     }
 
     const options = {
@@ -252,15 +258,15 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
       limit: parseInt(limit)
     };
 
-    const emissionFactors = await EmissionFactorScope3.find(filter)
+    const emissionFactors = await EmissionFactorHub.find(filter)
       .sort({ createdAt: -1 })
       .limit(options.limit * 1)
       .skip((options.page - 1) * options.limit);
 
-    const total = await EmissionFactorScope3.countDocuments(filter);
+    const total = await EmissionFactorHub.countDocuments(filter);
 
     res.status(200).json({
-      message: 'Filtered Scope 3 emission factors fetched successfully',
+      message: 'Filtered emission factors fetched successfully',
       data: emissionFactors,
       pagination: {
         currentPage: options.page,
@@ -271,16 +277,16 @@ exports.filterEmissionFactorsScope3 = async (req, res) => {
       appliedFilters: filter
     });
   } catch (error) {
-    console.error('Error filtering Scope 3 emission factors:', error);
+    console.error('Error filtering emission factors:', error);
     res.status(500).json({
-      message: 'Failed to filter Scope 3 emission factors',
+      message: 'Failed to filter emission factors',
       error: error.message
     });
   }
 };
 
-// Get unique categories
-exports.getUniqueCategories = async (req, res) => {
+// Get unique field values
+exports.getUniqueFieldValues = async (req, res) => {
   try {
     const { field } = req.query;
     
@@ -289,16 +295,16 @@ exports.getUniqueCategories = async (req, res) => {
 
     // If no field specified or field is 'all', fetch all unique values
     if (!field || field === 'all') {
-      const [categories, activityDescriptions, itemNames, units] = await Promise.all([
-        EmissionFactorScope3.distinct('category'),
-        EmissionFactorScope3.distinct('activityDescription'),
-        EmissionFactorScope3.distinct('itemName'),
-        EmissionFactorScope3.distinct('unit')
+      const [categories, activities, itemNames, units] = await Promise.all([
+        EmissionFactorHub.distinct('category'),
+        EmissionFactorHub.distinct('activity'),
+        EmissionFactorHub.distinct('itemName'),
+        EmissionFactorHub.distinct('unit')
       ]);
 
       result = {
         categories: categories.sort(),
-        activityDescriptions: activityDescriptions.sort(),
+        activities: activities.sort(),
         itemNames: itemNames.sort(),
         units: units.sort()
       };
@@ -312,38 +318,37 @@ exports.getUniqueCategories = async (req, res) => {
       switch (field.toLowerCase()) {
         case 'category':
         case 'categories':
-          data = await EmissionFactorScope3.distinct('category');
+          data = await EmissionFactorHub.distinct('category');
           fieldName = 'categories';
           message = 'Unique categories fetched successfully';
           break;
 
         case 'activity':
-        case 'activitydescription':
-        case 'activitydescriptions':
-          data = await EmissionFactorScope3.distinct('activityDescription');
-          fieldName = 'activityDescriptions';
-          message = 'Unique activity descriptions fetched successfully';
+        case 'activities':
+          data = await EmissionFactorHub.distinct('activity');
+          fieldName = 'activities';
+          message = 'Unique activities fetched successfully';
           break;
 
         case 'item':
         case 'itemname':
         case 'itemnames':
-          data = await EmissionFactorScope3.distinct('itemName');
+          data = await EmissionFactorHub.distinct('itemName');
           fieldName = 'itemNames';
           message = 'Unique item names fetched successfully';
           break;
 
         case 'unit':
         case 'units':
-          data = await EmissionFactorScope3.distinct('unit');
+          data = await EmissionFactorHub.distinct('unit');
           fieldName = 'units';
           message = 'Unique units fetched successfully';
           break;
 
         default:
           return res.status(400).json({
-            message: 'Invalid field parameter. Use: category, activityDescription, itemName, unit, or all',
-            validFields: ['category', 'activityDescription', 'itemName', 'unit', 'all']
+            message: 'Invalid field parameter. Use: category, activity, itemName, unit, or all',
+            validFields: ['category', 'activity', 'itemName', 'unit', 'all']
           });
       }
 
@@ -371,7 +376,7 @@ exports.getActivitiesByCategory = async (req, res) => {
   try {
     const { category } = req.params;
     
-    const activities = await EmissionFactorScope3.distinct('activityDescription', {
+    const activities = await EmissionFactorHub.distinct('activity', {
       category: { $regex: category, $options: 'i' }
     });
 
@@ -391,13 +396,14 @@ exports.getActivitiesByCategory = async (req, res) => {
 // Get items by category and activity
 exports.getItemsByCategoryAndActivity = async (req, res) => {
   try {
-    const { category, activityDescription } = req.query;
+    const { category, activity } = req.query;
     
     const filter = {};
+    
     if (category) filter.category = { $regex: category, $options: 'i' };
-    if (activityDescription) filter.activityDescription = { $regex: activityDescription, $options: 'i' };
+    if (activity) filter.activity = { $regex: activity, $options: 'i' };
 
-    const items = await EmissionFactorScope3.distinct('itemName', filter);
+    const items = await EmissionFactorHub.distinct('itemName', filter);
 
     res.status(200).json({
       message: 'Items fetched successfully',
@@ -412,11 +418,8 @@ exports.getItemsByCategoryAndActivity = async (req, res) => {
   }
 };
 
-// Bulk import emission factors (CSV file upload or manual data)
-// Update your bulkImportEmissionFactorsScope3 function in the controller
-// Replace the existing function with this updated version:
-
-exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
+// Bulk import emission factors
+exports.bulkImportEmissionFactorsHub = async (req, res) => {
   try {
     let emissionFactorsData = [];
 
@@ -468,11 +471,12 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
         // Convert CSV data to our schema format
         emissionFactorsData = csvData.map((row, index) => {
           const mappedData = {
+            scope: (row.Scope || row.scope || '').toString().trim(),
             category: (row.Category || row.category || '').toString().trim(),
-            activityDescription: (row['Activity Description'] || row.activityDescription || row['Activity description'] || '').toString().trim(),
+            activity: (row['Activity'] || row.activity || row['Activity Description'] || '').toString().trim(),
             itemName: (row['Item Name'] || row.itemName || row['Item name'] || '').toString().trim(),
             unit: (row.Unit || row.unit || '').toString().trim().toLowerCase(),
-            emissionFactor: parseFloat(row['Emission Factor'] || row.emissionFactor || row['emission factor'] || 0),
+            Co2e: parseFloat(row['Emission Factor'] || row.Co2e || row['emission factor'] || row['CO2e'] || 0),
             source: (row.Source || row.source || '').toString().trim(),
             reference: (row.Reference || row.reference || '').toString().trim(),
             year: parseInt(row.Year || row.year) || new Date().getFullYear(),
@@ -506,7 +510,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
         return res.status(400).json({
           message: 'Error parsing CSV file. Please check the file format and column headers.',
           error: csvError.message,
-          expectedHeaders: ['Category', 'Activity Description', 'Item Name', 'Unit', 'Emission Factor', 'Source'],
+          expectedHeaders: ['Category', 'Activity', 'Item Name', 'Unit', 'Emission Factor', 'Source'],
           receivedHeaders: csvError.headers || 'Unknown'
         });
       }
@@ -548,31 +552,32 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
         const factor = emissionFactorsData[i];
         
         // Validate required fields
-        if (!factor.category || !factor.activityDescription || !factor.itemName || 
-            !factor.unit || !factor.emissionFactor || !factor.source) {
+        if (!factor.scope||!factor.category || !factor.activity || !factor.itemName || 
+            !factor.unit || !factor.Co2e || !factor.source) {
           results.errors.push({
             index: i + 1,
             data: factor,
-            error: 'Missing required fields: category, activityDescription, itemName, unit, emissionFactor, source'
+            error: 'Missing required fields: category, activity, itemName, unit, Co2e, source'
           });
           continue;
         }
 
-        // Validate emission factor is a valid positive number
-        const emissionFactorNum = parseFloat(factor.emissionFactor);
-        if (isNaN(emissionFactorNum) || emissionFactorNum < 0) {
+        // Validate Co2e is a valid positive number
+        const co2eNum = parseFloat(factor.Co2e);
+        if (isNaN(co2eNum) || co2eNum < 0) {
           results.errors.push({
             index: i + 1,
             data: factor,
-            error: 'Emission factor must be a positive number'
+            error: 'Co2e must be a positive number'
           });
           continue;
         }
 
         // Check for duplicates in database
-        const existingFactor = await EmissionFactorScope3.findOne({
+        const existingFactor = await EmissionFactorHub.findOne({
+          scope:factor.scope.trim(),
           category: factor.category.trim(),
-          activityDescription: factor.activityDescription.trim(),
+          activity: factor.activity.trim(),
           itemName: factor.itemName.trim(),
           unit: factor.unit.toLowerCase().trim()
         });
@@ -588,12 +593,13 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
         }
 
         // Create new document for MongoDB
-        const newFactor = new EmissionFactorScope3({
+        const newFactor = new EmissionFactorHub({
+          scope:factor.scope.trim(),
           category: factor.category.trim(),
-          activityDescription: factor.activityDescription.trim(),
+          activity: factor.activity.trim(),
           itemName: factor.itemName.trim(),
           unit: factor.unit.toLowerCase().trim(),
-          emissionFactor: emissionFactorNum,
+          Co2e: co2eNum,
           source: factor.source.trim(),
           reference: factor.reference ? factor.reference.trim() : '',
           year: factor.year || new Date().getFullYear(),
@@ -611,7 +617,7 @@ exports.bulkImportEmissionFactorsScope3 = async (req, res) => {
           id: saved._id,
           category: saved.category,
           itemName: saved.itemName,
-          emissionFactor: saved.emissionFactor
+          Co2e: saved.Co2e
         });
         
       } catch (error) {
@@ -657,7 +663,7 @@ exports.downloadCSVTemplate = async (req, res) => {
     console.log('🔄 Starting CSV export process...');
 
     // Fetch all emission factors from the database
-    const emissionFactors = await EmissionFactorScope3.find({}).sort({ createdAt: -1 });
+    const emissionFactors = await EmissionFactorHub.find({}).sort({ createdAt: -1 });
     
     console.log(`📊 Found ${emissionFactors.length} records to export`);
 
@@ -669,8 +675,9 @@ exports.downloadCSVTemplate = async (req, res) => {
 
     // Define CSV headers
     const csvHeaders = [
+      'Scope',
       'Category',
-      'Activity Description', 
+      'Activity', 
       'Item Name',
       'Unit',
       'Emission Factor',
@@ -687,11 +694,12 @@ exports.downloadCSVTemplate = async (req, res) => {
     // Add each emission factor as a row in the CSV
     emissionFactors.forEach((factor) => {
       const row = [
+        factor.scope ||'',
         factor.category || '',
-        factor.activityDescription || '',
+        factor.activity || '',
         factor.itemName || '',
         factor.unit || '',
-        factor.emissionFactor || '',
+        factor.Co2e || '',
         factor.source || '',
         factor.reference || '',
         factor.year || '',
@@ -712,7 +720,7 @@ exports.downloadCSVTemplate = async (req, res) => {
     console.log('✅ CSV content generated successfully');
 
     // Set response headers for file download
-    const filename = `scope3_emission_factors_${new Date().toISOString().split('T')[0]}.csv`;
+    const filename = `emission_factors_hub_${new Date().toISOString().split('T')[0]}.csv`;
     
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

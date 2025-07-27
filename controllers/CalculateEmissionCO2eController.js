@@ -6,7 +6,7 @@ const Flowchart             = require("../models/Flowchart");
 const FuelCombustion        = require("../models/EmissionFactor/FuelCombustion");
 const EmissionFactor        = require("../models/EmissionFactor/DefraData");
 const emissionFactor2 = require("../models/EmissionFactor/contryEmissionFactorModel");
-const emissionFactor3 = require("../models/EmissionFactor/EmissionFactorScope3");
+const emissionFactor3 = require("../models/EmissionFactor/EmissionFactorHub");
 
 const User      = require("../models/User");
 const DataEntry = require("../models/DataEntry")
