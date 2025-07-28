@@ -861,61 +861,9 @@ const updateIoTInputStatus = async (req, res) => {
 };
 
 
-// Auto-update flowchart status when consultant starts creating
-const autoUpdateFlowchartStatus = async (clientId, userId) => {
-  try {
-    const client = await Client.findOne({ clientId });
-    if (!client) return;
-    
-    // Only update if status is not_started
-    if (client.workflowTracking.flowchartStatus === 'not_started') {
-      client.workflowTracking.flowchartStatus = 'on_going';
-      client.workflowTracking.flowchartStartedAt = new Date();
-      
-      client.timeline.push({
-        stage: client.stage,
-        status: client.status,
-        action: "Flowchart creation started",
-        performedBy: userId,
-        notes: "Status automatically updated to on-going"
-      });
-      
-      await client.save();
-      console.log(`Auto-updated flowchart status to on-going for client ${clientId}`);
-    }
-  } catch (error) {
-    console.error("Auto update flowchart status error:", error);
-    // Don't throw error to prevent disrupting the main flow
-  }
-};
 
-// Auto-update process flowchart status when consultant starts creating
-const autoUpdateProcessFlowchartStatus = async (clientId, userId) => {
-  try {
-    const client = await Client.findOne({ clientId });
-    if (!client) return;
-    
-    // Only update if status is not_started
-    if (client.workflowTracking.processFlowchartStatus === 'not_started') {
-      client.workflowTracking.processFlowchartStatus = 'on_going';
-      client.workflowTracking.processFlowchartStartedAt = new Date();
-      
-      client.timeline.push({
-        stage: client.stage,
-        status: client.status,
-        action: "Process flowchart creation started",
-        performedBy: userId,
-        notes: "Status automatically updated to on-going"
-      });
-      
-      await client.save();
-      console.log(`Auto-updated process flowchart status to on-going for client ${clientId}`);
-    }
-  } catch (error) {
-    console.error("Auto update process flowchart status error:", error);
-    // Don't throw error to prevent disrupting the main flow
-  }
-};
+
+
 
 // ====================================
 // Helper function for pagination with caching
@@ -1582,6 +1530,9 @@ const moveToDataSubmission = async (req, res) => {
       });
     }
 
+    // Store the previous stage BEFORE updating it
+    const previousStage = client.stage;
+
     // C) Update stage and status
     client.stage = "registered";
     client.status = "pending";
@@ -1593,8 +1544,8 @@ const moveToDataSubmission = async (req, res) => {
       notes: "Client moved to data submission stage",
     });
 
-   const prevStage = client.stage;
     await client.save();
+    
     // ADD THIS: Emit real-time updates
     await emitClientStageChange(client, previousStage, req.user.id);
     await emitClientListUpdate(client, 'stage_changed', req.user.id);
@@ -1638,6 +1589,7 @@ const moveToDataSubmission = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -1769,6 +1721,9 @@ const updateClientData = async (req, res) => {
       });
     }
 
+    // Store previous assessment level for comparison (handle undefined cases)
+    const previousAssessmentLevel = client.submissionData?.assessmentLevel || null;
+
     // F) For each key in payload (e.g. "organizationalOverview"), merge its subfields:
     Object.keys(payload).forEach((key) => {
       // Ensure that this key actually exists in client.submissionData
@@ -1786,14 +1741,21 @@ const updateClientData = async (req, res) => {
     // G) Update timestamp
     client.submissionData.updatedAt = new Date();
 
-    // H) Add a timeline entry
-    client.timeline.push({
-      stage: "registered",
-      status: "updated",
-      action: "Submission data updated",
-      performedBy: req.user.id,
-      notes: "Consultant Admin edited client submission data",
-    });
+    // H) Check if assessmentLevel was updated and update workflow accordingly
+    const newAssessmentLevel = client.submissionData.assessmentLevel;
+    if (newAssessmentLevel && newAssessmentLevel !== previousAssessmentLevel) {
+      // Update workflow tracking based on new assessment level
+      client.updateWorkflowBasedOnAssessment();
+
+      // Add timeline entry for workflow update
+      client.timeline.push({
+        stage: "registered",
+        status: "updated",
+        action: "Workflow updated based on assessment level",
+        performedBy: req.user.id,
+        notes: `Assessment level changed from '${previousAssessmentLevel || 'none'}' to '${newAssessmentLevel}'. Workflow tracking updated accordingly.`,
+      });
+    }
 
     await client.save();
 
@@ -1809,7 +1771,7 @@ const updateClientData = async (req, res) => {
             {
                 stage: 'registered',
                 hasDataSubmission: true,
-                dataCompleteness: calculateDataCompleteness(client)
+                dataCompleteness: client.calculateDataCompleteness()
             }
         );
     }
@@ -2154,7 +2116,7 @@ const moveToProposal = async (req, res) => {
     const prevStage = client.stage;
     await client.save();
     // ADD THIS: Emit real-time updates
-    await emitClientStageChange(client, previousStage, req.user.id);
+    await emitClientStageChange(client, prevStage, req.user.id);
     await emitClientListUpdate(client, 'stage_changed', req.user.id);
 
     return res.status(200).json({
@@ -4359,8 +4321,6 @@ module.exports = {
   updateManualInputStatus,
   updateAPIInputStatus,
   updateIoTInputStatus,
-  autoUpdateFlowchartStatus,
-  autoUpdateProcessFlowchartStatus,
   getConsultantHistory,
   changeConsultant,
   removeConsultant

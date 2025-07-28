@@ -6,6 +6,9 @@ const Flowchart = require('../../models/Flowchart');
 const Client = require('../../models/Client');
 const moment = require('moment');
 
+
+const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
+
 // Import socket.io instance
 let io;
 
@@ -183,7 +186,11 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     
     console.log(`Found ${dataEntries.length} data entries to process`);
     
-    const flowchart = await Flowchart.findOne({ clientId, isActive: true }).lean();
+    const activeChart = await getActiveFlowchart(clientId);
+if (!activeChart) {
+  return res.status(404).json({ message: 'No active flowchart found' });
+}
+const flowchart = activeChart.chart;
     if (!flowchart) {
       console.error(`No active flowchart found for client ${clientId}`);
       return null;

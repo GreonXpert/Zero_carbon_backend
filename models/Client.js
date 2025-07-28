@@ -196,6 +196,12 @@ const clientSchema = new mongoose.Schema(
     
     // Stage 2: Registration/Data Submission (GHG Form Data)
     submissionData: {
+       // Assessment Level Field (Add this at the top of submissionData)
+  assessmentLevel: {
+    type: String,
+    enum: ['both', 'organization', 'process'],
+    // No default value since no validation is required
+  },
       // Section A: Company Information
       companyInfo: {
         companyName: { type: String },
@@ -642,6 +648,62 @@ clientSchema.methods.getWorkflowDashboard = function() {
       overall:  w.dataInputPoints.totalDataPoints
     }
   };
+};
+// ===== 1. ADD THIS METHOD TO YOUR CLIENT SCHEMA (Client.js) =====
+
+// Method to update workflow tracking based on assessment level
+clientSchema.methods.updateWorkflowBasedOnAssessment = function() {
+  const assessmentLevel = this.submissionData?.assessmentLevel;
+  
+  if (!assessmentLevel) {
+    // If no assessment level is set, keep existing workflow status
+    return;
+  }
+
+  // Get current statuses to preserve progress
+  const currentFlowchartStatus = this.workflowTracking.flowchartStatus;
+  const currentProcessFlowchartStatus = this.workflowTracking.processFlowchartStatus;
+
+  switch (assessmentLevel) {
+    case 'both':
+      // Both flowchart and process flowchart are available
+      // Keep existing statuses if they're already in progress
+      if (currentFlowchartStatus === 'not_started') {
+        this.workflowTracking.flowchartStatus = 'not_started';
+      }
+      if (currentProcessFlowchartStatus === 'not_started') {
+        this.workflowTracking.processFlowchartStatus = 'not_started';
+      }
+      break;
+
+    case 'organization':
+      // Only flowchart is available
+      // Keep flowchart status, disable process flowchart
+      if (currentFlowchartStatus === 'not_started') {
+        this.workflowTracking.flowchartStatus = 'not_started';
+      }
+      // Reset process flowchart to not_started and clear timestamps
+      this.workflowTracking.processFlowchartStatus = 'not_started';
+      this.workflowTracking.processFlowchartStartedAt = undefined;
+      this.workflowTracking.processFlowchartCompletedAt = undefined;
+      break;
+
+    case 'process':
+      // Only process flowchart is available
+      // Keep process flowchart status, disable flowchart
+      if (currentProcessFlowchartStatus === 'not_started') {
+        this.workflowTracking.processFlowchartStatus = 'not_started';
+      }
+      // Reset flowchart to not_started and clear timestamps
+      this.workflowTracking.flowchartStatus = 'not_started';
+      this.workflowTracking.flowchartStartedAt = undefined;
+      this.workflowTracking.flowchartCompletedAt = undefined;
+      break;
+
+    default:
+      // Invalid assessment level, do nothing
+      break;
+  }
 };
 
 module.exports = mongoose.model("Client", clientSchema);
