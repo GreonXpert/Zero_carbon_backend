@@ -2,6 +2,36 @@
 
 const DataEntry = require('../../models/DataEntry');
 const Flowchart = require('../../models/Flowchart');
+const ProcessFlowchart = require('../../models/ProcessFlowchart');
+const Client = require('../../models/Client'); 
+
+/**
+ * Fetch scopeConfig based on client's assessmentLevel (organization/process/both)
+ */
+async function getScopeConfigWithAssessmentSource(clientId, nodeId, scopeIdentifier) {
+  const client = await Client.findOne({ clientId }).lean();
+  if (!client) throw new Error('Client not found');
+
+  const assessmentLevel = client?.submissionData?.assessmentLevel ?? 'both';
+  let flowchartModel = Flowchart;
+
+  if (assessmentLevel === 'process') {
+    flowchartModel = ProcessFlowchart;
+  }
+
+  const chart = await flowchartModel.findOne({ clientId, isActive: true }).lean();
+  if (!chart) throw new Error(`${assessmentLevel === 'process' ? 'Process' : 'Main'} flowchart not found`);
+
+  const node = chart.nodes.find(n => n.id === nodeId);
+  if (!node) throw new Error(`Node ${nodeId} not found in ${assessmentLevel} flowchart`);
+
+  const scopeConfig = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
+  if (!scopeConfig) throw new Error(`Scope config not found in node ${nodeId}`);
+
+  return scopeConfig;
+}
+
+
 
 /**
  * Main emission calculation function
@@ -20,35 +50,16 @@ const calculateEmissions = async (req, res) => {
       });
     }
 
-    // 2. Fetch the flowchart for this client
-    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
-    if (!flowchart) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Flowchart not found for this client' 
-      });
-    }
-
-    // 3. Find the specific node and scope configuration
-    const node = flowchart.nodes.find(n => n.id === nodeId);
-    if (!node) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Node not found in flowchart' 
-      });
-    }
-
-    const scopeConfig = node.details.scopeDetails.find(
-      s => s.scopeIdentifier === scopeIdentifier
-    );
+    // 2. Get scope config based on assessmentLevel logic
+    const scopeConfig = await getScopeConfigWithAssessmentSource(clientId, nodeId, scopeIdentifier);
     if (!scopeConfig) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Scope configuration not found' 
+        message: 'Scope configuration not found for this client' 
       });
     }
 
-    // 4. Extract configuration from flowchart
+    // 3. Extract config
     const {
       scopeType,
       categoryName,
@@ -60,56 +71,27 @@ const calculateEmissions = async (req, res) => {
       UEF = 0
     } = scopeConfig;
 
-    // 5. Get emission factor values and GWP based on source
+    // 4. Get EF and GWP
     const efValues = extractEmissionFactorValues(scopeConfig);
     const gwpValues = extractGWPValues(scopeConfig);
 
-    // 6. Calculate emissions based on scope and category
+    // 5. Calculation
     let calculationResult;
-    
     switch (scopeType) {
       case 'Scope 1':
-        calculationResult = await calculateScope1Emissions(
-          dataEntry, 
-          scopeConfig, 
-          efValues, 
-          gwpValues, 
-          UAD, 
-          UEF
-        );
+        calculationResult = await calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
         break;
-        
       case 'Scope 2':
-        calculationResult = await calculateScope2Emissions(
-          dataEntry, 
-          scopeConfig, 
-          efValues, 
-          gwpValues, 
-          UAD, 
-          UEF
-        );
+        calculationResult = await calculateScope2Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
         break;
-        
       case 'Scope 3':
-        // Placeholder for future implementation
-        calculationResult = await calculateScope3Emissions(
-     dataEntry,
-      scopeConfig,
-      efValues,
-      gwpValues,
-      UAD,
-      UEF
-    );
+        calculationResult = await calculateScope3Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
         break;
-        
       default:
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Invalid scope type' 
-        });
+        return res.status(400).json({ success: false, message: 'Invalid scope type' });
     }
 
-    // 7. Save the calculated emissions back to DataEntry
+    // 6. Save results
     if (calculationResult.success) {
       dataEntry.calculatedEmissions = calculationResult.emissions;
       dataEntry.processingStatus = 'processed';
@@ -127,6 +109,7 @@ const calculateEmissions = async (req, res) => {
     });
   }
 };
+
 
 /**
  * Extract emission factor values based on source

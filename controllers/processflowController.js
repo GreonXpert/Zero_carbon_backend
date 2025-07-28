@@ -3,62 +3,182 @@ const ProcessFlowchart = require('../models/ProcessFlowchart');
 const Client = require('../models/Client');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const Notification = require('../models/Notification')
 
-// Helper function to check if user can manage process flowchart
-const canManageProcessFlowchart = async (user, clientId) => {
-  // Super admin can manage all
-  if (user.userType === 'super_admin') {
-    return true;
-  }
+// Import helper functions
+const {
+  validateScopeDetails,
+  normalizeNodes,
+  normalizeEdges,
+  createChartNotifications,
+  isChartAvailable,
+  getChartUnavailableMessage
+} = require('../utils/chart/chartHelpers');
 
-  const client = await Client.findOne({ clientId });
-  if (!client) return false;
 
-  // Consultant admin can manage their clients' flowcharts
-  if (user.userType === 'consultant_admin') {
-    // Get all consultant IDs under this admin
-    const consultants = await User.find({ 
-      consultantAdminId: user._id,
-      userType: 'consultant'
-    }).select('_id');
-    const consultantIds = consultants.map(c => c._id);
-    consultantIds.push(user._id);
+// Import existing permission and workflow functions
+const {autoUpdateProcessFlowchartStatus}  = require('../utils/Workflow/workflow');
+const {canManageProcessFlowchart} = require('../utils/Permissions/permissions');
 
-    return (
-      client.leadInfo.consultantAdminId?.toString() === user._id.toString() ||
-      consultantIds.some(id => client.leadInfo.assignedConsultantId?.toString() === id.toString())
-    );
-  }
 
-  // Consultant can manage assigned clients' flowcharts
-  if (user.userType === 'consultant') {
-    return client.leadInfo.assignedConsultantId?.toString() === user._id.toString();
-  }
 
-  return false;
-};
+// Enhanced validation for scope details (excerpt from flowchartController.js)
+// const validateScopeDetails = (scopeDetails, nodeId) => {
+//   if (!Array.isArray(scopeDetails)) {
+//     throw new Error("scopeDetails must be an array");
+//   }
+
+//   // Check for unique identifiers within this node
+//   const identifiers = new Set();
+//   const scopeTypeCounts = {
+//     'Scope 1': 0,
+//     'Scope 2': 0,
+//     'Scope 3': 0
+//   };
+  
+//   scopeDetails.forEach((scope, index) => {
+//     // Check required common fields
+//     if (!scope.scopeIdentifier || scope.scopeIdentifier.trim() === '') {
+//       throw new Error(`Scope at index ${index} must have a scopeIdentifier (unique name)`);
+//     }
+    
+//     if (identifiers.has(scope.scopeIdentifier)) {
+//       throw new Error(`Duplicate scopeIdentifier "${scope.scopeIdentifier}" in node ${nodeId}`);
+//     }
+//     identifiers.add(scope.scopeIdentifier);
+
+//     if (!scope.scopeType) {
+//       throw new Error(`Scope "${scope.scopeIdentifier}" must have a scopeType`);
+//     }
+
+//     if (!['Scope 1', 'Scope 2', 'Scope 3'].includes(scope.scopeType)) {
+//       throw new Error(`Invalid scopeType "${scope.scopeType}" for scope "${scope.scopeIdentifier}"`);
+//     }
+
+//     if (!scope.inputType) {
+//       throw new Error(`Scope "${scope.scopeIdentifier}" must have an inputType (manual/IOT/API)`);
+//     }
+
+//     if (!['manual', 'IOT', 'API'].includes(scope.inputType)) {
+//       throw new Error(`Invalid inputType "${scope.inputType}" for scope "${scope.scopeIdentifier}". Must be manual, IOT, or API`);
+//     }
+
+//     // Count scope types
+//     scopeTypeCounts[scope.scopeType]++;
+
+//     // Validate based on scope type
+//     switch (scope.scopeType) {
+//       case "Scope 1":
+//         if (!scope.emissionFactor || !scope.categoryName || !scope.activity || !scope.fuel || !scope.units) {
+//           throw new Error(`Scope 1 "${scope.scopeIdentifier}" requires: emissionFactor, categoryName, activity, fuel, units`);
+//         }
+        
+//         // Updated validation to include Custom and other emission factors
+//         if (!['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom'].includes(scope.emissionFactor)) {
+//           throw new Error(`Scope 1 "${scope.scopeIdentifier}" emissionFactor must be one of: IPCC, DEFRA, EPA, EmissionFactorHub, or Custom`);
+//         }
+
+//         // Validate custom emission factor if selected
+//              if (scope.emissionFactor === 'Custom') {
+//         // must exist inside emissionFactorValues.customEmissionFactor
+//         const cef = scope.emissionFactorValues?.customEmissionFactor;
+//         if (!cef || typeof cef !== 'object') {
+//           throw new Error(
+//             `Scope 1 "${scope.scopeIdentifier}" with Custom emission factor `
+//              `must have an emissionFactorValues.customEmissionFactor object`
+//           );
+//         }
+
+//         // if they supply any numeric field, ensure it's non-negative
+//         ['CO2','CH4','N2O','CO2e','leakageRate','Gwp_refrigerant'].forEach(key => {
+//           const v = cef[key];
+//           if (v != null && (typeof v !== 'number' || v < 0)) {
+//             throw new Error(
+//               `Scope 1 "${scope.scopeIdentifier}" `
+//                `emissionFactorValues.customEmissionFactor.${key} `
+//                `must be a non-negative number`
+//             );
+//           }
+//         });
+//       }
+
+
+//         // Validate API endpoint if API input type
+//         if (scope.inputType === 'API' && !scope.apiEndpoint) {
+//           throw new Error(`Scope 1 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
+//         }
+
+//         // Validate IOT device ID if IOT input type
+//         if (scope.inputType === 'IOT' && !scope.iotDeviceId) {
+//           throw new Error(`Scope 1 "${scope.scopeIdentifier}" with IOT input type must have iotDeviceId`);
+//         }
+//         break;
+
+//       case "Scope 2":
+//         if (!scope.country || !scope.regionGrid) {
+//           throw new Error(`Scope 2 "${scope.scopeIdentifier}" requires: country, regionGrid`);
+//         }
+        
+//         if (scope.electricityUnit && !['kWh', 'MWh', 'GWh'].includes(scope.electricityUnit)) {
+//           throw new Error(`Invalid electricity unit "${scope.electricityUnit}" for scope "${scope.scopeIdentifier}"`);
+//         }
+
+//         // Validate API/IOT fields if applicable
+//         if (scope.inputType === 'API' && !scope.apiEndpoint) {
+//           throw new Error(`Scope 2 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
+//         }
+
+//         if (scope.inputType === 'IOT' && !scope.iotDeviceId) {
+//           throw new Error(`Scope 2 "${scope.scopeIdentifier}" with IOT input type must have iotDeviceId`);
+//         }
+//         break;
+
+//       case "Scope 3":
+//         if (!scope.categoryName || !scope.activity  ) {
+//           throw new Error(`Scope 3 "${scope.scopeIdentifier}" requires: category and activity`);
+//         }
+
+//         // Validate API fields if applicable (Scope 3 typically doesn't use IOT)
+//         if (scope.inputType === 'API' && !scope.apiEndpoint) {
+//           throw new Error(`Scope 3 "${scope.scopeIdentifier}" with API input type must have apiEndpoint`);
+//         }
+//         break;
+
+//       default:
+//         throw new Error(`Invalid scopeType: ${scope.scopeType}`);
+//     }
+//   });
+
+//   return {
+//     isValid: true,
+//     counts: scopeTypeCounts,
+//     totalScopes: scopeDetails.length
+//   };
+// };
 
 // Save or update process flowchart
 const saveProcessFlowchart = async (req, res) => {
   try {
     const { clientId, flowchartData } = req.body;
+    
+    // 0) Check if user is authenticated and has required fields
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({
+        message: 'Authentication required - user information missing'
+      });
+    }
 
-    // Validate input
-    if (!clientId || !flowchartData || !flowchartData.nodes || !flowchartData.edges) {
+    // Ensure we have a consistent userId
+    const userId = req.user._id || req.user.id;
+
+    // 1) Basic request validation
+    if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
       return res.status(400).json({ 
-        message: 'Missing required fields: clientId and flowchartData (nodes, edges)' 
+        message: 'Missing required fields: clientId or flowchartData.nodes' 
       });
     }
 
-    // Check if user can manage this client's process flowchart
-    const canManage = await canManageProcessFlowchart(req.user, clientId);
-    if (!canManage) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to manage process flowcharts for this client' 
-      });
-    }
-
-    // Check if client exists and is active
+    // 2) Check if client exists and is active
     const client = await Client.findOne({ clientId });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
@@ -69,56 +189,123 @@ const saveProcessFlowchart = async (req, res) => {
       });
     }
 
-    // Find existing or create new
+    // 3) Check process flowchart availability based on assessment level
+    const assessmentLevel = client.submissionData?.assessmentLevel || 'both';
+    if (!isChartAvailable(assessmentLevel, 'processFlowchart')) {
+      return res.status(403).json(getChartUnavailableMessage(assessmentLevel, 'processFlowchart'));
+    }
+
+    // 4) Auto-update client workflow status when consultant starts creating process flowchart
+    if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      await autoUpdateProcessFlowchartStatus(clientId, userId);
+    }
+
+    // 5) Check if user can manage this client's process flowchart
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) {
+      return res.status(403).json({ 
+        message: 'You do not have permission to manage process flowcharts for this client' 
+      });
+    }
+
+    // 6) Normalize nodes based on assessmentLevel
+    const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
+
+    // 7) Normalize edges - Process flowchart supports 4 directional edges per node
+    const normalizedEdges = normalizeEdges(flowchartData.edges);
+
+    // 8) Find existing or create new
     let processFlowchart = await ProcessFlowchart.findOne({ 
       clientId, 
       isDeleted: false 
     });
 
+    let isNew = false;
+
     if (processFlowchart) {
       // Update existing
-      processFlowchart.nodes = flowchartData.nodes;
-      processFlowchart.edges = flowchartData.edges;
-      processFlowchart.lastModifiedBy = req.user._id;
+      processFlowchart.nodes = normalizedNodes;
+      processFlowchart.edges = normalizedEdges;
+      processFlowchart.lastModifiedBy = userId;
+      processFlowchart.version = (processFlowchart.version || 0) + 1;
     } else {
       // Create new
+      isNew = true;
       processFlowchart = new ProcessFlowchart({
         clientId,
-        nodes: flowchartData.nodes,
-        edges: flowchartData.edges,
-        createdBy: req.user._id,
-        lastModifiedBy: req.user._id
+        nodes: normalizedNodes,
+        edges: normalizedEdges,
+        createdBy: userId,
+        creatorType: req.user.userType,
+        lastModifiedBy: userId,
+        assessmentLevel, // Store assessment level for reference
+        version: 1
       });
     }
 
     await processFlowchart.save();
 
-                // Auto‐start flowchart status
-            if (['consultant','consultant_admin'].includes(req.user.userType)) {
-              await Client.findOneAndUpdate(
-                { clientId },
-                { 
-                  $set: {
-                    'workflowTracking.flowchartStatus': 'on_going',
-                    'workflowTracking.flowchartStartedAt': new Date()
-                  }
-                }
-              );
-            }
+    // 9) Auto-start flowchart status
+    if (['consultant', 'consultant_admin'].includes(req.user.userType) && isNew) {
+      await Client.findOneAndUpdate(
+        { clientId },
+        { 
+          $set: {
+            'workflowTracking.processFlowchartStatus': 'on_going',
+            'workflowTracking.processFlowchartStartedAt': new Date()
+          }
+        }
+      );
+    }
 
-    res.status(200).json({ 
-      message: processFlowchart.isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
-      flowchart: {
-        clientId: processFlowchart.clientId,
-        nodes: processFlowchart.nodes,
-        edges: processFlowchart.edges,
-        createdAt: processFlowchart.createdAt,
-        updatedAt: processFlowchart.updatedAt
-      }
+    // 10) Send notifications to all client_admins of this client
+    await createChartNotifications(User, Notification, {
+      clientId,
+      userId,
+      userType: req.user.userType,
+      userName: req.user.userName,
+      isNew,
+      chartType: 'processFlowchart',
+      chartId: processFlowchart._id
+    });
+
+    // 11) Prepare response based on assessmentLevel
+    const responseData = {
+      clientId: processFlowchart.clientId,
+      nodes: processFlowchart.nodes,
+      edges: processFlowchart.edges,
+      assessmentLevel: assessmentLevel,
+      version: processFlowchart.version,
+      createdAt: processFlowchart.createdAt,
+      updatedAt: processFlowchart.updatedAt
+    };
+
+    // Include additional info for 'process' assessment level
+    if (assessmentLevel === 'process') {
+      responseData.hasFullScopeDetails = true;
+      responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level)';
+    } else if (assessmentLevel === 'both') {
+      responseData.hasFullScopeDetails = false;
+      responseData.message = 'Process flowchart saved with basic details only (full scope details available in flowchart)';
+    }
+
+    res.status(isNew ? 201 : 200).json({ 
+      message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
+      flowchart: responseData
     });
 
   } catch (error) {
     console.error('Save process flowchart error:', error);
+    
+    // Handle Mongo duplicate-key
+    if (error.code === 11000) {
+      return res.status(400).json({
+        message: 'Duplicate key error - check for duplicate identifiers',
+        error: error.message,
+        details: 'This might be caused by duplicate edge IDs or scope identifiers'
+      });
+    }
+
     res.status(500).json({ 
       message: 'Failed to save process flowchart', 
       error: error.message 
@@ -159,6 +346,17 @@ const getProcessFlowchart = async (req, res) => {
     if (!processFlowchart) {
       return res.status(404).json({ 
         message: 'Process flowchart not found' 
+      });
+    }
+
+
+    // ADD THIS: Check if process flowchart is still available based on current assessment level
+    const client = await Client.findOne({ clientId });
+    const assessmentLevel = client?.submissionData?.assessmentLevel;
+    if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'process') {
+      return res.status(403).json({
+        message: `Process flowchart is not available for current assessment level: ${assessmentLevel}`,
+        availableFor: ['both', 'process']
       });
     }
 

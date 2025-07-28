@@ -5,6 +5,8 @@ const { updateSummariesOnDataChange } = require('./CalculationSummary');
 const DataEntry = require('../../models/DataEntry');
 const Flowchart = require('../../models/Flowchart');
 
+const {getActiveFlowchart}= require ('../../utils/DataCollection/dataCollection');
+
 /**
  * Integration function to be called from saveAPIData, saveIoTData, saveManualData
  * This function prepares the data and triggers emission calculation
@@ -361,7 +363,11 @@ const saveManualDataWithEmission = async (manualData) => {
 const validateEmissionPrerequisites = async (clientId, nodeId, scopeIdentifier) => {
 try {
 // Check if flowchart exists
-const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+const activeChart = await getActiveFlowchart(clientId);
+if (!activeChart) {
+  return res.status(404).json({ message: 'No active flowchart found' });
+}
+const flowchart = activeChart.chart;
 if (!flowchart) {
 return {
 isValid: false,
