@@ -206,6 +206,16 @@ const normalizeScopeDetail = (scope) => {
  * @param {String} chartType - 'flowchart' or 'processFlowchart'
  */
 const normalizeNodes = (nodes, assessmentLevel, chartType) => {
+  const cleanObject = (obj) => {
+    return Object.fromEntries(
+      Object.entries(obj).filter(([_, v]) =>
+        v !== undefined && v !== null && v !== '' &&
+        !(Array.isArray(v) && v.length === 0) &&
+        !(typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0)
+      )
+    );
+  };
+
   return nodes.map(node => {
     const d = node.details || {};
     
@@ -221,7 +231,14 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
           department:        d.department        || '',
           location:          d.location          || '',
           employeeHeadId:    d.employeeHeadId    || null,
-          scopeDetails:      [], // Empty scopeDetails for basic view
+          scopeDetails: Array.isArray(d.scopeDetails)
+            ? d.scopeDetails.map(scope => cleanObject({
+                scopeIdentifier: scope.scopeIdentifier,
+                scopeType: scope.scopeType,
+                categoryName: scope.categoryName,
+                activity: scope.activity
+              }))
+            : [],// Empty scopeDetails for basic view
           additionalDetails: d.additionalDetails || {}
         }
       };
