@@ -1,5 +1,5 @@
 const Client = require('../../models/Client');
-
+const User = require('../../models/User')
 
 // Helper function to check if user can manage process flowchart
 const canManageProcessFlowchart = async (user, clientId) => {
