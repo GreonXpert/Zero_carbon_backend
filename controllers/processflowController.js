@@ -211,7 +211,7 @@ const saveProcessFlowchart = async (req, res) => {
     // 6) Normalize nodes based on assessmentLevel
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
 
-    // 7) Normalize edges - Process flowchart supports 4 directional edges per node
+    // 7) Normalize edges - The schema allows for many edges per node.
     const normalizedEdges = normalizeEdges(flowchartData.edges);
 
     // 8) Find existing or create new
@@ -243,6 +243,7 @@ const saveProcessFlowchart = async (req, res) => {
       });
     }
 
+    // The .save() call will now automatically trigger the pre-save hook in the model
     await processFlowchart.save();
 
     // 9) Auto-start flowchart status
@@ -280,7 +281,6 @@ const saveProcessFlowchart = async (req, res) => {
       updatedAt: processFlowchart.updatedAt
     };
 
-    // Include additional info for 'process' assessment level
     if (assessmentLevel === 'process') {
       responseData.hasFullScopeDetails = true;
       responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level)';
@@ -297,7 +297,16 @@ const saveProcessFlowchart = async (req, res) => {
   } catch (error) {
     console.error('Save process flowchart error:', error);
     
-    // Handle Mongo duplicate-key
+    // ** UPDATED ERROR HANDLING **
+    // The pre-save hook will throw an error that gets caught here.
+    // We can check for the custom status code we set.
+    if (error.statusCode === 400) {
+        return res.status(400).json({
+            message: 'Process flowchart validation failed.',
+            error: error.message
+        });
+    }
+
     if (error.code === 11000) {
       return res.status(400).json({
         message: 'Duplicate key error - check for duplicate identifiers',

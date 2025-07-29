@@ -630,6 +630,186 @@ const getMultipleSummaries = async (req, res) => {
   }
 };
 
+
+
+
+const getFilteredSummary = async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const { 
+            periodType, year, month, day, week,
+            scope, category, nodeId, department, activity, location
+        } = req.query;
+
+        let query = { clientId };
+        let fullSummary = null;
+
+        // --- Step 1: Fetch the correct base summary document ---
+
+        if (periodType) {
+            query['period.type'] = periodType;
+            if (year) query['period.year'] = parseInt(year);
+            if (month) query['period.month'] = parseInt(month);
+            if (day) query['period.day'] = parseInt(day);
+            if (week) query['period.week'] = parseInt(week);
+            fullSummary = await EmissionSummary.findOne(query).lean();
+        } else {
+            fullSummary = await EmissionSummary.findOne({ clientId })
+                                               .sort({ 'period.to': -1 })
+                                               .lean();
+        }
+
+        if (!fullSummary) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'No summary data found for the specified client and period.' 
+            });
+        }
+
+        // --- Step 2: Apply the requested filter ---
+
+        let filteredData = {};
+        let filterType = 'none';
+
+        if (scope) {
+            filterType = 'scope';
+            if (!['Scope 1', 'Scope 2', 'Scope 3'].includes(scope)) {
+                return res.status(400).json({ success: false, message: 'Invalid scope type. Use "Scope 1", "Scope 2", or "Scope 3".' });
+            }
+            if (!fullSummary.byScope || !fullSummary.byScope[scope]) {
+                 return res.status(404).json({ success: false, message: `Scope '${scope}' has no data in this summary period.` });
+            }
+
+            filteredData = {
+                scopeType: scope,
+                period: fullSummary.period,
+                emissions: fullSummary.byScope[scope] || {},
+                categories: {},
+                activities: {},
+                nodes: {}
+            };
+            
+            const categoryEntries = fullSummary.byCategory instanceof Map ? fullSummary.byCategory.entries() : Object.entries(fullSummary.byCategory || {});
+            for (const [catName, catData] of categoryEntries) {
+                if (catData.scopeType === scope) filteredData.categories[catName] = catData;
+            }
+
+            const activityEntries = fullSummary.byActivity instanceof Map ? fullSummary.byActivity.entries() : Object.entries(fullSummary.byActivity || {});
+            for (const [actName, actData] of activityEntries) {
+                if (actData.scopeType === scope) filteredData.activities[actName] = actData;
+            }
+
+            const nodeEntries = fullSummary.byNode instanceof Map ? fullSummary.byNode.entries() : Object.entries(fullSummary.byNode || {});
+            for (const [nodeId, nodeData] of nodeEntries) {
+                if (nodeData.byScope?.[scope]?.CO2e > 0) {
+                    filteredData.nodes[nodeId] = { ...nodeData, scopeEmissions: nodeData.byScope[scope] };
+                }
+            }
+
+        } else if (category) {
+            filterType = 'category';
+            const categoryData = fullSummary.byCategory?.get?.(category) || fullSummary.byCategory?.[category];
+
+            if (!categoryData) {
+                return res.status(404).json({ success: false, message: `Category '${category}' not found in this summary period.` });
+            }
+            filteredData = {
+                categoryName: category,
+                period: fullSummary.period,
+                emissions: categoryData,
+                activities: categoryData.activities || {},
+                scopeType: categoryData.scopeType,
+                percentage: fullSummary.totalEmissions.CO2e > 0 ? ((categoryData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2) : 0
+            };
+        } else if (nodeId) {
+            filterType = 'node';
+            const nodeData = fullSummary.byNode?.get?.(nodeId) || fullSummary.byNode?.[nodeId];
+
+            if (!nodeData) {
+                return res.status(404).json({ success: false, message: `Node ID '${nodeId}' not found in this summary period.` });
+            }
+            filteredData = {
+                nodeId,
+                nodeLabel: nodeData.nodeLabel,
+                department: nodeData.department,
+                location: nodeData.location,
+                period: fullSummary.period,
+                totalEmissions: { CO2e: nodeData.CO2e, CO2: nodeData.CO2, CH4: nodeData.CH4, N2O: nodeData.N2O, uncertainty: nodeData.uncertainty },
+                byScope: nodeData.byScope,
+                percentage: fullSummary.totalEmissions.CO2e > 0 ? ((nodeData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2) : 0
+            };
+        } else if (department) {
+            filterType = 'department';
+            const departmentData = fullSummary.byDepartment?.get?.(department) || fullSummary.byDepartment?.[department];
+
+            if (!departmentData) {
+                return res.status(404).json({ success: false, message: `Department '${department}' not found in this summary period.` });
+            }
+            const departmentNodes = {};
+            const nodeEntries = fullSummary.byNode instanceof Map ? fullSummary.byNode.entries() : Object.entries(fullSummary.byNode || {});
+            for (const [id, nodeData] of nodeEntries) {
+                if (nodeData.department === department) departmentNodes[id] = nodeData;
+            }
+            filteredData = {
+                departmentName: department,
+                period: fullSummary.period,
+                emissions: departmentData,
+                nodes: departmentNodes,
+                nodeCount: departmentData.nodeCount,
+                percentage: fullSummary.totalEmissions.CO2e > 0 ? ((departmentData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2) : 0
+            };
+        } else if (activity) {
+            filterType = 'activity';
+            const activityData = fullSummary.byActivity?.get?.(activity) || fullSummary.byActivity?.[activity];
+
+            if (!activityData) {
+                return res.status(404).json({ success: false, message: `Activity '${activity}' not found in this summary period.` });
+            }
+            filteredData = {
+                activityName: activity,
+                period: fullSummary.period,
+                emissions: activityData,
+                scopeType: activityData.scopeType,
+                categoryName: activityData.categoryName,
+                percentage: fullSummary.totalEmissions.CO2e > 0 ? ((activityData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2) : 0
+            };
+        } else if (location) {
+            filterType = 'location';
+            const locationData = fullSummary.byLocation?.get?.(location) || fullSummary.byLocation?.[location];
+
+            if (!locationData) {
+                return res.status(404).json({ success: false, message: `Location '${location}' not found in this summary period.` });
+            }
+            const locationNodes = {};
+            const nodeEntries = fullSummary.byNode instanceof Map ? fullSummary.byNode.entries() : Object.entries(fullSummary.byNode || {});
+            for (const [id, nodeData] of nodeEntries) {
+                if (nodeData.location === location) locationNodes[id] = nodeData;
+            }
+            filteredData = {
+                locationName: location,
+                period: fullSummary.period,
+                emissions: locationData,
+                nodes: locationNodes,
+                nodeCount: locationData.nodeCount,
+                percentage: fullSummary.totalEmissions.CO2e > 0 ? ((locationData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2) : 0
+            };
+        } else {
+            filterType = 'full';
+            filteredData = fullSummary;
+        }
+
+        res.status(200).json({
+            success: true,
+            filterType,
+            data: filteredData
+        });
+
+    } catch (error) {
+        console.error('Error in getFilteredSummary:', error);
+        res.status(500).json({ success: false, message: 'Failed to get filtered summary', error: error.message });
+    }
+};
+
 module.exports = {
   setSocketIO,
   calculateEmissionSummary,
@@ -637,5 +817,7 @@ module.exports = {
   updateSummariesOnDataChange,
   recalculateAndSaveSummary,
   getEmissionSummary,
-  getMultipleSummaries
+  getMultipleSummaries,
+  getFilteredSummary,
+
 };

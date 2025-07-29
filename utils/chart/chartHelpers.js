@@ -262,7 +262,9 @@ const normalizeEdges = (edges) => {
     .map(e => ({
       id:     e.id     || uuidv4(),
       source: e.source,
-      target: e.target
+      target: e.target,
+      sourcePosition: e.sourcePosition,
+      targetPosition:e.targetPosition
     }))
     .filter(edge => edge.source && edge.target);
 };

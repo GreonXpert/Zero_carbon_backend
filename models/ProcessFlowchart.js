@@ -16,8 +16,7 @@ const ScopeDetailSchema = new mongoose.Schema({
     required: true,
     enum: ['Scope 1', 'Scope 2', 'Scope 3']
   },
-  
-  
+    
   // Input type for this specific scope detail
   inputType: {
     type: String,
@@ -221,9 +220,7 @@ emissionFactorValues: {
     default: '',
     description: 'Electricity consumption unit'
   },
-  
-  
-  
+    
   // Common fields
   description: { type: String },
   source: { 
@@ -270,13 +267,12 @@ const NodeSchema = new mongoose.Schema({
     },
     department: { type: String },
     location: { type: String },
-     // ← here ↓
-  employeeHeadId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null,
-    description: 'The User._id of the Employee Head responsible for this node'
-  },
+    employeeHeadId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        description: 'The User._id of the Employee Head responsible for this node'
+    },
     
     // Array of scope details - each with its own input type
     scopeDetails: [ScopeDetailSchema],
@@ -290,21 +286,70 @@ const EdgeSchema = new mongoose.Schema({
   id: { type: String, required: true },
   source: { type: String, required: true },
   target: { type: String, required: true },
+  sourcePosition: { type: String, required: true },
+  targetPosition: { type: String, required: true },
 });
 
 const ProcessFlowchartSchema = new mongoose.Schema({
   clientId: { type: String, required: true, index: true },
-  nodes: [NodeSchema], // This now uses the updated, more detailed NodeSchema
+  nodes: [NodeSchema],
   edges: [EdgeSchema],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   isDeleted: { type: Boolean, default: false },
   deletedAt: { type: Date },
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-   // Metadata
   version: { type: Number, default: 1 },
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
+
+// ** NEW CODE: Pre-save hook for edge validation **
+ProcessFlowchartSchema.pre('save', function(next) {
+  const flowchart = this;
+  const MIN_EDGES_PER_NODE = 1;
+
+  // If there are no nodes, no need to validate
+  if (!flowchart.nodes || flowchart.nodes.length === 0) {
+    return next();
+  }
+
+  const edgeCounts = new Map();
+  
+  // Initialize edge counts for all nodes to 0
+  for (const node of flowchart.nodes) {
+    edgeCounts.set(node.id, 0);
+  }
+
+  // Count edges for each node
+  for (const edge of flowchart.edges) {
+    if (edgeCounts.has(edge.source)) {
+      edgeCounts.set(edge.source, edgeCounts.get(edge.source) + 1);
+    }
+    if (edgeCounts.has(edge.target)) {
+      edgeCounts.set(edge.target, edgeCounts.get(edge.target) + 1);
+    }
+  }
+
+  // Check if any node has fewer than the minimum required edges
+  const invalidNodes = [];
+  for (const node of flowchart.nodes) {
+    const count = edgeCounts.get(node.id) || 0;
+    if (count < MIN_EDGES_PER_NODE) {
+      invalidNodes.push(`Node "${node.label}" (ID: ${node.id}) has only ${count} edge(s), but requires ${MIN_EDGES_PER_NODE}.`);
+    }
+  }
+
+  if (invalidNodes.length > 0) {
+    // If validation fails, pass an error to the next middleware (the save operation)
+    const error = new Error(`Validation failed: ${invalidNodes.join(' ')}`);
+    error.statusCode = 400; // Bad Request
+    return next(error);
+  }
+
+  // If all nodes are valid, proceed with the save operation
+  next();
+});
+
 
 ProcessFlowchartSchema.index({ clientId: 1, isDeleted: 1 });
 
