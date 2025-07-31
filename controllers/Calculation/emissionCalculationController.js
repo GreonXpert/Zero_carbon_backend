@@ -780,10 +780,13 @@ async function calculateScope3Emissions(
   const ec    = dataValues.electricityConsumption ?? 0;
   const cumEc = cumulativeVals.electricityConsumption ?? 0;
   const td    = dataValues.tdLossFactor           ?? 0;
+  const cf    = dataValues.fuelConsumption        ?? 0;
+  const cumCf = dataValues.fuelConsumption        ?? 0;
 
   // emission factor for all fuel‐energy buckets
   // you were using `ef` for upstream and WTT, and `gridEF` for T&D.
   // adjust these if you pull them from different efValues properties.
+  const WTTEF= ef;
   const upstreamEF = ef;     
   const gridEF     = ef;     
 
@@ -807,8 +810,8 @@ async function calculateScope3Emissions(
 
   // ─── B) Well-to-Tank (fuel × EF) ────────────────────
   {
-    const incB = fc    * upstreamEF;
-    const cumB = cumFc * upstreamEF;
+    const incB = cf     * WTTEF;
+    const cumB = cumCf * upstreamEF;
     const uB   = calculateUncertainty(incB, UAD, UEF);
 
     emissions.incoming['WTT'] = {
