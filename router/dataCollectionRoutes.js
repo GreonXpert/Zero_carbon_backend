@@ -9,6 +9,7 @@ const {
   saveManualData,
   uploadCSVData,
   editManualData,
+  deleteManualData,
   switchInputType,
   getDataEntries,
   getCollectionStatus,
@@ -74,6 +75,8 @@ router.post(
 // Edit Manual Data Entry
 // PUT /api/data-collection/data-entries/:dataId
 router.put('/data-entries/:dataId', editManualData);
+
+router.delete('/data-entries/:dataId', deleteManualData);
 
 // Get Data Entries (with filtering and pagination)
 // GET /api/data-collection/clients/:clientId/data-entries

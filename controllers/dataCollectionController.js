@@ -14,7 +14,7 @@ const {
   validateEmissionPrerequisites
 } = require('./Calculation/emissionIntegration');
 
-
+const {getActiveFlowchart} = require ('../utils/DataCollection/dataCollection');
 /**
  * Normalizes a data payload from any source (API, IOT, Manual, CSV)
  * into a standardized format for emission calculation.
@@ -125,6 +125,7 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
 
       case 'Fuel and energy':
         pd.fuelConsumed = getValue(['fuelConsumed', 'fuel_consumed']);
+        pd.fuelConsumption=getValue(['consumed_fuel','consumedFuel']);
         pd.electricityConsumption = getValue(['electricityConsumption', 'electricity_consumed']);
         pd.tdLossFactor = getValue(['tdLossFactor', 'td_loss_factor']);
         break;
@@ -250,28 +251,7 @@ const emitDataUpdate = (eventType, data) => {
   }
 };
 
-// Helper function to get active flowchart (either Flowchart or ProcessFlowchart)
-const getActiveFlowchart = async (clientId) => {
-  try {
-    // First check for regular Flowchart
-    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
-    if (flowchart) {
-      return { chart: flowchart, type: 'flowchart' };
-    }
-    
-    // If not found, check for ProcessFlowchart
-    const processFlowchart = await ProcessFlowchart.findOne({ clientId, isActive: true });
-    if (processFlowchart) {
-      return { chart: processFlowchart, type: 'processFlowchart' };
-    }
-    
-    // Neither found
-    return null;
-  } catch (error) {
-    console.error('Error fetching active flowchart:', error);
-    return null;
-  }
-};
+
 
 
 // Helper function to convert data to Map if needed
@@ -1215,8 +1195,6 @@ const saveManualData = async (req, res) => {
 
 
 
-
-// Upload CSV Data (now with cumulative tracking)
 const uploadCSVData = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -1481,6 +1459,42 @@ if (savedEntries.length > 0) {
   }
 };
 
+const handleDataChange = async (entry) => {
+  if (!entry || !entry._id) {
+    console.error('handleDataChange called with an invalid entry object.');
+    return;
+  }
+
+  console.log(`Handling data change for entry: ${entry._id}`);
+
+  try {
+    // 1. Re-trigger emission calculation for the specific entry
+    // This ensures the entry itself has the latest emission data.
+    await triggerEmissionCalculation(entry);
+    console.log(`Emission calculation re-triggered for entry: ${entry._id}`);
+
+    // 2. Invalidate or update monthly/quarterly summaries for the period.
+    // (This is a placeholder for your summary update logic)
+    // For example:
+    // await SummaryModel.updateSummaryForPeriod(entry.clientId, entry.timestamp);
+    console.log(`Summary update triggered for period of entry: ${entry._id}`);
+
+
+    // 3. Potentially update dashboard analytics or other aggregated views.
+    // (This is a placeholder for your analytics update logic)
+    // For example:
+    // await AnalyticsModel.refreshDashboard(entry.clientId);
+    console.log(`Analytics refresh triggered for client: ${entry.clientId}`);
+
+  } catch (error) {
+    console.error(`Error in handleDataChange for entry ${entry._id}:`, error);
+    // It's important not to throw here, as this is a background process.
+    // Log the error for monitoring.
+  }
+};
+
+
+
 // Edit Manual Data Entry
 const editManualData = async (req, res) => {
   try {
@@ -1546,8 +1560,15 @@ const editManualData = async (req, res) => {
       entry.dataValues = dataMap;
     }
     
-    // Add edit history
-    entry.addEditHistory(req.user._id, reason, previousValues, 'Manual edit');
+    // *** FIX: Ensure a valid user ID is passed ***
+    // The user object might have `id` or `_id`. We safely get whichever is available.
+    const editorId = req.user._id || req.user.id;
+    if (!editorId) {
+        return res.status(400).json({ message: 'Could not identify the editor. User ID is missing.' });
+    }
+    
+    // Add edit history with the validated editorId
+    entry.addEditHistory(editorId, reason, previousValues, 'Manual edit');
     
     await entry.save();
 
@@ -1571,6 +1592,13 @@ const editManualData = async (req, res) => {
     
   } catch (error) {
     console.error('Edit manual data error:', error);
+    // Provide more detailed validation error messages if available
+    if (error.name === 'ValidationError') {
+        return res.status(400).json({
+            message: 'Validation failed',
+            errors: error.errors
+        });
+    }
     res.status(500).json({ 
       message: 'Failed to edit data entry', 
       error: error.message 

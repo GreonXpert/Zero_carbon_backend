@@ -10,7 +10,9 @@ const {
     downloadCountryEmissionFactorsTemplate
 } = require('../../controllers/EmissionFactor/countryEmissionFactorController');
 const multer = require('multer');
+const { auth, checkRole } = require('../../middleware/auth');
 const path = require('path');
+
 
 
 // Configure multer for CSV file uploads
@@ -39,27 +41,35 @@ const upload = multer({
   }
 });
 
+// Apply authentication to all routes
+router.use(auth);
+
+// Define roles that can view data
+const viewRoles = ['consultant', 'consultant_admin', 'super_admin'];
+const editRoles = ['consultant_admin', 'super_admin'];
+
+
 // Add new country emission factor
-router.post('/add', addEmissionFactor);
+router.post('/add',checkRole(editRoles), addEmissionFactor);
 
 // 1. bulk import via CSV upload (field name: csvFile)
-router.post('/bulk-import', upload.single('csvFile'), bulkImportCountryEmissionFactors);
+router.post('/bulk-import', checkRole(editRoles),upload.single('csvFile'), bulkImportCountryEmissionFactors);
 
 // 2. download a CSV template
-router.get('/template', downloadCountryEmissionFactorsTemplate);
+router.get('/template',checkRole(editRoles), downloadCountryEmissionFactorsTemplate);
 
 // Get all country emission factors
-router.get('/all', getAllEmissionFactors);
+router.get('/all',checkRole(viewRoles), getAllEmissionFactors);
 
 // Get single country emission factor by ID
-router.get('/:id', getEmissionFactorById);
+router.get('/:id',checkRole(viewRoles), getEmissionFactorById);
 
 
 
 // Update country emission factor by ID
-router.put('/update/:id', updateEmissionFactor);
+router.put('/update/:id', checkRole(editRoles),updateEmissionFactor);
 
 // Delete country emission factor by ID
-router.delete('/delete/:id', deleteEmissionFactor);
+router.delete('/delete/:id', checkRole(editRoles),deleteEmissionFactor);
 
 module.exports = router;

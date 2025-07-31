@@ -113,7 +113,7 @@ io.use(async (socket, next) => {
         }
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findById(decoded.userId).select('-password');
+        const user = await User.findById(decoded.id).select('-password');
         
         if (!user || !user.isActive) {
             return next(new Error('Invalid or inactive user'));
