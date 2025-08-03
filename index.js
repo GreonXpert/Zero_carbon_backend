@@ -23,6 +23,7 @@ const EmissionFactorHub = require('./router/EmissionFactor/EmissionFactorHubRout
 const ipccDataRoutes = require('./router/EmissionFactor/ipccDataRoutes');
 const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
 const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
+const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverstionCalculation');
 const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
 
 // Import notification routes
@@ -83,6 +84,7 @@ app.use('/api', iotRoutes);
 app.use('/api/ipcc', ipccDataRoutes);
 app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
+app.use('/api/emission-factor', ipccConverstionCalculation);
 app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
 
 // Notification and data collection routes
