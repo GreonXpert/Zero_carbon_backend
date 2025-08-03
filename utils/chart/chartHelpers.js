@@ -112,12 +112,7 @@ const normalizeScopeDetail = (scope) => {
   if (scope.emissionFactor === 'DEFRA') {
     const defraSource = scope.emissionFactorValues?.defraData || scope;
     normalizedScope.emissionFactorValues.defraData = {
-      scope:   defraSource.scope    || '',
-      level1:  defraSource.level1   || '',
-      level2:  defraSource.level2   || '',
-      level3:  defraSource.level3   || '',
-      level4:  defraSource.level4   || '',
-      columnText: defraSource.columnText || '',
+ 
       uom:     defraSource.uom      || '',
       ghgUnits: Array.isArray(defraSource.ghgUnits) 
         ? defraSource.ghgUnits
@@ -131,27 +126,23 @@ const normalizeScopeDetail = (scope) => {
   } else if (scope.emissionFactor === 'IPCC') {
     const ipccSource = scope.emissionFactorValues?.ipccData || scope;
     normalizedScope.emissionFactorValues.ipccData = {
-      level1:         ipccSource.level1           || '',
-      level2:         ipccSource.level2           || '',
-      level3:         ipccSource.level3           || '',
-      cpool:          ipccSource.cpool || ipccSource.Cpool || '',
-      typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
+     
+      fuelDensityLiter: ipccSource.fuelDensityLiter || null,
+    fuelDensityM3: ipccSource.fuelDensityM3 || null,
       unit:           ipccSource.unit || ipccSource.Unit || '',
-      value:          ipccSource.value ?? ipccSource.Value ?? null,
-      description:    ipccSource.description || ipccSource.Description || '',
+      ghgUnits: Array.isArray(ipccSource.ghgUnits) 
+        ? ipccSource.ghgUnits
+        : (ipccSource.ghgUnit && ipccSource.ghgConversionFactor != null)
+          ? [{ unit: ipccSource.ghgUnit, ghgconversionFactor: ipccSource.ghgConversionFactor }]
+          : [],
       gwpValue: ipccSource.gwpValue || 0,
-      gwpSearchField:ipccSource.gwpSearchField || null,
+      gwpSearchField: ipccSource.gwpSearchField || null,
       gwpLastUpdated: ipccSource.gwpLastUpdated || null
     };
   } else if (scope.emissionFactor === 'EPA') {
     const epaSource = scope.emissionFactorValues?.epaData || scope;
     normalizedScope.emissionFactorValues.epaData = {
-      scopeEPA:       epaSource.scopeEPA        || '',
-      level1EPA:      epaSource.level1EPA       || '',
-      level2EPA:      epaSource.level2EPA       || '',
-      level3EPA:      epaSource.level3EPA       || '',
-      level4EPA:      epaSource.level4EPA       || '',
-      columnTextEPA:  epaSource.columnTextEPA   || '',
+   
       uomEPA:         epaSource.uomEPA          || '',
       ghgUnitsEPA: Array.isArray(epaSource.ghgUnitsEPA)
         ? epaSource.ghgUnitsEPA

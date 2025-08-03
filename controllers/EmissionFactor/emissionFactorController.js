@@ -237,6 +237,17 @@ exports.getEmissionFactors = async (req, res) => {
         if (filters.level3)  query.level3    = new RegExp(filters.level3, 'i');
         if (filters.Cpool)   query.Cpool     = new RegExp(filters.Cpool, 'i');
         if (filters.TypeOfParameter) query.TypeOfParameter = new RegExp(filters.TypeOfParameter, 'i');
+        if (filters.Description) query.Description = new RegExp(filters.Description, 'i');
+        if (filters.TechnologiesOrPractices) query.TechnologiesOrPractices = new RegExp(filters.TechnologiesOrPractices, 'i');
+        if (filters.ParametersOrConditions) query.ParametersOrConditions = new RegExp(filters.ParametersOrConditions, 'i');
+        if (filters.RegionOrRegionalConditions) query.RegionOrRegionalConditions = new RegExp(filters.RegionOrRegionalConditions, 'i');
+        if (filters.AbatementOrControlTechnologies) query.AbatementOrControlTechnologies = new RegExp(filters.AbatementOrControlTechnologies, 'i');
+        if (filters.OtherProperties) query.OtherProperties = new RegExp(filters.OtherProperties, 'i');
+        if (filters.Equation) query.Equation = new RegExp(filters.Equation, 'i');
+        if (filters.IPCCWorksheet) query.IPCCWorksheet = new RegExp(filters.IPCCWorksheet, 'i');
+        if (filters.TechnicalReference) query.TechnicalReference = new RegExp(filters.TechnicalReference, 'i');
+        if (filters.SourceOfData) query.SourceOfData = new RegExp(filters.SourceOfData, 'i');
+        if (filters.DataProvider) query.DataProvider = new RegExp(filters.DataProvider, 'i');
         if (filters.Unit)    query.Unit      = new RegExp(filters.Unit, 'i');
         break;
 

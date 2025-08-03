@@ -57,12 +57,7 @@ const ScopeDetailSchema = new mongoose.Schema({
 emissionFactorValues: {
   // For DEFRA
   defraData: {
-    scope: { type: String },
-    level1: { type: String },
-    level2: { type: String },
-    level3: { type: String },
-    level4: { type: String },
-    columnText: { type: String },
+
     uom: { type: String },
     ghgUnits: [{ 
       unit: { type: String },
@@ -77,27 +72,24 @@ emissionFactorValues: {
   
   // For IPCC
   ipccData: {
-    level1: { type: String },
-    level2: { type: String },
-    level3: { type: String },
-    cpool: { type: String },
-    typeOfParameter: { type: String },
+   
+    fuelDensityLiter: { type: Number, default: null },
+    fuelDensityM3: { type: Number, default: null },
     unit: { type: String },
-    value: { type: Number },
-    description: { type: String },
-    gwpValue: { type: Number, default: 0 },
+    ghgUnits: [{ 
+      unit: { type: String },
+      ghgconversionFactor: { type: Number },
+      gwpValue: { type: Number, default: 0 },
       gwpSearchField: { type: String, default: null },
       gwpLastUpdated: { type: Date, default: null }
+
+    }],
+    
   },
   
   // For EPA
   epaData: {
-    scopeEPA: { type: String },
-    level1EPA: { type: String },
-    level2EPA: { type: String },
-    level3EPA: { type: String },
-    level4EPA: { type: String },
-    columnTextEPA: { type: String },
+   
     uomEPA: { type: String },
     ghgUnitsEPA: [{
       unit: { type: String },

@@ -72,7 +72,6 @@ const IPCCDataSchema = new mongoose.Schema({
   // Value and measurement
   Value: { 
     type: Number, 
-    required: true,
     default: 0
   },
   Unit: { 
