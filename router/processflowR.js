@@ -1,6 +1,7 @@
 // router/processflowR.js
 const express = require('express');
-const { authenticate } = require('../utils/authenticate');
+const { auth, checkRole } = require('../middleware/auth');
+
 const {
   saveProcessFlowchart,
   getProcessFlowchart,
@@ -9,13 +10,16 @@ const {
   deleteProcessFlowchart,
   deleteProcessNode,
   getProcessFlowchartSummary,
-  restoreProcessFlowchart
+  restoreProcessFlowchart,
+  assignOrUnassignEmployeeHeadToNode
 } = require('../controllers/processflowController');
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(authenticate);
+router.use(auth);
+
+const editRoles = ['consultant_admin', 'super_admin', 'client_admin'];
 
 // Process flowchart operations
 router.post('/save', saveProcessFlowchart);                             // Create/Update process flowchart
@@ -26,5 +30,6 @@ router.patch('/:clientId/node/:nodeId', updateProcessFlowchartNode);   // Update
 router.delete('/:clientId', deleteProcessFlowchart);                   // Delete process flowchart (soft)
 router.delete('/:clientId/node/:nodeId', deleteProcessNode);           // Delete specific node
 router.patch('/:clientId/restore', restoreProcessFlowchart);           // Restore deleted flowchart (super admin only)
+router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
 
 module.exports = router;
