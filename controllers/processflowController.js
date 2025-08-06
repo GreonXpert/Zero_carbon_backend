@@ -18,7 +18,7 @@ const {
 
 // Import existing permission and workflow functions
 const {autoUpdateProcessFlowchartStatus}  = require('../utils/Workflow/workflow');
-const {canManageProcessFlowchart} = require('../utils/Permissions/permissions');
+const {canManageProcessFlowchart, canAssignHeadToNode} = require('../utils/Permissions/permissions');
 
 
 
@@ -749,6 +749,84 @@ const restoreProcessFlowchart = async (req, res) => {
   }
 };
 
+const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+    const { employeeHeadId } = req.body;
+
+    // Permission checks
+    const permissionCheck = await canAssignHeadToNode(req.user, clientId);
+    if (!permissionCheck) {
+      return res.status(403).json({ 
+        message: 'Permission denied'
+      });
+    }
+
+    if (req.user.userType !== 'client_admin' && !permissionCheck) {
+      return res.status(403).json({ 
+        message: 'Only client admins or authorized consultants can assign/unassign employee heads.'
+      });
+    }
+
+    // Find the flowchart
+    const flowchart = await ProcessFlowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Active process flowchart not found for this client.' });
+    }
+
+    // Find the node
+    const node = flowchart.nodes.find(n => n.id === nodeId);
+    if (!node) {
+      return res.status(404).json({ message: 'Node not found in the process flowchart.' });
+    }
+
+    // ASSIGN
+    if (employeeHeadId) {
+      // Verify the employee head exists and belongs to the client
+      const employeeHead = await User.findOne({ _id: employeeHeadId, userType: 'client_employee_head', clientId });
+      if (!employeeHead) {
+        return res.status(404).json({ message: 'Employee head not found or does not belong to this client.' });
+      }
+
+      node.details.employeeHeadId = employeeHeadId;
+
+      await flowchart.save();
+
+      return res.status(200).json({
+        message: 'Employee head assigned to node successfully.',
+        nodeId: node.id,
+        employeeHeadId
+      });
+    } 
+    
+    // UNASSIGN
+    else {
+      if (!node.details.employeeHeadId) {
+        return res.status(400).json({ message: 'No employee head is currently assigned to this node.' });
+      }
+
+      node.details.employeeHeadId = null;
+
+      await flowchart.save();
+
+      return res.status(200).json({
+        message: 'Employee head unassigned from node successfully.',
+        nodeId: node.id
+      });
+    }
+
+  } catch (error) {
+    console.error('Error assigning/unassigning employee head to node:', error);
+    res.status(500).json({ 
+      message: 'Failed to assign/unassign employee head to node.', 
+      error: error.message 
+    });
+  }
+};
+
+
+
+
 
 module.exports = {
   saveProcessFlowchart,
@@ -758,5 +836,6 @@ module.exports = {
   deleteProcessFlowchart,
   deleteProcessNode,
   getProcessFlowchartSummary,
-  restoreProcessFlowchart
+  restoreProcessFlowchart,
+  assignOrUnassignEmployeeHeadToNode
 };
