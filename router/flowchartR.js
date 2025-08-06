@@ -9,6 +9,7 @@ const {
   getConsolidatedSummary,
   updateFlowchartNode,
   restoreFlowchart,
+  assignOrUnassignEmployeeHeadToNode
  
 } = require('../controllers/flowchartController');
 // CHANGED: Use the same auth middleware as other routes
@@ -21,7 +22,7 @@ router.use(auth); // CHANGED: Use proper auth middleware
 
 // Define roles that can access emission factor data
 const viewRoles = ['consultant', 'consultant_admin', 'super_admin', 'client_admin', 'employee_head', 'employee'];
-const editRoles = ['consultant_admin', 'super_admin'];
+const editRoles = ['consultant_admin', 'super_admin', 'client_admin'];
 
 // Summary routes
 router.get('/summary', getConsolidatedSummary); 
@@ -35,6 +36,7 @@ router.delete('/:clientId', deleteFlowchart);
 router.delete('/:clientId/node/:nodeId', deleteFlowchartNode); 
 router.patch('/:clientId/node/:nodeId', updateFlowchartNode); 
 router.patch('/:clientId/restore', restoreFlowchart); 
+router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode)
 
 
 
