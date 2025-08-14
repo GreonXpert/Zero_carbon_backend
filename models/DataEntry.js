@@ -1,86 +1,80 @@
 const mongoose = require('mongoose');
 
 const EditHistorySchema = new mongoose.Schema({
-  editedAt: { 
-    type: Date, 
-    default: Date.now 
+  editedAt: {
+    type: Date,
+    default: Date.now
   },
-  editedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
-    required: true 
+  editedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
   },
-  reason: { 
-    type: String, 
-    default: 'Data correction' 
+  reason: {
+    type: String,
+    default: 'Data correction'
   },
-  previousValues: { 
-    type: mongoose.Schema.Types.Mixed 
+  previousValues: {
+    type: mongoose.Schema.Types.Mixed
   },
-  changeDescription: { 
-    type: String 
+  changeDescription: {
+    type: String
   }
 });
 
 const SourceDetailsSchema = new mongoose.Schema({
   // For manual entries
-  uploadedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  uploadedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
-  
   // For API entries
-  apiEndpoint: { 
-    type: String 
+  apiEndpoint: {
+    type: String
   },
-  
   // For IoT entries
-  iotDeviceId: { 
-    type: String 
+  iotDeviceId: {
+    type: String
   },
-  
   // For CSV uploads
-  fileName: { 
-    type: String 
+  fileName: {
+    type: String
   },
-  
   // Additional metadata
-  dataSource: { 
-    type: String 
+  dataSource: {
+    type: String
   },
-  requestId: { 
-    type: String 
+  requestId: {
+    type: String
   },
-  batchId: { 
-    type: String 
+  batchId: {
+    type: String
   }
 });
 
 const DataEntrySchema = new mongoose.Schema({
   // Core identifiers
-  clientId: { 
-    type: String, 
-    required: true, 
-    index: true 
-  },
-  nodeId: { 
-    type: String, 
+  clientId: {
+    type: String,
     required: true,
-    index: true 
+    index: true
   },
-  scopeIdentifier: { 
-    type: String, 
+  nodeId: {
+    type: String,
     required: true,
-    index: true 
+    index: true
   },
-  
+  scopeIdentifier: {
+    type: String,
+    required: true,
+    index: true
+  },
   // Scope information
   scopeType: {
     type: String,
     required: true,
     enum: ['Scope 1', 'Scope 2', 'Scope 3']
   },
-  
   // Input method
   inputType: {
     type: String,
@@ -88,20 +82,18 @@ const DataEntrySchema = new mongoose.Schema({
     enum: ['manual', 'API', 'IOT'],
     index: true
   },
-  
   // Timestamp information
-  date: { 
-    type: String, 
+  date: {
+    type: String,
   }, // Format: "DD:MM:YYYY"
-  time: { 
-    type: String, 
+  time: {
+    type: String,
   }, // Format: "HH:mm:ss"
-  timestamp: { 
-    type: Date, 
+  timestamp: {
+    type: Date,
     required: true,
-    index: true 
+    index: true
   },
-  
   // Data content
   dataValues: {
     type: Map,
@@ -109,7 +101,6 @@ const DataEntrySchema = new mongoose.Schema({
     required: true,
     validate: {
       validator: function(v) {
-        // Ensure it's a Map with numeric values
         if (!(v instanceof Map)) return false;
         for (const [key, value] of v) {
           if (typeof value !== 'number' && isNaN(Number(value))) {
@@ -121,37 +112,32 @@ const DataEntrySchema = new mongoose.Schema({
       message: 'dataValues must be a key-value map with numeric values'
     }
   },
-   // Cumulative tracking fields
+  // Cumulative tracking fields
   cumulativeValues: {
     type: Map,
     of: Number,
     default: () => new Map()
   },
-  
   highData: {
     type: Map,
     of: Number,
     default: () => new Map()
   },
-  
   lowData: {
     type: Map,
     of: Number,
     default: () => new Map()
   },
-  
   lastEnteredData: {
     type: Map,
     of: Number,
     default: () => new Map()
   },
-  
   // Monthly summary flag
   isSummary: {
     type: Boolean,
     default: false
   },
-  
   summaryPeriod: {
     month: Number,
     year: Number
@@ -162,10 +148,13 @@ const DataEntrySchema = new mongoose.Schema({
     enum: ['IPCC', 'DEFRA', 'EPA', 'Custom', 'Country', 'EmissionFactorHub'],
     default: ''
   },
-  
+  nodeType: {
+    type: String,
+    enum: ['Emission Source', 'Reduction'],
+    default: 'Emission Source'
+  },
   // Source tracking
   sourceDetails: SourceDetailsSchema,
-  
   // Edit capability and tracking
   isEditable: {
     type: Boolean,
@@ -173,31 +162,26 @@ const DataEntrySchema = new mongoose.Schema({
       return this.inputType === 'manual';
     }
   },
-  
-  lastEditedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  lastEditedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
-  lastEditedAt: { 
-    type: Date 
+  lastEditedAt: {
+    type: Date
   },
-  
   editHistory: [EditHistorySchema],
-  
   // Processing status
   processingStatus: {
     type: String,
     enum: ['pending', 'processing', 'processed', 'failed'],
     default: 'pending'
   },
-  
   // Validation and quality
   validationStatus: {
     type: String,
     enum: ['valid', 'invalid', 'warning', 'pending_review'],
     default: 'valid'
   },
-  
   validationErrors: [{
     field: String,
     message: String,
@@ -206,7 +190,6 @@ const DataEntrySchema = new mongoose.Schema({
       enum: ['error', 'warning', 'info']
     }
   }],
-  
   // Quality metrics
   dataQuality: {
     completeness: { type: Number, min: 0, max: 100 }, // Percentage
@@ -214,130 +197,148 @@ const DataEntrySchema = new mongoose.Schema({
     consistency: { type: Number, min: 0, max: 100 },
     timeliness: { type: Number, min: 0, max: 100 }
   },
-
   // Emission calculation results
-calculatedEmissions: {
-  incoming: {
-    type: Map,
-    of: {
-      CO2: Number,
-      CH4: Number,
-      N2O: Number,
-      CO2e: Number,
-      emission: Number, // For process emissions
-      combinedUncertainty: Number,
-      CO2eWithUncertainty: Number,
-      emissionWithUncertainty: Number // For process emissions
+  calculatedEmissions: {
+    incoming: {
+      type: Map,
+      of: {
+        CO2: Number,
+        CH4: Number,
+        N2O: Number,
+        CO2e: Number,
+        emission: Number, // For process emissions
+        combinedUncertainty: Number,
+        CO2eWithUncertainty: Number,
+        emissionWithUncertainty: Number // For process emissions
+      }
+    },
+    cumulative: {
+      type: Map,
+      of: {
+        CO2: Number,
+        CH4: Number,
+        N2O: Number,
+        CO2e: Number,
+        emission: Number, // For process emissions
+        combinedUncertainty: Number,
+        CO2eWithUncertainty: Number,
+        emissionWithUncertainty: Number // For process emissions
+      }
+    },
+    metadata: {
+      scopeType: String,
+      category: String,
+      tier: String,
+      emissionFactorSource: String,
+      UAD: Number,
+      UEF: Number,
+      gwpValues: {
+        CO2: Number,
+        CH4: Number,
+        N2O: Number,
+        refrigerant: Number
+      }
     }
   },
-  cumulative: {
-    type: Map,
-    of: {
-      CO2: Number,
-      CH4: Number,
-      N2O: Number,
-      CO2e: Number,
-      emission: Number, // For process emissions
-      combinedUncertainty: Number,
-      CO2eWithUncertainty: Number,
-      emissionWithUncertainty: Number // For process emissions
-    }
-  },
-  metadata: {
-    scopeType: String,
-    category: String,
-    tier: String,
-    emissionFactorSource: String,
-    UAD: Number,
-    UEF: Number,
-    gwpValues: {
-      CO2: Number,
-      CH4: Number,
-      N2O: Number,
-      refrigerant: Number
-    }
-  }
-},
-
-// Emission calculation tracking
-emissionCalculationStatus: {
-  type: String,
-  enum: ['pending', 'processing', 'completed', 'failed', 'error'],
-  default: 'pending'
-},
-
-emissionCalculatedAt: {
-  type: Date
-},
-
-emissionCalculationError: {
-  type: String
-},
-
-lastCalculated: {
-  type: Date
-},
-
-// Emission factor tracking (for audit trail)
-appliedEmissionFactors: {
-  source: {
+  // Emission calculation tracking
+  emissionCalculationStatus: {
     type: String,
-    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country']
+    enum: ['pending', 'processing', 'completed', 'failed', 'error'],
+    default: 'pending'
   },
-  values: {
-    CO2: Number,
-    CH4: Number,
-    N2O: Number
+  emissionCalculatedAt: {
+    type: Date
   },
-  appliedAt: Date
-},
-
-// Total emissions summary (for quick access)
-emissionsSummary: {
-  totalCO2: Number,
-  totalCH4: Number,
-  totalN2O: Number,
-  totalCO2e: Number,
-  totalCO2eWithUncertainty: Number,
-  unit: String
-},
-  
+  emissionCalculationError: {
+    type: String
+  },
+  lastCalculated: {
+    type: Date
+  },
+  // Emission factor tracking (for audit trail)
+  appliedEmissionFactors: {
+    source: {
+      type: String,
+      enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country']
+    },
+    values: {
+      CO2: Number,
+      CH4: Number,
+      N2O: Number
+    },
+    appliedAt: Date
+  },
+  // Total emissions summary (for quick access)
+  emissionsSummary: {
+    totalCO2: Number,
+    totalCH4: Number,
+    totalN2O: Number,
+    totalCO2e: Number,
+    totalCO2eWithUncertainty: Number,
+    unit: String
+  },
+  calculatedReductions: {
+    incoming: {
+        type: Map,
+        of: Number
+    },
+    cumulative: {
+        type: Map,
+        of: Number
+    },
+    breakdown: {
+        baseline: {
+            incoming: { type: Map, of: mongoose.Schema.Types.Mixed },
+            cumulative: { type: Map, of: mongoose.Schema.Types.Mixed }
+        },
+        project: {
+            incoming: { type: Map, of: mongoose.Schema.Types.Mixed },
+            cumulative: { type: Map, of: mongoose.Schema.Types.Mixed }
+        },
+        leakage: {
+            incoming: { type: Map, of: mongoose.Schema.Types.Mixed },
+            cumulative: { type: Map, of: mongoose.Schema.Types.Mixed }
+        },
+        buffer: {
+            incoming: { type: mongoose.Schema.Types.Mixed },
+            cumulative: { type: mongoose.Schema.Types.Mixed }
+        },
+        netReduction: {
+            incoming: { type: Number },
+            cumulative: { type: Number }
+        }
+    }
+  },
   // Approval workflow (for sensitive data)
   approvalStatus: {
     type: String,
     enum: ['auto_approved', 'pending_approval', 'approved', 'rejected'],
     default: 'auto_approved'
   },
-  
-  approvedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
-  approvedAt: { 
-    type: Date 
+  approvedAt: {
+    type: Date
   },
-  
   // Archiving
-  isArchived: { 
-    type: Boolean, 
-    default: false 
+  isArchived: {
+    type: Boolean,
+    default: false
   },
-  archivedAt: { 
-    type: Date 
+  archivedAt: {
+    type: Date
   },
-  archivedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  archivedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
-  
   // Additional metadata
   tags: [String],
   notes: String,
   externalId: String, // For external system integration
-  
 },
-
-
 {
   timestamps: true,
   collection: 'dataentries'

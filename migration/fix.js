@@ -1213,5 +1213,98 @@
 // }
 
 
+const mongoose = require('mongoose');
+const Flowchart = require('../models/Flowchart'); // Adjust path to your Flowchart model
+const ProcessFlowchart = require('../models/ProcessFlowchart'); // Adjust path to your ProcessFlowchart model
+require('dotenv').config(); // Make sure to have dotenv installed and a .env file with your MONGO_URI
+
+// --- Configuration ---
+// Replace with your MongoDB connection string if not using .env
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/your_db_name';
+
+/**
+ * -----------------------------------------------------------------------------
+ * MIGRATION SCRIPT
+ * -----------------------------------------------------------------------------
+ * This script adds a default value of 'Emission Source' to the `TypeOfNode`
+ * field for all nodes within the `flowcharts` and `processflowcharts` collections.
+ *
+ * It will only update nodes where the `TypeOfNode` field does not already exist
+ * or is null.
+ *
+ * HOW TO RUN:
+ * 1. Make sure you have `mongoose` and `dotenv` installed (`npm install mongoose dotenv`).
+ * 2. Place this file in your project's script directory.
+ * 3. Adjust the paths to your Mongoose models (`Flowchart` and `ProcessFlowchart`).
+ * 4. Create a `.env` file in your root directory with your `MONGO_URI`.
+ * 5. Run the script from your terminal: `node <path_to_this_script>.js`
+ * -----------------------------------------------------------------------------
+ */
+const runMigration = async () => {
+  try {
+    // 1. Connect to MongoDB
+    console.log('Connecting to MongoDB...');
+    await mongoose.connect(MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('✅ MongoDB connected successfully.');
+
+    // 2. Migrate the Flowchart collection
+    console.log('\nMigrating Flowchart collection...');
+
+    const flowchartUpdateResult = await Flowchart.updateMany(
+      // Filter: Find documents where at least one node is missing the `TypeOfNode` field.
+      { 'nodes.details.TypeOfNode': { $exists: false } },
+      // Update: Set the `TypeOfNode` to 'Emission Source' for those specific nodes.
+      { $set: { 'nodes.$[elem].details.TypeOfNode': 'Emission Source' } },
+      // arrayFilters: Identifies which elements in the `nodes` array to update.
+      {
+        arrayFilters: [{ 'elem.details.TypeOfNode': { $exists: false } }],
+        multi: true, // Ensure multiple documents are updated
+      }
+    );
+
+    console.log(`✅ Flowchart migration complete.`);
+    console.log(`   - Matched documents: ${flowchartUpdateResult.matchedCount}`);
+    console.log(`   - Modified documents: ${flowchartUpdateResult.modifiedCount}`);
+
+
+    // 3. Migrate the ProcessFlowchart collection
+    console.log('\nMigrating ProcessFlowchart collection...');
+
+    const processFlowchartUpdateResult = await ProcessFlowchart.updateMany(
+        // Filter: Find documents where at least one node is missing the `TypeOfNode` field.
+      { 'nodes.details.TypeOfNode': { $exists: false } },
+       // Update: Set the `TypeOfNode` to 'Emission Source' for those specific nodes.
+      { $set: { 'nodes.$[elem].details.TypeOfNode': 'Emission Source' } },
+       // arrayFilters: Identifies which elements in the `nodes` array to update.
+      {
+        arrayFilters: [{ 'elem.details.TypeOfNode': { $exists: false } }],
+        multi: true,
+      }
+    );
+
+    console.log(`✅ ProcessFlowchart migration complete.`);
+    console.log(`   - Matched documents: ${processFlowchartUpdateResult.matchedCount}`);
+    console.log(`   - Modified documents: ${processFlowchartUpdateResult.modifiedCount}`);
+
+
+    console.log('\n🎉 Migration finished successfully!');
+
+  } catch (error) {
+    console.error('❌ An error occurred during migration:', error);
+    process.exit(1); // Exit with an error code
+  } finally {
+    // 4. Disconnect from MongoDB
+    await mongoose.disconnect();
+    console.log('Disconnected from MongoDB.');
+  }
+};
+
+// Execute the migration
+runMigration();
+
+
 
 

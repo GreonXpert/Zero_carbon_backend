@@ -25,6 +25,8 @@ const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
 const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
 const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverstionCalculation');
 const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
+const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Corrected path
+const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
 
 // Import notification routes
 const notificationRoutes = require('./router/notificationRoutes');
@@ -86,6 +88,8 @@ app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
 app.use('/api/emission-factor', ipccConverstionCalculation);
 app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
+app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
+app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
 
 // Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);

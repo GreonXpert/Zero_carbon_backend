@@ -15,7 +15,12 @@ const ScopeDetailSchema = new mongoose.Schema({
     enum: ['Scope 1', 'Scope 2', 'Scope 3']
   },
   
-  
+  // Project Activity Type
+  projectActivityType: { 
+    type: String,
+    default: 'null',
+    description: 'Type of project activity for this scope detail'
+  },
   // Input type for this specific scope detail
   inputType: {
     type: String,
@@ -42,6 +47,7 @@ const ScopeDetailSchema = new mongoose.Schema({
     type: String, 
     default: '' 
   },
+
   calculationModel:{
     type: String,
     enum:['tier 1', 'tier 2', 'tier 3'],
@@ -52,6 +58,104 @@ const ScopeDetailSchema = new mongoose.Schema({
     enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub','Custom','Country', ''],
     default: '',
     description: 'Emission factor standard used'
+  },
+  // 🆕 NEW REDUCTION SETUP FIELDS (for Reduction nodes only)
+  reductionSetup: {
+    // Initial setup values (entered once during flowchart creation)
+    initialBE: { 
+      type: Number, 
+      default: 0,
+      description: 'Initial Baseline Emissions (tCO2e) - calculated during setup'
+    },
+    initialPE: { 
+      type: Number, 
+      default: 0,
+      description: 'Initial Project Emissions (tCO2e) - calculated during setup'
+    },
+    initialLE: { 
+      type: Number, 
+      default: 0,
+      description: 'Initial Leakage Emissions (tCO2e) - calculated during setup'
+    },
+    initialBufferPercentage: { 
+      type: Number, 
+      default: 0,
+      min: 0,
+      max: 100,
+      description: 'Initial Buffer percentage - entered during setup'
+    },
+    initialBufferEmissions: { 
+      type: Number, 
+      default: 0,
+      description: 'Initial Buffer Emissions (tCO2e) - calculated during setup'
+    },
+    initialNetReduction: { 
+      type: Number, 
+      default: 0,
+      description: 'Initial Net Reduction (tCO2e) - calculated during setup'
+    },
+    
+    // 🔧 THE KEY FIELD: Unit Reduction Factor
+    unitReductionFactor: { 
+      type: Number, 
+      default: 0,
+      description: 'Reduction factor per unit (tCO2e per unit) - calculated as initialNetReduction ÷ initialPE'
+    },
+    
+    
+    
+    // Setup metadata
+    setupCompletedAt: { 
+      type: Date,
+      description: 'When the initial reduction setup was completed'
+    },
+    setupCompletedBy: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'User',
+      description: 'User who completed the initial reduction setup'
+    },
+    
+    // Track if setup is completed
+    isSetupCompleted: { 
+      type: Boolean, 
+      default: false,
+      description: 'Whether the initial reduction setup has been completed'
+    },
+    
+    // Optional: Store the calculation details for reference
+    setupCalculationDetails: {
+      setupAPDValues: { 
+        type: Map, 
+        of: Number,
+        description: 'Original APD values used for setup calculation'
+      },
+      setupABDValues: { 
+        type: Map, 
+        of: Number,
+        description: 'Original ABD values used for setup calculation' 
+      },
+      setupALDValues: { 
+        type: Map, 
+        of: Number,
+        description: 'Original ALD values used for setup calculation'
+      },
+      setupEmissionFactor: { 
+        type: Number,
+        description: 'Emission factor used during setup'
+      },
+      setupNotes: { 
+        type: String,
+        description: 'Additional notes about the setup calculation'
+      }
+    }
+  },
+
+  // 🆕 REDUCTION CALCULATION MODE
+  reductionCalculationMode: {
+    type: String,
+    enum: ['simple', 'advanced'],
+    default: 'advanced',
+    description: 'Simple: PE × unitReductionFactor, Advanced: Include LE and Buffer calculations'
   },
   // After the customEmissionFactor field, add:
 emissionFactorValues: {
@@ -147,6 +251,7 @@ emissionFactorValues: {
       CO2_gwp: { type: Number, default: null },
       CH4_gwp: { type: Number, default: null },
       N2O_gwp: { type: Number, default: null },
+      CO2e_gwp: { type: Number, default: null },
       gwpLastUpdated: { type: Date, default: null }
     },
   // Emission factor value // For EmissionFactorHub
@@ -261,7 +366,7 @@ const NodeSchema = new mongoose.Schema({
     y: { type: Number, required: true },
   },
   parentNode: { type: String, default: null },
-  
+ 
   // Node details
   details: {
     // Node-level properties
@@ -269,9 +374,17 @@ const NodeSchema = new mongoose.Schema({
       type: String,
       description: 'Type of node (e.g., facility, department, process)'
     },
+     TypeOfNode: {
+    type: String,
+    enum: ['Emission Source', 'Reduction'],
+    default: 'Emission Source',
+    description: 'Type of node means which type of data collection and calculation is going to be performed here'
+  },
     department: { type: String },
     location: { type: String },
-     // ← here ↓
+    longitude: { type: Number, default: null },
+    latitude: { type: Number, default: null },
+    // ← here ↓
   employeeHeadId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
