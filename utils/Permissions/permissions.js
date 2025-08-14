@@ -35,8 +35,8 @@ const canManageProcessFlowchart = async (user, clientId) => {
   return false;
 };
 
-// Check if user can create/edit flowchart for a client
-const canManageFlowchart = async (user, clientId, flowchart = null) => {
+// Check if user can create/edit flowchart for a client (restricted to consultants/super-admin)
+const canManageFlowchart = async (user, clientId) => {
   // Super admin can manage all
   if (user.userType === 'super_admin') {
     return { allowed: true, reason: 'Super admin access' };
@@ -48,14 +48,13 @@ const canManageFlowchart = async (user, clientId, flowchart = null) => {
     return { allowed: false, reason: 'Client not found' };
   }
 
-  // Consultant Admin: Can manage if they created the lead
+  // Consultant Admin: Can manage if they created the lead or their team is assigned
   if (user.userType === 'consultant_admin') {
     const createdBy = client.leadInfo?.createdBy;
     if (createdBy && user._id && createdBy.toString() === user._id.toString()) {
       return { allowed: true, reason: 'Consultant admin who created lead' };
     }
 
-    // Also check if any consultant under them is assigned
     const consultantsUnderAdmin = await User.find({
       consultantAdminId: user.id,
       userType: 'consultant'
@@ -80,6 +79,28 @@ const canManageFlowchart = async (user, clientId, flowchart = null) => {
   return { allowed: false, reason: 'Insufficient permissions' };
 };
 
+// NEW: Specific permission check for assigning an Employee Head
+const canAssignHeadToNode = async (user, clientId) => {
+    // Super admin can always assign
+    if (user.userType === 'super_admin') {
+        return { allowed: true, reason: 'Super admin access' };
+    }
+
+    // Client admin can assign for their own client
+    if (user.userType === 'client_admin' && user.clientId === clientId) {
+        return { allowed: true, reason: 'Client admin access for own client' };
+    }
+
+    // For consultants and consultant admins, we can reuse the canManageFlowchart logic
+    const managePermission = await canManageFlowchart(user, clientId);
+    if (managePermission.allowed) {
+        return { allowed: true, reason: `Allowed because user can manage flowchart: ${managePermission.reason}` };
+    }
+    
+    return { allowed: false, reason: 'Insufficient permissions to assign employee head.' };
+};
+
+
 // Check if user can view flowchart
 const canViewFlowchart = async (user, clientId) => {
   // Super admin can view all
@@ -92,29 +113,7 @@ const canViewFlowchart = async (user, clientId) => {
   if (manageCheck.allowed) {
     return { allowed: true, fullAccess: true };
   }
-  //  // Consultant Admin: view if any of their consultants is assigned to this client
-  // if (user.userType === 'consultant_admin') {
-  //   const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId');
-  //   if (client?.leadInfo?.assignedConsultantId) {
-  //     // get all consultants under this admin
-  //     const subCons = await User.find({
-  //       consultantAdminId: user.id,
-  //       userType: 'consultant'
-  //     }).select('_id');
-  //     const subIds = subCons.map(c => c._id.toString());
-  //     if (subIds.includes(client.leadInfo.assignedConsultantId.toString())) {
-  //       return { allowed: true, fullAccess: true };
-  //     }
-  //   }
-  // }
 
-  // // Consultant: view if they are the assigned consultant
-  // if (user.userType === 'consultant') {
-  //   const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId');
-  //   if (client?.leadInfo?.assignedConsultantId?.toString() === user.id.toString()) {
-  //     return { allowed: true, fullAccess: true };
-  //   }
-  // }
   // Client admin can view their own flowchart
   if (user.userType === 'client_admin' && user.clientId === clientId) {
     return { allowed: true, fullAccess: true };
@@ -143,5 +142,6 @@ const canViewFlowchart = async (user, clientId) => {
 module.exports = {
     canManageProcessFlowchart,
     canManageFlowchart,
-    canViewFlowchart
+    canViewFlowchart,
+    canAssignHeadToNode
 }

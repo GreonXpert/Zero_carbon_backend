@@ -27,6 +27,7 @@ const normalizeScopeDetail = (scope) => {
   const normalizedScope = {
     scopeIdentifier:      scope.scopeIdentifier.trim(),
     scopeType:            scope.scopeType,
+    projectActivityType:  scope.projectActivityType || 'null',
     inputType:            scope.inputType          || 'manual',
     apiStatus:            scope.apiStatus          || false,
     apiEndpoint:          scope.apiEndpoint        || '',
@@ -49,7 +50,28 @@ const normalizeScopeDetail = (scope) => {
     additionalInfo:       scope.additionalInfo     || {},
     assignedEmployees:    scope.assignedEmployees  || [],
     UAD:                  scope.UAD                || 0,
-    UEF:                  scope.UEF                || 0
+    UEF:                  scope.UEF                || 0,
+    reductionSetup: scope.reductionSetup || {
+      initialBE: 0,
+      initialPE: 0,
+      initialLE: 0,
+      initialBufferPercentage: 0,
+      initialBufferEmissions: 0,
+      initialNetReduction: 0,
+      unitReductionFactor: 0,
+      setupCompletedAt: null,
+      setupCompletedBy: null,
+      isSetupCompleted: false,
+      setupCalculationDetails: {
+        setupAPDValues: new Map(),
+        setupABDValues: new Map(),
+        setupALDValues: new Map(),
+        setupEmissionFactor: 0,
+        setupNotes: ''
+      }
+    },
+    reductionCalculationMode: scope.reductionCalculationMode || 'advanced'
+  
   };
 
   // Handle custom emission factor
@@ -219,15 +241,19 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
         parentNode: node.parentNode || null,
         details: {
           nodeType:          d.nodeType          || '',
+          TypeOfNode:        d.TypeOfNode        || 'Emission Source',
           department:        d.department        || '',
           location:          d.location          || '',
+          longitude:         d.longitude         || null,
+          latitude:          d.latitude          || null,
           employeeHeadId:    d.employeeHeadId    || null,
           scopeDetails: Array.isArray(d.scopeDetails)
             ? d.scopeDetails.map(scope => cleanObject({
                 scopeIdentifier: scope.scopeIdentifier,
                 scopeType: scope.scopeType,
                 categoryName: scope.categoryName,
-                activity: scope.activity
+                activity: scope.activity,
+               
               }))
             : [],// Empty scopeDetails for basic view
           additionalDetails: d.additionalDetails || {}
@@ -248,8 +274,11 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
       parentNode: node.parentNode || null,
       details: {
         nodeType:          d.nodeType          || '',
+        TypeOfNode:        d.TypeOfNode        || 'Emission Source',
         department:        d.department        || '',
         location:          d.location          || '',
+        longitude:         d.longitude         || null,
+        latitude:          d.latitude          || null,
         employeeHeadId:    d.employeeHeadId    || null,
         scopeDetails:      d.scopeDetails      || [],
         additionalDetails: d.additionalDetails || {}

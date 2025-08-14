@@ -535,6 +535,7 @@ const saveAPIData = async (req, res) => {
 try {
 const { clientId, nodeId, scopeIdentifier } = req.params;
 const { data, date, time, dataValues, emissionFactor } = req.body;
+
 // Check permissions for API data operations
 const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'api_data');
 if (!permissionCheck.allowed) {
@@ -588,7 +589,9 @@ const [day, month, year] = formattedDate.split(':').map(Number);
 const [hour, minute, second] = formattedTime.split(':').map(Number);
 const timestamp = new Date(year, month - 1, day, hour, minute, second);
 // Process API data into dataValues format
-const processedData = normalizeDataPayload(dataValues, scopeConfig, 'API');;
+
+const apiData = dataValues || data; // Check for dataValues first, then data
+const processedData = normalizeDataPayload(apiData, scopeConfig, 'API');
 // Ensure dataValues is a Map
 let dataMap;
 try {
