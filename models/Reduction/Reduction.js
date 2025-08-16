@@ -1,7 +1,6 @@
 // models/Reduction.js
 const mongoose = require('mongoose');
-const Methodology2Schema = require('./Methodology2');
-
+const { Schema } = mongoose; // ✅ FIX: needed for Schema.Types.ObjectId and nested Schema uses
 
 /**
  * Counter for per-client ReductionID sequences
@@ -22,6 +21,30 @@ const UnitItemSchema = new mongoose.Schema({
   AF:    { type: Number, required: true },      // Adjustment factor (e.g., activity/engineering factor)
   uncertainty: { type: Number, default: 0 }     // percent; 5 = 5%
 }, {_id:false});
+
+const M2Schema = new mongoose.Schema({
+  // ALD inputs (for LE computation)
+  ALD: [UnitItemSchema],
+
+  // computed totals
+  LE: { type: Number, default: 0 }, // Sum(Li_with_uncertainty)
+  // optional detailed breakdown if you want to inspect later
+  _debug: {
+    Lpartials: [{ label: String, L: Number, LwithUncertainty: Number }]
+  },
+
+  // mapping to a formula that computes "netReductionInFormula"
+  formulaRef: {
+    formulaId:   { type: Schema.Types.ObjectId, ref: 'ReductionFormula' },
+    version:     { type: Number },
+    // frozen variables current values (and optional policy info)
+    variables:   { type: Map, of: new Schema({
+      value:        { type: Number, default: null },
+      updatePolicy: { type: String, enum: ['manual','annual_automatic'], default: 'manual' },
+      lastUpdatedAt:{ type: Date }
+    }, { _id: false }) }
+  }
+}, { _id: false });
 
 const ReductionEntrySchema = new mongoose.Schema({
   // normalized type stored in the document
@@ -48,8 +71,11 @@ const reductionSchema = new mongoose.Schema({
   // Project basics
   projectName: { type: String, required: true },
   projectActivity: { type: String, enum: ['Reduction','Removal'], required: true }, // enum
+  category: { type: String, default: '' }, // optional, e.g. 'Energy Efficiency'
   scope: { type: String, default: '' }, // optional
   location: {
+    place: { type: String, default: '' }, // e.g. 'Mumbai, India'
+    address: { type: String, default: '' }, // e.g. '123 Main St, Mumbai'
     latitude:  { type: Number, default: null },
     longitude: { type: Number, default: null }
   },
@@ -94,15 +120,20 @@ const reductionSchema = new mongoose.Schema({
     CAPD: { type: Number, default: 0 },           // cumulative of all APD values (sum(APD[i].value))
     emissionReductionRate: { type: Number, default: 0 } // ER/CAPD (safe 0 if CAPD=0)
   },
+
   // Methodology 2 data
-  m2: { type: Methodology2Schema, default: undefined },
+  m2: { type: M2Schema, default: undefined }, // only when methodology2
+
   reductionDataEntry: { type: ReductionEntrySchema, default: () => ({ inputType:'manual', originalInputType:'manual' }) },
+
   // Soft delete / meta
   isDeleted: { type: Boolean, default: false },
   deletedAt: { type: Date },
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+// ---------- helpers ----------
+function round6(n){ return Math.round((Number(n)||0)*1e6)/1e6; }
 
 /** Helpers: core math for Methodology 1 */
 function sumWithUncertainty(items) {
@@ -139,10 +170,6 @@ function calcM1(doc) {
   doc.m1.emissionReductionRate = round6(emissionReductionRate);
 }
 
-function round6(n) {
-  return Math.round((Number(n) || 0) * 1e6) / 1e6;
-}
-
 /** Pre-validate: auto period days + methodology calculations + IDs */
 reductionSchema.pre('validate', async function(next) {
   try {
@@ -166,36 +193,53 @@ reductionSchema.pre('validate', async function(next) {
       this.projectId = `${this.clientId}-${this.reductionId}`;
     }
 
+    // Normalize reductionDataEntry (✅ run this BEFORE next())
+    if (this.reductionDataEntry) {
+      const r = this.reductionDataEntry;
+      const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
+
+      if (rawType === 'csv') {
+        r.originalInputType = 'CSV';
+        r.inputType = 'manual';
+        r.apiEndpoint = '';
+        r.iotDeviceId = '';
+      } else if (rawType === 'api') {
+        r.originalInputType = 'API';
+        r.inputType = 'API';
+        r.iotDeviceId = '';
+      } else if (rawType === 'iot') {
+        r.originalInputType = 'IOT';
+        r.inputType = 'IOT';
+        r.apiEndpoint = '';
+      } else {
+        r.originalInputType = 'manual';
+        r.inputType = 'manual';
+        r.apiEndpoint = '';
+        r.iotDeviceId = '';
+      }
+    }
+
     // Calculations
     if (this.calculationMethodology === 'methodology1') {
       calcM1(this);
     }
 
-    next();
-    if (this.reductionDataEntry) {
-  const r = this.reductionDataEntry;
-  const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
+    // m2: compute LE from ALD like m1 (uncertainty in PERCENT)
+    if (this.calculationMethodology === 'methodology2' && this.m2 && Array.isArray(this.m2.ALD)) {
+      let LE = 0;
+      const debug = [];
+      this.m2.ALD.forEach((it, idx) => {
+        const label = it.label || `L${idx+1}`;
+        const L  = (Number(it.value)||0) * (Number(it.EF)||0) * (Number(it.GWP)||0) * (Number(it.AF)||0);
+        const Lu = L * (1 + (Number(it.uncertainty)||0) / 100); // ✅ percent, same as m1
+        LE += Lu;
+        debug.push({ label, L: round6(L), LwithUncertainty: round6(Lu) });
+      });
+      this.m2.LE = round6(LE);
+      this.m2._debug = { Lpartials: debug };
+    }
 
-  if (rawType === 'csv') {
-    r.originalInputType = 'CSV';
-    r.inputType = 'manual';
-    r.apiEndpoint = '';
-    r.iotDeviceId = '';
-  } else if (rawType === 'api') {
-    r.originalInputType = 'API';
-    r.inputType = 'API';
-    r.iotDeviceId = '';
-  } else if (rawType === 'iot') {
-    r.originalInputType = 'IOT';
-    r.inputType = 'IOT';
-    r.apiEndpoint = '';
-  } else {
-    r.originalInputType = 'manual';
-    r.inputType = 'manual';
-    r.apiEndpoint = '';
-    r.iotDeviceId = '';
-  }
-}
+    next();
   } catch (e) {
     next(e);
   }
@@ -203,8 +247,6 @@ reductionSchema.pre('validate', async function(next) {
 
 /** Virtual: projectPeriodFormatted (DD/MM/YYYY style as duration: DD/MM/YYYY) */
 reductionSchema.virtual('projectPeriodFormatted').get(function() {
-  // You asked DD/MM/YYYY — that’s a date format, but “period” is a duration.
-  // We’ll present duration as DD/MM/YYYY => (days / months / years approx)
   const days = this.projectPeriodDays || 0;
   const years = Math.floor(days / 365);
   const months = Math.floor((days % 365) / 30);

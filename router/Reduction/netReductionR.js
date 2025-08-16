@@ -10,7 +10,10 @@ const {
   saveApiNetReduction,
   saveIotNetReduction,
   uploadCsvNetReduction,
-  getNetReductionStats
+  getNetReductionStats,
+  listNetReductions,
+  deleteManualNetReductionEntry,
+  updateManualNetReductionEntry
 } = require('../../controllers/Reduction/netReductionController');
 
 router.use(auth);
@@ -22,5 +25,25 @@ router.post('/:clientId/:projectId/:calculationMethodology/iot',    saveIotNetRe
 router.post('/:clientId/:projectId/:calculationMethodology/csv',    upload.single('file'), uploadCsvNetReduction);
 
 router.get('/:clientId/:projectId/:calculationMethodology/stats',   getNetReductionStats);
+
+router.get(
+  '/',
+  
+ listNetReductions
+);
+
+
+// Edit & Delete manual entries
+router.patch(
+  '/:clientId/:projectId/:calculationMethodology/manual/:entryId',
+  
+  updateManualNetReductionEntry
+);
+
+router.delete(
+  '/:clientId/:projectId/:calculationMethodology/manual/:entryId',
+  
+  deleteManualNetReductionEntry
+);
 
 module.exports = router;

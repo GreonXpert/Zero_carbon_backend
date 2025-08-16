@@ -27,6 +27,8 @@ const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverst
 const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
 const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Corrected path
 const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
+const m2FormulaR = require('./router/Reduction/m2FormulaR'); // 🆕 Corrected path
+const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR'); // 🆕 Corrected path
 
 // Import notification routes
 const notificationRoutes = require('./router/notificationRoutes');
@@ -45,6 +47,9 @@ const { scheduleMonthlySummary, checkAndCreateMissedSummaries } = require('./con
 // 🆕 Import summary controller
 const calculationSummaryController = require('./controllers/Calculation/CalculationSummary');
 const dataCollectionController = require('./controllers/dataCollectionController');
+const netReductionController = require('./controllers/Reduction/netReductionController');
+const netReductionSummaryController = require('./controllers/Reduction/netReductionSummaryController');
+
 
 // Import models for real-time features
 const User = require('./models/User');
@@ -90,6 +95,8 @@ app.use('/api/emission-factor', ipccConverstionCalculation);
 app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
 app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
 app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
+app.use('/api/m2-formula', m2FormulaR); // 🆕 M2 Formula routes
+app.use('/api/net-reduction-summary', netReductionSummaryR); // 🆕 Net Reduction Summary routes
 
 // Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);
@@ -108,6 +115,9 @@ const io = socketIo(server, {
 // 🆕 Set socket.io instance in controllers
 dataCollectionController.setSocketIO(io);
 calculationSummaryController.setSocketIO(io);
+netReductionController.setSocketIO(io);
+netReductionSummaryController.setSocketIO(io);
+
 
 // 🔐 Socket.IO Authentication Middleware
 io.use(async (socket, next) => {
