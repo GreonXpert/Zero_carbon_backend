@@ -79,6 +79,41 @@ function normalizeReductionDataEntry(raw = {}) {
   };
 }
 
+function normalizeM2FromBody(raw = {}) {
+  const out = {};
+
+  // ALD (same shape as M1 items)
+  if (Array.isArray(raw.ALD)) {
+    out.ALD = raw.ALD.map(normalizeUnitItem('L'));
+  }
+
+  // accept { m2: { formulaRef:{...} } } or flattened { m2:{ formulaId, version, frozenValues } }
+  const ref = raw.formulaRef || {};
+  const formulaId = ref.formulaId || raw.formulaId;
+  const version   = ref.version != null ? Number(ref.version) :
+                    (raw.version != null ? Number(raw.version) : undefined);
+
+  // frozen values: allow { variables:{ A:{value,..}, ... } } or { frozenValues:{ A: 123, ... } }
+  const incomingVars = ref.variables || raw.frozenValues || {};
+  const varsObj = {};
+  for (const [k, v] of Object.entries(incomingVars)) {
+    const val = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+    const pol = (v && typeof v === 'object' && v.updatePolicy) ? v.updatePolicy : 'manual';
+    const ts  = (v && typeof v === 'object' && v.lastUpdatedAt) ? new Date(v.lastUpdatedAt) : new Date();
+    varsObj[k] = { value: Number(val ?? 0), updatePolicy: pol, lastUpdatedAt: ts };
+  }
+
+  if (formulaId) {
+    out.formulaRef = {
+      formulaId,
+      ...(version != null ? { version } : {}),
+      ...(Object.keys(varsObj).length ? { variables: varsObj } : {})
+    };
+  }
+  return out;
+}
+
+
 /** Create Reduction (Methodology-agnostic; we implement M1 math now) */
 exports.createReduction = async (req, res) => {
   try {
@@ -88,15 +123,16 @@ exports.createReduction = async (req, res) => {
 
     const {
       projectName, projectActivity, scope, location,
-      commissioningDate, endDate, description,
+      category,commissioningDate, endDate, description,
       baselineMethod, baselineJustification,
-      calculationMethodology, m1
+      calculationMethodology, m1, m2  
     } = req.body;
 
     if (!projectName) return res.status(400).json({ success:false, message:'projectName is required' });
     if (!projectActivity) return res.status(400).json({ success:false, message:'projectActivity is required' });
     if (!commissioningDate || !endDate) return res.status(400).json({ success:false, message:'commissioningDate & endDate required' });
     if (!calculationMethodology) return res.status(400).json({ success:false, message:'calculationMethodology is required' });
+    if (!category) return res.status(400).json({ success:false, message:'category is required' });
 
     // ✅ MOVE THIS BLOCK UP HERE
     let reductionEntryPayload = null;
@@ -114,7 +150,7 @@ exports.createReduction = async (req, res) => {
 
     // UPSERT: same client + same projectName (case-insensitive), not deleted
     const existing = await Reduction.findOne({
-      clientId,
+      
       isDeleted: false,
       projectName: { $regex: new RegExp(`^${escapeRegex(projectName)}$`, 'i') }
     });
@@ -127,6 +163,8 @@ exports.createReduction = async (req, res) => {
       if (location) {
         existing.location.latitude = location.latitude ?? existing.location.latitude;
         existing.location.longitude = location.longitude ?? existing.location.longitude;
+        existing.location.place = location.place || existing.location.place;
+        existing.location.address = location.address || existing.location.address;
       }
       existing.commissioningDate = new Date(commissioningDate);
       existing.endDate = new Date(endDate);
@@ -142,6 +180,9 @@ exports.createReduction = async (req, res) => {
           ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
           bufferPercent: Number(m1?.bufferPercent ?? existing.m1?.bufferPercent ?? 0)
         };
+      }
+      if (existing.calculationMethodology === 'methodology2' && req.body.m2) {
+        existing.m2 = normalizeM2FromBody(req.body.m2);
       }
 
       // ✅ Now this is safe; variable exists
@@ -169,10 +210,13 @@ exports.createReduction = async (req, res) => {
       createdByType: req.user.userType,
       projectName,
       projectActivity,
+      category,
       scope: scope || '',
       location: {
         latitude:  location?.latitude ?? null,
-        longitude: location?.longitude ?? null
+        longitude: location?.longitude ?? null,
+        place: location?.place || '',
+        address: location?.address || ''
       },
       commissioningDate: new Date(commissioningDate),
       endDate:           new Date(endDate),
@@ -186,7 +230,11 @@ exports.createReduction = async (req, res) => {
         APD: (m1?.APD || []).map(normalizeUnitItem('P')),
         ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
         bufferPercent: Number(m1?.bufferPercent ?? 0)
-      } : undefined
+      } : undefined,
+      ...(calculationMethodology === 'methodology2'
+      ? { m2: normalizeM2FromBody(m2 || {}) }
+      : {})
+
     });
 
     return res.status(201).json({
@@ -198,14 +246,16 @@ exports.createReduction = async (req, res) => {
         reductionId: doc.reductionId,
         projectName: doc.projectName,
         projectActivity: doc.projectActivity,
+        category: doc.category,
         scope: doc.scope,
         commissioningDate: doc.commissioningDate,
         endDate: doc.endDate,
         projectPeriodDays: doc.projectPeriodDays,
         projectPeriodFormatted: doc.projectPeriodFormatted,
         calculationMethodology: doc.calculationMethodology,
-        ...(doc.reductionDataEntry ? { reductionDataEntry: doc.reductionDataEntry } : {}),
-        m1: doc.m1
+      ...(doc.reductionDataEntry ? { reductionDataEntry: doc.reductionDataEntry } : {}),
+      ...(doc.m1 ? { m1: doc.m1 } : {}),
+      ...(doc.m2 ? { m2: doc.m2 } : {})
       }
     });
   } catch (err) {

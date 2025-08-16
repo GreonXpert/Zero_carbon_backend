@@ -23,10 +23,10 @@ const NetReductionEntrySchema = new mongoose.Schema({
   time:            { type: String }, // "HH:mm"
   timestamp:       { type: Date, required: true, index: true },
 
-  // Payload & math
-  inputValue:              { type: Number, required: true },  // the user data
-  emissionReductionRate:   { type: Number, required: true },  // snapshot from Reduction doc
-  netReduction:            { type: Number, default: 0 },      // = inputValue * rate (rounded)
+  // Payload & math (shared)
+  inputValue:              { type: Number, required: true },  // for M1; M2 controllers can leave this 0
+  emissionReductionRate:   { type: Number, required: true },  // for M1; M2 controllers can leave this 0
+  netReduction:            { type: Number, default: 0 },      // final net reduction
   cumulativeNetReduction:  { type: Number, default: 0 },      // running cumulative per project
   highNetReduction:        { type: Number, default: 0 },      // highest single netReduction so far
   lowNetReduction:         { type: Number, default: 0 }       // lowest single netReduction so far
@@ -56,32 +56,45 @@ NetReductionEntrySchema.pre('validate', function(next){
   next();
 });
 
+NetReductionEntrySchema.add({
+  formulaId:            { type: mongoose.Schema.Types.ObjectId, ref: 'ReductionFormula' },
+  variables:            { type: mongoose.Schema.Types.Mixed, default: {} }, // realtime payload used for evaluation
+  netReductionInFormula:{ type: Number, default: 0 }                         // result before subtracting LE
+});
+
 NetReductionEntrySchema.pre('save', async function(next) {
   try {
-    // Compute netReduction
-    this.netReduction = round6((this.inputValue || 0) * (this.emissionReductionRate || 0));
+    // M1 → compute from inputValue * rate (unchanged behavior)
+    // M2 → controller provides netReduction; don't overwrite here
+    if (this.calculationMethodology === 'methodology1') {
+      this.netReduction = round6((this.inputValue || 0) * (this.emissionReductionRate || 0));
+    } else if (this.calculationMethodology === 'methodology2') {
+      this.netReduction = round6(Number(this.netReduction || 0));
+    }
 
-    // Find the latest *earlier* entry for same project (any inputType)
+    // Find the latest earlier entry for same project/methodology
     const prev = await this.constructor.findOne({
       clientId: this.clientId,
       projectId: this.projectId,
       calculationMethodology: this.calculationMethodology,
       _id: { $ne: this._id },
       timestamp: { $lt: this.timestamp }
-    }).sort({ timestamp: -1 }).select('cumulativeNetReduction highNetReduction lowNetReduction');
+    })
+      .sort({ timestamp: -1 })
+      .select('cumulativeNetReduction highNetReduction lowNetReduction');
 
-    // Cumulative, High, Low
+    // Cumulative & min/max tracking
     if (prev) {
-      this.cumulativeNetReduction = round6(prev.cumulativeNetReduction + this.netReduction);
+      this.cumulativeNetReduction = round6((prev.cumulativeNetReduction || 0) + (this.netReduction || 0));
       this.highNetReduction = Math.max(prev.highNetReduction ?? this.netReduction, this.netReduction);
       this.lowNetReduction  = Math.min(
         (typeof prev.lowNetReduction === 'number' ? prev.lowNetReduction : this.netReduction),
         this.netReduction
       );
     } else {
-      this.cumulativeNetReduction = round6(this.netReduction);
-      this.highNetReduction = this.netReduction;
-      this.lowNetReduction  = this.netReduction;
+      this.cumulativeNetReduction = round6(this.netReduction || 0);
+      this.highNetReduction = this.netReduction || 0;
+      this.lowNetReduction  = this.netReduction || 0;
     }
 
     next();
@@ -89,5 +102,4 @@ NetReductionEntrySchema.pre('save', async function(next) {
     next(err);
   }
 });
-
 module.exports = mongoose.model('NetReductionEntry', NetReductionEntrySchema);
