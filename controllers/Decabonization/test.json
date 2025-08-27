@@ -1,0 +1,207 @@
+ABSOLUTE METHOD
+
+Request 
+{
+  "alignment": "SBTi",
+  "targetType": "near_term",
+  "method": "absolute",
+  "baseYear": 2020,
+  "targetYear": 2030,
+  "baseEmission_tCO2e": 100000
+}
+// Response
+{
+    "success": true,
+    "data": {
+        "_id": "68a4a73af8acd1d2e7bf681e",
+        "targetType": "near_term",
+        "clientId": "Greon117",
+        "__v": 0,
+        "absolute": {
+            "minimumReductionPercent": 42,
+            "annualRatePercent": 4.2
+        },
+        "alignment": "SBTi",
+        "baseEmission_tCO2e": 100000,
+        "baseYear": 2020,
+        "createdAt": "2025-08-19T16:32:58.484Z",
+        "gracePeriodEndsAt": null,
+        "isWithinGrace": true,
+        "method": "absolute",
+        "renewableElectricity": [],
+        "supplierEngagement": [],
+        "targetYear": 2030,
+        "toolUpdatedAt": "2025-08-01T00:00:00.000Z",
+        "toolVersion": "SBTi-2025-08-v1",
+        "trajectory": [
+            {
+                "year": 2020,
+                "targetEmission_tCO2e": 100000,
+                "cumulativeReductionPercent": 0
+            },
+            {
+                "year": 2021,
+                "targetEmission_tCO2e": 95800,
+                "cumulativeReductionPercent": 4.2
+            },
+            {
+                "year": 2022,
+                "targetEmission_tCO2e": 91600,
+                "cumulativeReductionPercent": 8.4
+            },
+            {
+                "year": 2023,
+                "targetEmission_tCO2e": 87400,
+                "cumulativeReductionPercent": 12.6
+            },
+            {
+                "year": 2024,
+                "targetEmission_tCO2e": 83200,
+                "cumulativeReductionPercent": 16.8
+            },
+            {
+                "year": 2025,
+                "targetEmission_tCO2e": 79000,
+                "cumulativeReductionPercent": 21
+            },
+            {
+                "year": 2026,
+                "targetEmission_tCO2e": 74800,
+                "cumulativeReductionPercent": 25.2
+            },
+            {
+                "year": 2027,
+                "targetEmission_tCO2e": 70600,
+                "cumulativeReductionPercent": 29.4
+            },
+            {
+                "year": 2028,
+                "targetEmission_tCO2e": 66400,
+                "cumulativeReductionPercent": 33.6
+            },
+            {
+                "year": 2029,
+                "targetEmission_tCO2e": 62200,
+                "cumulativeReductionPercent": 37.8
+            },
+            {
+                "year": 2030,
+                "targetEmission_tCO2e": 58000,
+                "cumulativeReductionPercent": 42
+            }
+        ],
+        "updatedAt": "2025-08-19T17:34:22.765Z"
+    }
+}
+
+
+SDA METHOD
+
+Request 
+
+
+{
+  "alignment": "SBTi",
+  "targetType": "net_zero",
+  "method": "sda",
+  "baseYear": 2020,
+  "targetYear": 2030,
+  "baseEmission_tCO2e": 50000,
+  "baseActivity": 10000,
+  "targetIntensity": 1.2,
+  "activityTarget": 10000
+}
+
+
+Response
+
+{
+    "success": true,
+    "data": {
+        "_id": "68a4ac45f8acd1d2e7bf6827",
+        "targetType": "net_zero",
+        "clientId": "Greon117",
+        "__v": 0,
+        "alignment": "SBTi",
+        "baseEmission_tCO2e": 50000,
+        "baseYear": 2020,
+        "createdAt": "2025-08-19T16:54:29.244Z",
+        "gracePeriodEndsAt": null,
+        "isWithinGrace": true,
+        "method": "sda",
+        "renewableElectricity": [],
+        "sda": {
+            "baseActivity": 10000,
+            "targetIntensity": 1.2,
+            "intensityUnit": "tCO2e/unit",
+            "activityTarget": 10000,
+            "baseIntensity": 5,
+            "intensityReductionPercent": 76,
+            "absoluteTargetEmission_tCO2e": 12000,
+            "absoluteReductionPercent": 76,
+            "annualReductionPercent": 7.6
+        },
+        "supplierEngagement": [],
+        "targetYear": 2030,
+        "toolUpdatedAt": "2025-08-01T00:00:00.000Z",
+        "toolVersion": "SBTi-2025-08-v1",
+        "trajectory": [
+            {
+                "year": 2020,
+                "targetEmission_tCO2e": 50000,
+                "cumulativeReductionPercent": 0
+            },
+            {
+                "year": 2021,
+                "targetEmission_tCO2e": 46200,
+                "cumulativeReductionPercent": 7.6
+            },
+            {
+                "year": 2022,
+                "targetEmission_tCO2e": 42400,
+                "cumulativeReductionPercent": 15.2
+            },
+            {
+                "year": 2023,
+                "targetEmission_tCO2e": 38600,
+                "cumulativeReductionPercent": 22.8
+            },
+            {
+                "year": 2024,
+                "targetEmission_tCO2e": 34800,
+                "cumulativeReductionPercent": 30.4
+            },
+            {
+                "year": 2025,
+                "targetEmission_tCO2e": 31000,
+                "cumulativeReductionPercent": 38
+            },
+            {
+                "year": 2026,
+                "targetEmission_tCO2e": 27200,
+                "cumulativeReductionPercent": 45.6
+            },
+            {
+                "year": 2027,
+                "targetEmission_tCO2e": 23400,
+                "cumulativeReductionPercent": 53.2
+            },
+            {
+                "year": 2028,
+                "targetEmission_tCO2e": 19600,
+                "cumulativeReductionPercent": 60.8
+            },
+            {
+                "year": 2029,
+                "targetEmission_tCO2e": 15800,
+                "cumulativeReductionPercent": 68.4
+            },
+            {
+                "year": 2030,
+                "targetEmission_tCO2e": 12000,
+                "cumulativeReductionPercent": 76
+            }
+        ],
+        "updatedAt": "2025-08-19T17:50:34.703Z"
+    }
+}
