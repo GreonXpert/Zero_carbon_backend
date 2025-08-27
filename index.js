@@ -29,6 +29,7 @@ const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Correc
 const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
 const m2FormulaR = require('./router/Reduction/m2FormulaR'); // 🆕 Corrected path
 const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR'); // 🆕 Corrected path
+const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes'); // 🆕 Corrected path
 
 // Import notification routes
 const notificationRoutes = require('./router/notificationRoutes');
@@ -49,6 +50,7 @@ const calculationSummaryController = require('./controllers/Calculation/Calculat
 const dataCollectionController = require('./controllers/dataCollectionController');
 const netReductionController = require('./controllers/Reduction/netReductionController');
 const netReductionSummaryController = require('./controllers/Reduction/netReductionSummaryController');
+const sbtiController = require('./controllers/Decabonization/sbtiController');
 
 
 // Import models for real-time features
@@ -97,11 +99,13 @@ app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
 app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
 app.use('/api/m2-formula', m2FormulaR); // 🆕 M2 Formula routes
 app.use('/api/net-reduction-summary', netReductionSummaryR); // 🆕 Net Reduction Summary routes
+app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 
 // Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
+
 
 // Create HTTP server and bind Socket.io
 const server = http.createServer(app);
@@ -117,6 +121,7 @@ dataCollectionController.setSocketIO(io);
 calculationSummaryController.setSocketIO(io);
 netReductionController.setSocketIO(io);
 netReductionSummaryController.setSocketIO(io);
+sbtiController.setSocketIO(io);
 
 
 // 🔐 Socket.IO Authentication Middleware
