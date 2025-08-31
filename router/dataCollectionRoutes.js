@@ -45,11 +45,6 @@ const upload = multer({
   }
 });
 
-// Apply authentication to all routes
-router.use(auth);
-
-// ============== Data Ingestion Routes ==============
-
 // API Data Ingestion
 // POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data
 router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data', saveAPIData);
@@ -57,6 +52,14 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data',
 // IoT Data Ingestion
 // POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data
 router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data', saveIoTData);
+
+
+// Apply authentication to all routes
+router.use(auth);
+
+// ============== Data Ingestion Routes ==============
+
+
 
 // Manual Data Entry
 // POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data

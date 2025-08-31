@@ -27,10 +27,15 @@ const canManageProcessFlowchart = async (user, clientId) => {
     );
   }
 
-  // Consultant can manage assigned clients' flowcharts
+  // Consultant: Can manage if they are assigned to this client
   if (user.userType === 'consultant') {
-    return client.leadInfo.assignedConsultantId?.toString() === user._id.toString();
+    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+    if (assignedConsultantId && user.id && assignedConsultantId.toString() === user.id.toString()) {
+      return { allowed: true, reason: 'Assigned consultant' };
+    }
+    return { allowed: false, reason: 'Not assigned to this client' };
   }
+
 
   return false;
 };
