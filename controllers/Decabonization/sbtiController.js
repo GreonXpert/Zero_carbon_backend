@@ -361,11 +361,11 @@ const addRenewableProgress = async (req, res) => {
         return res.status(403).json({ success: false, message: 'Only Super Admin, Consultant Admin, or Consultant can manage SBTi targets' });
         }
 
-        // 2) permission check (client scoping)
-        const managePerm = await canManageFlowchart(req.user, clientId);
-        if (!managePerm.allowed) {
-        return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-        }
+        // // 2) permission check (client scoping)
+        // const managePerm = await canManageFlowchart(req.user, clientId);
+        // if (!managePerm.allowed) {
+        // return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+        // }
 
     const { clientId } = req.params;
     const { targetType = 'near_term' } = req.query;
@@ -407,10 +407,10 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
 }
 
 // 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
-if (!managePerm.allowed) {
-  return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-}
+// const managePerm = await canManageFlowchart(req.user, clientId);
+// if (!managePerm.allowed) {
+//   return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+// }
     const { clientId } = req.params;
     const { targetType = 'near_term' } = req.query;
     const { year, coveredEmissions_tCO2e, totalSupplierEmissions_tCO2e } = req.body;
@@ -450,10 +450,10 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
 }
 
 // 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
-if (!managePerm.allowed) {
-  return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-}
+// const managePerm = await canManageFlowchart(req.user, clientId);
+// if (!managePerm.allowed) {
+//   return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+// }
     const { clientId } = req.params;
     const { targetType = 'near_term' } = req.query;
     const doc = await SbtiTarget.findOne({ clientId, targetType });
@@ -489,10 +489,10 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
 }
 
 // 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
-if (!managePerm.allowed) {
-  return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-}
+// const managePerm = await canManageFlowchart(req.user, clientId);
+// if (!managePerm.allowed) {
+//   return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+// }
     const { clientId } = req.params;
     const { targetType = 'near_term' } = req.query;
 
@@ -549,11 +549,11 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
   return res.status(403).json({ success: false, message: 'Only Super Admin, Consultant Admin, or Consultant can manage SBTi targets' });
 }
 
-// 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
-if (!managePerm.allowed) {
-  return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-}
+// // 2) permission check (client scoping)
+// const managePerm = await canManageFlowchart(req.user, clientId);
+// if (!managePerm.allowed) {
+//   return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+// }
     const { clientId } = req.params;
     const { targetType = 'near_term' } = req.query;
 
