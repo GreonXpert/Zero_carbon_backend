@@ -327,6 +327,135 @@ exports.getReduction = async (req, res) => {
 };
 
 
+// controllers/Reduction/reductionController.js
+
+exports.getAllReductions = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      clientId: clientIdFilter,
+      q,                         // optional text query (projectName)
+      includeDeleted = 'false',  // set to 'true' to include soft-deleted
+      sort = '-createdAt'        // default newest first
+    } = req.query;
+
+    const role = req.user?.userType;
+    const userId = req.user?.id;
+
+    if (!role || !userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    // ---- Base filter (exclude soft-deleted by default) ----
+    const filter = {};
+    if (includeDeleted !== 'true') {
+      filter.$or = [{ isDeleted: { $exists: false } }, { isDeleted: false }];
+    }
+
+    // quick text search on projectName (case-insensitive)
+    if (q && String(q).trim()) {
+      filter.projectName = { $regex: new RegExp(String(q).trim(), 'i') };
+    }
+
+    // optional hard client filter (allowed for super_admin & consultant roles; ignored otherwise)
+    const applyClientIdFilter = (cid) => {
+      if (cid && String(cid).trim()) filter.clientId = String(cid).trim();
+    };
+
+    // ---- Role-specific scoping ----
+    if (role === 'super_admin') {
+      // full access
+      applyClientIdFilter(clientIdFilter);
+    }
+
+    else if (role === 'consultant_admin') {
+      // Created by admin OR by any consultant under this admin
+      const teamConsultants = await User.find({
+        userType: 'consultant',
+        consultantAdminId: userId,
+        isActive: true
+      }).select('_id');
+
+      const ids = [userId, ...teamConsultants.map(u => u._id)];
+      filter.$and = (filter.$and || []).concat([{ createdBy: { $in: ids } }]);
+
+      applyClientIdFilter(clientIdFilter);
+    }
+
+    else if (role === 'consultant') {
+      // (A) reductions created by this consultant
+      // (B) reductions for clients assigned to this consultant
+      const myClients = await Client.find({
+        $or: [
+          { 'leadInfo.assignedConsultantId': userId },
+          { 'workflowTracking.assignedConsultantId': userId }
+        ]
+      }).select('clientId');
+
+      const myClientIds = myClients.map(c => c.clientId);
+
+      const orList = [{ createdBy: userId }];
+      if (myClientIds.length) orList.push({ clientId: { $in: myClientIds } });
+
+      filter.$and = (filter.$and || []).concat([{ $or: orList }]);
+
+      applyClientIdFilter(clientIdFilter);
+    }
+
+    else if (
+      role === 'client_admin' ||
+      role === 'client_employee_head' ||
+      role === 'employee' ||
+      role === 'viewer' ||
+      role === 'auditor'
+    ) {
+      // Restrict strictly to their organization
+      if (!req.user.clientId) {
+        return res.status(403).json({ success: false, message: 'No client scope for this user' });
+      }
+      filter.clientId = req.user.clientId;
+    }
+
+    else {
+      return res.status(403).json({ success: false, message: 'Forbidden role' });
+    }
+
+    // ---- Query & pagination ----
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+
+    const query = Reduction.find(filter)
+      .sort(sort)
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .populate('createdBy', 'userName userType email') // nice-to-have context
+      .lean();
+
+    const [items, total] = await Promise.all([
+      query,
+      Reduction.countDocuments(filter)
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      data: items
+    });
+  } catch (err) {
+    console.error('getAllReductions error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reductions',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+};
+
+
+
 
 
 /** Update + recalc */

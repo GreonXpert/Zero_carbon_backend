@@ -9,13 +9,16 @@ const {
   recalculateReduction,
   deleteReduction,
   deleteFromDB,
-  restoreSoftDeletedReduction
+  restoreSoftDeletedReduction,
+  getAllReductions
 } = require('../../controllers/Reduction/reductionController');
 
 router.use(auth);
 
 // Create: consultant_admin (creator of lead) or assigned consultant
 router.post('/:clientId', createReduction);
+
+router.get('/getall',getAllReductions);
 
 
 
