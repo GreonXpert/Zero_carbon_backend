@@ -22,8 +22,7 @@ router.get('/getall',getAllReductions);
 
 
 
-// Get one
-router.get('/:clientId', getReduction);
+router.get('/:clientId/:projectId', getReduction);
 
 // Update
 router.put('/:clientId/:projectId', updateReduction);
