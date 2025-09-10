@@ -308,73 +308,7 @@ const getProcessFlowchart = async (req, res) => {
 };
 
 
-// Get process flowchart by clientId
-const getProcessFlowchart = async (req, res) => {
-  try {
-    const { clientId } = req.params;
 
-    // Check permissions
-    let canView = false;
-    
-    if (req.user.userType === 'super_admin') {
-      canView = true;
-    } else if (['consultant_admin', 'consultant'].includes(req.user.userType)) {
-      canView = await canManageProcessFlowchart(req.user, clientId);
-    } else if (req.user.userType === 'client_admin') {
-      // Client admin can only view their own client's flowchart
-      canView = req.user.clientId === clientId;
-    }
-
-    if (!canView) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to view this process flowchart' 
-      });
-    }
-
-    const processFlowchart = await ProcessFlowchart.findOne({ 
-      clientId, 
-      isDeleted: false 
-    })
-    .populate('createdBy', 'userName email')
-    .populate('lastModifiedBy', 'userName email');
-
-    if (!processFlowchart) {
-      return res.status(404).json({ 
-        message: 'Process flowchart not found' 
-      });
-    }
-
-
-    // ADD THIS: Check if process flowchart is still available based on current assessment level
-    const client = await Client.findOne({ clientId });
-    const assessmentLevel = client?.submissionData?.assessmentLevel;
-    if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'process') {
-      return res.status(403).json({
-        message: `Process flowchart is not available for current assessment level: ${assessmentLevel}`,
-        availableFor: ['both', 'process']
-      });
-    }
-
-    res.status(200).json({
-      flowchart: {
-        clientId: processFlowchart.clientId,
-        nodes: processFlowchart.nodes,
-        edges: processFlowchart.edges,
-        createdBy: processFlowchart.createdBy,
-        lastModifiedBy: processFlowchart.lastModifiedBy,
-        createdAt: processFlowchart.createdAt,
-        updatedAt: processFlowchart.updatedAt
-      }
-    });
-
-  } catch (error) {
-    console.error('Get process flowchart error:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch process flowchart', 
-      error: error.message 
-    });
-  }
-};
 
 // Get all process flowcharts (based on user hierarchy)
 const getAllProcessFlowcharts = async (req, res) => {
