@@ -157,170 +157,156 @@ const {canManageProcessFlowchart, canAssignHeadToNode} = require('../utils/Permi
 // };
 
 // Save or update process flowchart
-const saveProcessFlowchart = async (req, res) => {
+// Get process flowchart by clientId
+const getProcessFlowchart = async (req, res) => {
   try {
-    const { clientId, flowchartData } = req.body;
-    
-    // 0) Check if user is authenticated and has required fields
-    if (!req.user || (!req.user._id && !req.user.id)) {
-      return res.status(401).json({
-        message: 'Authentication required - user information missing'
-      });
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'clientId is required' });
     }
 
-    // Ensure we have a consistent userId
-    const userId = req.user._id || req.user.id;
+    // ---------- 1) Permission gate ----------
+    // We allow read for limited roles (same client), full access for admins/consultants/client_admin
+    const userType = req.user.userType;
+    const userClientId = req.user.clientId || req.user.client_id;
+    const userId = (req.user.id || req.user._id || '').toString();
 
-    // 1) Basic request validation
-    if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
-      return res.status(400).json({ 
-        message: 'Missing required fields: clientId or flowchartData.nodes' 
-      });
+    let allowed = false;
+    let fullAccess = false;
+
+    if (userType === 'super_admin') {
+      allowed = true; fullAccess = true;
+    } else if (['consultant_admin', 'consultant'].includes(userType)) {
+      // If your canManageProcessFlowchart returns boolean "can manage", treat that as fullAccess
+      const canManage = await canManageProcessFlowchart(req.user, clientId);
+      allowed = !!canManage;
+      fullAccess = !!canManage;
+    } else if (userType === 'client_admin') {
+      allowed = (userClientId && userClientId.toString() === clientId.toString());
+      fullAccess = allowed;
+    } else if (['client_employee_head', 'employee', 'auditor', 'viewer'].includes(userType)) {
+      // Read-only if they belong to the same client; further filtering happens below
+      allowed = (userClientId && userClientId.toString() === clientId.toString());
+      fullAccess = false;
     }
 
-    // 2) Check if client exists and is active
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ message: 'Client not found' });
-    }
-    if (client.stage !== 'active') {
-      return res.status(400).json({ 
-        message: 'Process flowcharts can only be created for active clients' 
-      });
-    }
-
-    // 3) Check process flowchart availability based on assessment level
-    const assessmentLevel = client.submissionData?.assessmentLevel || 'both';
-    if (!isChartAvailable(assessmentLevel, 'processFlowchart')) {
-      return res.status(403).json(getChartUnavailableMessage(assessmentLevel, 'processFlowchart'));
-    }
-
-    // 4) Auto-update client workflow status when consultant starts creating process flowchart
-    if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
-      await autoUpdateProcessFlowchartStatus(clientId, userId);
-    }
-
-    // 5) Check if user can manage this client's process flowchart
-    const canManage = await canManageProcessFlowchart(req.user, clientId);
-    if (!canManage) {
+    if (!allowed) {
       return res.status(403).json({ 
-        message: 'You do not have permission to manage process flowcharts for this client' 
+        message: 'You do not have permission to view this process flowchart' 
       });
     }
 
-    // 6) Normalize nodes based on assessmentLevel
-    const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
-
-    // 7) Normalize edges - The schema allows for many edges per node.
-    const normalizedEdges = normalizeEdges(flowchartData.edges);
-
-    // 8) Find existing or create new
-    let processFlowchart = await ProcessFlowchart.findOne({ 
+    // ---------- 2) Load flowchart ----------
+    const processFlowchart = await ProcessFlowchart.findOne({ 
       clientId, 
       isDeleted: false 
-    });
+    })
+    .populate('createdBy', 'userName email')
+    .populate('lastModifiedBy', 'userName email');
 
-    let isNew = false;
+    if (!processFlowchart) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
+    }
 
-    if (processFlowchart) {
-      // Update existing
-      processFlowchart.nodes = normalizedNodes;
-      processFlowchart.edges = normalizedEdges;
-      processFlowchart.lastModifiedBy = userId;
-      processFlowchart.version = (processFlowchart.version || 0) + 1;
-    } else {
-      // Create new
-      isNew = true;
-      processFlowchart = new ProcessFlowchart({
-        clientId,
-        nodes: normalizedNodes,
-        edges: normalizedEdges,
-        createdBy: userId,
-        creatorType: req.user.userType,
-        lastModifiedBy: userId,
-        assessmentLevel, // Store assessment level for reference
-        version: 1
+    // ---------- 3) Assessment-level availability ----------
+    const client = await Client.findOne({ clientId });
+    const assessmentLevel = client?.submissionData?.assessmentLevel;
+    if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'process') {
+      return res.status(403).json({
+        message: `Process flowchart is not available for current assessment level: ${assessmentLevel}`,
+        availableFor: ['both', 'process']
       });
     }
 
-    // The .save() call will now automatically trigger the pre-save hook in the model
-    await processFlowchart.save();
+    // ---------- 4) Build filtered nodes for limited roles ----------
+    const originalNodes = Array.isArray(processFlowchart.nodes) ? processFlowchart.nodes : [];
+    let filteredNodes = originalNodes;
 
-    // 9) Auto-start flowchart status
-    if (['consultant', 'consultant_admin'].includes(req.user.userType) && isNew) {
-      await Client.findOneAndUpdate(
-        { clientId },
-        { 
-          $set: {
-            'workflowTracking.processFlowchartStatus': 'on_going',
-            'workflowTracking.processFlowchartStartedAt': new Date()
-          }
+    // Helper: return a safe copy of a node (remove/limit sensitive fields for read-only roles)
+    const toSafeNode = (node) => {
+      const base = typeof node.toObject === 'function' ? node.toObject() : node;
+      const details = base?.details || {};
+
+      // Scope detail guard + whitelisting
+      const rawScopes = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
+      const safeScopes = rawScopes.map(s => ({
+        scopeIdentifier: s?.scopeIdentifier,
+        scopeType: s?.scopeType,
+        // normalize name if your schema uses dataCollectionType
+        inputType: s?.inputType ?? s?.dataCollectionType
+      }));
+
+      // Return a shallow copy with limited details
+      return {
+        ...base,
+        details: {
+          ...details,
+          scopeDetails: safeScopes,
+          // optionally hide other sensitive internals if they exist on process nodes:
+          emissionFactors: undefined,
+          gwp: undefined,
+          calculations: undefined,
+          formulas: undefined
         }
-      );
-    }
-
-    // 10) Send notifications to all client_admins of this client
-    await createChartNotifications(User, Notification, {
-      clientId,
-      userId,
-      userType: req.user.userType,
-      userName: req.user.userName,
-      isNew,
-      chartType: 'processFlowchart',
-      chartId: processFlowchart._id
-    });
-
-    // 11) Prepare response based on assessmentLevel
-    const responseData = {
-      clientId: processFlowchart.clientId,
-      nodes: processFlowchart.nodes,
-      edges: processFlowchart.edges,
-      assessmentLevel: assessmentLevel,
-      version: processFlowchart.version,
-      createdAt: processFlowchart.createdAt,
-      updatedAt: processFlowchart.updatedAt
+      };
     };
 
-    if (assessmentLevel === 'process') {
-      responseData.hasFullScopeDetails = true;
-      responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level)';
-    } else if (assessmentLevel === 'both') {
-      responseData.hasFullScopeDetails = false;
-      responseData.message = 'Process flowchart saved with basic details only (full scope details available in flowchart)';
+    // Employee Head: see ONLY nodes assigned to them (primary),
+    // fallback to department/location match if assignment not yet set.
+    if (userType === 'client_employee_head' && !fullAccess) {
+      const assigned = originalNodes.filter(n =>
+        n?.details?.employeeHeadId &&
+        n.details.employeeHeadId.toString?.() === userId
+      );
+
+      const departmentLocationFallback = originalNodes.filter(n =>
+        (n?.details?.department && n.details.department === req.user.department) ||
+        (n?.details?.location && n.details.location === req.user.location)
+      );
+
+      filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback)
+        .map(toSafeNode);
     }
 
-    res.status(isNew ? 201 : 200).json({ 
-      message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
-      flowchart: responseData
+    // Employee / Auditor / Viewer: allow read of nodes but with limited details
+    if (['employee', 'auditor', 'viewer'].includes(userType) && !fullAccess) {
+      filteredNodes = originalNodes.map(toSafeNode);
+    }
+
+    // Admin/Consultant/Client Admin with fullAccess: no node filtering
+    // (keep originalNodes)
+
+    // ---------- 5) Filter edges to visible nodes ----------
+    // Be tolerant: some nodes may use id or _id
+    const getNodeId = (n) => (n?.id ?? n?._id?.toString?.() ?? n?.data?.id);
+    const visibleIds = new Set(filteredNodes.map(getNodeId).filter(Boolean));
+
+    const filteredEdges = (Array.isArray(processFlowchart.edges) ? processFlowchart.edges : [])
+      .filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
+
+    // ---------- 6) Response ----------
+    return res.status(200).json({
+      flowchart: {
+        clientId: processFlowchart.clientId,
+        nodes: filteredNodes,
+        edges: filteredEdges,
+        createdBy: processFlowchart.createdBy,
+        lastModifiedBy: processFlowchart.lastModifiedBy,
+        createdAt: processFlowchart.createdAt,
+        updatedAt: processFlowchart.updatedAt
+      }
     });
 
   } catch (error) {
-    console.error('Save process flowchart error:', error);
-    
-    // ** UPDATED ERROR HANDLING **
-    // The pre-save hook will throw an error that gets caught here.
-    // We can check for the custom status code we set.
-    if (error.statusCode === 400) {
-        return res.status(400).json({
-            message: 'Process flowchart validation failed.',
-            error: error.message
-        });
-    }
-
-    if (error.code === 11000) {
-      return res.status(400).json({
-        message: 'Duplicate key error - check for duplicate identifiers',
-        error: error.message,
-        details: 'This might be caused by duplicate edge IDs or scope identifiers'
-      });
-    }
-
-    res.status(500).json({ 
-      message: 'Failed to save process flowchart', 
+    console.error('Get process flowchart error:', error);
+    return res.status(500).json({ 
+      message: 'Failed to fetch process flowchart', 
       error: error.message 
     });
   }
 };
+
 
 // Get process flowchart by clientId
 const getProcessFlowchart = async (req, res) => {
