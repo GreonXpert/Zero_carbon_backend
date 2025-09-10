@@ -424,23 +424,21 @@ const saveFlowchart = async (req, res) => {
 };
 
 // Get single Flowchart with proper permissions
+// Get single Flowchart with proper permissions
 const getFlowchart = async (req, res) => {
   try {
     const { clientId } = req.params;
-
     if (!clientId) {
       return res.status(400).json({ message: 'clientId is required' });
     }
 
-    // Check view permissions
+    // 1) Permission gate
     const permissionCheck = await canViewFlowchart(req.user, clientId);
     if (!permissionCheck.allowed) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to view this flowchart' 
-      });
+      return res.status(403).json({ message: 'You do not have permission to view this flowchart' });
     }
 
-    // Find flowchart
+    // 2) Load flowchart
     const flowchart = await Flowchart.findOne({ clientId, isActive: true })
       .populate('createdBy', 'userName email userType')
       .populate('lastModifiedBy', 'userName email');
@@ -448,7 +446,8 @@ const getFlowchart = async (req, res) => {
     if (!flowchart) {
       return res.status(404).json({ message: 'Flowchart not found' });
     }
-     // ADD THIS: Check if flowchart is still available based on current assessment level
+
+    // 3) Assessment-level availability
     const client = await Client.findOne({ clientId });
     const assessmentLevel = client?.submissionData?.assessmentLevel;
     if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'organization') {
@@ -458,34 +457,64 @@ const getFlowchart = async (req, res) => {
       });
     }
 
-    // Filter nodes based on permissions
+    // 4) Filter nodes by role
     let filteredNodes = flowchart.nodes;
-    
-    // Employee heads see only their department/location nodes
+
+    // Employee Head: show only nodes explicitly assigned to this head (primary rule),
+    // fallback to department/location match if assignment isn't set yet.
     if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
-      filteredNodes = flowchart.nodes.filter(node => {
-        return node.details.department === req.user.department ||
-               node.details.location === req.user.location;
+      const assigned = flowchart.nodes.filter(n =>
+        n?.details?.employeeHeadId &&
+        n.details.employeeHeadId.toString?.() === req.user.id
+      );
+
+      filteredNodes = assigned.length > 0
+        ? assigned
+        : flowchart.nodes.filter(n =>
+            n?.details?.department === req.user.department ||
+            n?.details?.location === req.user.location
+          );
+    }
+
+    // Employee / Auditor / Viewer: same visibility, but hide sensitive details
+    if (['employee', 'auditor', 'viewer'].includes(req.user.userType) && !permissionCheck.fullAccess) {
+      filteredNodes = flowchart.nodes.map(node => {
+        const base = typeof node.toObject === 'function' ? node.toObject() : node;
+        const scope = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
+        return {
+          ...base,
+          details: {
+            ...base.details,
+            // expose only non-sensitive fields per scope
+            scopeDetails: scope.map(s => ({
+              scopeIdentifier: s.scopeIdentifier,
+              scopeType: s.scopeType,
+              // keep your field naming consistent (inputType vs dataCollectionType)
+              inputType: s.inputType ?? s.dataCollectionType
+            }))
+          }
+        };
       });
     }
 
-    // Employees see limited scope details
-    if (req.user.userType === 'employee' && !permissionCheck.fullAccess) {
-      filteredNodes = flowchart.nodes.map(node => ({
-        ...node.toObject(),
-        details: {
-          ...node.details,
-          scopeDetails: node.details.scopeDetails.map(scope => ({
-            scopeIdentifier: scope.scopeIdentifier,
-            scopeType: scope.scopeType,
-            dataCollectionType: scope.dataCollectionType
-            // Hide sensitive emission details
-          }))
-        }
-      }));
-    }
+    // 5) Format nodes for React Flow
+    const rfNodes = filteredNodes.map(n => ({
+      id: n.id,
+      data: {
+        label: n.label,
+        details: n.details
+      },
+      position: n.position,
+      ...(n.parentNode ? { parentNode: n.parentNode } : {})
+    }));
 
-    // Format response
+    // 6) Filter edges to only those connecting visible nodes
+    const visibleIds = new Set(rfNodes.map(n => n.id));
+    const rfEdges = flowchart.edges
+      .filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
+      .map(e => ({ id: e.id, source: e.source, target: e.target }));
+
+    // 7) Response
     const response = {
       clientId: flowchart.clientId,
       createdBy: flowchart.createdBy,
@@ -494,33 +523,18 @@ const getFlowchart = async (req, res) => {
       version: flowchart.version,
       createdAt: flowchart.createdAt,
       updatedAt: flowchart.updatedAt,
-      nodes: filteredNodes.map(n => ({
-        id: n.id,
-        data: { 
-          label: n.label, 
-          details: n.details 
-        },
-        position: n.position,
-        ...(n.parentNode ? { parentNode: n.parentNode } : {})
-      })),
-      edges: flowchart.edges.map(e => ({
-        id: e.id,
-        source: e.source,
-        target: e.target
-      })),
+      nodes: rfNodes,
+      edges: rfEdges,
       permissions: {
         canEdit: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType),
         canDelete: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType)
       }
     };
 
-    res.status(200).json(response);
+    return res.status(200).json(response);
   } catch (error) {
     console.error('Error fetching flowchart:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch flowchart', 
-      error: error.message 
-    });
+    return res.status(500).json({ message: 'Failed to fetch flowchart', error: error.message });
   }
 };
 
