@@ -157,6 +157,172 @@ const {canManageProcessFlowchart, canAssignHeadToNode} = require('../utils/Permi
 // };
 
 // Save or update process flowchart
+const saveProcessFlowchart = async (req, res) => {
+  try {
+    const { clientId, flowchartData } = req.body;
+    
+    // 0) Check if user is authenticated and has required fields
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({
+        message: 'Authentication required - user information missing'
+      });
+    }
+
+    // Ensure we have a consistent userId
+    const userId = req.user._id || req.user.id;
+
+    // 1) Basic request validation
+    if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: clientId or flowchartData.nodes' 
+      });
+    }
+
+    // 2) Check if client exists and is active
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
+    }
+    if (client.stage !== 'active') {
+      return res.status(400).json({ 
+        message: 'Process flowcharts can only be created for active clients' 
+      });
+    }
+
+    // 3) Check process flowchart availability based on assessment level
+    const assessmentLevel = client.submissionData?.assessmentLevel || 'both';
+    if (!isChartAvailable(assessmentLevel, 'processFlowchart')) {
+      return res.status(403).json(getChartUnavailableMessage(assessmentLevel, 'processFlowchart'));
+    }
+
+    // 4) Auto-update client workflow status when consultant starts creating process flowchart
+    if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
+      await autoUpdateProcessFlowchartStatus(clientId, userId);
+    }
+
+    // 5) Check if user can manage this client's process flowchart
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) {
+      return res.status(403).json({ 
+        message: 'You do not have permission to manage process flowcharts for this client' 
+      });
+    }
+
+    // 6) Normalize nodes based on assessmentLevel
+    const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
+
+    // 7) Normalize edges - The schema allows for many edges per node.
+    const normalizedEdges = normalizeEdges(flowchartData.edges);
+
+    // 8) Find existing or create new
+    let processFlowchart = await ProcessFlowchart.findOne({ 
+      clientId, 
+      isDeleted: false 
+    });
+
+    let isNew = false;
+
+    if (processFlowchart) {
+      // Update existing
+      processFlowchart.nodes = normalizedNodes;
+      processFlowchart.edges = normalizedEdges;
+      processFlowchart.lastModifiedBy = userId;
+      processFlowchart.version = (processFlowchart.version || 0) + 1;
+    } else {
+      // Create new
+      isNew = true;
+      processFlowchart = new ProcessFlowchart({
+        clientId,
+        nodes: normalizedNodes,
+        edges: normalizedEdges,
+        createdBy: userId,
+        creatorType: req.user.userType,
+        lastModifiedBy: userId,
+        assessmentLevel, // Store assessment level for reference
+        version: 1
+      });
+    }
+
+    // The .save() call will now automatically trigger the pre-save hook in the model
+    await processFlowchart.save();
+
+    // 9) Auto-start flowchart status
+    if (['consultant', 'consultant_admin'].includes(req.user.userType) && isNew) {
+      await Client.findOneAndUpdate(
+        { clientId },
+        { 
+          $set: {
+            'workflowTracking.processFlowchartStatus': 'on_going',
+            'workflowTracking.processFlowchartStartedAt': new Date()
+          }
+        }
+      );
+    }
+
+    // 10) Send notifications to all client_admins of this client
+    await createChartNotifications(User, Notification, {
+      clientId,
+      userId,
+      userType: req.user.userType,
+      userName: req.user.userName,
+      isNew,
+      chartType: 'processFlowchart',
+      chartId: processFlowchart._id
+    });
+
+    // 11) Prepare response based on assessmentLevel
+    const responseData = {
+      clientId: processFlowchart.clientId,
+      nodes: processFlowchart.nodes,
+      edges: processFlowchart.edges,
+      assessmentLevel: assessmentLevel,
+      version: processFlowchart.version,
+      createdAt: processFlowchart.createdAt,
+      updatedAt: processFlowchart.updatedAt
+    };
+
+    if (assessmentLevel === 'process') {
+      responseData.hasFullScopeDetails = true;
+      responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level)';
+    } else if (assessmentLevel === 'both') {
+      responseData.hasFullScopeDetails = false;
+      responseData.message = 'Process flowchart saved with basic details only (full scope details available in flowchart)';
+    }
+
+    res.status(isNew ? 201 : 200).json({ 
+      message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
+      flowchart: responseData
+    });
+
+  } catch (error) {
+    console.error('Save process flowchart error:', error);
+    
+    // ** UPDATED ERROR HANDLING **
+    // The pre-save hook will throw an error that gets caught here.
+    // We can check for the custom status code we set.
+    if (error.statusCode === 400) {
+        return res.status(400).json({
+            message: 'Process flowchart validation failed.',
+            error: error.message
+        });
+    }
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        message: 'Duplicate key error - check for duplicate identifiers',
+        error: error.message,
+        details: 'This might be caused by duplicate edge IDs or scope identifiers'
+      });
+    }
+
+    res.status(500).json({ 
+      message: 'Failed to save process flowchart', 
+      error: error.message 
+    });
+  }
+};
+
+// Get process flowchart by clientId
 // Get process flowchart by clientId
 const getProcessFlowchart = async (req, res) => {
   try {
@@ -306,8 +472,6 @@ const getProcessFlowchart = async (req, res) => {
     });
   }
 };
-
-
 
 
 // Get all process flowcharts (based on user hierarchy)
