@@ -41,7 +41,28 @@ const canManageProcessFlowchart = async (user, clientId) => {
 };
 
 // Check if user can create/edit flowchart for a client (restricted to consultants/super-admin)
+// Check if user can create/edit flowchart for a client (restricted to consultants/super-admin)
 const canManageFlowchart = async (user, clientId) => {
+// extremely defensive ID normalizer
+const getId = (x) => {
+  if (x == null) return '';                // handles undefined/null
+  // If it's already a string or number (ObjectId as string), return as string
+  if (typeof x === 'string' || typeof x === 'number') return String(x);
+
+  // If it's a Mongoose doc or plain object that might contain _id/id
+  const candidate = (x._id != null) ? x._id
+                   : (x.id != null) ? x.id
+                   : x;
+
+  if (candidate == null) return '';        // guard explicit null
+
+  // Safely call toString if present
+  if (typeof candidate === 'string' || typeof candidate === 'number') {
+    return String(candidate);
+  }
+  return candidate?.toString ? candidate.toString() : '';
+};
+
   // Super admin can manage all
   if (user.userType === 'super_admin') {
     return { allowed: true, reason: 'Super admin access' };
@@ -53,29 +74,49 @@ const canManageFlowchart = async (user, clientId) => {
     return { allowed: false, reason: 'Client not found' };
   }
 
-  // Consultant Admin: Can manage if they created the lead or their team is assigned
+  // Gather all possible "currently assigned" consultant IDs
+  const leadAssigned = getId(client.leadInfo?.assignedConsultantId);
+  const workflowAssigned = getId(client.workflowTracking?.assignedConsultantId);
+  const activeHistoryIds = (client.leadInfo?.consultantHistory || [])
+    .filter(h => h?.isActive)
+    .map(h => getId(h.consultantId))
+    .filter(Boolean);
+
+  const currentlyAssigned = new Set(
+    [leadAssigned, workflowAssigned, ...activeHistoryIds].filter(Boolean)
+  );
+
+  const myId = getId(user);
+
+  // Consultant Admin rules
   if (user.userType === 'consultant_admin') {
-    const createdBy = client.leadInfo?.createdBy;
-    if (createdBy && user._id && createdBy.toString() === user._id.toString()) {
+    const createdById   = getId(client.leadInfo?.createdBy);
+    const adminOnClient = getId(client.leadInfo?.consultantAdminId);
+
+    // (a) This admin created the lead
+    if (createdById && createdById === myId) {
       return { allowed: true, reason: 'Consultant admin who created lead' };
     }
+    // (b) This admin is the client’s consultantAdminId
+    if (adminOnClient && adminOnClient === myId) {
+      return { allowed: true, reason: 'Consultant admin for this client' };
+    }
 
-    const consultantsUnderAdmin = await User.find({
-      consultantAdminId: user.id || user._id,
-      userType: 'consultant'
-    }).select('_id');
-    const consultantIds = consultantsUnderAdmin.map(c => c._id.toString());
-    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
-    if (assignedConsultantId && consultantIds.includes(assignedConsultantId.toString())) {
-      return { allowed: true, reason: 'Client assigned to consultant under this admin' };
+    // (c) Any currently assigned consultant is in this admin's team
+    const team = await User.find({ consultantAdminId: myId, userType: 'consultant' }).select('_id');
+    const teamIds = new Set(team.map(u => getId(u._id)));
+
+    for (const cid of currentlyAssigned) {
+      if (teamIds.has(cid)) {
+        return { allowed: true, reason: 'Client assigned to consultant under this admin' };
+      }
     }
     return { allowed: false, reason: 'Not authorized for this client' };
   }
 
-  // Consultant: Can manage if they are assigned to this client
+  // Consultant rule: must be currently assigned via any of the sources
   if (user.userType === 'consultant') {
-    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
-    if (assignedConsultantId && user.id && assignedConsultantId.toString() === user.id.toString()) {
+    if (currentlyAssigned.has(myId)) {
       return { allowed: true, reason: 'Assigned consultant' };
     }
     return { allowed: false, reason: 'Not assigned to this client' };
@@ -83,6 +124,7 @@ const canManageFlowchart = async (user, clientId) => {
 
   return { allowed: false, reason: 'Insufficient permissions' };
 };
+
 
 // NEW: Specific permission check for assigning an Employee Head
 const canAssignHeadToNode = async (user, clientId) => {
