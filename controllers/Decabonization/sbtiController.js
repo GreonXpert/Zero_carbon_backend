@@ -1,6 +1,6 @@
 // controllers/Targets/sbtiController.js
 const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
-const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
+const { canManageFlowchart, canViewFlowchart, canManageProcessFlowchart } = require('../../utils/Permissions/permissions');
 
 // Optional: real-time updates like your summaries do
 let io;
@@ -153,7 +153,7 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
 }
 
 // 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
+const managePerm = await canManageProcessFlowchart(req.user, clientId);
 if (!managePerm.allowed) {
   return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
 }
