@@ -61,7 +61,7 @@ const canManageFlowchart = async (user, clientId) => {
     }
 
     const consultantsUnderAdmin = await User.find({
-      consultantAdminId: user.id,
+      consultantAdminId: user.id || user._id,
       userType: 'consultant'
     }).select('_id');
     const consultantIds = consultantsUnderAdmin.map(c => c._id.toString());
