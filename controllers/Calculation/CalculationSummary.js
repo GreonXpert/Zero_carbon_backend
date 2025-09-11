@@ -534,44 +534,86 @@ const updateSummariesOnDataChange = async (dataEntry) => {
 const recalculateAndSaveSummary = async (clientId, periodType, year, month, week, day, userId = null) => {
   try {
     const summaryData = await calculateEmissionSummary(clientId, periodType, year, month, week, day, userId);
-    if (summaryData) {
-      return await saveEmissionSummary(summaryData);
-    }
-    return null;
-  } catch (error) {
-    console.error(`Error recalculating ${periodType} summary for client ${clientId}:`, error);
-    throw error;
+    if (!summaryData) return null;
+    if ((summaryData.metadata?.totalDataPoints ?? 0) === 0) return null; // ← do not save "zero" snapshot
+    return await saveEmissionSummary(summaryData);
+  } catch (err) {
+    console.error(`Error recalculating ${periodType} summary for client ${clientId}:`, err);
+    throw err;
   }
 };
+
 
 // ========== API Controllers ==========
 
 const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { periodType = 'monthly', year, month, week, day, recalculate = 'false' } = req.query;
+    const {
+      periodType = 'monthly',
+      year, month, week, day,
+      recalculate = 'false',
+      preferLatest = 'true',
+    } = req.query;
 
-    if (!['daily', 'weekly', 'monthly', 'yearly', 'all-time'].includes(periodType)) {
-      return res.status(400).json({ success: false, message: 'Invalid period type.' });
+    if (!['daily','weekly','monthly','yearly','all-time'].includes(periodType)) {
+      return res.status(400).json({ success:false, message:'Invalid period type.' });
     }
 
+    const y = year ? parseInt(year) : moment.utc().year();
+    const m = month ? parseInt(month) : moment.utc().month() + 1;
+    const w = week ? parseInt(week) : moment.utc().isoWeek();
+    const d = day ? parseInt(day) : moment.utc().date();
+
     let summary;
-    const currentYear = year ? parseInt(year) : moment.utc().year();
-    const currentMonth = month ? parseInt(month) : moment.utc().month() + 1;
-    const currentWeek = week ? parseInt(week) : moment.utc().isoWeek();
-    const currentDay = day ? parseInt(day) : moment.utc().date();
+
+    // If no explicit period parts, return the latest available snapshot for this type
+    const noSpecificParts = !year && !month && !week && !day;
 
     if (recalculate === 'true') {
-      summary = await recalculateAndSaveSummary(clientId, periodType, currentYear, currentMonth, currentWeek, currentDay, req.user?._id);
+      summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
     } else {
-      const query = { clientId, 'period.type': periodType };
-      if (year) query['period.year'] = currentYear;
-      if (month) query['period.month'] = currentMonth;
-      if (week) query['period.week'] = currentWeek;
-      if (day) query['period.day'] = currentDay;
-      summary = await EmissionSummary.findOne(query).lean();
-      if (!summary || (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000) {
-        summary = await recalculateAndSaveSummary(clientId, periodType, currentYear, currentMonth, currentWeek, currentDay, req.user?._id);
+      const baseQuery = { clientId, 'period.type': periodType };
+
+      if (noSpecificParts) {
+        // latest
+        summary = await EmissionSummary
+          .findOne(baseQuery)
+          .sort({ 'period.to': -1, 'period.year': -1, 'period.month': -1, 'period.week': -1, 'period.day': -1, updatedAt: -1 })
+          .lean();
+      } else {
+        // exact period
+        const exactQuery = { ...baseQuery };
+        if (year) exactQuery['period.year'] = y;
+        if (month) exactQuery['period.month'] = m;
+        if (week) exactQuery['period.week'] = w;
+        if (day) exactQuery['period.day'] = d;
+
+        summary = await EmissionSummary.findOne(exactQuery).lean();
+
+        // If not found or stale -> recompute
+        const isStale = summary && (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000; // 1h
+        if (!summary || isStale) {
+          const recomputed = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
+          // If recompute produced nothing AND preferLatest is on, fall back to latest available
+          if (recomputed && (recomputed.metadata?.totalDataPoints ?? 0) > 0) {
+            summary = recomputed;
+          } else if (preferLatest === 'true') {
+            const endOfRequested = buildDateRange(periodType, y, m, w, d).to; // use your existing helper
+            summary = await EmissionSummary
+              .findOne({ ...baseQuery, 'period.to': { $lte: endOfRequested } })
+              .sort({ 'period.to': -1, 'period.year': -1, 'period.month': -1, 'period.week': -1, 'period.day': -1, updatedAt: -1 })
+              .lean();
+
+            if (summary) {
+              // annotate that this is a fallback for transparency (front-end can show a small note)
+              summary.metadata = {
+                ...summary.metadata,
+                fallbackFor: { type: periodType, year: y, month: m, week: w, day: d }
+              };
+            }
+          }
+        }
       }
     }
 
@@ -579,17 +621,18 @@ const getEmissionSummary = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No data found for the specified period' });
     }
 
+    // Convert Map fields to plain objects before sending
     const responseData = { ...summary };
-    for (const key of ['byCategory', 'byActivity', 'byNode', 'byDepartment', 'byLocation', 'byEmissionFactor']) {
-        if (responseData[key] instanceof Map) {
-            responseData[key] = Object.fromEntries(responseData[key]);
-        }
+    for (const key of ['byCategory','byActivity','byNode','byDepartment','byLocation','byEmissionFactor']) {
+      if (responseData[key] instanceof Map) {
+        responseData[key] = Object.fromEntries(responseData[key]);
+      }
     }
 
-    res.status(200).json({ success: true, data: responseData });
+    return res.status(200).json({ success: true, data: responseData });
   } catch (error) {
     console.error('Error getting emission summary:', error);
-    res.status(500).json({ success: false, message: 'Failed to get emission summary', error: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to get emission summary', error: error.message });
   }
 };
 
