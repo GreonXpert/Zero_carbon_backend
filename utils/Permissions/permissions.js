@@ -53,22 +53,12 @@ const canManageFlowchart = async (user, clientId) => {
     return { allowed: false, reason: 'Client not found' };
   }
 
- // Consultant admin can manage their clients' flowcharts
+  // Consultant Admin: Can manage if they created the lead or their team is assigned
   if (user.userType === 'consultant_admin') {
-    // Get all consultant IDs under this admin
-    const consultants = await User.find({ 
-      consultantAdminId: user._id,
-      userType: 'consultant'
-    }).select('_id');
-    const consultantIds = consultants.map(c => c._id);
-    consultantIds.push(user._id);
-
-    return (
-      client.leadInfo.consultantAdminId?.toString() === user._id.toString() ||
-      consultantIds.some(id => client.leadInfo.assignedConsultantId?.toString() === id.toString())
-    );
-  }
-
+    const createdBy = client.leadInfo?.createdBy;
+    if (createdBy && user._id && createdBy.toString() === user._id.toString()) {
+      return { allowed: true, reason: 'Consultant admin who created lead' };
+    }
 
     const consultantsUnderAdmin = await User.find({
       consultantAdminId: user.id || user._id,
