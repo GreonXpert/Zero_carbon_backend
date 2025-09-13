@@ -582,57 +582,132 @@ const getAllProcessFlowcharts = async (req, res) => {
 };
 
 // Update process flowchart node
+// controllers/processflowController.js – PATCH /:clientId/node/:nodeId
 const updateProcessFlowchartNode = async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
     const { nodeData } = req.body;
 
-    // Check if user can manage
+    // Permission
     const canManage = await canManageProcessFlowchart(req.user, clientId);
     if (!canManage) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to update this process flowchart' 
-      });
+      return res.status(403).json({ message: 'You do not have permission to update this process flowchart' });
     }
 
-    const processFlowchart = await ProcessFlowchart.findOne({ 
-      clientId, 
-      isDeleted: false 
-    });
-
+    const processFlowchart = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
     if (!processFlowchart) {
       return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    // Find and update the specific node
+    // Find node
     const nodeIndex = processFlowchart.nodes.findIndex(n => n.id === nodeId);
     if (nodeIndex === -1) {
       return res.status(404).json({ message: 'Node not found' });
     }
 
-    // Update node data
-    processFlowchart.nodes[nodeIndex] = {
-      ...processFlowchart.nodes[nodeIndex],
-      ...nodeData,
-      id: nodeId // Ensure ID doesn't change
+    // Existing node as plain object
+    const existingNode =
+      typeof processFlowchart.nodes[nodeIndex].toObject === 'function'
+        ? processFlowchart.nodes[nodeIndex].toObject()
+        : JSON.parse(JSON.stringify(processFlowchart.nodes[nodeIndex] || {}));
+
+    // Reuse same helpers as above
+    const shallowMerge = (base, patch) => {
+      const out = { ...base };
+      if (patch && typeof patch === 'object') {
+        for (const k of Object.keys(patch)) {
+          if (patch[k] !== undefined) out[k] = patch[k];
+        }
+      }
+      return out;
     };
 
+    const mergeEFBlocks = (finalEF, existingEFVals = {}, incomingEFVals = {}, incomingTopLevel = {}) => {
+      const out = {
+        defraData: { ...(existingEFVals.defraData || {}), ...(incomingEFVals.defraData || {}) },
+        ipccData: { ...(existingEFVals.ipccData || {}), ...(incomingEFVals.ipccData || {}) },
+        epaData: { ...(existingEFVals.epaData || {}), ...(incomingEFVals.epaData || {}) },
+        countryData: { ...(existingEFVals.countryData || {}), ...(incomingEFVals.countryData || {}) },
+        emissionFactorHubData: { ...(existingEFVals.emissionFactorHubData || {}), ...(incomingEFVals.emissionFactorHubData || {}) },
+        customEmissionFactor: {
+          ...(existingEFVals.customEmissionFactor || {}),
+          ...((incomingEFVals && incomingEFVals.customEmissionFactor) || (incomingTopLevel && incomingTopLevel.customEmissionFactor) || {})
+        },
+        dataSource: incomingEFVals?.dataSource !== undefined ? incomingEFVals.dataSource : (existingEFVals.dataSource || undefined),
+        lastUpdated: new Date()
+      };
+      if (finalEF === 'Custom' && !out.customEmissionFactor) out.customEmissionFactor = {};
+      return out;
+    };
+
+    const mergeScopeDetail = (existingScope = {}, incomingScope = {}) => {
+      const finalEF = incomingScope.emissionFactor ?? existingScope.emissionFactor ?? '';
+      const mergedTop = {
+        ...existingScope,
+        ...Object.fromEntries(
+          Object.entries(incomingScope).filter(([k, v]) => k !== 'emissionFactorValues' && v !== undefined)
+        ),
+        emissionFactor: finalEF
+      };
+      const existingEFVals = existingScope.emissionFactorValues || {};
+      const incomingEFVals = incomingScope.emissionFactorValues || {};
+      mergedTop.emissionFactorValues = mergeEFBlocks(finalEF, existingEFVals, incomingEFVals, incomingScope);
+
+      if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
+      if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
+
+      return mergedTop;
+    };
+
+    // Merge the node (shallow first)
+    const mergedNode = {
+      ...existingNode,
+      ...(nodeData && typeof nodeData === 'object' ? nodeData : {}),
+      id: nodeId
+    };
+
+    // Merge details
+    mergedNode.details = shallowMerge(existingNode.details || {}, (nodeData && nodeData.details) || {});
+
+    // If this node carries scopeDetails in process-flow context, merge them too
+    if (Array.isArray((nodeData && nodeData.details && nodeData.details.scopeDetails) || null)) {
+      const incomingScopes = nodeData.details.scopeDetails;
+      const byId = new Map(
+        (Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [])
+          .map(s => [s.scopeIdentifier, s])
+      );
+
+      const mergedScopes = [];
+      for (const inc of incomingScopes) {
+        const old = byId.get(inc.scopeIdentifier);
+        if (old) {
+          mergedScopes.push(mergeScopeDetail(old, inc));
+          byId.delete(inc.scopeIdentifier);
+        } else {
+          mergedScopes.push(mergeScopeDetail({}, inc));
+        }
+      }
+      for (const leftover of byId.values()) mergedScopes.push(leftover);
+      mergedNode.details.scopeDetails = mergedScopes;
+    }
+
+    // Save back
+    processFlowchart.nodes[nodeIndex] = mergedNode; // <-- fixed spread bug
+    processFlowchart.markModified('nodes');
     processFlowchart.lastModifiedBy = req.user._id;
+
     await processFlowchart.save();
 
-    res.status(200).json({ 
+    return res.status(200).json({
       message: 'Node updated successfully',
       node: processFlowchart.nodes[nodeIndex]
     });
-
   } catch (error) {
     console.error('Update process flowchart node error:', error);
-    res.status(500).json({ 
-      message: 'Failed to update node', 
-      error: error.message 
-    });
+    return res.status(500).json({ message: 'Failed to update node', error: error.message });
   }
 };
+
 
 // Delete process flowchart (soft delete)
 const deleteProcessFlowchart = async (req, res) => {
