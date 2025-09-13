@@ -1190,6 +1190,8 @@ const normalizeCustomEF = (src = {}) => {
     GWP_CH4_leak:             numericOrNull(src.GWP_CH4_leak),
     GWP_CH4_Component:        numericOrNull(src.GWP_CH4_Component),
     GWP_SF6:                  numericOrNull(src.GWP_SF6),
+    CO2e_gwp:                numericOrNull(src.CO2e_gwp),
+    unit:                    src.unit ?? null,
 
     // process/stoi/efficiency & misc fields
     stoichiometicFactor: numericOrNull(src.stoichiometicFactor),
