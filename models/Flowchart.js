@@ -233,7 +233,7 @@ emissionFactorValues: {
       // fugitive emission Factor Values 
       chargeType: { type: String, default: '' },
       leakageRate: { type: Number, default: null },
-      Gwp_refrigerant: { type: Number, default: '' },
+      Gwp_refrigerant: { type: Number, default: null },
       GWP_fugitiveEmission: { type: Number, default: null },
       //fugitive emisson Activity === SF6
       GWP_SF6: {type:Number, default: null},
@@ -357,6 +357,7 @@ ScopeDetailSchema.pre('save', function(next) {
   }
   next();
 });
+
 
 const NodeSchema = new mongoose.Schema({
   id: { type: String, required: true },

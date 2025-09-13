@@ -1160,240 +1160,175 @@ const getConsolidatedSummary = async (req, res) => {
 // In the updateFlowchartNode function, ensure custom emission factors are handled
 // This is a modification to the existing updateFlowchartNode function
 
+const numericOrNull = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+};
+
+const normalizeCustomEF = (src = {}) => {
+  // Accept both camel and all-caps variants you used across payloads
+  return {
+    // generic factor(s)
+    industryAverageEmissionFactor: numericOrNull(src.industryAverageEmissionFactor),
+
+    // gases & GWPs used across your examples
+    CO2:          numericOrNull(src.CO2),
+    CH4:          numericOrNull(src.CH4),
+    N2O:          numericOrNull(src.N2O),
+    CO2e:         numericOrNull(src.CO2e),
+
+    CO2_gwp:      numericOrNull(src.CO2_gwp),
+    CH4_gwp:      numericOrNull(src.CH4_gwp),
+    N2O_gwp:      numericOrNull(src.N2O_gwp),
+
+    // refrigerant/fugitive/fuel special cases seen in your data
+    Gwp_refrigerant:          numericOrNull(src.Gwp_refrigerant ?? src.GWP_refrigerant),
+    GWP_fugitiveEmission:     numericOrNull(src.GWP_fugitiveEmission),
+    EmissionFactorFugitiveCH4Leak:       numericOrNull(src.EmissionFactorFugitiveCH4Leak),
+    EmissionFactorFugitiveCH4Component:  numericOrNull(src.EmissionFactorFugitiveCH4Component),
+    GWP_CH4_leak:             numericOrNull(src.GWP_CH4_leak),
+    GWP_CH4_Component:        numericOrNull(src.GWP_CH4_Component),
+    GWP_SF6:                  numericOrNull(src.GWP_SF6),
+
+    // process/stoi/efficiency & misc fields
+    stoichiometicFactor: numericOrNull(src.stoichiometicFactor),
+    conversionEfficiency: numericOrNull(src.conversionEfficiency),
+    leakageRate:         numericOrNull(src.leakageRate),
+    chargeType:          src.chargeType ?? null,
+    BuildingTotalS1_S2:  numericOrNull(src.BuildingTotalS1_S2)
+  };
+};
+
+const mergeEmissionFactorValues = (prevEFV = {}, incomingEFV = {}, finalCustomEF = null) => {
+  // Shallow-merge each block; only overwrite if provided
+  const merged = {
+    ...prevEFV,
+    ...incomingEFV
+  };
+
+  if (finalCustomEF) {
+    merged.customEmissionFactor = finalCustomEF;
+  } else if (incomingEFV && incomingEFV.customEmissionFactor) {
+    merged.customEmissionFactor = incomingEFV.customEmissionFactor;
+  }
+
+  // keep/refresh lastUpdated if any EF block changed
+  merged.lastUpdated = new Date();
+  return merged;
+};
+
+// --- main controller --- //
 const updateFlowchartNode = async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
-    const { nodeData } = req.body;
+    const userId = req.user?._id || req.user?.id;
 
-    // Check if user is authenticated and has required fields
-    if (!req.user || (!req.user._id && !req.user.id)) {
-      return res.status(401).json({
-        message: 'Authentication required - user information missing'
-      });
-    }
-
-    // Ensure we have a consistent userId
-    const userId = req.user._id || req.user.id;
-
-    // Check permissions
-    const permissionCheck = await canManageFlowchart(req.user, clientId);
-    if (!permissionCheck.allowed) {
-      return res.status(403).json({ 
-        message: 'Permission denied',
-        reason: permissionCheck.reason 
-      });
-    }
-
-    // Find flowchart
+    // 1) Load active flowchart
     const flowchart = await Flowchart.findOne({ clientId, isActive: true });
     if (!flowchart) {
       return res.status(404).json({ message: 'Flowchart not found' });
     }
 
-    // Find node index
+    // 2) Find the node to update
     const nodeIndex = flowchart.nodes.findIndex(n => n.id === nodeId);
     if (nodeIndex === -1) {
       return res.status(404).json({ message: 'Node not found' });
     }
 
-    // Validate and normalize scope details if updating
-    if (nodeData.details?.scopeDetails) {
-      try {
-        validateScopeDetails(nodeData.details.scopeDetails, nodeId);
-        
-        // Normalize the scope details with dynamic emission factor support
-        nodeData.details.scopeDetails = nodeData.details.scopeDetails.map(scope => {
-          const normalizedScope = {
-            scopeIdentifier:      scope.scopeIdentifier.trim(),
-            scopeType:            scope.scopeType,
-            inputType:            scope.inputType          || 'manual',
-            apiStatus:            scope.apiStatus          || false,
-            apiEndpoint:          scope.apiEndpoint        || '',
-            iotStatus:            scope.iotStatus          || false,
-            iotDeviceId:          scope.iotDeviceId        || '',
-            emissionFactor:       scope.emissionFactor     || '',
-            categoryName:         scope.categoryName       || '',
-            activity:             scope.activity           || '',
-            fuel:                 scope.fuel               || '',
-            units:                scope.units              || '',
-            country:              scope.country            || '',
-            regionGrid:           scope.regionGrid         || '',
-            electricityUnit:      scope.electricityUnit    || '',
-            itemName:             scope.itemName           || '',
-            description:          scope.description        || '',
-            source:               scope.source             || '',
-            reference:            scope.reference          || '',
-            collectionFrequency:  scope.collectionFrequency|| 'monthly',
-            calculationModel:     scope.calculationModel  || 'tier 1',
-            additionalInfo:       scope.additionalInfo     || {},
-            assignedEmployees:    scope.assignedEmployees  || [],
-            UAD:                  scope.UAD                || 0,
-            UEF:                  scope.UEF                || 0
-          };
-          
-          // Handle custom emission factor
-          if (scope.emissionFactor === 'Custom') {
-            normalizedScope.customEmissionFactor = {
-              CO2:  scope.customEmissionFactor?.CO2  ?? null,
-              CH4:  scope.customEmissionFactor?.CH4  ?? null,
-              N2O:  scope.customEmissionFactor?.N2O  ?? null,
-              CO2e: scope.customEmissionFactor?.CO2e ?? null,
-              unit: scope.customEmissionFactor?.unit || '',
-               // Process Emission Factor 
-              industryAverageEmissionFactor:scope.customEmissionFactor?.industryAverageEmissionFactor || null,
-              stoichiometicFactor: scope.customEmissionFactor?.stoichiometicFactor || null,
-              conversionEfficiency: scope.customEmissionFactor?.conversionEfficiency || null,
+    // We allow partial updates; if client passes { details: { scopeDetails: [...] } }
+    const incomingNode = req.body?.nodeData || req.body || {};
+    const existingNode = flowchart.nodes[nodeIndex].toObject ? flowchart.nodes[nodeIndex].toObject() : flowchart.nodes[nodeIndex];
 
-              // fugitive emission Factor Values 
-              chargeType: scope.customEmissionFactor?.chargeType || '',
-              leakageRate: scope.customEmissionFactor?.leakageRate || null,
-              Gwp_refrigerant: scope.customEmissionFactor?.Gwp_refrigerant || null,
-              GWP_fugitiveEmission: scope.customEmissionFactor?.GWP_fugitiveEmission || null,
-              // GWP value
-              CO2_gwp: scope.customEmissionFactor?.CO2_gwp ?? 0,
-              CH4_gwp: scope.customEmissionFactor?.CH4_gwp ?? 0,
-              N2O_gwp: scope.customEmissionFactor?.N2O_gwp ?? 0,
-
-              
-            };
-          } else {
-            normalizedScope.customEmissionFactor = {
-              CO2: null,
-              CH4: null,
-              N2O: null,
-              CO2e: null,
-              unit: ''
-            };
-          }
-          
-          // ───── UPDATED: Dynamic emissionFactorValues based on emissionFactor choice ─────
-          const validSources = ['DEFRA','IPCC','EPA','EmissionFactorHub','Custom','Country'];
-          
-          // Initialize empty emissionFactorValues structure (this clears old data)
-          normalizedScope.emissionFactorValues = {
-            defraData: {},
-            ipccData: {},
-            epaData: {},
-            countryData: {},
-            customEmissionFactor: normalizedScope.customEmissionFactor,
-            dataSource: validSources.includes(scope.emissionFactor) ? scope.emissionFactor : undefined,
-            lastUpdated: new Date()
-          };
-
-          // Populate only the relevant data based on emissionFactor choice
-          if (scope.emissionFactor === 'DEFRA') {
-            // Check if data comes from emissionFactorValues or direct fields
-            const defraSource = scope.emissionFactorValues?.defraData || scope;
-            normalizedScope.emissionFactorValues.defraData = {
-              scope:   defraSource.scope    || '',
-              level1:  defraSource.level1   || '',
-              level2:  defraSource.level2   || '',
-              level3:  defraSource.level3   || '',
-              level4:  defraSource.level4   || '',
-              columnText: defraSource.columnText || '',
-              uom:     defraSource.uom      || '',
-              ghgUnits: Array.isArray(defraSource.ghgUnits) 
-                ? defraSource.ghgUnits
-                : (defraSource.ghgUnit && defraSource.ghgConversionFactor != null)
-                  ? [{ unit: defraSource.ghgUnit, ghgconversionFactor: defraSource.ghgConversionFactor }]
-                  : [],
-              gwpValue: defraSource.gwpValue || 0,
-              gwpSearchField: defraSource.gwpSearchField || null,
-              gwpLastUpdated: defraSource.gwpLastUpdated || null
-            };
-          } else if (scope.emissionFactor === 'IPCC') {
-            // Check if data comes from emissionFactorValues or direct fields
-            const ipccSource = scope.emissionFactorValues?.ipccData || scope;
-            normalizedScope.emissionFactorValues.ipccData = {
-              level1:         ipccSource.level1           || '',
-              level2:         ipccSource.level2           || '',
-              level3:         ipccSource.level3           || '',
-              cpool:          ipccSource.cpool || ipccSource.Cpool || '',
-              typeOfParameter:ipccSource.typeOfParameter || ipccSource.TypeOfParameter || '',
-              unit:           ipccSource.unit || ipccSource.Unit || '',
-              value:          ipccSource.value ?? ipccSource.Value ?? null,
-              description:    ipccSource.description || ipccSource.Description || '',
-              gwpValue: ipccSource.gwpValue || 0,
-              gwpSearchField:ipccSource.gwpSearchField || null,
-              gwpLastUpdated: ipccSource.gwpLastUpdated || null
-            };
-          } else if (scope.emissionFactor === 'EPA') {
-            // Check if data comes from emissionFactorValues or direct fields
-            const epaSource = scope.emissionFactorValues?.epaData || scope;
-            normalizedScope.emissionFactorValues.epaData = {
-              scopeEPA:       epaSource.scopeEPA        || '',
-              level1EPA:      epaSource.level1EPA       || '',
-              level2EPA:      epaSource.level2EPA       || '',
-              level3EPA:      epaSource.level3EPA       || '',
-              level4EPA:      epaSource.level4EPA       || '',
-              columnTextEPA:  epaSource.columnTextEPA   || '',
-              uomEPA:         epaSource.uomEPA          || '',
-              ghgUnitsEPA: Array.isArray(epaSource.ghgUnitsEPA)
-                ? epaSource.ghgUnitsEPA
-                : (epaSource.ghgUnitEPA && epaSource.ghgConversionFactorEPA != null)
-                  ? [{ unit: epaSource.ghgUnitEPA, ghgconversionFactor: epaSource.ghgConversionFactorEPA }]
-                  : [],
-               gwpValue:epaSource.gwpValue || 0,
-              gwpSearchField: epaSource.gwpSearchField || null,
-              gwpLastUpdated:epaSource.gwpLastUpdated || null
-            };
-          } else if (scope.emissionFactor === 'Country') {
-            // Check if data comes from emissionFactorValues or direct fields
-            const countrySource = scope.emissionFactorValues?.countryData || scope;
-            normalizedScope.emissionFactorValues.countryData = {
-              C:             countrySource.C || countrySource.country || '',
-              regionGrid:    countrySource.regionGrid       || '',
-              emissionFactor:countrySource.emissionFactor   || '',
-              reference:     countrySource.reference        || '',
-              unit:          countrySource.unit             || '',
-              yearlyValues:  Array.isArray(countrySource.yearlyValues)
-                ? countrySource.yearlyValues.map(yv => ({
-                    from:        yv.from,
-                    to:          yv.to,
-                    periodLabel: yv.periodLabel,
-                    value:       yv.value
-                  }))
-                : []
-            };
-          }
-          // If emissionFactor is Custom, customEmissionFactor is already handled above
-          // If emissionFactor is EmissionFactorHub or other, keep empty structures
-          
-          // ───────────────────────────────────────────────
-          
-          return normalizedScope;
-        });
-      } catch (error) {
-        return res.status(400).json({
-          message: `Node validation failed: ${error.message}`
-        });
+    // 3) Merge node-level props (label, position, etc.)
+    const mergedNode = {
+      ...existingNode,
+      ...incomingNode,
+      id: nodeId,
+      details: {
+        ...existingNode.details,
+        ...incomingNode.details
       }
-    }
-
-    // Update node
-    flowchart.nodes[nodeIndex] = {
-      ...flowchart.nodes[nodeIndex].toObject(),
-      ...nodeData,
-      id: nodeId // Ensure ID doesn't change
     };
 
+    // 4) Merge scopeDetails carefully (by scopeIdentifier)
+    const prevScopes = Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [];
+    const incScopes  = Array.isArray(incomingNode.details?.scopeDetails) ? incomingNode.details.scopeDetails : [];
+
+    if (incScopes.length > 0) {
+      // Build index of previous scopes by identifier
+      const prevById = new Map(prevScopes.map(s => [s.scopeIdentifier, s]));
+
+      for (const inc of incScopes) {
+        const key = inc.scopeIdentifier;
+        const prev = prevById.get(key) || {};
+
+        // Determine final emissionFactor type (prefer incoming)
+        const finalEmissionFactor = inc.emissionFactor ?? prev.emissionFactor ?? '';
+
+        // Accept custom EF from either location (this was the bug)
+        // Priority: incoming.emissionFactorValues.customEmissionFactor → incoming.customEmissionFactor → previous values
+        const incomingCEF =
+          inc?.emissionFactorValues?.customEmissionFactor
+          ?? inc?.customEmissionFactor
+          ?? prev?.emissionFactorValues?.customEmissionFactor
+          ?? prev?.customEmissionFactor
+          ?? null;
+
+        const normalizedCEF =
+          finalEmissionFactor === 'Custom'
+            ? normalizeCustomEF(incomingCEF || {})
+            : null;
+
+        // Merge emissionFactorValues (do NOT blow away other EF blocks)
+        const mergedEFV = mergeEmissionFactorValues(
+          prev.emissionFactorValues || {},
+          inc.emissionFactorValues || {},
+          normalizedCEF
+        );
+
+        // Build final scope
+        const finalScope = {
+          ...prev,
+          ...inc,
+          emissionFactor: finalEmissionFactor,
+          emissionFactorValues: mergedEFV
+        };
+
+        // Keep a mirrored copy at top level for backward compatibility if using Custom
+        if (finalEmissionFactor === 'Custom') {
+          finalScope.customEmissionFactor = normalizedCEF;
+        } else if ('customEmissionFactor' in finalScope) {
+          // If switching away from Custom, do not delete historical data; leave as-is.
+          // (Remove next 2 lines if you DO want to clear it)
+          finalScope.customEmissionFactor = prev.customEmissionFactor || null;
+        }
+
+        prevById.set(key, finalScope);
+      }
+
+      mergedNode.details.scopeDetails = Array.from(prevById.values());
+    }
+
+    // 5) Persist
+    flowchart.nodes[nodeIndex] = mergedNode;
     flowchart.lastModifiedBy = userId;
-    flowchart.version += 1;
+    flowchart.version = (flowchart.version || 0) + 1;
+
     await flowchart.save();
 
-    res.status(200).json({ 
+    return res.status(200).json({
       message: 'Node updated successfully',
       node: flowchart.nodes[nodeIndex]
     });
   } catch (error) {
     console.error('Error updating node:', error);
-    res.status(500).json({ 
-      message: 'Failed to update node', 
-      error: error.message 
+    return res.status(500).json({
+      message: 'Failed to update node',
+      error: error.message
     });
   }
 };
-
 const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
