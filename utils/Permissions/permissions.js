@@ -1,43 +1,91 @@
 const Client = require('../../models/Client');
 const User = require('../../models/User')
 
+
+// ---- Robust ID normalizer used everywhere below ----
+const getId = (x) => {
+  if (x == null) return '';
+  if (typeof x === 'string' || typeof x === 'number') return String(x);
+
+  const candidate = (x._id != null) ? x._id
+                  : (x.id  != null) ? x.id
+                  : x;
+
+  if (candidate == null) return '';
+  return (typeof candidate === 'string' || typeof candidate === 'number')
+    ? String(candidate)
+    : (candidate.toString ? candidate.toString() : '');
+};
+
+
 // Helper function to check if user can manage process flowchart
+/**
+ * Can the user manage *process* flowchart for this client?
+ * Always returns: { allowed: boolean, reason: string }
+ */
 const canManageProcessFlowchart = async (user, clientId) => {
+  const myId = getId(user);
+
   // Super admin can manage all
   if (user.userType === 'super_admin') {
-    return true;
+    return { allowed: true, reason: 'Super admin access' };
   }
 
+  // Load client
   const client = await Client.findOne({ clientId });
-  if (!client) return false;
+  if (!client) {
+    return { allowed: false, reason: 'Client not found' };
+  }
 
-  // Consultant admin can manage their clients' flowcharts
+  // Collect possible "assigned consultant" ids (lead, workflow, active history)
+  const leadAssigned        = getId(client.leadInfo?.assignedConsultantId);
+  const workflowAssigned    = getId(client.workflowTracking?.assignedConsultantId);
+  const activeHistoryIds    = (client.leadInfo?.consultantHistory || [])
+    .filter(h => h?.isActive)
+    .map(h => getId(h?.consultantId))
+    .filter(Boolean);
+
+  const currentlyAssigned = new Set(
+    [leadAssigned, workflowAssigned, ...activeHistoryIds].filter(Boolean)
+  );
+
+  // Consultant Admin: created lead, is admin on client, or manages a team member who is assigned
   if (user.userType === 'consultant_admin') {
-    // Get all consultant IDs under this admin
-    const consultants = await User.find({ 
-      consultantAdminId: user._id,
+    const createdById   = getId(client.leadInfo?.createdBy);
+    const adminOnClient = getId(client.leadInfo?.consultantAdminId);
+
+    if (createdById && createdById === myId) {
+      return { allowed: true, reason: 'Consultant admin who created lead' };
+    }
+    if (adminOnClient && adminOnClient === myId) {
+      return { allowed: true, reason: 'Consultant admin for this client' };
+    }
+
+    // Is any currently-assigned consultant under this admin?
+    const team = await User.find({
+      consultantAdminId: myId,
       userType: 'consultant'
     }).select('_id');
-    const consultantIds = consultants.map(c => c._id);
-    consultantIds.push(user._id);
 
-    return (
-      client.leadInfo.consultantAdminId?.toString() === user._id.toString() ||
-      consultantIds.some(id => client.leadInfo.assignedConsultantId?.toString() === id.toString())
-    );
+    const teamIds = new Set(team.map(u => getId(u._id)));
+    for (const cid of currentlyAssigned) {
+      if (teamIds.has(cid)) {
+        return { allowed: true, reason: 'Client assigned to consultant under this admin' };
+      }
+    }
+    return { allowed: false, reason: 'Not authorized for this client' };
   }
 
-  // Consultant: Can manage if they are assigned to this client
+  // Consultant: must be one of the "currently assigned" consultants
   if (user.userType === 'consultant') {
-    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
-    if (assignedConsultantId && user.id && assignedConsultantId.toString() === user.id.toString()) {
+    if (currentlyAssigned.has(myId)) {
       return { allowed: true, reason: 'Assigned consultant' };
     }
     return { allowed: false, reason: 'Not assigned to this client' };
   }
 
-
-  return false;
+  // Everyone else
+  return { allowed: false, reason: 'Insufficient permissions' };
 };
 
 // Check if user can create/edit flowchart for a client (restricted to consultants/super-admin)
