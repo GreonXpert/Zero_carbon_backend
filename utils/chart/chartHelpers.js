@@ -25,6 +25,7 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
  */
 const normalizeScopeDetail = (scope) => {
   const normalizedScope = {
+    //scopeUid: scope.scopeUid || scope.uid || scope._id || uuidv4(),
     scopeIdentifier:      scope.scopeIdentifier.trim(),
     scopeType:            scope.scopeType,
     projectActivityType:  scope.projectActivityType || 'null',

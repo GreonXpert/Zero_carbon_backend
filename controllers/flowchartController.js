@@ -1238,11 +1238,41 @@ const updateFlowchartNode = async (req, res) => {
       return res.status(404).json({ message: 'Node not found' });
     }
 
-    // We allow partial updates; if client passes { details: { scopeDetails: [...] } }
+    // allow partial updates – same as before
     const incomingNode = req.body?.nodeData || req.body || {};
-    const existingNode = flowchart.nodes[nodeIndex].toObject ? flowchart.nodes[nodeIndex].toObject() : flowchart.nodes[nodeIndex];
+    const existingNode = flowchart.nodes[nodeIndex].toObject
+      ? flowchart.nodes[nodeIndex].toObject()
+      : flowchart.nodes[nodeIndex];
 
+    // ──────────────────────────────────────────────────────────────
+    // Helpers (EF merge + CEF normalization)
+    // ──────────────────────────────────────────────────────────────
+    const normalizeCustomEF = (cef = {}) => {
+      if (!cef || typeof cef !== 'object') return {};
+      return { ...cef }; // keep your structure; you already normalize in chartHelpers
+    };
+
+    const mergeEmissionFactorValues = (prevVals = {}, incVals = {}, normalizedCEF = null) => {
+      const out = {
+        defraData: { ...(prevVals.defraData || {}), ...(incVals.defraData || {}) },
+        ipccData: { ...(prevVals.ipccData || {}), ...(incVals.ipccData || {}) },
+        epaData: { ...(prevVals.epaData || {}), ...(incVals.epaData || {}) },
+        countryData: { ...(prevVals.countryData || {}), ...(incVals.countryData || {}) },
+        emissionFactorHubData: { ...(prevVals.emissionFactorHubData || {}), ...(incVals.emissionFactorHubData || {}) },
+        customEmissionFactor: {
+          ...(prevVals.customEmissionFactor || {}),
+          ...((incVals && incVals.customEmissionFactor) || {})
+        },
+        dataSource: incVals?.dataSource !== undefined ? incVals.dataSource : (prevVals.dataSource || undefined),
+        lastUpdated: new Date()
+      };
+      if (normalizedCEF) out.customEmissionFactor = normalizedCEF;
+      return out;
+    };
+
+    // ──────────────────────────────────────────────────────────────
     // 3) Merge node-level props (label, position, etc.)
+    // ──────────────────────────────────────────────────────────────
     const mergedNode = {
       ...existingNode,
       ...incomingNode,
@@ -1253,23 +1283,65 @@ const updateFlowchartNode = async (req, res) => {
       }
     };
 
-    // 4) Merge scopeDetails carefully (by scopeIdentifier)
+    // ──────────────────────────────────────────────────────────────
+    // 4) Merge scopeDetails with RENAME SUPPORT
+    // ──────────────────────────────────────────────────────────────
     const prevScopes = Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [];
     const incScopes  = Array.isArray(incomingNode.details?.scopeDetails) ? incomingNode.details.scopeDetails : [];
 
+    // Ensure every existing scope has a stable scopeUid (if older records predate this)
+    for (const s of prevScopes) {
+      if (!s.scopeUid) s.scopeUid = s.scopeUid || s.uid || s._id || require('uuid').v4();
+    }
+
     if (incScopes.length > 0) {
-      // Build index of previous scopes by identifier
-      const prevById = new Map(prevScopes.map(s => [s.scopeIdentifier, s]));
+      // Build indices for fast matching
+      const prevByUid  = new Map(prevScopes.map(s => [(s.scopeUid || s._id || s.scopeIdentifier), s]));
+      const prevByName = new Map(prevScopes.map(s => [s.scopeIdentifier, s]));
 
-      for (const inc of incScopes) {
-        const key = inc.scopeIdentifier;
-        const prev = prevById.get(key) || {};
+      const consumed = new Set(); // track matched prev scopes
+      const mergedScopes = [];
 
-        // Determine final emissionFactor type (prefer incoming)
+      const pickExistingFor = (inc) => {
+        // 1) match by UID
+        if (inc.scopeUid && prevByUid.has(inc.scopeUid)) return prevByUid.get(inc.scopeUid);
+
+        // 2) match by NEW name (if someone sends the same name again)
+        if (inc.scopeIdentifier && prevByName.has(inc.scopeIdentifier)) return prevByName.get(inc.scopeIdentifier);
+
+        // 3) match by explicit old name fields if client sends them
+        const oldKeys = ['previousScopeIdentifier', 'oldScopeIdentifier', 'originalScopeIdentifier'];
+        for (const k of oldKeys) {
+          const oldName = inc?.[k];
+          if (oldName && prevByName.has(oldName)) return prevByName.get(oldName);
+        }
+
+        // 4) heuristic: same type + (categoryName + activity) combo not yet consumed
+        if (inc.scopeType) {
+          const cand = prevScopes.find(s =>
+            !consumed.has(s) &&
+            s.scopeType === inc.scopeType &&
+            (s.categoryName || '') === (inc.categoryName || '') &&
+            (s.activity || '') === (inc.activity || '')
+          );
+          if (cand) return cand;
+        }
+
+        return null;
+      };
+
+      for (const incRaw of incScopes) {
+        // carry forward uid if provided; assign if missing
+        const inc = { ...incRaw };
+        if (!inc.scopeUid) inc.scopeUid = inc.scopeUid || inc.uid || inc._id || require('uuid').v4();
+
+        const prev = pickExistingFor(inc) || {};
+        if (prev && prev.scopeUid) consumed.add(prev);
+
+        // Determine final emissionFactor (prefer incoming)
         const finalEmissionFactor = inc.emissionFactor ?? prev.emissionFactor ?? '';
 
-        // Accept custom EF from either location (this was the bug)
-        // Priority: incoming.emissionFactorValues.customEmissionFactor → incoming.customEmissionFactor → previous values
+        // Accept custom EF from either location (your earlier fix)
         const incomingCEF =
           inc?.emissionFactorValues?.customEmissionFactor
           ?? inc?.customEmissionFactor
@@ -1282,38 +1354,54 @@ const updateFlowchartNode = async (req, res) => {
             ? normalizeCustomEF(incomingCEF || {})
             : null;
 
-        // Merge emissionFactorValues (do NOT blow away other EF blocks)
         const mergedEFV = mergeEmissionFactorValues(
           prev.emissionFactorValues || {},
           inc.emissionFactorValues || {},
           normalizedCEF
         );
 
-        // Build final scope
         const finalScope = {
           ...prev,
           ...inc,
+          scopeUid: inc.scopeUid || prev.scopeUid, // ensure stable UID
+          scopeIdentifier: inc.scopeIdentifier || prev.scopeIdentifier, // if rename, new name wins
           emissionFactor: finalEmissionFactor,
           emissionFactorValues: mergedEFV
         };
 
-        // Keep a mirrored copy at top level for backward compatibility if using Custom
         if (finalEmissionFactor === 'Custom') {
           finalScope.customEmissionFactor = normalizedCEF;
         } else if ('customEmissionFactor' in finalScope) {
-          // If switching away from Custom, do not delete historical data; leave as-is.
-          // (Remove next 2 lines if you DO want to clear it)
           finalScope.customEmissionFactor = prev.customEmissionFactor || null;
         }
 
-        prevById.set(key, finalScope);
+        mergedScopes.push(finalScope);
       }
 
-      mergedNode.details.scopeDetails = Array.from(prevById.values());
+      // carry over any untouched previous scopes
+      for (const leftover of prevScopes) {
+        if (!consumed.has(leftover) && !mergedScopes.find(s => s.scopeUid === leftover.scopeUid)) {
+          mergedScopes.push(leftover);
+        }
+      }
+
+      // ✅ prevent duplicate names after rename collisions
+      const nameSeen = new Set();
+      for (const s of mergedScopes) {
+        if (!s.scopeIdentifier || nameSeen.has(s.scopeIdentifier)) {
+          return res.status(400).json({
+            message: `Duplicate or missing scopeIdentifier "${s.scopeIdentifier || '(empty)'}" after merge. Please use unique names.`
+          });
+        }
+        nameSeen.add(s.scopeIdentifier);
+      }
+
+      mergedNode.details.scopeDetails = mergedScopes;
     }
 
     // 5) Persist
     flowchart.nodes[nodeIndex] = mergedNode;
+    flowchart.markModified('nodes'); // 👈 ensure Mongoose tracks deep changes
     flowchart.lastModifiedBy = userId;
     flowchart.version = (flowchart.version || 0) + 1;
 

@@ -594,24 +594,26 @@ const updateProcessFlowchartNode = async (req, res) => {
       return res.status(403).json({ message: 'You do not have permission to update this process flowchart' });
     }
 
+    // Load the active (non-deleted) process flowchart
     const processFlowchart = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
     if (!processFlowchart) {
       return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    // Find node
+    // Locate node
     const nodeIndex = processFlowchart.nodes.findIndex(n => n.id === nodeId);
     if (nodeIndex === -1) {
       return res.status(404).json({ message: 'Node not found' });
     }
 
-    // Existing node as plain object
-    const existingNode =
-      typeof processFlowchart.nodes[nodeIndex].toObject === 'function'
-        ? processFlowchart.nodes[nodeIndex].toObject()
-        : JSON.parse(JSON.stringify(processFlowchart.nodes[nodeIndex] || {}));
+    // Plain object of existing node
+    const existingNode = (typeof processFlowchart.nodes[nodeIndex].toObject === 'function')
+      ? processFlowchart.nodes[nodeIndex].toObject()
+      : JSON.parse(JSON.stringify(processFlowchart.nodes[nodeIndex] || {}));
 
-    // Reuse same helpers as above
+    // ──────────────────────────────────────────────────────────────
+    // Helpers
+    // ──────────────────────────────────────────────────────────────
     const shallowMerge = (base, patch) => {
       const out = { ...base };
       if (patch && typeof patch === 'object') {
@@ -620,6 +622,11 @@ const updateProcessFlowchartNode = async (req, res) => {
         }
       }
       return out;
+    };
+
+    const normalizeCustomEF = (cef = {}) => {
+      if (!cef || typeof cef !== 'object') return {};
+      return { ...cef };
     };
 
     const mergeEFBlocks = (finalEF, existingEFVals = {}, incomingEFVals = {}, incomingTopLevel = {}) => {
@@ -641,7 +648,20 @@ const updateProcessFlowchartNode = async (req, res) => {
     };
 
     const mergeScopeDetail = (existingScope = {}, incomingScope = {}) => {
+      // Prefer incoming EF type
       const finalEF = incomingScope.emissionFactor ?? existingScope.emissionFactor ?? '';
+
+      // Prefer incoming custom EF from nested first, then top-level
+      const incomingCEF =
+        incomingScope?.emissionFactorValues?.customEmissionFactor
+        ?? incomingScope?.customEmissionFactor
+        ?? existingScope?.emissionFactorValues?.customEmissionFactor
+        ?? existingScope?.customEmissionFactor
+        ?? null;
+
+      const normalizedCEF = finalEF === 'Custom' ? normalizeCustomEF(incomingCEF || {}) : null;
+
+      // Merge non-EF fields (without blowing away nested EF blocks)
       const mergedTop = {
         ...existingScope,
         ...Object.fromEntries(
@@ -649,52 +669,127 @@ const updateProcessFlowchartNode = async (req, res) => {
         ),
         emissionFactor: finalEF
       };
+
+      // Merge EF blocks
       const existingEFVals = existingScope.emissionFactorValues || {};
       const incomingEFVals = incomingScope.emissionFactorValues || {};
       mergedTop.emissionFactorValues = mergeEFBlocks(finalEF, existingEFVals, incomingEFVals, incomingScope);
+      if (normalizedCEF) mergedTop.emissionFactorValues.customEmissionFactor = normalizedCEF;
 
+      // Mirror custom EF at top-level for backward compatibility
+      if (finalEF === 'Custom') {
+        mergedTop.customEmissionFactor = normalizedCEF;
+      } else if ('customEmissionFactor' in mergedTop) {
+        mergedTop.customEmissionFactor = existingScope.customEmissionFactor || null;
+      }
+
+      // Carry UAD / UEF if present
       if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
       if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
 
       return mergedTop;
     };
 
-    // Merge the node (shallow first)
+    // ──────────────────────────────────────────────────────────────
+    // Merge node shallow props
+    // ──────────────────────────────────────────────────────────────
     const mergedNode = {
       ...existingNode,
       ...(nodeData && typeof nodeData === 'object' ? nodeData : {}),
       id: nodeId
     };
 
-    // Merge details
+    // Merge details shallowly
     mergedNode.details = shallowMerge(existingNode.details || {}, (nodeData && nodeData.details) || {});
 
-    // If this node carries scopeDetails in process-flow context, merge them too
-    if (Array.isArray((nodeData && nodeData.details && nodeData.details.scopeDetails) || null)) {
-      const incomingScopes = nodeData.details.scopeDetails;
-      const byId = new Map(
-        (Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [])
-          .map(s => [s.scopeIdentifier, s])
-      );
+    // ──────────────────────────────────────────────────────────────
+    // ScopeDetails merge with RENAME SUPPORT
+    // ──────────────────────────────────────────────────────────────
+    const incomingScopes = (nodeData && nodeData.details && Array.isArray(nodeData.details.scopeDetails))
+      ? nodeData.details.scopeDetails
+      : null;
+
+    if (incomingScopes) {
+      const prevScopes = Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [];
+
+      // Ensure stable UID on existing scopes
+      for (const s of prevScopes) {
+        if (!s.scopeUid) s.scopeUid = s.scopeUid || s.uid || s._id || uuidv4();
+      }
+
+      // Indexes for matching
+      const prevByUid  = new Map(prevScopes.map(s => [(s.scopeUid || s._id || s.scopeIdentifier), s]));
+      const prevByName = new Map(prevScopes.map(s => [s.scopeIdentifier, s]));
+      const consumed   = new Set();
+
+      const pickExistingFor = (inc) => {
+        // 1) by stable UID
+        if (inc.scopeUid && prevByUid.has(inc.scopeUid)) return prevByUid.get(inc.scopeUid);
+
+        // 2) by new name (post-rename or unchanged)
+        if (inc.scopeIdentifier && prevByName.has(inc.scopeIdentifier)) return prevByName.get(inc.scopeIdentifier);
+
+        // 3) by any provided previous/old/original name
+        for (const k of ['previousScopeIdentifier', 'oldScopeIdentifier', 'originalScopeIdentifier']) {
+          const oldName = inc?.[k];
+          if (oldName && prevByName.has(oldName)) return prevByName.get(oldName);
+        }
+
+        // 4) heuristic: same type + category + activity (unconsumed)
+        const cand = prevScopes.find(s =>
+          !consumed.has(s) &&
+          (s.scopeType || '') === (inc.scopeType || '') &&
+          (s.categoryName || '') === (inc.categoryName || '') &&
+          (s.activity || '') === (inc.activity || '')
+        );
+        return cand || null;
+      };
 
       const mergedScopes = [];
-      for (const inc of incomingScopes) {
-        const old = byId.get(inc.scopeIdentifier);
-        if (old) {
-          mergedScopes.push(mergeScopeDetail(old, inc));
-          byId.delete(inc.scopeIdentifier);
-        } else {
-          mergedScopes.push(mergeScopeDetail({}, inc));
+
+      for (const incRaw of incomingScopes) {
+        const inc = { ...incRaw };
+        // ensure a scopeUid on incoming
+        if (!inc.scopeUid) inc.scopeUid = inc.scopeUid || inc.uid || inc._id || uuidv4();
+
+        const prev = pickExistingFor(inc) || {};
+        if (prev && prev.scopeUid) consumed.add(prev);
+
+        const finalScope = mergeScopeDetail(prev, inc);
+
+        // Ensure stable identity & final name (new name wins on rename)
+        finalScope.scopeUid = inc.scopeUid || prev.scopeUid || uuidv4();
+        finalScope.scopeIdentifier = inc.scopeIdentifier || prev.scopeIdentifier || '';
+
+        mergedScopes.push(finalScope);
+      }
+
+      // Carry forward any untouched previous scopes
+      for (const leftover of prevScopes) {
+        if (!consumed.has(leftover) && !mergedScopes.find(s => s.scopeUid === leftover.scopeUid)) {
+          mergedScopes.push(leftover);
         }
       }
-      for (const leftover of byId.values()) mergedScopes.push(leftover);
+
+      // Validate duplicate/missing names after merge
+      const nameSeen = new Set();
+      for (const s of mergedScopes) {
+        const name = (s.scopeIdentifier || '').trim();
+        if (!name || nameSeen.has(name)) {
+          return res.status(400).json({
+            message: `Duplicate or missing scopeIdentifier "${name || '(empty)'}" after merge. Please ensure unique, non-empty names.`
+          });
+        }
+        nameSeen.add(name);
+      }
+
       mergedNode.details.scopeDetails = mergedScopes;
     }
 
     // Save back
-    processFlowchart.nodes[nodeIndex] = mergedNode; // <-- fixed spread bug
-    processFlowchart.markModified('nodes');
-    processFlowchart.lastModifiedBy = req.user._id;
+    processFlowchart.nodes[nodeIndex] = mergedNode;
+    processFlowchart.markModified('nodes'); // ensure Mongoose tracks deep nested changes
+    processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
 
     await processFlowchart.save();
 
