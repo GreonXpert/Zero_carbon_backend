@@ -74,7 +74,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-    origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com"],
+    origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com","http://localhost:5174"],
     credentials: true,
 }));
 
@@ -111,7 +111,7 @@ app.use('/api/iot', iotRouter);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com", "index.html"],
+    origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com", "http://localhost:5174"],
     credentials: true
   }
 });
