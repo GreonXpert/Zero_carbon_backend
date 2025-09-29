@@ -34,6 +34,17 @@ const {
   emitFilteredClientListUpdate
 } = require('../utils/dashboardEmitter');
 
+const {
+  sendClientDataSubmittedEmail,
+  sendClientDataUpdatedEmail,
+  sendProposalCreatedEmail,
+  sendProposalUpdatedEmail
+} = require('../utils/emailServiceClient');
+
+
+const { renderClientDataHTML, renderProposalHTML } = require('../utils/pdfTemplates');
+const { htmlToPdfBuffer } = require('../utils/pdfService');
+
 
 // Additional helper function to emit targeted updates based on filters
 const emitTargetedClientUpdate = async (client, action, userId, additionalFilters = {}) => {
@@ -1665,6 +1676,15 @@ const submitClientData = async (req, res) => {
     });
     
     await client.save();
+
+    try {
+      const html = renderClientDataHTML(client);
+      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_ClientData_${client.clientId}.pdf`);
+      await sendClientDataSubmittedEmail(client, [pdf]);
+      console.log('✉️ Client data submitted email sent with PDF.');
+    } catch (e) {
+      console.error('Email/PDF (submitClientData) error:', e.message);
+    }
     
     res.status(200).json({
       message: "Client data submitted successfully",
@@ -1759,6 +1779,8 @@ const updateClientData = async (req, res) => {
 
     await client.save();
 
+
+
     // Regular update
     await emitClientListUpdate(client, 'updated', req.user.id);
 
@@ -1775,7 +1797,15 @@ const updateClientData = async (req, res) => {
             }
         );
     }
-
+    
+    try {
+      const html = renderClientDataHTML(client);
+      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_ClientData_${client.clientId}.pdf`);
+      await sendClientDataUpdatedEmail(client, [pdf]);
+      console.log('✉️ Client data updated email sent with PDF.');
+    } catch (e) {
+      console.error('Email/PDF (updateClientData) error:', e.message);
+    }
 
     return res.status(200).json({
       message: "Client submission data updated successfully",
@@ -2295,35 +2325,16 @@ const createProposal = async (req, res) => {
     
     await client.save();
     
-    // Send proposal email with updated information
-    const emailSubject = "ZeroCarbon - Service Proposal";
-    const emailMessage = `
-      Dear ${client.submissionData?.companyInfo?.primaryContactPerson?.name || 'Valued Client'},
-      
-      We are pleased to present our comprehensive carbon footprint management proposal.
-      
-      Proposal Details:
-      - Proposal Number: ${proposalNumber}
-      - Valid Until: ${moment(client.proposalData.validUntil).format('DD/MM/YYYY')}
-      - Total Amount: ₹${client.proposalData.pricing.totalAmount}
-      - Data Integration Points: ${proposalData.totalDataIntegrationPoints}
-      
-      Our solution covers:
-      • ${proposalData.consolidatedData.scope1.category} (${proposalData.consolidatedData.scope1.totalDataPoints} data points)
-      • ${proposalData.consolidatedData.scope2.category} (${proposalData.consolidatedData.scope2.totalDataPoints} data points)
-      • ${proposalData.consolidatedData.scope3.category} (${proposalData.consolidatedData.scope3.totalDataPoints} data points)
-      
-      Please review the proposal and let us know if you have any questions.
-      
-      Best regards,
-      ZeroCarbon Team
-    `;
-    
-    await sendMail(
-      client.submissionData?.companyInfo?.primaryContactPerson?.email || client.leadInfo?.email, 
-      emailSubject, 
-      emailMessage
-    );
+     // === EMAIL + PDF (NEW) ===
+    try {
+      const html = renderProposalHTML(client);
+      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_Proposal_${client.clientId}.pdf`);
+      await sendProposalCreatedEmail(client, [pdf]);
+      console.log('✉️ Proposal created email sent with PDF.');
+    } catch (e) {
+      console.error('Email/PDF (createProposal) error:', e.message);
+    }
+    // =========================
     
     res.status(200).json({
       message: "Proposal created and sent successfully",
@@ -2522,6 +2533,17 @@ const editProposal = async (req, res) => {
     });
 
     await client.save();
+
+     // === EMAIL + PDF (NEW) ===
+    try {
+      const html = renderProposalHTML(client);
+      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_Proposal_${client.clientId}.pdf`);
+      await sendProposalUpdatedEmail(client, [pdf]);
+      console.log('✉️ Proposal updated email sent with PDF.');
+    } catch (e) {
+      console.error('Email/PDF (editProposal) error:', e.message);
+    }
+    // =========================
 
     return res.status(200).json({
       message:
