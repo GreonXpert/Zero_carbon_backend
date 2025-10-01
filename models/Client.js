@@ -600,6 +600,37 @@ proposalData: {
   { timestamps: true }
 );
 
+
+// --- Normalize assessmentLevel on every save (handles legacy values) ---
+const ALLOWED_LEVELS = ['reduction', 'decarbonization', 'organization', 'process'];
+
+clientSchema.pre('validate', function (next) {
+  // Handle missing submissionData gracefully
+  const raw = this?.submissionData?.assessmentLevel;
+
+  // Convert to array
+  let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
+  // Normalize: trim/lowercase + alias + expand 'both' -> ['organization','process']
+  arr = arr
+    .map(v => String(v || '').trim().toLowerCase())
+    .flatMap(v => {
+      if (!v) return [];
+      if (v === 'organisation') return ['organization'];
+      if (v === 'both') return ['organization', 'process']; // legacy fix
+      return [v];
+    })
+    // Keep only allowed values and dedupe
+    .filter(v => ALLOWED_LEVELS.includes(v))
+    .filter((v, i, a) => a.indexOf(v) === i);
+
+  // Write back in the expected array shape
+  if (!this.submissionData) this.submissionData = {};
+  this.submissionData.assessmentLevel = arr;
+
+  return next();
+});
+
 // ✅ Normalize legacy single-string -> array on nested path
 clientSchema.path('submissionData.assessmentLevel').set((v) => {
   if (Array.isArray(v)) return v;
