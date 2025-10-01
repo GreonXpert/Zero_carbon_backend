@@ -234,9 +234,82 @@ const canViewFlowchart = async (user, clientId) => {
   return { allowed: false };
 };
 
+
+// --- internal helpers -------------------------------------------------------
+function _norm(s) {
+  return String(s ?? "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // strip zero-widths
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function _aliasToCanonical(level) {
+  const n = _norm(level);
+  // common aliases/typos mapped to canonical tokens
+  if (["organisation", "orangization", "organization", "org"].includes(n)) return "organization";
+  if (["process", "proc", "processes"].includes(n)) return "process";
+  if (["reduction", "reduce"].includes(n)) return "reduction";
+  if (["decarbonization", "decarbonisation", "decarb"].includes(n)) return "decarbonization";
+  if (n === "both") return "both"; // legacy storage meaning org+process
+  return n; // unknowns pass through
+}
+
+/** Return normalized, deduped array of levels from array|string|clientDoc */
+function getNormalizedLevels(levelsOrClient) {
+  const raw = Array.isArray(levelsOrClient)
+    ? levelsOrClient
+    : levelsOrClient?.submissionData?.assessmentLevel;
+
+  const arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+  const out = [];
+  for (const v of arr) {
+    const canon = _aliasToCanonical(v);
+    if (canon && !out.includes(canon)) out.push(canon);
+  }
+  return out;
+}
+
+// --- the one function you asked for ----------------------------------------
+/**
+ * canAccessModule(levelsOrClient, moduleName)
+ * - levelsOrClient: array|string OR a Client document/lean doc with submissionData.assessmentLevel
+ * - moduleName: "organization" | "process" | "reduction" (aliases/typos OK)
+ * Returns boolean.
+ */
+function canAccessModule(levelsOrClient, moduleName) {
+  const levels = getNormalizedLevels(levelsOrClient);
+  const target = _aliasToCanonical(moduleName);
+
+  if (target === "organization") {
+    // org is allowed by explicit "organization" or legacy "both"
+    return levels.includes("organization") || levels.includes("both");
+  }
+  if (target === "process") {
+    // process allowed by explicit "process" or legacy "both"
+    return levels.includes("process") || levels.includes("both");
+  }
+  // reduction / decarbonization / any other canonical token must be explicitly present
+  return levels.includes(target);
+}
+
+// (Optional) tiny convenience wrappers if you want them:
+const canAccessOrganization = (x) => canAccessModule(x, "organization");
+const canAccessProcess      = (x) => canAccessModule(x, "process");
+const canAccessReduction    = (x) => canAccessModule(x, "reduction");
+
+
+
 module.exports = {
     canManageProcessFlowchart,
     canManageFlowchart,
     canViewFlowchart,
-    canAssignHeadToNode
+    canAssignHeadToNode,
+    getNormalizedLevels,
+  canAccessModule,
+  // optional wrappers:
+  canAccessOrganization,
+  canAccessProcess,
+  canAccessReduction
 }

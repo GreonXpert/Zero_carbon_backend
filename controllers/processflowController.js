@@ -20,7 +20,7 @@ const {
 
 // Import existing permission and workflow functions
 const {autoUpdateProcessFlowchartStatus}  = require('../utils/Workflow/workflow');
-const {canManageProcessFlowchart, canAssignHeadToNode} = require('../utils/Permissions/permissions');
+const {canManageProcessFlowchart, canAssignHeadToNode, getNormalizedLevels, canAccessProcess} = require('../utils/Permissions/permissions');
 
 
 
@@ -377,16 +377,27 @@ const getProcessFlowchart = async (req, res) => {
       return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    // ---------- 3) Assessment-level availability ----------
-    const client = await Client.findOne({ clientId });
-    const assessmentLevel = client?.submissionData?.assessmentLevel;
-    if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'process') {
-      return res.status(403).json({
-        message: `Process flowchart is not available for current assessment level: ${assessmentLevel}`,
-        availableFor: ['both', 'process']
-      });
-    }
+    // ---------- 3) Assessment-level availability (array-based) ----------
+const client = await Client.findOne(
+  { clientId },
+  { 'submissionData.assessmentLevel': 1, _id: 0 }
+).lean();
 
+if (!client) {
+  return res.status(404).json({ message: 'Client not found' });
+}
+
+const normLevels = getNormalizedLevels(client);
+const hasProcessAccess = canAccessProcess(client);
+
+if (!hasProcessAccess) {
+  return res.status(403).json({
+    message: 'Process flowchart is not available for this client',
+    reason: 'assessmentLevel does not include "process"',
+    assessmentLevel: normLevels,   // what the API is actually seeing (normalized)
+    required: 'process'
+  });
+}
     // ---------- 4) Build filtered nodes for limited roles ----------
     const originalNodes = Array.isArray(processFlowchart.nodes) ? processFlowchart.nodes : [];
     let filteredNodes = originalNodes;
