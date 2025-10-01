@@ -4350,6 +4350,7 @@ const removeConsultant = async (req, res) => {
 };
 
 // ─── Update assessmentLevel only (post-onboarding) ─────────────────────────────
+// ─── Update assessmentLevel only (post-onboarding, no submission checks) ─────
 const updateAssessmentLevelOnly = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -4362,33 +4363,38 @@ const updateAssessmentLevelOnly = async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: "Client not found" });
 
-    // Guard: only after onboarding (adjust if your 'onboarded' stage differs)
+    // Only after onboarding
     if (client.stage !== 'active') {
-      return res.status(400).json({ message: "assessmentLevel can be changed only after onboarding (stage === 'active')." });
+      return res.status(400).json({
+        message: "assessmentLevel can be changed only after onboarding (stage === 'active')."
+      });
     }
 
-    // Build a preview with new levels, keeping existing submissionData for validation
+    // Normalize allowed values (accepts string or array; maps 'organisation' → 'organization')
     const nextLevels = normalizeAssessmentLevels(rawLevels);
     if (nextLevels.length === 0) {
-      return res.status(400).json({ message: "assessmentLevel must contain at least one allowed value" });
+      return res.status(400).json({
+        message: "assessmentLevel must contain at least one allowed value (reduction, decarbonization, organization, process)"
+      });
     }
 
-    const preview = {
-      ...(client.submissionData?.toObject?.() ? client.submissionData.toObject() : client.submissionData),
-      assessmentLevel: nextLevels
-    };
-    const { errors } = validateSubmissionForLevels(preview, nextLevels);
-    if (errors.length) {
-      return res.status(400).json({ message: "Validation error", errors });
+    // Ensure submissionData exists, but DO NOT overwrite subdocs
+    if (!client.submissionData || typeof client.submissionData !== 'object') {
+      client.submissionData = {}; // create container only
     }
 
-    const previous = client.submissionData?.assessmentLevel || [];
-    client.submissionData = { ...client.submissionData, assessmentLevel: nextLevels, updatedAt: new Date() };
+    // Update only the specific nested paths to avoid casting entire object
+    client.set('submissionData.assessmentLevel', nextLevels);
+    client.set('submissionData.updatedAt', new Date());
 
-    // Align workflow with your existing logic
+    // Keep your existing workflow alignment
     if (typeof client.updateWorkflowBasedOnAssessment === 'function') {
       client.updateWorkflowBasedOnAssessment();
     }
+
+    const previous = Array.isArray(client.submissionData?.assessmentLevel)
+      ? client.submissionData.assessmentLevel
+      : [];
 
     client.timeline.push({
       stage: client.stage,
@@ -4398,7 +4404,8 @@ const updateAssessmentLevelOnly = async (req, res) => {
       notes: `Changed from [${previous}] to [${nextLevels}].`
     });
 
-    await client.save();
+    // Save without running unrelated validators on submission subdocs
+    await client.save({ validateBeforeSave: false });
 
     return res.status(200).json({
       message: "assessmentLevel updated successfully",
@@ -4407,9 +4414,13 @@ const updateAssessmentLevelOnly = async (req, res) => {
 
   } catch (err) {
     console.error("Update assessmentLevel error:", err);
-    return res.status(500).json({ message: "Failed to update assessmentLevel", error: err.message });
+    return res.status(500).json({
+      message: "Failed to update assessmentLevel",
+      error: err.message
+    });
   }
 };
+
 
 
 
