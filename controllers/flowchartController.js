@@ -19,7 +19,7 @@ const {
 
 // Add this import at the top of flowchartController.js:
 const { autoUpdateFlowchartStatus } = require('../utils/Workflow/workflow');
-const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode} = require('../utils/Permissions/permissions')
+const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode, canAccessModule, getNormalizedLevels} = require('../utils/Permissions/permissions')
  
 // ============================================================================
 // PERMISSION HELPERS
@@ -448,15 +448,21 @@ const getFlowchart = async (req, res) => {
     }
 
     // 3) Assessment-level availability
-    const client = await Client.findOne({ clientId });
-    const assessmentLevel = client?.submissionData?.assessmentLevel;
-    if (assessmentLevel && assessmentLevel !== 'both' && assessmentLevel !== 'organization') {
-      return res.status(403).json({
-        message: `Flowchart is not available for current assessment level: ${assessmentLevel}`,
-        availableFor: ['both', 'organization']
-      });
-    }
+   const client = await Client.findOne(
+  { clientId },
+  { 'submissionData.assessmentLevel': 1, _id: 0 }
+).lean();
 
+if (!client) return res.status(404).json({ message: 'Client not found' });
+
+if (!canAccessModule(client, 'organization')) {
+  return res.status(403).json({
+    message: 'Flowchart is not available for this client',
+    reason: 'assessmentLevel does not include "organization"',
+    assessmentLevel: getNormalizedLevels(client),
+    required: 'organization'
+  });
+}
     // 4) Filter nodes by role
     let filteredNodes = flowchart.nodes;
 
