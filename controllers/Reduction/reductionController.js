@@ -3,6 +3,11 @@ const Reduction = require('../../models/Reduction/Reduction');
 const Client = require('../../models/Client');
 const User = require('../../models/User');
 const { canManageFlowchart } = require("../../utils/Permissions/permissions");
+const { notifyReductionEvent } = require('../../utils/notifications/reductionNotifications');
+const { syncReductionWorkflow } = require('../../utils/Workflow/workflow');
+
+
+
 
 /** Permission: consultant_admin who created the lead OR assigned consultant */
 async function canCreateOrEdit(user, clientId) {
@@ -53,20 +58,20 @@ function normalizeReductionDataEntry(raw = {}) {
     };
   }
   if (typeRaw === 'api') {
-    if (!apiEndpoint) throw new Error('apiEndpoint is required when inputType is API');
+    // No validation error here; model will auto-fill correct endpoint
     return {
       originalInputType: 'API',
       inputType: 'API',
-      apiEndpoint,
+      apiEndpoint, // may be '', will be overwritten in model pre('validate')
       iotDeviceId: ''
     };
   }
   if (typeRaw === 'iot') {
-    if (!iotDeviceId) throw new Error('iotDeviceId is required when inputType is IOT');
+    // No validation error here; model will auto-fill correct endpoint
     return {
       originalInputType: 'IOT',
       inputType: 'IOT',
-      apiEndpoint: '',
+      apiEndpoint, // will be overwritten in model pre('validate') with .../iot
       iotDeviceId
     };
   }
@@ -78,6 +83,8 @@ function normalizeReductionDataEntry(raw = {}) {
     iotDeviceId: ''
   };
 }
+
+
 
 function normalizeM2FromBody(raw = {}) {
   const out = {};
@@ -113,6 +120,73 @@ function normalizeM2FromBody(raw = {}) {
   return out;
 }
 
+function cleanString(x) { return (typeof x === 'string') ? x.trim() : x; }
+
+function normalizeProcessFlow(raw = {}, user) {
+  // If literally nothing was sent, return undefined so we don't touch the document
+  if (!raw || typeof raw !== 'object' || Object.keys(raw).length === 0) return undefined;
+
+  // mode/reference are optional; default to 'snapshot' but we won't force a snapshot
+  const mode = (raw.mode || 'snapshot').toLowerCase();
+  const out = {
+    mode: ['snapshot','reference','both'].includes(mode) ? mode : 'snapshot',
+    flowchartId: raw.flowchartId || null,
+    snapshot: undefined,
+    mapping: undefined,
+    snapshotCreatedAt: new Date(),
+    snapshotCreatedBy: user?.id
+  };
+
+  // Optional mapping
+  if (raw.mapping) {
+    out.mapping = {
+      ABD: Array.isArray(raw.mapping.ABD) ? raw.mapping.ABD.map(m => ({ nodeId: String(m.nodeId||''), field: String(m.field||'') })) : undefined,
+      APD: Array.isArray(raw.mapping.APD) ? raw.mapping.APD.map(m => ({ nodeId: String(m.nodeId||''), field: String(m.field||'') })) : undefined,
+      ALD: Array.isArray(raw.mapping.ALD) ? raw.mapping.ALD.map(m => ({ nodeId: String(m.nodeId||''), field: String(m.field||'') })) : undefined
+    };
+  }
+
+  // Optional snapshot
+  if (raw.snapshot && typeof raw.snapshot === 'object') {
+    const snapIn = raw.snapshot;
+    const nodesIn = Array.isArray(snapIn.nodes) ? snapIn.nodes : undefined;
+    const edgesIn = Array.isArray(snapIn.edges) ? snapIn.edges : undefined;
+
+    out.snapshot = {
+      metadata: {
+        title: cleanString(snapIn.metadata?.title || ''),
+        description: cleanString(snapIn.metadata?.description || ''),
+        version: Number(snapIn.metadata?.version ?? 1)
+      },
+      // if user omits nodes/edges, we keep them undefined (field won't be persisted)
+      ...(nodesIn ? {
+        nodes: nodesIn.map(n => ({
+          id: String(n.id || '').trim(),
+          label: cleanString(n.label || ''),
+          position: {
+            x: Number(n.position?.x ?? 0),
+            y: Number(n.position?.y ?? 0)
+          },
+          parentNode: n.parentNode ? String(n.parentNode) : null,
+          details: (n.details && typeof n.details === 'object') ? n.details : {},
+          kv: (n.kv && typeof n.kv === 'object') ? n.kv : undefined
+        }))
+      } : {}),
+      ...(edgesIn ? {
+        edges: edgesIn.map(e => ({
+          id: String(e.id || '').trim(),
+          source: String(e.source || '').trim(),
+          target: String(e.target || '').trim(),
+          kv: (e.kv && typeof e.kv === 'object') ? e.kv : undefined
+        }))
+      } : {})
+    };
+  }
+
+  return out;
+}
+
+
 
 /** Create Reduction (Methodology-agnostic; we implement M1 math now) */
 exports.createReduction = async (req, res) => {
@@ -127,6 +201,13 @@ exports.createReduction = async (req, res) => {
       baselineMethod, baselineJustification,
       calculationMethodology, m1, m2  
     } = req.body;
+
+    // OPTIONAL: processFlow
+let processFlowPayload;
+if (req.body.processFlow) {
+  processFlowPayload = normalizeProcessFlow(req.body.processFlow, req.user);
+}
+
 
     if (!projectName) return res.status(400).json({ success:false, message:'projectName is required' });
     if (!projectActivity) return res.status(400).json({ success:false, message:'projectActivity is required' });
@@ -150,7 +231,7 @@ exports.createReduction = async (req, res) => {
 
     // UPSERT: same client + same projectName (case-insensitive), not deleted
     const existing = await Reduction.findOne({
-      
+      clientId,
       isDeleted: false,
       projectName: { $regex: new RegExp(`^${escapeRegex(projectName)}$`, 'i') }
     });
@@ -192,6 +273,29 @@ exports.createReduction = async (req, res) => {
           ...reductionEntryPayload
         };
       }
+        // ✅ apply processFlow if sent (same semantics as updateReduction)
+if (processFlowPayload) {
+  if (!existing.processFlow) existing.processFlow = {};
+  if (processFlowPayload.mode) existing.processFlow.mode = processFlowPayload.mode;
+
+  if (Object.prototype.hasOwnProperty.call(processFlowPayload, 'flowchartId')) {
+    existing.processFlow.flowchartId = processFlowPayload.flowchartId;
+  }
+  if (processFlowPayload.mapping) {
+    existing.processFlow.mapping = processFlowPayload.mapping;
+  }
+  if (processFlowPayload.snapshot) {
+    const prevVer = Number(existing.processFlow.snapshot?.metadata?.version || 0);
+    const nextVer = prevVer > 0 ? prevVer + 1 : (processFlowPayload.snapshot.metadata?.version || 1);
+    processFlowPayload.snapshot.metadata = processFlowPayload.snapshot.metadata || {};
+    processFlowPayload.snapshot.metadata.version = nextVer;
+
+    existing.processFlow.snapshot = processFlowPayload.snapshot;
+    existing.processFlow.snapshotCreatedAt = new Date();
+    existing.processFlow.snapshotCreatedBy = req.user?.id;
+  }
+}
+
 
       await existing.validate(); // triggers recompute
       await existing.save();
@@ -232,10 +336,19 @@ exports.createReduction = async (req, res) => {
         bufferPercent: Number(m1?.bufferPercent ?? 0)
       } : undefined,
       ...(calculationMethodology === 'methodology2'
-      ? { m2: normalizeM2FromBody(m2 || {}) }
-      : {})
+        ? { m2: normalizeM2FromBody(m2 || {}) }
+        : {}),
+      ...(processFlowPayload ? { processFlow: processFlowPayload } : {}) // ✅ correct source
 
     });
+      // fire-and-forget notification; don't block the response
+      notifyReductionEvent({
+        actor: req.user,
+        clientId,
+        action: 'created',
+        doc
+      }).catch(() => {});
+      syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
     return res.status(201).json({
       success: true,
@@ -474,9 +587,17 @@ exports.updateReduction = async (req, res) => {
     if (body.projectActivity != null) doc.projectActivity = body.projectActivity;
     if (body.scope != null) doc.scope = body.scope;
     if (body.location) {
-      doc.location.latitude = body.location.latitude ?? doc.location.latitude;
-      doc.location.longitude = body.location.longitude ?? doc.location.longitude;
-    }
+  doc.location.latitude  = body.location.latitude  ?? doc.location.latitude;
+  doc.location.longitude = body.location.longitude ?? doc.location.longitude;
+  if (Object.prototype.hasOwnProperty.call(body.location, 'place')) {
+    doc.location.place = body.location.place ?? doc.location.place;
+  }
+  if (Object.prototype.hasOwnProperty.call(body.location, 'address')) {
+    doc.location.address = body.location.address ?? doc.location.address;
+  }
+}
+
+
     if (body.commissioningDate) doc.commissioningDate = new Date(body.commissioningDate);
     if (body.endDate)           doc.endDate           = new Date(body.endDate);
     if (body.description != null) doc.description = body.description;
@@ -493,8 +614,42 @@ exports.updateReduction = async (req, res) => {
       if (body.m1.bufferPercent != null) doc.m1.bufferPercent = Number(body.m1.bufferPercent);
     }
 
+    if (req.body.processFlow) {
+  const pf = normalizeProcessFlow(req.body.processFlow, req.user);
+
+  if (pf) {
+    if (!doc.processFlow) doc.processFlow = {};
+    if (pf.mode) doc.processFlow.mode = pf.mode;
+    if (pf.hasOwnProperty('flowchartId')) {
+      doc.processFlow.flowchartId = pf.flowchartId;
+    }
+    if (pf.mapping) {
+      doc.processFlow.mapping = pf.mapping;
+    }
+    if (pf.snapshot) {
+      // version bump (if existing snapshot)
+      const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
+      const nextVer = prevVer > 0 ? prevVer + 1 : (pf.snapshot.metadata?.version || 1);
+      pf.snapshot.metadata = pf.snapshot.metadata || {};
+      pf.snapshot.metadata.version = nextVer;
+
+      doc.processFlow.snapshot = pf.snapshot;
+      doc.processFlow.snapshotCreatedAt = new Date();
+      doc.processFlow.snapshotCreatedBy = req.user?.id;
+    }
+  }
+}
+
+
     await doc.validate(); // will recompute in pre('validate')
     await doc.save();
+        notifyReductionEvent({
+          actor: req.user,
+          clientId,
+          action: 'updated',
+          doc
+       }).catch(() => {});
+       syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
     res.status(200).json({ success:true, message:'Updated', data: doc });
   } catch (err) {
@@ -537,6 +692,13 @@ exports.deleteReduction = async (req, res) => {
     doc.deletedAt = new Date();
     doc.deletedBy = req.user.id;
     await doc.save();
+        notifyReductionEvent({
+      actor: req.user,
+      clientId,
+      action: 'deleted',
+      doc
+    }).catch(() => {});
+    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); 
 
     res.status(200).json({ success:true, message:'Deleted' });
   } catch (err) {
@@ -561,10 +723,23 @@ exports.deleteFromDB = async (req, res) => {
       return res.status(403).json({ success:false, message:'Permission denied (hard delete restricted)' });
     }
 
+    // fetch doc for notification context (name, etc.)
+    const doc = await Reduction.findOne({ clientId, projectId });
+
     const result = await Reduction.deleteOne({ clientId, projectId });
     if (result.deletedCount === 0) {
       return res.status(404).json({ success:false, message:'Reduction not found or already deleted' });
     }
+
+    // notify
+    notifyReductionEvent({
+      actor: req.user,
+      clientId,
+      action: 'hard_deleted',
+      doc,
+      projectId
+    }).catch(() => {});
+    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); // ✅ add thi
 
     return res.status(200).json({ success:true, message:'Reduction permanently deleted' });
   } catch (err) {
@@ -572,6 +747,7 @@ exports.deleteFromDB = async (req, res) => {
     res.status(500).json({ success:false, message:'Failed to hard delete reduction', error: err.message });
   }
 };
+
 
 // --- ADD this helper near the other helpers ---
 async function canViewSoftDeletedReduction(user, clientId, reductionDoc) {
@@ -621,6 +797,7 @@ exports.restoreSoftDeletedReduction = async (req, res) => {
     doc.deletedBy = undefined;
 
     await doc.save();
+    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); 
     return res.status(200).json({ success: true, message: 'Reduction restored', data: doc });
   } catch (err) {
     console.error('restoreSoftDeletedReduction error:', err);

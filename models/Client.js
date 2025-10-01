@@ -59,6 +59,12 @@ const IoTInputPointSchema = new mongoose.Schema({
   lastUpdatedAt: { type: Date }
 });
 
+// ✅ Add this near your other sub-schemas
+const ProjectProfileSchema = new mongoose.Schema({
+  projectName:   { type: String, required: true, trim: true },
+  projectType:   { type: String, required: true, trim: true },
+  description:   { type: String, default: '', trim: true },
+}, { _id: false });
 const clientSchema = new mongoose.Schema(
   {
     clientId: {
@@ -112,6 +118,30 @@ const clientSchema = new mongoose.Schema(
       processFlowchartStartedAt: { type: Date },
       processFlowchartCompletedAt: { type: Date },
       
+      reduction: {
+        status: {
+          type: String,
+          enum: ["not_started", "on_going", "pending", "completed"],
+          default: "not_started"
+        },
+        startedAt: { type: Date },
+        completedAt: { type: Date },
+        projects: {
+          totalCount:      { type: Number, default: 0 },
+          activeCount:     { type: Number, default: 0 },
+          completedCount:  { type: Number, default: 0 },
+          pendingCount:    { type: Number, default: 0 },
+          lastProjectCreatedAt: { type: Date }
+        },
+         // New: counts by data input type on Reduction projects
+        dataInputPoints: {
+          manual: { totalCount: { type: Number, default: 0 } },
+          api:    { totalCount: { type: Number, default: 0 } },
+          iot:    { totalCount: { type: Number, default: 0 } },
+          totalDataPoints: { type: Number, default: 0 }
+        }
+      },
+
       // Assigned consultant
       assignedConsultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       consultantAssignedAt: { type: Date },
@@ -197,11 +227,16 @@ const clientSchema = new mongoose.Schema(
     // Stage 2: Registration/Data Submission (GHG Form Data)
     submissionData: {
        // Assessment Level Field (Add this at the top of submissionData)
-  assessmentLevel: {
-    type: String,
-    enum: ['both', 'organization', 'process'],
-    // No default value since no validation is required
-  },
+  // ✅ In your SubmissionData schema, add/modify these fields:
+      assessmentLevel: {
+        type: [String],
+        enum: ['reduction', 'decarbonization', 'organization', 'process'],
+        default: []
+      },
+      projectProfile: {
+        type: [ProjectProfileSchema],
+        default: []
+      },
       // Section A: Company Information
       companyInfo: {
         companyName: { type: String },
@@ -565,6 +600,14 @@ proposalData: {
   { timestamps: true }
 );
 
+// ✅ Normalize legacy single-string -> array on nested path
+clientSchema.path('submissionData.assessmentLevel').set((v) => {
+  if (Array.isArray(v)) return v;
+  if (!v) return [];
+  return [String(v)];
+});
+
+
 // Indexes for performance
 clientSchema.index({ "leadInfo.email": 1 });
 clientSchema.index({ "leadInfo.consultantAdminId": 1 });
@@ -653,57 +696,54 @@ clientSchema.methods.getWorkflowDashboard = function() {
 
 // Method to update workflow tracking based on assessment level
 clientSchema.methods.updateWorkflowBasedOnAssessment = function() {
-  const assessmentLevel = this.submissionData?.assessmentLevel;
-  
-  if (!assessmentLevel) {
-    // If no assessment level is set, keep existing workflow status
-    return;
-  }
+  const al = this.submissionData?.assessmentLevel;
+  const levels = Array.isArray(al) ? al : (al ? [al] : []);
 
-  // Get current statuses to preserve progress
   const currentFlowchartStatus = this.workflowTracking.flowchartStatus;
   const currentProcessFlowchartStatus = this.workflowTracking.processFlowchartStatus;
 
-  switch (assessmentLevel) {
-    case 'both':
-      // Both flowchart and process flowchart are available
-      // Keep existing statuses if they're already in progress
-      if (currentFlowchartStatus === 'not_started') {
-        this.workflowTracking.flowchartStatus = 'not_started';
-      }
-      if (currentProcessFlowchartStatus === 'not_started') {
-        this.workflowTracking.processFlowchartStatus = 'not_started';
-      }
-      break;
+  const hasOrg       = levels.includes('organization');
+  const hasProc      = levels.includes('process');
+  const hasReduction = levels.includes('reduction');
 
-    case 'organization':
-      // Only flowchart is available
-      // Keep flowchart status, disable process flowchart
-      if (currentFlowchartStatus === 'not_started') {
-        this.workflowTracking.flowchartStatus = 'not_started';
-      }
-      // Reset process flowchart to not_started and clear timestamps
-      this.workflowTracking.processFlowchartStatus = 'not_started';
-      this.workflowTracking.processFlowchartStartedAt = undefined;
-      this.workflowTracking.processFlowchartCompletedAt = undefined;
-      break;
-
-    case 'process':
-      // Only process flowchart is available
-      // Keep process flowchart status, disable flowchart
-      if (currentProcessFlowchartStatus === 'not_started') {
-        this.workflowTracking.processFlowchartStatus = 'not_started';
-      }
-      // Reset flowchart to not_started and clear timestamps
-      this.workflowTracking.flowchartStatus = 'not_started';
-      this.workflowTracking.flowchartStartedAt = undefined;
-      this.workflowTracking.flowchartCompletedAt = undefined;
-      break;
-
-    default:
-      // Invalid assessment level, do nothing
-      break;
+  // Ensure reduction block exists if selected
+  if (hasReduction && !this.workflowTracking.reduction) {
+    this.workflowTracking.reduction = { status: 'not_started' };
   }
+
+  if (hasOrg && hasProc) {
+    if (currentFlowchartStatus === 'not_started') {
+      this.workflowTracking.flowchartStatus = 'not_started';
+    }
+    if (currentProcessFlowchartStatus === 'not_started') {
+      this.workflowTracking.processFlowchartStatus = 'not_started';
+    }
+    return;
+  }
+
+  if (hasOrg) {
+    if (currentFlowchartStatus === 'not_started') {
+      this.workflowTracking.flowchartStatus = 'not_started';
+    }
+    this.workflowTracking.processFlowchartStatus = 'not_started';
+    this.workflowTracking.processFlowchartStartedAt = undefined;
+    this.workflowTracking.processFlowchartCompletedAt = undefined;
+    return;
+  }
+
+  if (hasProc) {
+    if (currentProcessFlowchartStatus === 'not_started') {
+      this.workflowTracking.processFlowchartStatus = 'not_started';
+    }
+    this.workflowTracking.flowchartStatus = 'not_started';
+    this.workflowTracking.flowchartStartedAt = undefined;
+    this.workflowTracking.flowchartCompletedAt = undefined;
+    return;
+  }
+
+  // If neither org nor process is selected, leave existing statuses as-is.
+  // Reduction status is managed by the workflow utility (see utils/workflow.js).
 };
+
 
 module.exports = mongoose.model("Client", clientSchema);

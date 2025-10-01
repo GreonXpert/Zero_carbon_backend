@@ -16,7 +16,7 @@ const baseEmailStyles = `
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f8fafc; }
     .email-container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1); overflow: hidden; }
     .header { 
-      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #0ea5e9 100%); 
+      background: linear-gradient(135deg, #1AC99F 0%, #3bf6d7ff 50%, #1E6565 100%); 
       padding: 40px 30px; 
       text-align: center; 
       position: relative;
@@ -86,7 +86,7 @@ const baseEmailStyles = `
       left: 0;
       right: 0;
       height: 4px;
-      background: linear-gradient(90deg, #3b82f6, #0ea5e9);
+      background: linear-gradient(90deg, #1AC99F, #1E6565);
       border-radius: 12px 12px 0 0;
     }
     .detail-row { 
@@ -115,7 +115,7 @@ const baseEmailStyles = `
     }
     .info-card {
       background: linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%);
-      border-left: 4px solid #3b82f6;
+      border-left: 4px solid #29ae3fff;
       border-radius: 8px;
       padding: 20px;
       margin: 25px 0;
@@ -124,7 +124,7 @@ const baseEmailStyles = `
     .info-card-title {
       font-weight: 700;
       font-size: 16px;
-      color: #1e40af;
+      color: #1E6565;
       margin-bottom: 12px;
       display: flex;
       align-items: center;
@@ -171,7 +171,7 @@ const baseEmailStyles = `
     }
     .cta-button {
       display: inline-block;
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      background: linear-gradient(135deg, #1AC99F 0%, #1E6565 100%);
       color: #ffffff;
       text-decoration: none;
       padding: 14px 28px;
@@ -180,12 +180,12 @@ const baseEmailStyles = `
       font-size: 16px;
       text-align: center;
       margin: 20px 0;
-      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+      box-shadow: 0 4px 12px rgba(59, 246, 87, 0.3);
       transition: all 0.3s ease;
     }
     .cta-button:hover {
       transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+      box-shadow: 0 6px 20px rgba(81, 246, 59, 0.4);
     }
     .footer {
       background: #f8fafc;
@@ -196,7 +196,7 @@ const baseEmailStyles = `
     }
     .footer-brand {
       font-weight: 700;
-      color: #3b82f6;
+      color: #1E6565;
       font-size: 18px;
       margin-bottom: 8px;
     }

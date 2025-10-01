@@ -1,6 +1,6 @@
-const Notification = require("../models/Notification");
-const User = require("../models/User");
-const { sendMail } = require("../utils/mail");
+const Notification = require("../../models/Notification");
+const User = require("../../models/User");
+const { sendMail } = require("../mail");
 
 /**
  * Create a notification when a new lead is created
