@@ -2,6 +2,45 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose; // ✅ FIX: needed for Schema.Types.ObjectId and nested Schema uses
 
+// === ProcessFlow Snapshot (OPTIONAL) ===
+
+const SnapshotNodeSchema = new Schema({
+  id: { type: String, required: true },
+  label: { type: String, default: '' },
+  position: {
+    x: { type: Number, default: 0 },
+    y: { type: Number, default: 0 }
+  },
+  parentNode: { type: String, default: null },
+
+  // Keep any structure you already use in Flowchart nodes
+  details: { type: Schema.Types.Mixed, default: {} },
+
+  // Arbitrary key/value pairs decided by the user at creation time (optional)
+  kv: { type: Map, of: Schema.Types.Mixed, default: undefined }
+}, { _id: false });
+
+const SnapshotEdgeSchema = new Schema({
+  id: { type: String, required: true },
+  source: { type: String, required: true },
+  target: { type: String, required: true },
+
+  // Arbitrary key/value pairs on the edge (optional)
+  kv: { type: Map, of: Schema.Types.Mixed, default: undefined }
+}, { _id: false });
+
+const ProcessFlowSnapshotSchema = new Schema({
+  nodes: { type: [SnapshotNodeSchema], default: undefined },  // entirely optional
+  edges: { type: [SnapshotEdgeSchema], default: undefined },  // entirely optional
+  metadata: {
+    title: { type: String, default: '' },
+    description: { type: String, default: '' },
+    version: { type: Number, default: 1 }
+  }
+}, { _id: false });
+
+
+
 /**
  * Counter for per-client ReductionID sequences
  * key = `${clientId}_reduction`
@@ -124,6 +163,28 @@ const reductionSchema = new mongoose.Schema({
   // Methodology 2 data
   m2: { type: M2Schema, default: undefined }, // only when methodology2
 
+  // === processFlow (ENTIRELY OPTIONAL) ===
+    processFlow: {
+      mode: { type: String, enum: ['snapshot', 'reference', 'both'], default: 'snapshot' },
+
+      // Optional reference to an existing Flowchart document
+      flowchartId: { type: Schema.Types.ObjectId, ref: 'Flowchart', default: null },
+
+      // Optional embedded snapshot frozen at creation/update time
+      snapshot: { type: ProcessFlowSnapshotSchema, default: undefined },
+
+      snapshotCreatedAt: { type: Date },
+      snapshotCreatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+
+      // Optional mapping scaffolds if you want to bind ABD/APD/ALD later
+      mapping: {
+        ABD: [{ nodeId: String, field: String }],
+        APD: [{ nodeId: String, field: String }],
+        ALD: [{ nodeId: String, field: String }]
+      }
+    },
+
+
   reductionDataEntry: { type: ReductionEntrySchema, default: () => ({ inputType:'manual', originalInputType:'manual' }) },
 
   // Soft delete / meta
@@ -170,6 +231,34 @@ function calcM1(doc) {
   doc.m1.emissionReductionRate = round6(emissionReductionRate);
 }
 
+function validateProcessFlowSnapshot(pf) {
+  if (!pf || !pf.snapshot) return;
+  const snap = pf.snapshot;
+  if (!Array.isArray(snap.nodes) || !Array.isArray(snap.edges)) return; // nothing to validate
+
+  const ids = new Set(snap.nodes.map(n => String(n.id || '').trim()).filter(Boolean));
+  // unique node ids
+  if (ids.size !== (snap.nodes || []).length) {
+    throw new Error('processFlow.snapshot.nodes must have unique, non-empty ids');
+  }
+  // edges must reference existing nodes
+  for (const e of (snap.edges || [])) {
+    const s = String(e.source || '').trim();
+    const t = String(e.target || '').trim();
+    if (!ids.has(s) || !ids.has(t)) {
+      throw new Error(`processFlow edge "${e.id}" references unknown node(s)`);
+    }
+  }
+}
+
+function buildAutoEndpoint(base, clientId, projectId, methodology, ioKind) {
+  const host = (base || process.env.SERVER_BASE_URL || process.env.BASE_URL || 'http://localhost:5000').replace(/\/+$/,'');
+  const meth = String(methodology || '').toLowerCase();
+  const last = String(ioKind || '').toUpperCase() === 'IOT' ? 'iot' : 'api';
+  return `${host}/api/net-reduction/${clientId}/${projectId}/${meth}/${last}`;
+}
+
+
 /** Pre-validate: auto period days + methodology calculations + IDs */
 reductionSchema.pre('validate', async function(next) {
   try {
@@ -194,32 +283,39 @@ reductionSchema.pre('validate', async function(next) {
     }
 
     // Normalize reductionDataEntry (✅ run this BEFORE next())
-    if (this.reductionDataEntry) {
-      const r = this.reductionDataEntry;
-      const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
+  if (this.reductionDataEntry) {
+  const r = this.reductionDataEntry;
+  const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
 
-      if (rawType === 'csv') {
-        r.originalInputType = 'CSV';
-        r.inputType = 'manual';
-        r.apiEndpoint = '';
-        r.iotDeviceId = '';
-      } else if (rawType === 'api') {
-        r.originalInputType = 'API';
-        r.inputType = 'API';
-        r.iotDeviceId = '';
-      } else if (rawType === 'iot') {
-        r.originalInputType = 'IOT';
-        r.inputType = 'IOT';
-        r.apiEndpoint = '';
-      } else {
-        r.originalInputType = 'manual';
-        r.inputType = 'manual';
-        r.apiEndpoint = '';
-        r.iotDeviceId = '';
-      }
-    }
+  if (rawType === 'csv') {
+    r.originalInputType = 'CSV';
+    r.inputType = 'manual';
+    r.apiEndpoint = '';
+    r.iotDeviceId = '';
+  } else if (rawType === 'api') {
+    r.originalInputType = 'API';
+    r.inputType = 'API';
+    r.iotDeviceId = '';
+  } else if (rawType === 'iot') {
+    r.originalInputType = 'IOT';
+    r.inputType = 'IOT';
+    r.apiEndpoint = '';
+  } else {
+    r.originalInputType = 'manual';
+    r.inputType = 'manual';
+    r.apiEndpoint = '';
+    r.iotDeviceId = '';
+  }
 
-    // Calculations
+  // after projectId is set (above), auto-compose endpoint when API/IOT
+  if (['API','IOT'].includes(r.inputType) && this.clientId && this.projectId) {
+    const ioKind = r.inputType; // 'API' or 'IOT'
+    const meth = this.calculationMethodology || 'methodology1';
+    r.apiEndpoint = buildAutoEndpoint(process.env.SERVER_BASE_URL, this.clientId, this.projectId, meth, ioKind);
+  }
+}
+
+            // Calculations
     if (this.calculationMethodology === 'methodology1') {
       calcM1(this);
     }
@@ -238,7 +334,9 @@ reductionSchema.pre('validate', async function(next) {
       this.m2.LE = round6(LE);
       this.m2._debug = { Lpartials: debug };
     }
-
+    if (this.processFlow) {
+      validateProcessFlowSnapshot(this.processFlow);
+    }
     next();
   } catch (e) {
     next(e);

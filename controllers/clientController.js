@@ -16,7 +16,7 @@ const {
   createDataSubmissionNotification,
   createProposalActionNotification,
   createConsultantAssignmentNotification
-} = require("../utils/notificationHelper");
+} = require("../utils/notifications/notificationHelper");
 
 const {
   sendLeadCreatedEmail,
@@ -44,6 +44,13 @@ const {
 
 const { renderClientDataHTML, renderProposalHTML } = require('../utils/pdfTemplates');
 const { htmlToPdfBuffer } = require('../utils/pdfService');
+
+const {
+  normalizeAssessmentLevels,
+  validateSubmissionForLevels
+} = require('../utils/assessmentLevel');
+
+
 
 
 // Additional helper function to emit targeted updates based on filters
@@ -1658,13 +1665,28 @@ const submitClientData = async (req, res) => {
       }
     }
     // ─── END EMAIL VALIDATION ──────────────────────────────────────────────
-    
+          // --- NORMALIZE & VALIDATE assessmentLevel + conditional sections ---
+      const inbound = req.body?.submissionData || {};
+      const normalizedLevels = normalizeAssessmentLevels(inbound.assessmentLevel);
+
+      if (normalizedLevels.length === 0) {
+        return res.status(400).json({ message: "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)" });
+      }
+
+      // Ensure we validate what will be saved
+      const submissionPreview = { ...inbound, assessmentLevel: normalizedLevels };
+      const { errors } = validateSubmissionForLevels(submissionPreview, normalizedLevels);
+
+      if (errors.length) {
+        return res.status(400).json({ message: "Validation error", errors });
+      }
     // Update submission data
-    client.submissionData = {
-      ...submissionData,
-      submittedAt: new Date(),
-      submittedBy: req.user.id
-    };
+   client.submissionData = {
+  ...inbound,
+  assessmentLevel: normalizedLevels,
+  submittedAt: new Date(),
+  submittedBy: req.user.id
+};  
     
     client.status = "submitted";
     client.timeline.push({
@@ -1732,7 +1754,21 @@ const updateClientData = async (req, res) => {
           "You can only update submission data if you created this client or are the assigned consultant",
       });
     }
+      // --- Normalize/validate assessmentLevel on the merged result ---
+      const merged = { ...(client.submissionData?.toObject?.() ? client.submissionData.toObject() : client.submissionData), ...payload };
 
+      // normalize levels (accepts string or array, 'organisation' alias)
+      const normalizedLevels = normalizeAssessmentLevels(merged.assessmentLevel);
+      merged.assessmentLevel = normalizedLevels.length ? normalizedLevels : [];
+
+      // validate conditional requirements
+      const { errors } = validateSubmissionForLevels(merged, normalizedLevels);
+      if (errors.length) {
+        return res.status(400).json({ message: "Validation error", errors });
+      }
+
+// write back normalized levels (in case payload had different shape)
+client.submissionData.assessmentLevel = normalizedLevels;
     // E) Extract the nested object from body:
     const payload = req.body.submissionData;
     if (!payload || typeof payload !== "object") {
@@ -4313,6 +4349,68 @@ const removeConsultant = async (req, res) => {
   }
 };
 
+// ─── Update assessmentLevel only (post-onboarding) ─────────────────────────────
+const updateAssessmentLevelOnly = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const rawLevels = req.body?.assessmentLevel;
+
+    if (!rawLevels) {
+      return res.status(400).json({ message: "assessmentLevel is required in body" });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ message: "Client not found" });
+
+    // Guard: only after onboarding (adjust if your 'onboarded' stage differs)
+    if (client.stage !== 'active') {
+      return res.status(400).json({ message: "assessmentLevel can be changed only after onboarding (stage === 'active')." });
+    }
+
+    // Build a preview with new levels, keeping existing submissionData for validation
+    const nextLevels = normalizeAssessmentLevels(rawLevels);
+    if (nextLevels.length === 0) {
+      return res.status(400).json({ message: "assessmentLevel must contain at least one allowed value" });
+    }
+
+    const preview = {
+      ...(client.submissionData?.toObject?.() ? client.submissionData.toObject() : client.submissionData),
+      assessmentLevel: nextLevels
+    };
+    const { errors } = validateSubmissionForLevels(preview, nextLevels);
+    if (errors.length) {
+      return res.status(400).json({ message: "Validation error", errors });
+    }
+
+    const previous = client.submissionData?.assessmentLevel || [];
+    client.submissionData = { ...client.submissionData, assessmentLevel: nextLevels, updatedAt: new Date() };
+
+    // Align workflow with your existing logic
+    if (typeof client.updateWorkflowBasedOnAssessment === 'function') {
+      client.updateWorkflowBasedOnAssessment();
+    }
+
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: "Assessment level updated (post-onboarding)",
+      performedBy: req.user.id,
+      notes: `Changed from [${previous}] to [${nextLevels}].`
+    });
+
+    await client.save();
+
+    return res.status(200).json({
+      message: "assessmentLevel updated successfully",
+      assessmentLevel: nextLevels
+    });
+
+  } catch (err) {
+    console.error("Update assessmentLevel error:", err);
+    return res.status(500).json({ message: "Failed to update assessmentLevel", error: err.message });
+  }
+};
+
 
 
 module.exports = {
@@ -4345,5 +4443,6 @@ module.exports = {
   updateIoTInputStatus,
   getConsultantHistory,
   changeConsultant,
-  removeConsultant
+  removeConsultant,
+  updateAssessmentLevelOnly
 };

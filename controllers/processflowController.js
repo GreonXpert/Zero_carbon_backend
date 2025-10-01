@@ -5,6 +5,8 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const Notification = require('../models/Notification')
 
+const { v4: uuidv4 } = require('uuid');
+
 // Import helper functions
 const {
   validateScopeDetails,

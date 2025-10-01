@@ -30,7 +30,8 @@ const {
   updateIoTInputStatus,
   getConsultantHistory,
   changeConsultant,
-  removeConsultant
+  removeConsultant,
+  updateAssessmentLevelOnly
    
 } = require("../controllers/clientController");
 
@@ -97,6 +98,7 @@ router.get("/dashboard/metrics", getDashboardMetrics); // Get dashboard metrics
 // Add this route with your other routes:
 router.get("/:clientId/consultant-history", getConsultantHistory); // Get consultant assignment history
 
+router.patch("/:clientId/assessment-level", updateAssessmentLevelOnly);
 
 
 
