@@ -191,11 +191,18 @@ const saveProcessFlowchart = async (req, res) => {
       });
     }
 
-    // 3) Check process flowchart availability based on assessment level
-    const assessmentLevel = client.submissionData?.assessmentLevel || 'both';
-    if (!isChartAvailable(assessmentLevel, 'processFlowchart')) {
-      return res.status(403).json(getChartUnavailableMessage(assessmentLevel, 'processFlowchart'));
-    }
+    // 3) Check process flowchart availability (array-aware)
+const normLevels = getNormalizedLevels(client);  // ['process', ...] as applicable
+if (!canAccessProcess(client)) {
+  return res.status(403).json({
+    message: 'Process flowchart is not available for this client',
+    reason: 'assessmentLevel does not include "process"',
+    assessmentLevel: normLevels,
+    required: 'process'
+  });
+}
+// keep a normalized value for downstream usage
+const assessmentLevel = normLevels;
 
     // 4) Auto-update client workflow status when consultant starts creating process flowchart
     if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
@@ -283,13 +290,17 @@ const saveProcessFlowchart = async (req, res) => {
       updatedAt: processFlowchart.updatedAt
     };
 
-    if (assessmentLevel === 'process') {
-      responseData.hasFullScopeDetails = true;
-      responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level)';
-    } else if (assessmentLevel === 'both') {
-      responseData.hasFullScopeDetails = false;
-      responseData.message = 'Process flowchart saved with basic details only (full scope details available in flowchart)';
-    }
+    const hasOrg  = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
+const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
+
+if (hasProc && !hasOrg) {
+  responseData.hasFullScopeDetails = true;
+  responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level).';
+} else if (hasProc && hasOrg) {
+  responseData.hasFullScopeDetails = false;
+  responseData.message = 'Process flowchart saved with basic details only (full scope details available in the main flowchart).';
+}
+
 
     res.status(isNew ? 201 : 200).json({ 
       message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
