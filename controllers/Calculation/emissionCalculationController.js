@@ -12,24 +12,35 @@ async function getScopeConfigWithAssessmentSource(clientId, nodeId, scopeIdentif
   const client = await Client.findOne({ clientId }).lean();
   if (!client) throw new Error('Client not found');
 
-  const assessmentLevel = client?.submissionData?.assessmentLevel ?? 'both';
-  let flowchartModel = Flowchart;
+  const al = client?.submissionData?.assessmentLevel;
+  const levels = Array.isArray(al) ? al : (al ? [al] : ['organization','process']); // default to both
 
-  if (assessmentLevel === 'process') {
-    flowchartModel = ProcessFlowchart;
+  // Try process flowchart first when it's allowed, otherwise fallback to main flowchart.
+  const tryCharts = [];
+  if (levels.includes('process'))   tryCharts.push(ProcessFlowchart);
+  if (levels.includes('organization')) tryCharts.push(Flowchart);
+  if (tryCharts.length === 0) tryCharts.push(Flowchart);
+
+  let scopeConfig = null;
+  let pickedModel = null;
+
+  for (const Model of tryCharts) {
+    const chart = await Model.findOne({ clientId, isActive: true }).lean();
+    if (!chart) continue;
+    const node = chart.nodes.find(n => n.id === nodeId);
+    if (!node) continue;
+
+    const scope = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
+    if (scope) { scopeConfig = scope; pickedModel = Model; break; }
   }
 
-  const chart = await flowchartModel.findOne({ clientId, isActive: true }).lean();
-  if (!chart) throw new Error(`${assessmentLevel === 'process' ? 'Process' : 'Main'} flowchart not found`);
-
-  const node = chart.nodes.find(n => n.id === nodeId);
-  if (!node) throw new Error(`Node ${nodeId} not found in ${assessmentLevel} flowchart`);
-
-  const scopeConfig = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
-  if (!scopeConfig) throw new Error(`Scope config not found in node ${nodeId}`);
+  if (!scopeConfig) {
+    throw new Error('Scope config not found in available flowcharts for this client');
+  }
 
   return scopeConfig;
 }
+
 
 
 

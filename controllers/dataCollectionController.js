@@ -672,7 +672,7 @@ const saveAPIData = async (req, res) => {
       lastEnteredData: Object.fromEntries(entry.lastEnteredData),
       calculatedEmissions: {
         incoming: mapToObject(incomingMap),
-        cumulative: mapToObject(cumMap),
+        cumulative: mapToObject(cumulativeMap),
         metadata: metadata || {}
       }
     });
