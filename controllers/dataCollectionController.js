@@ -393,111 +393,155 @@ const flowchart = activeChart.chart;
   return false;
 };
 
-// Enhanced permission check for specific operations
-const checkOperationPermission = async (user, clientId, nodeId, scopeIdentifier, operation) => {
-  const userId = user._id || user.id;
-  if (!userId) return { allowed: false, reason: 'Invalid user' };
+/**
+ * Return all active charts for a client:
+ * - Org Flowchart (isActive: true)
+ * - Process Flowchart (not deleted)
+ */
+async function getChartsForPermission(clientId) {
+  const results = [];
 
-  // Super admin always allowed
-  if (user.userType === 'super_admin') {
-    return { allowed: true, reason: 'Super admin access' };
-  }
+  const org = await Flowchart.findOne({ clientId, isActive: true }).lean();
+  if (org) results.push({ type: 'flowchart', chart: org });
 
-  const client = await Client.findOne({ clientId });
-  if (!client) {
-    return { allowed: false, reason: 'Client not found' };
-  }
+  const proc = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
+  if (proc) results.push({ type: 'processflowchart', chart: proc });
 
-  // Consultant permissions for API/IoT operations
-  if (['api_data', 'iot_data', 'disconnect', 'reconnect'].includes(operation)) {
-    if (user.userType === 'consultant_admin') {
-      if (client.leadInfo?.createdBy?.toString() === userId.toString()) {
-        return { allowed: true, reason: 'Consultant admin who created client' };
-      }
-      
-      const consultants = await User.find({
-        consultantAdminId: userId,
-        userType: 'consultant'
-      }).select('_id');
-      const consultantIds = consultants.map(c => c._id.toString());
-      if (
-        client.leadInfo?.assignedConsultantId &&
-        consultantIds.includes(client.leadInfo.assignedConsultantId.toString())
-      ) {
-        return { allowed: true, reason: 'Consultant admin of assigned consultant' };
-      }
-    }
-
-    if (user.userType === 'consultant') {
-      if (client.leadInfo?.assignedConsultantId?.toString() === userId.toString()) {
-        return { allowed: true, reason: 'Assigned consultant' };
-      }
-    }
-  }
-
-  // Client user permissions
-  if (user.clientId !== clientId) {
-    return { allowed: false, reason: 'Different client organization' };
-  }
-
-  // Client admin permissions
-  if (user.userType === 'client_admin') {
-    if (operation === 'switch_input') {
-      return { allowed: true, reason: 'Client admin can switch input types' };
-    }
-    if (['api_data', 'iot_data', 'disconnect', 'reconnect'].includes(operation)) {
-      return { allowed: true, reason: 'Client admin access' };
-    }
-    if (['manual_data', 'edit_manual', 'csv_upload'].includes(operation)) {
-      return { allowed: true, reason: 'Client admin access' };
-    }
-  }
-
-  // Get node information for role-based checks
-// Find scope configuration
-const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
+  return results;
 }
-const flowchart = activeChart.chart;
 
-  const node = flowchart.nodes.find(n => n.id === nodeId);
-  if (!node) {
-    return { allowed: false, reason: 'Node not found' };
-  }
+/**
+ * Build allocation sets from all available charts
+ * - employeeHeads: Set of nodeIds this head owns
+ * - employeeScopes: Set of "nodeId|scopeIdentifier" the employee is assigned to
+ * - reductionScopes: Map reduction scopeId -> { nodeId, scopeIdentifier } from reductionMappings
+ */
+function buildAllocationMaps(charts, userId) {
+  const headNodeIds = new Set();
+  const employeeScopeKeys = new Set();
+  const reductionScopeMap = new Map();
 
-  // Employee head permissions
-  if (user.userType === 'client_employee_head') {
-    const isAssignedToNode = node.details.employeeHeadId?.toString() === userId.toString();
-    
-    if (!isAssignedToNode) {
-      return { allowed: false, reason: 'Not assigned to this node' };
-    }
+  for (const { type, chart } of charts) {
+    if (!chart?.nodes) continue;
 
-    if (['api_data', 'iot_data', 'disconnect', 'reconnect', 'manual_data', 'edit_manual', 'csv_upload'].includes(operation)) {
-      return { allowed: true, reason: 'Employee head of assigned node' };
-    }
-  }
+    for (const node of chart.nodes) {
+      const details = node?.details || {};
 
-  // Employee permissions for manual operations only
-  if (user.userType === 'employee' && ['manual_data', 'edit_manual', 'csv_upload'].includes(operation)) {
-    if (scopeIdentifier) {
-      const scope = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
-      if (!scope) {
-        return { allowed: false, reason: 'Scope not found' };
+      // Head allocations (node-level)
+      if (details.employeeHeadId && details.employeeHeadId.toString() === userId.toString()) {
+        headNodeIds.add(node.id);
       }
-      
-      const assignedEmployees = scope.assignedEmployees || [];
-      const isAssignedToScope = assignedEmployees.map(id => id.toString()).includes(userId.toString());
-      
-      if (isAssignedToScope) {
-        return { allowed: true, reason: 'Assigned employee to scope' };
+
+      // Employee allocations (scope-level)
+      const scopes = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
+      for (const s of scopes) {
+        const assigned = (s.assignedEmployees || []).map(x => x?.toString());
+        if (assigned.includes(userId.toString())) {
+          employeeScopeKeys.add(`${node.id}|${s.scopeIdentifier}`);
+        }
+      }
+
+      // Reduction mappings (if present)
+      const mappings = Array.isArray(details.reductionMappings) ? details.reductionMappings : [];
+      for (const r of mappings) {
+        // r.id is any stable identifier used when inputType === 'reduction'
+        if (r?.id && r.nodeId && r.scopeIdentifier) {
+          reductionScopeMap.set(r.id, { nodeId: r.nodeId, scopeIdentifier: r.scopeIdentifier });
+        }
       }
     }
   }
 
-  return { allowed: false, reason: 'Insufficient permissions for this operation' };
-};
+  return { headNodeIds, employeeScopeKeys, reductionScopeMap };
+}
+
+/**
+ * Enforce permissions for WRITE-like operations.
+ * Supported ops: 'manual_data', 'csv_upload', 'edit_manual', 'disconnect', 'reconnect'
+ * Rules:
+ *  - super_admin: allowed everywhere
+ *  - client_admin (same client): allowed for manual/csv/edit; also allowed for disconnect/reconnect
+ *  - client_employee_head: allowed to add/edit only for their allocated node(s)
+ *  - employee: allowed to add/edit only for their allocated scope(s)
+ *  - For inputType === 'reduction', (nodeId, scopeIdentifier) is resolved via reductionMappings
+ *
+ * @param {object} user
+ * @param {string} clientId
+ * @param {string} operation
+ * @param {{nodeId?: string, scopeIdentifier?: string, inputType?: string}} ctx
+ * @returns {{allowed: boolean, reason?: string}}
+ */
+async function checkOperationPermission(user, clientId, operation, ctx = {}) {
+  const { nodeId, scopeIdentifier, inputType } = ctx;
+
+  if (!user || !user.userType) return { allowed: false, reason: 'Unauthenticated' };
+  const role = user.userType;
+
+  // Strict client isolation for client-side roles
+  if (['client_admin', 'client_employee_head', 'employee', 'auditor'].includes(role)) {
+    if (user.clientId && user.clientId !== clientId) {
+      return { allowed: false, reason: 'Cross-client access not allowed' };
+    }
+  }
+
+  // Super admin: everything
+  if (role === 'super_admin') return { allowed: true };
+
+  // Admin-only ops for connection mgmt
+  if (operation === 'disconnect' || operation === 'reconnect') {
+    if (role === 'client_admin' && user.clientId === clientId) return { allowed: true };
+    return { allowed: false, reason: 'Only Client Admin or Super Admin can manage connections' };
+  }
+
+  // Data write/edit ops
+  const isWrite =
+    operation === 'manual_data' ||
+    operation === 'csv_upload' ||
+    operation === 'edit_manual';
+
+  if (!isWrite) return { allowed: false, reason: `Unsupported operation: ${operation}` };
+
+  // Client admin (same client): can write/edit
+  if (role === 'client_admin' && user.clientId === clientId) return { allowed: true };
+
+  // From here on we enforce allocations for head/employee
+  const charts = await getChartsForPermission(clientId); // both org + process
+  if (charts.length === 0) return { allowed: false, reason: 'No active charts found' };
+
+  const userId = user._id || user.id;
+  const { headNodeIds, employeeScopeKeys, reductionScopeMap } = buildAllocationMaps(charts, userId);
+
+  // If the input refers to a reduction id, resolve to (nodeId, scopeIdentifier)
+  let effNodeId = nodeId;
+  let effScopeId = scopeIdentifier;
+  if (inputType === 'reduction' && scopeIdentifier && reductionScopeMap.has(scopeIdentifier)) {
+    const mapped = reductionScopeMap.get(scopeIdentifier);
+    effNodeId = effNodeId || mapped.nodeId;
+    effScopeId = effScopeId || mapped.scopeIdentifier;
+  }
+
+  if (role === 'client_employee_head') {
+    if (!effNodeId) return { allowed: false, reason: 'Node not specified for employee head' };
+    if (!headNodeIds.has(effNodeId)) {
+      return { allowed: false, reason: 'You can add data only to nodes allocated to you' };
+    }
+    return { allowed: true };
+  }
+
+  if (role === 'employee') {
+    if (!effNodeId || !effScopeId) {
+      return { allowed: false, reason: 'Scope not specified for employee' };
+    }
+    const key = `${effNodeId}|${effScopeId}`;
+    if (!employeeScopeKeys.has(key)) {
+      return { allowed: false, reason: 'You can add data only to scopes allocated to you' };
+    }
+    return { allowed: true };
+  }
+
+  return { allowed: false, reason: 'Your role cannot add/edit data' };
+}
+
 
 
 
@@ -851,7 +895,13 @@ const saveManualData = async (req, res) => {
     const { entries, singleEntry } = req.body; // Support both formats
     
     // Check permissions for manual data operations
-    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'manual_data');
+    const permissionCheck = await checkOperationPermission(
+  req.user,
+  clientId,
+  'manual_data',
+  { nodeId, scopeIdentifier, inputType: 'manual' }
+);
+
     if (!permissionCheck.allowed) {
       return res.status(403).json({ 
         message: 'Permission denied', 
@@ -1188,7 +1238,13 @@ const uploadCSVData = async (req, res) => {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     
     // Check permissions for CSV upload operations
-    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'csv_upload');
+    const permissionCheck = await checkOperationPermission(
+  req.user,
+  clientId,
+  'csv_upload',
+  { nodeId, scopeIdentifier, inputType: 'CSV' }
+);
+
     if (!permissionCheck.allowed) {
       return res.status(403).json({ 
         message: 'Permission denied', 
