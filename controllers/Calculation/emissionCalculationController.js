@@ -552,89 +552,6 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
 
 
 
-/**
- * Calculate Scope 2 emissions
- */
-
-async function calculateScope2Emissions(
-  dataEntry,
-  scopeConfig,
-  efValues,    // { CO2: <the factor you pulled from flowchart> }
-  gwpValues,
-  UAD,
-  UEF
-) {
-  const { categoryName, calculationModel: tier } = scopeConfig;
-
-  // only handle our four purchased categories here
-  const validCategories = [
-    'Purchased Electricity',
-    'Purchased Steam',
-    'Purchased Heating',
-    'Purchased Cooling'
-  ];
-  if (!validCategories.includes(categoryName)) {
-    return { success: false, message: `Unsupported Scope 2 category: ${categoryName}` };
-  }
-
-  // pull in your data
-  const dataValues = dataEntry.dataValues instanceof Map
-    ? Object.fromEntries(dataEntry.dataValues)
-    : dataEntry.dataValues;
-  const cumValues = dataEntry.cumulativeValues instanceof Map
-    ? Object.fromEntries(dataEntry.cumulativeValues)
-    : dataEntry.cumulativeValues;
-
-  // pick the single CO2 factor (same for Tier 1 & Tier 2)
-  const factor = efValues.CO2;
-  if (factor == null) {
-    return { success: false, message: 'Emission factor not found for Scope 2' };
-  }
-
-  // map category → incoming field name
-  const fieldMap = {
-    'Purchased Electricity': 'consumed_electricity',
-    'Purchased Steam':       'consumed_steam',
-    'Purchased Heating':     'consumed_heating',
-    'Purchased Cooling':     'consumed_cooling'
-  };
-
-  // pick the right data key, falling back to the first numeric one
-  let fieldKey = fieldMap[categoryName];
-  if (!fieldKey || dataValues[fieldKey] == null) {
-    const numericKeys = Object.keys(dataValues).filter(k => typeof dataValues[k] === 'number');
-    fieldKey = numericKeys[0];
-  }
-  const incomingQty   = Number(dataValues[fieldKey]   ?? 0);
-  const cumulativeQty = Number(cumValues[fieldKey]    ?? 0);
-
-  // calculate
-  const inc = incomingQty  * factor;
-  const cum = cumulativeQty * factor;
-  const uInc = calculateUncertainty(inc, UAD, UEF);
-  const uCum = calculateUncertainty(cum, UAD, UEF);
-
-  const emissions = { incoming: {}, cumulative: {} };
-  emissions.incoming[fieldKey] = {
-    CO2e: inc,
-    combinedUncertainty: uInc,
-    CO2eWithUncertainty: inc + uInc
-  };
-  emissions.cumulative[fieldKey] = {
-    CO2e: cum,
-    combinedUncertainty: uCum,
-    CO2eWithUncertainty: cum + uCum
-  };
-
-  return {
-    success:   true,
-    scopeType: 'Scope 2',
-    category:  categoryName,
-    tier,
-    emissions
-  };
-}
-
 
 /**
  * Calculate Scope 3 emissions
@@ -792,14 +709,13 @@ async function calculateScope3Emissions(
   const cumEc = cumulativeVals.electricityConsumption ?? 0;
   const td    = dataValues.tdLossFactor           ?? 0;
   const cf    = dataValues.fuelConsumption        ?? 0;
-  const cumCf = dataValues.fuelConsumption        ?? 0;
+  const cumCf = cumulativeVals.fuelConsumption ?? 0;
 
   // emission factor for all fuel‐energy buckets
   // you were using `ef` for upstream and WTT, and `gridEF` for T&D.
   // adjust these if you pull them from different efValues properties.
   const WTTEF= ef;
   const upstreamEF = ef;     
-  const gridEF     = ef;     
 
   // ─── A) Upstream fuel × EF ──────────────────────────
   {
