@@ -443,26 +443,56 @@ if (!hasProcessAccess) {
     };
 
     // Employee Head: see ONLY nodes assigned to them (primary),
-    // fallback to department/location match if assignment not yet set.
-    if (userType === 'client_employee_head' && !fullAccess) {
-      const assigned = originalNodes.filter(n =>
-        n?.details?.employeeHeadId &&
-        n.details.employeeHeadId.toString?.() === userId
-      );
+   if (userType === 'client_employee_head' && !fullAccess) {
+  const assigned = originalNodes.filter(n =>
+    n?.details?.employeeHeadId &&
+    n.details.employeeHeadId.toString?.() === userId
+  );
 
-      const departmentLocationFallback = originalNodes.filter(n =>
-        (n?.details?.department && n.details.department === req.user.department) ||
-        (n?.details?.location && n.details.location === req.user.location)
-      );
+  const departmentLocationFallback = originalNodes.filter(n =>
+    (n?.details?.department && n.details.department === req.user.department) ||
+    (n?.details?.location && n.details.location === req.user.location)
+  );
 
-      filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback)
-        .map(toSafeNode);
-    }
+  // BEFORE:
+  // filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback).map(toSafeNode);
 
-    // Employee / Auditor / Viewer: allow read of nodes but with limited details
-    if (['employee', 'auditor', 'viewer'].includes(userType) && !fullAccess) {
-      filteredNodes = originalNodes.map(toSafeNode);
-    }
+  // AFTER (full details for heads on their nodes):
+  filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback);
+}
+
+ // Employee / Auditor / Viewer
+if (['employee', 'auditor', 'viewer'].includes(userType) && !fullAccess) {
+  if (userType === 'employee') {
+    // Employees: return FULL details but only for the scopes assigned to them
+    const userIdStr = String(userId);
+    filteredNodes = originalNodes.reduce((acc, node) => {
+      const base = typeof node.toObject === 'function' ? node.toObject() : node;
+      const rawScopes = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
+
+      // Keep only scopes that include this employee
+      const assignedScopes = rawScopes.filter(s => {
+        const assigned = Array.isArray(s?.assignedEmployees) ? s.assignedEmployees : [];
+        return assigned.map(x => String(x)).includes(userIdStr);
+      });
+
+      if (assignedScopes.length > 0) {
+        acc.push({
+          ...base,
+          details: {
+            ...base.details,
+            scopeDetails: assignedScopes // full objects for assigned scopes
+          }
+        });
+      }
+      return acc;
+    }, []);
+  } else {
+    // Auditors/Viewers: keep using safe/limited node view
+    filteredNodes = originalNodes.map(toSafeNode);
+  }
+}
+
 
     // Admin/Consultant/Client Admin with fullAccess: no node filtering
     // (keep originalNodes)

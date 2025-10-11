@@ -492,26 +492,53 @@ if (!canAccessModule(client, 'organization')) {
           );
     }
 
-    // Employee / Auditor / Viewer: same visibility, but hide sensitive details
-    if (['employee', 'auditor', 'viewer'].includes(req.user.userType) && !permissionCheck.fullAccess) {
-      filteredNodes = flowchart.nodes.map(node => {
-        const base = typeof node.toObject === 'function' ? node.toObject() : node;
-        const scope = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
-        return {
+// Employee / Auditor / Viewer
+if (['employee', 'auditor', 'viewer'].includes(req.user.userType) && !permissionCheck.fullAccess) {
+  if (req.user.userType === 'employee') {
+    // Employees: return FULL details but only for scopes assigned to them
+    const userIdStr = String(req.user.id);
+    filteredNodes = flowchart.nodes.reduce((acc, node) => {
+      const base = typeof node.toObject === 'function' ? node.toObject() : node;
+      const rawScopes = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
+
+      // keep only scopes where this employee is assigned
+      const assignedScopes = rawScopes.filter(s => {
+        const assigned = Array.isArray(s?.assignedEmployees) ? s.assignedEmployees : [];
+        return assigned.map(x => String(x)).includes(userIdStr);
+      });
+
+      if (assignedScopes.length > 0) {
+        acc.push({
           ...base,
           details: {
             ...base.details,
-            // expose only non-sensitive fields per scope
-            scopeDetails: scope.map(s => ({
-              scopeIdentifier: s.scopeIdentifier,
-              scopeType: s.scopeType,
-              // keep your field naming consistent (inputType vs dataCollectionType)
-              inputType: s.inputType ?? s.dataCollectionType
-            }))
+            // IMPORTANT: give full objects for assigned scopes only
+            scopeDetails: assignedScopes
           }
-        };
-      });
-    }
+        });
+      }
+      return acc;
+    }, []);
+  } else {
+    // Auditors/Viewers: keep your existing safe/limited view
+    filteredNodes = flowchart.nodes.map(node => {
+      const base = typeof node.toObject === 'function' ? node.toObject() : node;
+      const scope = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
+      return {
+        ...base,
+        details: {
+          ...base.details,
+          scopeDetails: scope.map(s => ({
+            scopeIdentifier: s.scopeIdentifier,
+            scopeType: s.scopeType,
+            inputType: s.inputType ?? s.dataCollectionType
+          }))
+        }
+      };
+    });
+  }
+}
+
 
     // 5) Format nodes for React Flow
     const rfNodes = filteredNodes.map(n => ({
