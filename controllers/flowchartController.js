@@ -12,7 +12,8 @@ const {
   normalizeEdges,
   createChartNotifications,
   isChartAvailable,
-  getChartUnavailableMessage
+  getChartUnavailableMessage,
+  addCEFCommentsToNodes
 } = require('../utils/chart/chartHelpers');
 
 
@@ -339,6 +340,9 @@ const assessmentLevel = levels;
 
     // 7) Normalize & validate nodes - flowchart always includes full scope details when available
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'flowchart');
+    
+    // ⬇️ ADD THIS: guarantee comment fields on all custom EF values
+    const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
     // 8) Normalize edges
     const normalizedEdges = normalizeEdges(flowchartData.edges);
@@ -1412,10 +1416,30 @@ const updateFlowchartNode = async (req, res) => {
           emissionFactorValues: mergedEFV
         };
 
+        // Keep CEF comments logic as you already had
         if (finalEmissionFactor === 'Custom') {
-          finalScope.customEmissionFactor = normalizedCEF;
+          finalScope.customEmissionFactor = ensureCEFComments(normalizedCEF || finalScope.customEmissionFactor || {});
+          finalScope.emissionFactorValues.customEmissionFactor =
+            ensureCEFComments(finalScope.emissionFactorValues.customEmissionFactor || {});
         } else if ('customEmissionFactor' in finalScope) {
           finalScope.customEmissionFactor = prev.customEmissionFactor || null;
+        }
+
+        // ── Merge customValues (optional) ─────────────────────────────
+        const incCV  = inc.customValues || inc.customValue || {};
+        const prevCV = prev.customValues || {};
+        const mergedCV = {
+          assetLifetime:        numOrNull( incCV.assetLifetime ?? incCV.AssetLifeTime ?? incCV.AssestLifeTime ?? incCV.assetLifeTime ?? prevCV.assetLifetime ?? null ),
+          TDLossFactor:         numOrNull( incCV.TDLossFactor ?? incCV['T&DLossFactor'] ?? incCV.TAndDLossFactor ?? prevCV.TDLossFactor ?? null ),
+          defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null )
+        };
+        // Only attach if any value is present
+        if (
+          mergedCV.assetLifetime != null ||
+          mergedCV.TDLossFactor != null ||
+          mergedCV.defaultRecyclingRate != null
+        ) {
+          finalScope.customValues = mergedCV;
         }
 
         mergedScopes.push(finalScope);

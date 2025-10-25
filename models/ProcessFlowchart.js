@@ -245,7 +245,35 @@ emissionFactorValues: {
       N2O_gwp: { type: Number, default: null },
       CO2e_gwp: { type: Number, default: null },
 
-      gwpLastUpdated: { type: Date, default: null }
+      gwpLastUpdated: { type: Date, default: null },
+
+      // ⬇️ ADD inside emissionFactorValues.customEmissionFactor (ProcessFlowchart.js)
+CO2_comment:  { type: String, default: '' },
+CH4_comment:  { type: String, default: '' },
+N2O_comment:  { type: String, default: '' },
+CO2e_comment: { type: String, default: '' },
+unit_comment: { type: String, default: '' },
+
+industryAverageEmissionFactor_comment: { type: String, default: '' },
+stoichiometicFactor_comment:           { type: String, default: '' },
+conversionEfficiency_comment:          { type: String, default: '' },
+
+chargeType_comment:                    { type: String, default: '' },
+leakageRate_comment:                   { type: String, default: '' },
+Gwp_refrigerant_comment:               { type: String, default: '' },
+GWP_fugitiveEmission_comment:          { type: String, default: '' },
+GWP_SF6_comment:                       { type: String, default: '' },
+
+EmissionFactorFugitiveCH4Leak_comment:      { type: String, default: '' },
+GWP_CH4_leak_comment:                       { type: String, default: '' },
+EmissionFactorFugitiveCH4Component_comment: { type: String, default: '' },
+GWP_CH4_Component_comment:                  { type: String, default: '' },
+
+CO2_gwp_comment:  { type: String, default: '' },
+CH4_gwp_comment:  { type: String, default: '' },
+N2O_gwp_comment:  { type: String, default: '' },
+CO2e_gwp_comment: { type: String, default: '' },
+
     },
   // Emission factor value // For EmissionFactorHub
     emissionFactorHubData: {
@@ -309,7 +337,12 @@ emissionFactorValues: {
     default: '',
     description: 'Electricity consumption unit'
   },
-    
+      customValues: {
+    assetLifetime:         { type: Number, default: null },
+    TDLossFactor:          { type: Number, default: null },
+    defaultRecyclingRate:  { type: Number, default: null }
+  },
+
   // Common fields
   description: { type: String },
   source: { 

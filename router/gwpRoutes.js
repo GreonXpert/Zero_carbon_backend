@@ -12,6 +12,7 @@ router.put('/update/:id', gwpController.updateGWP);
 router.delete('/delete/:id', gwpController.deleteGWP);
 router.get('/chemical/:chemicalName', gwpController.getGWPByChemicalName);
 router.get('/chemicalFormula/:chemicalFormula',gwpController.getGWPByChemicalFormula)
+router.get('/gwp-value', gwpController.getGWPWithFilters);
 
 // Get latest AR assessment for a specific chemical
 router.get('/latest-ar/:chemicalNameOrFormula', async (req, res) => {

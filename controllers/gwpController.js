@@ -92,20 +92,285 @@ exports.getGWPById = async (req, res) => {
 };
 
 // Get a single GWP using Chemical Name
-// Get a single GWP using Chemical Name
+/**
+ * GET /gwp/name/:chemicalName
+ * Enhanced: supports filters via ?match=exact|starts|contains&ar=AR6&min=...&max=...
+ *           &sortBy=chemicalName|chemicalFormula|value&order=asc|desc
+ *           &page=1&limit=10&fields=chemicalName,chemicalFormula&includeLatest=true
+ *
+ * Notes:
+ * - If sortBy=value, you must provide ?ar=ARx so we know which assessments.<ARx> to sort by
+ * - min/max filter applies to the selected AR (if provided)
+ */
 exports.getGWPByChemicalName = async (req, res) => {
-    try {
-      const { chemicalName } = req.params;
-  
-      // Pass the chemicalName as a query object
-      const gwpData = await GWP.findOne({ chemicalName });
-      if (!gwpData) return res.status(404).json({ message: 'GWP data not found' });
-  
-      res.status(200).json(gwpData);
-    } catch (error) {
-      res.status(500).json({ message: 'Failed to fetch GWP data', error: error.message });
+  try {
+    const { chemicalName } = req.params;
+    const {
+      match = 'exact',                 // exact | starts | contains
+      ar,                              // e.g., AR6
+      min,                             // numeric
+      max,                             // numeric
+      sortBy = 'chemicalName',         // chemicalName | chemicalFormula | value
+      order = 'asc',                   // asc | desc
+      page = 1,
+      limit = 10,
+      fields,                          // comma separated (e.g., "chemicalName,chemicalFormula,assessments")
+      includeLatest = 'false'          // "true" to add {latest:{assessment,value}}
+    } = req.query;
+
+    // Build name matcher
+    const escaped = escapeRegex(chemicalName);
+    const pattern =
+      match === 'starts'   ? `^${escaped}` :
+      match === 'contains' ? `${escaped}`  :
+                             `^${escaped}$`;
+
+    const filter = {
+      chemicalName: { $regex: new RegExp(pattern, 'i') }
+    };
+
+    // AR value existence / range filter
+    if (ar) {
+      const path = `assessments.${ar}`;
+      const range = {};
+      if (min !== undefined && min !== '') range.$gte = Number(min);
+      if (max !== undefined && max !== '') range.$lte = Number(max);
+
+      if (Object.keys(range).length) {
+        filter[path] = range;
+      } else {
+        // just ensure this AR exists
+        filter[path] = { $exists: true };
+      }
     }
-  };
+
+    // Projection
+    const projection = {};
+    if (fields) {
+      fields.split(',').map((f) => f.trim()).filter(Boolean).forEach((f) => {
+        projection[f] = 1;
+      });
+    }
+
+    // Sort
+    const sort = {};
+    if (sortBy === 'value') {
+      if (!ar) {
+        return res.status(400).json({ message: 'sortBy=value requires ?ar=<AR version>, e.g., ?ar=AR6' });
+      }
+      sort[`assessments.${ar}`] = order === 'desc' ? -1 : 1;
+    } else {
+      sort[sortBy] = order === 'desc' ? -1 : 1;
+    }
+
+    // Pagination
+    const pageNum  = Math.max(1, Number(page));
+    const perPage  = Math.max(1, Number(limit));
+    const skip     = (pageNum - 1) * perPage;
+
+    // Query
+    const [total, docsRaw] = await Promise.all([
+      GWP.countDocuments(filter),
+      GWP.find(filter, projection)
+         .sort(sort)
+         .skip(skip)
+         .limit(perPage)
+         .collation({ locale: 'en', strength: 2 }) // case-insensitive sort on strings
+         .lean()
+    ]);
+
+    if (!docsRaw.length) {
+      return res.status(404).json({ message: 'GWP data not found' });
+    }
+
+    // Normalize Map -> plain object & optionally compute latest assessment
+    const wantLatest = String(includeLatest).toLowerCase() === 'true';
+    const priority   = ['AR7', 'AR6', 'AR5', 'AR4'];
+
+    const docs = docsRaw.map((d) => {
+      const out = { ...d };
+
+      // If assessments came back as a Map (lean should already plain-ify, but be safe)
+      if (out.assessments && out.assessments instanceof Map) {
+        out.assessments = Object.fromEntries(out.assessments);
+      }
+
+      if (wantLatest) {
+        let latest = null;
+        if (out.assessments && typeof out.assessments === 'object') {
+          for (const key of priority) {
+            if (Object.prototype.hasOwnProperty.call(out.assessments, key)) {
+              latest = { assessment: key, value: out.assessments[key] };
+              break;
+            }
+          }
+          // fallback: first available
+          if (!latest) {
+            const entries = Object.entries(out.assessments);
+            if (entries.length) {
+              latest = { assessment: entries[0][0], value: entries[0][1] };
+            }
+          }
+        }
+        out.latest = latest;
+      }
+
+      if (ar && out.assessments && out.assessments[ar] !== undefined) {
+        out.selectedAssessment = { assessment: ar, value: out.assessments[ar] };
+      }
+
+      return out;
+    });
+
+    res.status(200).json({
+      page: pageNum,
+      limit: perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+      results: docs
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to fetch GWP data', error: error.message });
+  }
+};
+
+
+/**
+ * OPTIONAL: Universal filter endpoint
+ * GET /gwp?name=...&formula=...&q=...&match=exact|starts|contains&ar=AR6&min=..&max=..
+ *           &sortBy=chemicalName|chemicalFormula|value&order=asc|desc&page=1&limit=10
+ *           &fields=...&includeLatest=true
+ *
+ * - q applies to both chemicalName and chemicalFormula
+ * - name applies to chemicalName only; formula applies to chemicalFormula only
+ */
+exports.getGWPWithFilters = async (req, res) => {
+  try {
+    const {
+      q,                  // generic search across name & formula
+      name,               // chemicalName
+      formula,            // chemicalFormula
+      match = 'contains', // exact|starts|contains (applies to q/name/formula)
+      ar,
+      min,
+      max,
+      sortBy = 'chemicalName',
+      order = 'asc',
+      page = 1,
+      limit = 10,
+      fields,
+      includeLatest = 'false'
+    } = req.query;
+
+    const mkRegex = (value) => {
+      const esc = escapeRegex(value);
+      const pat =
+        match === 'exact'   ? `^${esc}$` :
+        match === 'starts'  ? `^${esc}`   :
+                              `${esc}`;
+      return new RegExp(pat, 'i');
+    };
+
+    const filter = {};
+
+    // q: OR on name/formula
+    if (q) {
+      const rx = mkRegex(q);
+      filter.$or = [
+        { chemicalName:   { $regex: rx } },
+        { chemicalFormula:{ $regex: rx } }
+      ];
+    }
+
+    // name / formula specific filters (ANDed with q if present)
+    if (name)    filter.chemicalName    = { $regex: mkRegex(name) };
+    if (formula) filter.chemicalFormula = { $regex: mkRegex(formula) };
+
+    if (ar) {
+      const path = `assessments.${ar}`;
+      const range = {};
+      if (min !== undefined && min !== '') range.$gte = Number(min);
+      if (max !== undefined && max !== '') range.$lte = Number(max);
+      filter[path] = Object.keys(range).length ? range : { $exists: true };
+    }
+
+    // Projection
+    const projection = {};
+    if (fields) {
+      fields.split(',').map((f) => f.trim()).filter(Boolean).forEach((f) => {
+        projection[f] = 1;
+      });
+    }
+
+    // Sort
+    const sort = {};
+    if (sortBy === 'value') {
+      if (!ar) {
+        return res.status(400).json({ message: 'sortBy=value requires ?ar=<AR version>, e.g., ?ar=AR6' });
+      }
+      sort[`assessments.${ar}`] = order === 'desc' ? -1 : 1;
+    } else {
+      sort[sortBy] = order === 'desc' ? -1 : 1;
+    }
+
+    // Pagination
+    const pageNum  = Math.max(1, Number(page));
+    const perPage  = Math.max(1, Number(limit));
+    const skip     = (pageNum - 1) * perPage;
+
+    const [total, docsRaw] = await Promise.all([
+      GWP.countDocuments(filter),
+      GWP.find(filter, projection)
+         .sort(sort)
+         .skip(skip)
+         .limit(perPage)
+         .collation({ locale: 'en', strength: 2 })
+         .lean()
+    ]);
+
+    const wantLatest = String(includeLatest).toLowerCase() === 'true';
+    const priority   = ['AR7', 'AR6', 'AR5', 'AR4'];
+
+    const docs = docsRaw.map((d) => {
+      const out = { ...d };
+      if (out.assessments && out.assessments instanceof Map) {
+        out.assessments = Object.fromEntries(out.assessments);
+      }
+      if (wantLatest) {
+        let latest = null;
+        if (out.assessments && typeof out.assessments === 'object') {
+          for (const key of priority) {
+            if (Object.prototype.hasOwnProperty.call(out.assessments, key)) {
+              latest = { assessment: key, value: out.assessments[key] };
+              break;
+            }
+          }
+          if (!latest) {
+            const entries = Object.entries(out.assessments);
+            if (entries.length) {
+              latest = { assessment: entries[0][0], value: entries[0][1] };
+            }
+          }
+        }
+        out.latest = latest;
+      }
+      if (ar && out.assessments && out.assessments[ar] !== undefined) {
+        out.selectedAssessment = { assessment: ar, value: out.assessments[ar] };
+      }
+      return out;
+    });
+
+    res.status(200).json({
+      page: pageNum,
+      limit: perPage,
+      total,
+      totalPages: Math.ceil(total / perPage),
+      results: docs
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to fetch GWP data', error: error.message });
+  }
+};
   
 
   exports.getGWPByChemicalFormula = async (req, res) => {

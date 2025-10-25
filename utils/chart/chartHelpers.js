@@ -20,6 +20,14 @@ const validateScopeDetails = (scopeDetails, nodeId) => {
   });
 };
 
+const numOrNull = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+};
+
+
+
 /**
  * Normalize a single scope detail object
  */
@@ -74,6 +82,26 @@ const normalizeScopeDetail = (scope) => {
     reductionCalculationMode: scope.reductionCalculationMode || 'advanced'
   
   };
+  // ── Custom values (optional, with alias support) ─────────────────────────────
+  const rawCV = scope.customValues || scope.customValue || {};
+  normalizedScope.customValues = {
+    assetLifetime:        numOrNull(
+                            rawCV.assetLifetime ??
+                            rawCV.AssetLifeTime ??
+                            rawCV.AssestLifeTime ??     // common typo accepted
+                            rawCV.assetLifeTime
+                          ),
+    TDLossFactor:         numOrNull(
+                            rawCV.TDLossFactor ??
+                            rawCV['T&DLossFactor'] ??   // if frontend sends T&DLossFactor
+                            rawCV.TAndDLossFactor
+                          ),
+    defaultRecyclingRate: numOrNull(
+                            rawCV.defaultRecyclingRate ??
+                            rawCV.defaultRecylingRate ?? // common typo accepted
+                            rawCV.defaultRecycleRate
+                          )
+  };
 
   // Handle custom emission factor
   if (scope.emissionFactor === 'Custom') {
@@ -107,7 +135,31 @@ const normalizeScopeDetail = (scope) => {
       // GWP override fields
       CO2_gwp: rawCEF.CO2_gwp ?? null,
       CH4_gwp: rawCEF.CH4_gwp ?? null,
-      N2O_gwp: rawCEF.N2O_gwp ?? null
+      N2O_gwp: rawCEF.N2O_gwp ?? null,
+      CO2e_gwp: rawCEF.CO2e_gwp ?? null,
+
+      CO2_comment: rawCEF.CO2_comment || '',
+      CH4_comment: rawCEF.CH4_comment || '',
+      N2O_comment: rawCEF.N2O_comment || '',
+      CO2e_comment: rawCEF.CO2e_comment || '',
+      unit_comment: rawCEF.unit_comment || '',
+      industryAverageEmissionFactor_comment: rawCEF.industryAverageEmissionFactor_comment || '',
+      stoichiometicFactor_comment: rawCEF.stoichiometicFactor_comment || '',
+      conversionEfficiency_comment: rawCEF.conversionEfficiency_comment || '',
+      chargeType_comment: rawCEF.chargeType_comment || '',
+      leakageRate_comment: rawCEF.leakageRate_comment || '',
+      Gwp_refrigerant_comment: rawCEF.Gwp_refrigerant_comment || '',
+      GWP_fugitiveEmission_comment: rawCEF.GWP_fugitiveEmission_comment || '',
+      GWP_SF6_comment: rawCEF.GWP_SF6_comment || '',
+      EmissionFactorFugitiveCH4Leak_comment: rawCEF.EmissionFactorFugitiveCH4Leak_comment || '',
+      GWP_CH4_leak_comment: rawCEF.GWP_CH4_leak_comment || '',
+      EmissionFactorFugitiveCH4Component_comment: rawCEF.EmissionFactorFugitiveCH4Component_comment || '',
+      GWP_CH4_Component_comment: rawCEF.GWP_CH4_Component_comment || '',
+      CO2_gwp_comment: rawCEF.CO2_gwp_comment || '',
+      CH4_gwp_comment: rawCEF.CH4_gwp_comment || '',
+      N2O_gwp_comment: rawCEF.N2O_gwp_comment || '',
+      CO2e_gwp_comment: rawCEF.CO2e_gwp_comment || ''
+
     };
   } else {
     normalizedScope.customEmissionFactor = {
@@ -387,6 +439,44 @@ const getChartUnavailableMessage = (assessmentLevel, chartType) => {
     availableFor
   };
 };
+// Ensures that for each known CEF key, a sibling "<key>_comment" string exists
+const ensureCEFComments = (cef = {}) => {
+  if (!cef || typeof cef !== 'object') return cef;
+
+  const keysNeedingComment = [
+    'CO2','CH4','N2O','CO2e','unit',
+    'industryAverageEmissionFactor','stoichiometicFactor','conversionEfficiency',
+    'chargeType','leakageRate','Gwp_refrigerant','GWP_fugitiveEmission','GWP_SF6',
+    'EmissionFactorFugitiveCH4Leak','GWP_CH4_leak','EmissionFactorFugitiveCH4Component','GWP_CH4_Component',
+    'CO2_gwp','CH4_gwp','N2O_gwp','CO2e_gwp'
+  ];
+
+  const out = { ...cef };
+  for (const k of keysNeedingComment) {
+    const ck = `${k}_comment`;
+    if (out[k] !== undefined && out[ck] === undefined) out[ck] = '';
+  }
+  return out;
+};
+
+// Walk nodes -> scopes and apply ensureCEFComments to customEmissionFactor
+const addCEFCommentsToNodes = (nodes = []) =>
+  nodes.map(node => {
+    const details = node?.details || {};
+    const scopes = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
+    const scoped = scopes.map(s => {
+      const efv = s?.emissionFactorValues || {};
+      if (efv.customEmissionFactor) {
+        efv.customEmissionFactor = ensureCEFComments(efv.customEmissionFactor);
+      }
+      // keep mirror top-level if you use it
+      if (s.customEmissionFactor) {
+        s.customEmissionFactor = ensureCEFComments(s.customEmissionFactor);
+      }
+      return { ...s, emissionFactorValues: efv };
+    });
+    return { ...node, details: { ...details, scopeDetails: scoped } };
+  });
 
 module.exports = {
   validateScopeDetails,
@@ -395,5 +485,6 @@ module.exports = {
   normalizeEdges,
   createChartNotifications,
   isChartAvailable,
-  getChartUnavailableMessage
+  getChartUnavailableMessage,
+  addCEFCommentsToNodes
 };

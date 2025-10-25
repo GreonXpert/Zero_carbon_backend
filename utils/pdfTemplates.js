@@ -1,6 +1,15 @@
 // utils/pdfTemplates.js
 const moment = require('moment');
 
+// Robust string formatter for template fields
+const safeString = (v) => {
+  if (v === null || v === undefined) return '';
+  if (Array.isArray(v)) return v.filter(Boolean).join(', ');
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+};
+
+
 const baseCSS = `
   <style>
     @page { size: A4; margin: 18mm; }
@@ -55,24 +64,81 @@ function renderHeader(client, heading, subtitle) {
 
 /** CLIENT DATA PDF */
 function renderClientDataHTML(client) {
-  const data = client?.submissionData || {};
-  const primary = data?.companyInfo?.primaryContactPerson || {};
-  const alternate = data?.companyInfo?.alternateContactPerson || {};
-  const org = data?.organizationalOverview || {};
-  const emissions = data?.emissionsProfile || {};
-  const ghgData = data?.ghgDataManagement || {};
+  const data       = client?.submissionData || {};
+  const primary    = data?.companyInfo?.primaryContactPerson || {};
+  const alternate  = data?.companyInfo?.alternateContactPerson || {};
+  const org        = data?.organizationalOverview || {};
+  const emissions  = data?.emissionsProfile || {};
+  const ghgData    = data?.ghgDataManagement || {};
   const additional = data?.additionalNotes || {};
-  const docs = data?.supportingDocuments || [];
+  const docs       = data?.supportingDocuments || [];
   const submittedAt = additional?.completionDate || data?.submittedAt;
+
+  // ---- Helpers (match new details shape: { name, description, otherDetails }) ----
+  const detailBlock = (d = {}) => {
+    const out = [
+      d?.name ? `<div><strong>Name:</strong> ${safe(d.name)}</div>` : '',
+      d?.description ? `<div><strong>Description:</strong> ${safe(d.description)}</div>` : '',
+      d?.otherDetails ? `<div><strong>Other details:</strong> ${safe(d.otherDetails)}</div>` : ''
+    ].filter(Boolean).join('');
+    return out || 'Details not provided';
+  };
+
+  const scopeRow = (label, entry) => `
+    <tr>
+      <td><strong>${label}</strong></td>
+      <td>${entry?.included ? '✅ Yes' : '❌ No'}</td>
+      <td class="muted">${entry?.included ? detailBlock(entry?.details || {}) : 'Not included'}</td>
+    </tr>
+  `;
+
+  const catLabel = (key) => ({
+    businessTravel: 'Business Travel',
+    employeeCommuting: 'Employee Commuting',
+    wasteGenerated: 'Waste Generated',
+    upstreamTransportation: 'Upstream Transportation',
+    downstreamTransportation: 'Downstream Transportation',
+    purchasedGoodsAndServices: 'Purchased Goods & Services',
+    capitalGoods: 'Capital Goods',
+    fuelAndEnergyRelated: 'Fuel & Energy Related',
+    upstreamLeasedAssets: 'Upstream Leased Assets',
+    downstreamLeasedAssets: 'Downstream Leased Assets',
+    processingOfSoldProducts: 'Processing of Sold Products',
+    useOfSoldProducts: 'Use of Sold Products',
+    endOfLifeTreatment: 'End-of-Life Treatment',
+    franchises: 'Franchises',
+    investments: 'Investments'
+  }[key] || key);
+
+  const orderedScope3Keys = [
+    'businessTravel','employeeCommuting','wasteGenerated',
+    'upstreamTransportation','downstreamTransportation',
+    'purchasedGoodsAndServices','capitalGoods','fuelAndEnergyRelated',
+    'upstreamLeasedAssets','downstreamLeasedAssets',
+    'processingOfSoldProducts','useOfSoldProducts',
+    'endOfLifeTreatment','franchises','investments'
+  ];
+
+  // Safely build assessment level text (array or string) to avoid .toUpperCase on non-strings
+  const assessmentLevelsText = (
+    Array.isArray(data.assessmentLevel) ? data.assessmentLevel :
+    (data.assessmentLevel ? [data.assessmentLevel] : [])
+  )
+    .map(s => String(s || '').trim())
+    .filter(Boolean)
+    .join(', ')
+    .toUpperCase() || '—';
+
+  // Build subtitle separately to avoid nested template-literal escaping issues
+  const subtitle =
+    `Generated on ${moment().format('DD MMM YYYY, HH:mm')} • ` +
+    `Stage: ${client.stage} • Status: ${client.status} • ` +
+    `Assessment Level: ${assessmentLevelsText}`;
 
   return `
     <!doctype html><html><head><meta charset="utf-8" />${baseCSS}</head>
     <body>
-      ${renderHeader(
-        client,
-        'Client Data Snapshot',
-        `Generated on ${moment().format('DD MMM YYYY, HH:mm')} • Stage: ${client.stage} • Status: ${client.status} • Assessment Level: ${safe(data.assessmentLevel).toUpperCase()}`
-      )}
+      ${renderHeader(client, 'Client Data Snapshot', subtitle)}
 
       <div class="card">
         <div class="badge">Company Information</div>
@@ -146,20 +212,20 @@ function renderClientDataHTML(client) {
             </tr>
           </thead>
           <tbody>
-            ${org.sitesDetails?.map((site, index) => {
-              const employeeInfo = org.employeesByFacility?.find(emp => 
-                emp.facilityName === site.siteName
-              ) || {};
-              return `
-                <tr>
-                  <td><strong>${safe(site.siteName)}</strong></td>
-                  <td>${safe(site.location)}</td>
-                  <td>${safe(site.operation)}</td>
-                  <td>${safe(site.productionCapacity)}</td>
-                  <td>${safe(employeeInfo.employeeCount, 0)}</td>
-                </tr>
-              `;
-            }).join('') || '<tr><td colspan="5" class="muted">No site details provided</td></tr>'}
+            ${
+              org.sitesDetails?.map(site => {
+                const employeeInfo = org.employeesByFacility?.find(emp => emp.facilityName === site.siteName) || {};
+                return `
+                  <tr>
+                    <td><strong>${safe(site.siteName)}</strong></td>
+                    <td>${safe(site.location)}</td>
+                    <td>${safe(site.operation)}</td>
+                    <td>${safe(site.productionCapacity)} ${safe(site.unit)}</td>
+                    <td>${safe(employeeInfo.employeeCount, 0)}</td>
+                  </tr>
+                `;
+              }).join('') || '<tr><td colspan="5" class="muted">No site details provided</td></tr>'
+            }
           </tbody>
         </table>
       </div>
@@ -167,48 +233,12 @@ function renderClientDataHTML(client) {
       <div class="card">
         <div class="badge">Scope 1 Emissions - Direct Emissions</div>
         <table>
-          <thead>
-            <tr>
-              <th>Category</th>
-              <th>Included</th>
-              <th>Details</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Category</th><th>Included</th><th>Details</th></tr></thead>
           <tbody>
-            <tr>
-              <td><strong>Stationary Combustion</strong></td>
-              <td>${emissions.scope1?.stationaryCombustion?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">
-                ${emissions.scope1?.stationaryCombustion?.included ? `
-                  Fuel: ${safe(emissions.scope1.stationaryCombustion.details?.fuelType)}<br>
-                  Quantity: ${safe(emissions.scope1.stationaryCombustion.details?.quantityUsed)}<br>
-                  Equipment: ${safe(emissions.scope1.stationaryCombustion.details?.equipmentType)}<br>
-                  Hours: ${safe(emissions.scope1.stationaryCombustion.details?.operationalHours)}
-                ` : 'Not included'}
-              </td>
-            </tr>
-            <tr>
-              <td><strong>Mobile Combustion</strong></td>
-              <td>${emissions.scope1?.mobileCombustion?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">
-                ${emissions.scope1?.mobileCombustion?.included ? `
-                  Vehicle: ${safe(emissions.scope1.mobileCombustion.details?.vehicleType)}<br>
-                  Fuel: ${safe(emissions.scope1.mobileCombustion.details?.fuelType)}<br>
-                  Distance: ${safe(emissions.scope1.mobileCombustion.details?.distanceTraveled)}<br>
-                  Consumption: ${safe(emissions.scope1.mobileCombustion.details?.fuelConsumed)}
-                ` : 'Not included'}
-              </td>
-            </tr>
-            <tr>
-              <td><strong>Process Emissions</strong></td>
-              <td>${emissions.scope1?.processEmissions?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">${emissions.scope1?.processEmissions?.included ? 'Details provided' : 'Not included'}</td>
-            </tr>
-            <tr>
-              <td><strong>Fugitive Emissions</strong></td>
-              <td>${emissions.scope1?.fugitiveEmissions?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">${emissions.scope1?.fugitiveEmissions?.included ? 'Details provided' : 'Not included'}</td>
-            </tr>
+            ${scopeRow('Stationary Combustion', emissions.scope1?.stationaryCombustion)}
+            ${scopeRow('Mobile Combustion',     emissions.scope1?.mobileCombustion)}
+            ${scopeRow('Process Emissions',     emissions.scope1?.processEmissions)}
+            ${scopeRow('Fugitive Emissions',    emissions.scope1?.fugitiveEmissions)}
           </tbody>
         </table>
       </div>
@@ -216,31 +246,10 @@ function renderClientDataHTML(client) {
       <div class="card">
         <div class="badge">Scope 2 Emissions - Indirect Energy Emissions</div>
         <table>
-          <thead>
-            <tr>
-              <th>Category</th>
-              <th>Included</th>
-              <th>Details</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Category</th><th>Included</th><th>Details</th></tr></thead>
           <tbody>
-            <tr>
-              <td><strong>Purchased Electricity</strong></td>
-              <td>${emissions.scope2?.purchasedElectricity?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">
-                ${emissions.scope2?.purchasedElectricity?.included ? `
-                  Monthly: ${safe(emissions.scope2.purchasedElectricity.details?.monthlyConsumption)}<br>
-                  Annual: ${safe(emissions.scope2.purchasedElectricity.details?.annualConsumption)}<br>
-                  Supplier: ${safe(emissions.scope2.purchasedElectricity.details?.supplierDetails)}<br>
-                  Unit: ${safe(emissions.scope2.purchasedElectricity.details?.unit)}
-                ` : 'Not included'}
-              </td>
-            </tr>
-            <tr>
-              <td><strong>Purchased Steam/Heating</strong></td>
-              <td>${emissions.scope2?.purchasedSteamHeating?.included ? '✅ Yes' : '❌ No'}</td>
-              <td class="muted">${emissions.scope2?.purchasedSteamHeating?.included ? 'Details provided' : 'Not included'}</td>
-            </tr>
+            ${scopeRow('Purchased Electricity',   emissions.scope2?.purchasedElectricity)}
+            ${scopeRow('Purchased Steam/Heating', emissions.scope2?.purchasedSteamHeating)}
           </tbody>
         </table>
       </div>
@@ -257,68 +266,57 @@ function renderClientDataHTML(client) {
             <div class="value" style="font-weight:500;">${safe(emissions.scope3?.otherIndirectSources)}</div>
           </div>
         </div>
-        ${emissions.scope3?.includeScope3 ? `
-          <table style="margin-top: 12px;">
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Included</th>
-                <th>Category</th>
-                <th>Included</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Business Travel</td>
-                <td>${emissions.scope3?.categories?.businessTravel ? '✅' : '❌'}</td>
-                <td>Employee Commuting</td>
-                <td>${emissions.scope3?.categories?.employeeCommuting ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Waste Generated</td>
-                <td>${emissions.scope3?.categories?.wasteGenerated ? '✅' : '❌'}</td>
-                <td>Upstream Transportation</td>
-                <td>${emissions.scope3?.categories?.upstreamTransportation ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Downstream Transportation</td>
-                <td>${emissions.scope3?.categories?.downstreamTransportation ? '✅' : '❌'}</td>
-                <td>Purchased Goods & Services</td>
-                <td>${emissions.scope3?.categories?.purchasedGoodsAndServices ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Capital Goods</td>
-                <td>${emissions.scope3?.categories?.capitalGoods ? '✅' : '❌'}</td>
-                <td>Fuel & Energy Related</td>
-                <td>${emissions.scope3?.categories?.fuelAndEnergyRelated ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Upstream Leased Assets</td>
-                <td>${emissions.scope3?.categories?.upstreamLeasedAssets ? '✅' : '❌'}</td>
-                <td>Downstream Leased Assets</td>
-                <td>${emissions.scope3?.categories?.downstreamLeasedAssets ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Processing of Sold Products</td>
-                <td>${emissions.scope3?.categories?.processingOfSoldProducts ? '✅' : '❌'}</td>
-                <td>Use of Sold Products</td>
-                <td>${emissions.scope3?.categories?.useOfSoldProducts ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>End-of-Life Treatment</td>
-                <td>${emissions.scope3?.categories?.endOfLifeTreatment ? '✅' : '❌'}</td>
-                <td>Franchises</td>
-                <td>${emissions.scope3?.categories?.franchises ? '✅' : '❌'}</td>
-              </tr>
-              <tr>
-                <td>Investments</td>
-                <td>${emissions.scope3?.categories?.investments ? '✅' : '❌'}</td>
-                <td></td>
-                <td></td>
-              </tr>
-            </tbody>
-          </table>
-        ` : ''}
+
+        ${
+          emissions.scope3?.includeScope3 ? `
+            <table style="margin-top: 12px;">
+              <thead>
+                <tr>
+                  <th>Category</th><th>Included</th>
+                  <th>Category</th><th>Included</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(() => {
+                  const cats = emissions.scope3?.categories || {};
+                  const rows = [];
+                  for (let i = 0; i < orderedScope3Keys.length; i += 2) {
+                    const k1 = orderedScope3Keys[i];
+                    const k2 = orderedScope3Keys[i + 1];
+                    rows.push(`
+                      <tr>
+                        <td>${catLabel(k1)}</td><td>${cats[k1] ? '✅' : '❌'}</td>
+                        <td>${k2 ? catLabel(k2) : ''}</td><td>${k2 ? (cats[k2] ? '✅' : '❌') : ''}</td>
+                      </tr>
+                    `);
+                  }
+                  return rows.join('');
+                })()}
+              </tbody>
+            </table>
+
+            <div class="badge" style="margin-top:16px;">Scope 3 Category Details</div>
+            <table>
+              <thead><tr><th>Category</th><th>Details</th></tr></thead>
+              <tbody>
+                ${
+                  orderedScope3Keys.map(k => {
+                    const included = emissions.scope3?.categories?.[k];
+                    if (!included) return '';
+                    // NEW SHAPE: read from categoriesDetails[k].details (generic details object)
+                    const det = emissions.scope3?.categoriesDetails?.[k]?.details || {};
+                    return `
+                      <tr>
+                        <td><strong>${catLabel(k)}</strong></td>
+                        <td class="muted">${detailBlock(det)}</td>
+                      </tr>
+                    `;
+                  }).join('') || '<tr><td colspan="2" class="muted">No scope 3 categories selected</td></tr>'
+                }
+              </tbody>
+            </table>
+          ` : ''
+        }
       </div>
 
       <div class="card">
@@ -327,12 +325,14 @@ function renderClientDataHTML(client) {
           <div class="col">
             <div class="label">Previous Carbon Accounting</div>
             <div class="value">${ghgData.previousCarbonAccounting?.conducted ? '✅ Yes' : '❌ No'}</div>
-            ${ghgData.previousCarbonAccounting?.conducted ? `
-              <div class="muted" style="margin-top: 6px;">
-                Details: ${safe(ghgData.previousCarbonAccounting.details)}<br>
-                Methodologies: ${safe(ghgData.previousCarbonAccounting.methodologies)}
-              </div>
-            ` : ''}
+            ${
+              ghgData.previousCarbonAccounting?.conducted ? `
+                <div class="muted" style="margin-top: 6px;">
+                  Details: ${safe(ghgData.previousCarbonAccounting.details)}<br>
+                  Methodologies: ${safe(ghgData.previousCarbonAccounting.methodologies)}
+                </div>
+              ` : ''
+            }
           </div>
           <div class="col">
             <div class="label">ISO Compliance</div>
@@ -359,43 +359,25 @@ function renderClientDataHTML(client) {
         </div>
       </div>
 
-      <div class="card">
-        <div class="badge">Additional Information & Requirements</div>
-        <div class="row">
-          <div class="col">
-            <div class="label">Stakeholder Requirements</div>
-            <div class="value" style="font-weight:500; line-height:1.4;">${safe(additional.stakeholderRequirements)}</div>
+      ${
+        docs.length > 0 ? `
+          <div class="card">
+            <div class="badge">Supporting Documents (${docs.length})</div>
+            <table>
+              <thead><tr><th>Document Name</th><th>Type</th><th>Uploaded At</th></tr></thead>
+              <tbody>
+                ${docs.map(doc => `
+                  <tr>
+                    <td><strong>${safe(doc.name)}</strong></td>
+                    <td>${safe(doc.documentType)}</td>
+                    <td class="muted">${doc.uploadedAt ? moment(doc.uploadedAt).format('DD MMM YYYY, HH:mm') : '—'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
           </div>
-          <div class="col">
-            <div class="label">Additional Expectations</div>
-            <div class="value" style="font-weight:500; line-height:1.4;">${safe(additional.additionalExpectations)}</div>
-          </div>
-        </div>
-      </div>
-
-      ${docs.length > 0 ? `
-        <div class="card">
-          <div class="badge">Supporting Documents (${docs.length})</div>
-          <table>
-            <thead>
-              <tr>
-                <th>Document Name</th>
-                <th>Type</th>
-                <th>Uploaded At</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${docs.map(doc => `
-                <tr>
-                  <td><strong>${safe(doc.name)}</strong></td>
-                  <td>${safe(doc.documentType)}</td>
-                  <td class="muted">${doc.uploadedAt ? moment(doc.uploadedAt).format('DD MMM YYYY, HH:mm') : '—'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      ` : ''}
+        ` : ''
+      }
 
       <div style="margin-top: 40px; padding: 20px; background: #f8fafc; border-radius: 8px; text-align: center; color: #6b7280; font-size: 12px;">
         <strong>ZeroCarbon Platform</strong> • Generated on ${moment().format('DD MMM YYYY, HH:mm [IST]')} • Confidential Document
@@ -403,6 +385,7 @@ function renderClientDataHTML(client) {
     </body></html>
   `;
 }
+
 
 
 /** PROPOSAL PDF */

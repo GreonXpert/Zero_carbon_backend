@@ -12,9 +12,7 @@ const {
   deleteClientData,
   getClientSubmissionData,     
   moveToProposal,
-  createProposal,
-  editProposal,
-  deleteProposal,
+ 
   updateProposalStatus,
   getClientProposalData,
   getClients,
@@ -61,9 +59,7 @@ router.get("/:clientId/submission-data", getClientSubmissionData); // Get submit
 router.patch("/:clientId/move-to-proposal", moveToProposal); // Move to stage 3
 
 // Proposal Management (Stage 3)
-router.post("/:clientId/proposal", createProposal); // Create proposal
-router.put("/:clientId/proposal", editProposal); // Edit proposal (consultant_admin only)
-router.delete("/:clientId/proposal", deleteProposal); // Delete proposal (consultant_admin only)
+
 router.patch("/:clientId/proposal-status", updateProposalStatus); // Accept/Reject proposal
 router.get("/:clientId/proposal-data", getClientProposalData); // Get proposal data for a client
 

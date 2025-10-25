@@ -42,6 +42,90 @@ async function getScopeConfigWithAssessmentSource(clientId, nodeId, scopeIdentif
 }
 
 
+// Helper to safely extract assetLifetime from scope details (processFlowchart or flowchart)
+function getAssetLifetimeFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    // accept a few common spellings/keys; first positive number wins
+    const candidates = [
+      scope?.assetLifetime, scope?.asset_lifetime, scope?.assetLife,
+      ai?.assetLifetime,    ai?.asset_lifetime,    ai?.assetLife,
+      cv?.assetLifetime,    cv?.asset_lifetime,    cv?.assetLife,
+      ai?.lifetime,         cv?.lifetime,          scope?.lifetime
+    ];
+
+    for (const v of candidates) {
+      if (typeof v === 'number' && isFinite(v) && v > 0) return v;
+      if (typeof v === 'string' && v.trim() && !isNaN(Number(v))) {
+        const num = Number(v);
+        if (isFinite(num) && num > 0) return num;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Helper: read T&D Loss factor from scope config (process flowchart preferred, else flowchart)
+// Looks inside: additionalInfo.customValue.TDLossFactor (and a few common variants)
+function getTDLossFactorFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    const candidates = [
+      scope?.TDLossFactor, scope?.tdLossFactor, scope?.tdloss,
+      ai?.TDLossFactor,    ai?.tdLossFactor,    ai?.tdloss,
+      cv?.TDLossFactor,    cv?.tdLossFactor,    cv?.tdloss
+    ];
+
+    for (const v of candidates) {
+      if (typeof v === 'number' && isFinite(v)) return v;
+      if (typeof v === 'string' && v.trim() && !isNaN(Number(v))) return Number(v);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+
+// Helper: read defaultRecyclingRate from scope config (prefers process flowchart; falls back to main)
+// Accepts fractional (0–1) or percent (0–100). Clamps to [0, 1]. Returns 0 if not found.
+function getDefaultRecyclingRateFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    const candidates = [
+      scope?.defaultRecyclingRate, scope?.recyclingRateDefault, scope?.recyclingRate, scope?.defaultRecycleRate,
+      ai?.defaultRecyclingRate,    ai?.recyclingRateDefault,    ai?.recyclingRate,    ai?.defaultRecycleRate,
+      cv?.defaultRecyclingRate,    cv?.recyclingRateDefault,    cv?.recyclingRate,    cv?.defaultRecycleRate,
+    ];
+
+    for (let v of candidates) {
+      if (v == null) continue;
+      // normalize strings
+      if (typeof v === 'string' && v.trim() && !isNaN(Number(v))) v = Number(v);
+
+      if (typeof v === 'number' && isFinite(v)) {
+        // If given as percent > 1, convert to fraction
+        let r = (v > 1) ? v / 100 : v;
+        // clamp to [0,1]
+        if (r < 0) r = 0;
+        if (r > 1) r = 1;
+        return r;
+      }
+    }
+    return 0; // default (no change vs legacy)
+  } catch {
+    return 0;
+  }
+}
+
 
 
 /**
@@ -679,25 +763,35 @@ async function calculateScope3Emissions(
       CO2eWithUncertainty: cum + uCum
     };
   } else if (tier === 'tier 2') {
-    // Tier 2: quantity-based
-    const qty    = dataValues.assetQuantity     ?? 0;
-    const cumQty = cumulativeVals.assetQuantity ?? 0;
-    const inc    = qty * ef;
-    const cum    = cumQty * ef;
-    const uInc   = calculateUncertainty(inc, UAD, UEF);
-    const uCum   = calculateUncertainty(cum, UAD, UEF);
+ } else if (tier === 'tier 2') {
+  // Tier 2: quantity-based with lifetime allocation
+  const qty    = dataValues.assetQuantity     ?? 0;
+  const cumQty = cumulativeVals.assetQuantity ?? 0;
 
-    emissions.incoming['capital_goods'] = {
-      CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
-    };
-    emissions.cumulative['capital_goods'] = {
-      CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
-    };
-  }
+  // Read assetLifetime from the scope configuration (process flowchart preferred, fallback to flowchart)
+  // Expected location: scope.details.scopeDetails[].additionalInfo.customValue.assetLifetime (or shallow)
+  const rawLifetime  = getAssetLifetimeFromScope(scopeConfig);
+  const assetLifetime = (typeof rawLifetime === 'number' && isFinite(rawLifetime) && rawLifetime > 0)
+    ? rawLifetime
+    : 1; // safe fallback to avoid divide-by-zero and preserve previous behavior
+
+  const inc  = (qty    * ef) / assetLifetime;
+  const cum  = (cumQty * ef) / assetLifetime;
+
+  const uInc = calculateUncertainty(inc, UAD, UEF);
+  const uCum = calculateUncertainty(cum, UAD, UEF);
+
+  emissions.incoming['capital_goods'] = {
+    CO2e: inc,
+    combinedUncertainty: uInc,
+    CO2eWithUncertainty: inc + uInc
+  };
+  emissions.cumulative['capital_goods'] = {
+    CO2e: cum,
+    combinedUncertainty: uCum,
+    CO2eWithUncertainty: cum + uCum
+  };
+}
   break;
 
      // ───────── Fuel and energy (3) ─────────
@@ -707,7 +801,8 @@ async function calculateScope3Emissions(
   const cumFc = cumulativeVals.fuelConsumed       ?? 0;
   const ec    = dataValues.electricityConsumption ?? 0;
   const cumEc = cumulativeVals.electricityConsumption ?? 0;
-  const td    = dataValues.tdLossFactor           ?? 0;
+  const tdCfg = getTDLossFactorFromScope(scopeConfig);
+  const td    = (tdCfg !== null) ? tdCfg : (dataValues.tdLossFactor ?? dataValues.TDLossFactor ?? 0);
   const cf    = dataValues.fuelConsumption        ?? 0;
   const cumCf = cumulativeVals.fuelConsumption ?? 0;
 
@@ -819,47 +914,66 @@ async function calculateScope3Emissions(
 
       // ───────── Waste Generated in Operation (5) ─────────
     case 'Waste Generated in Operation':
-      if (tier === 'tier 1') {
-        // Tier 1: waste mass × waste‐type EF
-        const mass    = dataValues.wasteMass          ?? 0;
-        const cumMass = cumulativeVals.wasteMass      ?? 0;
-        const inc     = mass * ef;
-        const cum     = cumMass * ef;
-        const uInc    = calculateUncertainty(inc, UAD, UEF);
-        const uCum    = calculateUncertainty(cum, UAD, UEF);
+  if (tier === 'tier 1') {
+    // Tier 1: wasteMass × EF × (1 − defaultRecyclingRate)
+    const mass    = dataValues.wasteMass     ?? 0;
+    const cumMass = cumulativeVals.wasteMass ?? 0;
 
-        emissions.incoming['waste_generated_in_operation'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['waste_generated_in_operation'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      else if (tier === 'tier 2') {
-        // Tier 2: mass of each waste type × treatment‐specific EF
-        const mass    = dataValues.wasteMass            ?? 0;
-        const cumMass = cumulativeVals.wasteMass        ?? 0;
-        const inc     = mass * ef;
-        const cum     = cumMass * ef;
-        const uInc    = calculateUncertainty(inc, UAD, UEF);
-        const uCum    = calculateUncertainty(cum, UAD, UEF);
+    // Prefer flowchart config → fallback to legacy data-entry value
+    // Accepts 0–1 or 0–100 and clamps to [0,1]
+    const cfgRate = getDefaultRecyclingRateFromScope(scopeConfig);
+    let entryRate = dataValues.defaultRecyclingRate;
+    if (typeof entryRate === 'string' && entryRate.trim() && !isNaN(Number(entryRate))) {
+      entryRate = Number(entryRate);
+    }
+    if (typeof entryRate !== 'number' || !isFinite(entryRate)) entryRate = 0;
+    // normalize legacy entry percent if needed
+    if (entryRate > 1) entryRate = entryRate / 100;
+    if (entryRate < 0) entryRate = 0;
+    if (entryRate > 1) entryRate = 1;
 
-        emissions.incoming['waste_generated_in_operation'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['waste_generated_in_operation'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      break;
+    const r = (cfgRate ?? 0);           // take config rate (default 0 via helper)
+    const effRate = (r !== 0) ? r : entryRate;  // prefer config; else fallback to data entry
+
+    const inc = mass    * ef * (1 - effRate);
+    const cum = cumMass * ef * (1 - effRate);
+
+    const uInc = calculateUncertainty(inc, UAD, UEF);
+    const uCum = calculateUncertainty(cum, UAD, UEF);
+
+    emissions.incoming['waste_generated_in_operation'] = {
+      CO2e: inc,
+      combinedUncertainty: uInc,
+      CO2eWithUncertainty: inc + uInc
+    };
+    emissions.cumulative['waste_generated_in_operation'] = {
+      CO2e: cum,
+      combinedUncertainty: uCum,
+      CO2eWithUncertainty: cum + uCum
+    };
+  }
+  else if (tier === 'tier 2') {
+    // (unchanged) Tier 2: mass × treatment‐specific EF
+    const mass    = dataValues.wasteMass     ?? 0;
+    const cumMass = cumulativeVals.wasteMass ?? 0;
+    const inc     = mass * ef;
+    const cum     = cumMass * ef;
+    const uInc    = calculateUncertainty(inc, UAD, UEF);
+    const uCum    = calculateUncertainty(cum, UAD, UEF);
+
+    emissions.incoming['waste_generated_in_operation'] = {
+      CO2e: inc,
+      combinedUncertainty: uInc,
+      CO2eWithUncertainty: inc + uInc
+    };
+    emissions.cumulative['waste_generated_in_operation'] = {
+      CO2e: cum,
+      combinedUncertainty: uCum,
+      CO2eWithUncertainty: cum + uCum
+    };
+  }
+  break;
+
      
      // ───────── Business Travel ─────────
     // ───────── Business Travel (6) ─────────

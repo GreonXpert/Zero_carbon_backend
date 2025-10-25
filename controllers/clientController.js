@@ -1727,17 +1727,18 @@ const submitClientData = async (req, res) => {
 };
 
 // ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
+// ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
 const updateClientData = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // B) Find the client record
+    // A) Find the client record
     const client = await Client.findOne({ clientId });
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
 
-    // C) Must be in "registered" stage and not yet active
+    // B) Must be in "registered" stage and not yet active
     if (client.stage !== "registered" || client.status === "active") {
       return res.status(400).json({
         message:
@@ -1745,7 +1746,7 @@ const updateClientData = async (req, res) => {
       });
     }
 
-    // D) Only the Consultant Admin who created the lead or the assigned consultant may update
+    // C) Only the Consultant Admin who created the lead or the assigned consultant may update
     const creatorId = client.leadInfo.createdBy?.toString();
     const assignedConsultantId = client.leadInfo.assignedConsultantId?.toString();
     if (req.user.id !== creatorId && req.user.id !== assignedConsultantId) {
@@ -1754,93 +1755,212 @@ const updateClientData = async (req, res) => {
           "You can only update submission data if you created this client or are the assigned consultant",
       });
     }
-      // --- Normalize/validate assessmentLevel on the merged result ---
-      const merged = { ...(client.submissionData?.toObject?.() ? client.submissionData.toObject() : client.submissionData), ...payload };
 
-      // normalize levels (accepts string or array, 'organisation' alias)
-      const normalizedLevels = normalizeAssessmentLevels(merged.assessmentLevel);
-      merged.assessmentLevel = normalizedLevels.length ? normalizedLevels : [];
-
-      // validate conditional requirements
-      const { errors } = validateSubmissionForLevels(merged, normalizedLevels);
-      if (errors.length) {
-        return res.status(400).json({ message: "Validation error", errors });
-      }
-
-// write back normalized levels (in case payload had different shape)
-client.submissionData.assessmentLevel = normalizedLevels;
-    // E) Extract the nested object from body:
-    const payload = req.body.submissionData;
+    // D) Extract payload (REQUIRED)
+    const payload = req.body?.submissionData;
     if (!payload || typeof payload !== "object") {
       return res.status(400).json({
         message: "Request must contain a 'submissionData' object",
       });
     }
 
-    // Store previous assessment level for comparison (handle undefined cases)
-    const previousAssessmentLevel = client.submissionData?.assessmentLevel || null;
+    // E) Helpers for unified emissions-profile details + deep merge
+    const SCOPE1_KEYS = [
+      "stationaryCombustion",
+      "mobileCombustion",
+      "processEmissions",
+      "fugitiveEmissions",
+    ];
+    const SCOPE2_KEYS = ["purchasedElectricity", "purchasedSteamHeating"];
+    const SCOPE3_KEYS = [
+      "businessTravel",
+      "employeeCommuting",
+      "wasteGenerated",
+      "upstreamTransportation",
+      "downstreamTransportation",
+      "purchasedGoodsAndServices",
+      "capitalGoods",
+      "fuelAndEnergyRelated",
+      "upstreamLeasedAssets",
+      "downstreamLeasedAssets",
+      "processingOfSoldProducts",
+      "useOfSoldProducts",
+      "endOfLifeTreatment",
+      "franchises",
+      "investments",
+    ];
 
-    // F) For each key in payload (e.g. "organizationalOverview"), merge its subfields:
+    const mergeDetails = (existing = {}, incoming = {}) => ({
+      name: incoming.name ?? existing.name ?? "",
+      description: incoming.description ?? existing.description ?? "",
+      otherDetails: incoming.otherDetails ?? existing.otherDetails ?? "",
+    });
+
+    const normalizeLocal = (levels) => {
+      if (!levels) return [];
+      const arr = Array.isArray(levels) ? levels : [levels];
+      return Array.from(
+        new Set(
+          arr
+            .map((s) => String(s || "").trim().toLowerCase())
+            .filter(Boolean)
+            .map((s) => (s === "organisation" ? "organization" : s))
+        )
+      );
+    };
+
+    const validateLocal =
+      typeof validateSubmissionForLevels === "function"
+        ? validateSubmissionForLevels
+        : () => ({ errors: [] });
+
+    // F) Build a "next state" (plain object) to validate before writing to the doc
+    const current =
+      client.submissionData?.toObject?.() ??
+      JSON.parse(JSON.stringify(client.submissionData || {}));
+    const next = { ...current };
+
+    // Generic shallow merge for non-emissionsProfile keys
     Object.keys(payload).forEach((key) => {
-      // Ensure that this key actually exists in client.submissionData
-      if (client.submissionData[key] && typeof client.submissionData[key] === "object") {
-        client.submissionData[key] = {
-          ...client.submissionData[key],
-          ...payload[key],
-        };
-      } else {
-        // If the subdocument key did not exist before, simply assign it:
-        client.submissionData[key] = payload[key];
+      if (key !== "emissionsProfile") {
+        const prevVal =
+          next[key] && typeof next[key] === "object" ? next[key] : {};
+        const incVal =
+          payload[key] && typeof payload[key] === "object" ? payload[key] : payload[key];
+        next[key] =
+          typeof incVal === "object" && !Array.isArray(incVal)
+            ? { ...prevVal, ...incVal }
+            : incVal;
       }
     });
 
-    // G) Update timestamp
+    // Specialized deep merge for emissionsProfile (unified details shape)
+    if (payload.emissionsProfile) {
+      next.emissionsProfile = next.emissionsProfile || {};
+
+      // Scope 1
+      const incS1 = payload.emissionsProfile.scope1 || {};
+      next.emissionsProfile.scope1 = next.emissionsProfile.scope1 || {};
+      SCOPE1_KEYS.forEach((k) => {
+        const prev = next.emissionsProfile.scope1[k] || {
+          included: false,
+          details: {},
+        };
+        const inc = incS1[k] || {};
+        next.emissionsProfile.scope1[k] = {
+          included:
+            typeof inc.included === "boolean" ? inc.included : prev.included ?? false,
+          details: mergeDetails(prev.details, inc.details),
+        };
+      });
+
+      // Scope 2
+      const incS2 = payload.emissionsProfile.scope2 || {};
+      next.emissionsProfile.scope2 = next.emissionsProfile.scope2 || {};
+      SCOPE2_KEYS.forEach((k) => {
+        const prev = next.emissionsProfile.scope2[k] || {
+          included: false,
+          details: {},
+        };
+        const inc = incS2[k] || {};
+        next.emissionsProfile.scope2[k] = {
+          included:
+            typeof inc.included === "boolean" ? inc.included : prev.included ?? false,
+          details: mergeDetails(prev.details, inc.details),
+        };
+      });
+
+      // Scope 3
+      const incS3 = payload.emissionsProfile.scope3 || {};
+      const prevS3 = next.emissionsProfile.scope3 || {};
+      next.emissionsProfile.scope3 = {
+        includeScope3:
+          typeof incS3.includeScope3 === "boolean"
+            ? incS3.includeScope3
+            : prevS3.includeScope3 ?? false,
+        categories: {
+          ...(prevS3.categories || {}),
+          ...(incS3.categories || {}),
+        },
+        categoriesDetails: {},
+        otherIndirectSources:
+          incS3.otherIndirectSources ?? prevS3.otherIndirectSources ?? "",
+      };
+
+      const prevCD = prevS3.categoriesDetails || {};
+      const incCD = incS3.categoriesDetails || {};
+      SCOPE3_KEYS.forEach((k) => {
+        const prev = (prevCD[k] && prevCD[k].details) || {};
+        const inc = (incCD[k] && incCD[k].details) || {};
+        next.emissionsProfile.scope3.categoriesDetails[k] = {
+          details: mergeDetails(prev, inc),
+        };
+      });
+    }
+
+    // G) Normalize & validate assessmentLevel on the next state
+    const prevAssessmentLevel = client.submissionData?.assessmentLevel || null;
+    const normalizedLevels =
+      typeof normalizeAssessmentLevels === "function"
+        ? normalizeAssessmentLevels(next.assessmentLevel)
+        : normalizeLocal(next.assessmentLevel);
+
+    next.assessmentLevel = normalizedLevels.length ? normalizedLevels : [];
+
+    const { errors } = validateLocal(next, normalizedLevels);
+    if (errors.length) {
+      return res.status(400).json({ message: "Validation error", errors });
+    }
+
+    // H) Write back "next" into the real document
+    client.submissionData = next; // safe: subdoc assignment; mongoose will cast
     client.submissionData.updatedAt = new Date();
 
-    // H) Check if assessmentLevel was updated and update workflow accordingly
+    // I) Update workflow if assessmentLevel changed
     const newAssessmentLevel = client.submissionData.assessmentLevel;
-    if (newAssessmentLevel && newAssessmentLevel !== previousAssessmentLevel) {
-      // Update workflow tracking based on new assessment level
+    const changed =
+      JSON.stringify(newAssessmentLevel) !== JSON.stringify(prevAssessmentLevel);
+
+    if (changed && typeof client.updateWorkflowBasedOnAssessment === "function") {
       client.updateWorkflowBasedOnAssessment();
 
-      // Add timeline entry for workflow update
+      client.timeline = client.timeline || [];
       client.timeline.push({
         stage: "registered",
         status: "updated",
         action: "Workflow updated based on assessment level",
         performedBy: req.user.id,
-        notes: `Assessment level changed from '${previousAssessmentLevel || 'none'}' to '${newAssessmentLevel}'. Workflow tracking updated accordingly.`,
+        notes: `Assessment level changed from '${Array.isArray(prevAssessmentLevel) ? prevAssessmentLevel.join(", ") : prevAssessmentLevel || "none"}' to '${Array.isArray(newAssessmentLevel) ? newAssessmentLevel.join(", ") : newAssessmentLevel}'. Workflow tracking updated accordingly.`,
       });
     }
 
     await client.save();
 
+    // J) Emits
+    await emitClientListUpdate(client, "updated", req.user.id);
 
-
-    // Regular update
-    await emitClientListUpdate(client, 'updated', req.user.id);
-
-    // ADD THIS: Targeted update for users viewing registered clients
-    if (client.stage === 'registered') {
-        await emitTargetedClientUpdate(
-            client,
-            'data_submission_updated',
-            req.user.id,
-            {
-                stage: 'registered',
-                hasDataSubmission: true,
-                dataCompleteness: client.calculateDataCompleteness()
-            }
-        );
+    if (client.stage === "registered") {
+      await emitTargetedClientUpdate(client, "data_submission_updated", req.user.id, {
+        stage: "registered",
+        hasDataSubmission: true,
+        dataCompleteness:
+          typeof client.calculateDataCompleteness === "function"
+            ? client.calculateDataCompleteness()
+            : undefined,
+      });
     }
-    
+
+    // K) Email / PDF (best-effort)
     try {
       const html = renderClientDataHTML(client);
-      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_ClientData_${client.clientId}.pdf`);
+      const pdf = await htmlToPdfBuffer(
+        html,
+        `ZeroCarbon_ClientData_${client.clientId}.pdf`
+      );
       await sendClientDataUpdatedEmail(client, [pdf]);
-      console.log('✉️ Client data updated email sent with PDF.');
+      console.log("✉️ Client data updated email sent with PDF.");
     } catch (e) {
-      console.error('Email/PDF (updateClientData) error:', e.message);
+      console.error("Email/PDF (updateClientData) error:", e.message);
     }
 
     return res.status(200).json({
@@ -1859,6 +1979,7 @@ client.submissionData.assessmentLevel = normalizedLevels;
     });
   }
 };
+
 
 
 
@@ -1929,84 +2050,49 @@ const deleteClientData = async (req, res) => {
       },
 
       // 3) emissionsProfile defaults
-      emissionsProfile: {
-        scope1: {
-          stationaryCombustion: {
-            included: false,
-            details: {
-              fuelType: "",
-              quantityUsed: "",
-              equipmentType: "",
-              operationalHours: ""
-            }
-          },
-          mobileCombustion: {
-            included: false,
-            details: {
-              vehicleType: "",
-              fuelType: "",
-              distanceTraveled: "",
-              fuelConsumed: ""
-            }
-          },
-          processEmissions: {
-            included: false,
-            details: {
-              processDescription: "",
-              emissionTypes: "",
-              quantitiesEmitted: ""
-            }
-          },
-          fugitiveEmissions: {
-            included: false,
-            details: {
-              gasType: "",
-              leakageRates: "",
-              equipmentType: ""
-            }
-          }
-        },
-        scope2: {
-          purchasedElectricity: {
-            included: false,
-            details: {
-              monthlyConsumption: "",
-              annualConsumption: "",
-              supplierDetails: "",
-              unit: ""
-            }
-          },
-          purchasedSteamHeating: {
-            included: false,
-            details: {
-              quantityPurchased: "",
-              sourceSupplier: "",
-              unit: ""
-            }
-          }
-        },
-        scope3: {
-          includeScope3: false,
-          categories: {
-            businessTravel: false,
-            employeeCommuting: false,
-            wasteGenerated: false,
-            upstreamTransportation: false,
-            downstreamTransportation: false,
-            purchasedGoodsAndServices: false,
-            capitalGoods: false,
-            fuelAndEnergyRelated: false,
-            upstreamLeasedAssets: false,
-            downstreamLeasedAssets: false,
-            processingOfSoldProducts: false,
-            useOfSoldProducts: false,
-            endOfLifeTreatment: false,
-            franchises: false,
-            investments: false
-          },
-          otherIndirectSources: ""
-        }
-      },
+emissionsProfile: {
+  scope1: {
+    stationaryCombustion: { included: false, details: { name: "", description: "", otherDetails: "" } },
+    mobileCombustion:     { included: false, details: { name: "", description: "", otherDetails: "" } },
+    processEmissions:     { included: false, details: { name: "", description: "", otherDetails: "" } },
+    fugitiveEmissions:    { included: false, details: { name: "", description: "", otherDetails: "" } }
+  },
+  scope2: {
+    purchasedElectricity: { included: false, details: { name: "", description: "", otherDetails: "" } },
+    purchasedSteamHeating:{ included: false, details: { name: "", description: "", otherDetails: "" } }
+  },
+  scope3: {
+    includeScope3: false,
+    categories: {
+      businessTravel: false, employeeCommuting: false, wasteGenerated: false,
+      upstreamTransportation: false, downstreamTransportation: false,
+      purchasedGoodsAndServices: false, capitalGoods: false, fuelAndEnergyRelated: false,
+      upstreamLeasedAssets: false, downstreamLeasedAssets: false,
+      processingOfSoldProducts: false, useOfSoldProducts: false,
+      endOfLifeTreatment: false, franchises: false, investments: false
+    },
+    // NEW: per-category details
+    categoriesDetails: {
+      businessTravel:            { details: { name:"", description:"", otherDetails:"" } },
+      employeeCommuting:         { details: { name:"", description:"", otherDetails:"" } },
+      wasteGenerated:            { details: { name:"", description:"", otherDetails:"" } },
+      upstreamTransportation:    { details: { name:"", description:"", otherDetails:"" } },
+      downstreamTransportation:  { details: { name:"", description:"", otherDetails:"" } },
+      purchasedGoodsAndServices: { details: { name:"", description:"", otherDetails:"" } },
+      capitalGoods:              { details: { name:"", description:"", otherDetails:"" } },
+      fuelAndEnergyRelated:      { details: { name:"", description:"", otherDetails:"" } },
+      upstreamLeasedAssets:      { details: { name:"", description:"", otherDetails:"" } },
+      downstreamLeasedAssets:    { details: { name:"", description:"", otherDetails:"" } },
+      processingOfSoldProducts:  { details: { name:"", description:"", otherDetails:"" } },
+      useOfSoldProducts:         { details: { name:"", description:"", otherDetails:"" } },
+      endOfLifeTreatment:        { details: { name:"", description:"", otherDetails:"" } },
+      franchises:                { details: { name:"", description:"", otherDetails:"" } },
+      investments:               { details: { name:"", description:"", otherDetails:"" } }
+    },
+    otherIndirectSources: ""
+  }
+},
+
 
       // 4) ghgDataManagement defaults
       ghgDataManagement: {
@@ -2136,11 +2222,12 @@ const getClientSubmissionData = async (req, res) => {
 
 
 // Move to Proposal Stage (Stage 3)
+// Move to Proposal Stage (Stage 3)
 const moveToProposal = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // A) Only consultant_admin can perform this
+    // Only consultant_admin can perform this
     if (req.user.userType !== "consultant_admin") {
       return res.status(403).json({
         message: "Only Consultant Admins can move clients to proposal stage",
@@ -2152,11 +2239,8 @@ const moveToProposal = async (req, res) => {
       return res.status(404).json({ message: "Client not found" });
     }
 
-    // B) Only the same consultant_admin who submitted the data can move it forward
-    if (
-      !client.submissionData ||
-      client.submissionData.submittedBy.toString() !== req.user.id
-    ) {
+    // Only the same consultant_admin who submitted the data can move it forward
+    if (!client.submissionData || client.submissionData.submittedBy?.toString() !== req.user.id) {
       return res.status(403).json({
         message: "Only the Consultant Admin who submitted data can move to proposal stage",
       });
@@ -2164,33 +2248,70 @@ const moveToProposal = async (req, res) => {
 
     if (client.stage !== "registered" || client.status !== "submitted") {
       return res.status(400).json({
-        message: "Client data must be submitted before creating proposal",
+        message: "Client data must be submitted before moving to proposal stage",
       });
     }
 
-    // C) Update stage and status
+    const previousStage = client.stage;
+
+    // —— Mark proposal submitted (toggle) and switch stage/status
     client.stage = "proposal";
-    client.status = "proposal_pending";
+    client.status = "proposal_submitted";
+    client.proposalData = {
+      ...client.proposalData,
+      submitted: true,
+      submittedAt: new Date(),
+      submittedBy: req.user.id,
+      // verifiedAt: new Date(),
+      // verifiedBy: req.user.id,
+    };
+
     client.timeline.push({
       stage: "proposal",
-      status: "proposal_pending",
-      action: "Moved to proposal stage",
+      status: "proposal_submitted",
+      action: "Submission verified & proposal submitted",
       performedBy: req.user.id,
-      notes: "Ready for proposal creation",
+      notes: "Moved to proposal (toggle only — no proposal creation).",
     });
 
-    const prevStage = client.stage;
     await client.save();
-    // ADD THIS: Emit real-time updates
-    await emitClientStageChange(client, prevStage, req.user.id);
+
+    // === Generate PDF of FULL submissionData and email it ===
+    try {
+      if (!client.submissionData) {
+        console.warn(`Client ${client.clientId} moved to proposal without submissionData.`);
+      }
+      const html = renderClientDataHTML(client); // uses full submissionData
+      const filename = `ZeroCarbon_Submission_${client.clientId}.pdf`;
+      const pdf = await htmlToPdfBuffer(html, filename);
+
+      // Preferred helper: sends to appropriate recipient(s) with branding
+      await sendProposalCreatedEmail(client, [pdf]);
+
+      // If you ever need a fallback:
+      // await sendMail(
+      //   client.leadInfo.email,
+      //   'ZeroCarbon – Proposal Submitted (Submission Summary Attached)',
+      //   `Dear ${client.leadInfo.contactPersonName || 'Client'},\n\nWe have submitted your proposal. Please find attached the PDF containing your full submission details.\n\nRegards,\nZeroCarbon Team`,
+      //   [{ filename, content: pdf }]
+      // );
+
+      console.log(`✉️ Proposal submission email with PDF sent to ${client.leadInfo.email}`);
+    } catch (e) {
+      console.error('Email/PDF (moveToProposal) error:', e.message);
+    }
+
+    // Real-time updates
+    await emitClientStageChange(client, previousStage, req.user.id);
     await emitClientListUpdate(client, 'stage_changed', req.user.id);
 
     return res.status(200).json({
-      message: "Client moved to proposal stage",
+      message: "Client moved to proposal stage (proposal submitted)",
       client: {
         clientId: client.clientId,
         stage: client.stage,
         status: client.status,
+        proposalData: client.proposalData
       },
     });
   } catch (error) {
@@ -2202,432 +2323,25 @@ const moveToProposal = async (req, res) => {
   }
 };
 
-// Create and Submit Proposal (Stage 3)
-const createProposal = async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const proposalData = req.body;
-    
-    // Only consultant_admin can perform this
-    if (req.user.userType !== "consultant_admin") {
-      return res.status(403).json({ 
-        message: "Only Consultant Admins can create proposals" 
-      });
-    }
-    
-    const client = await Client.findOne({ clientId });
-    
-    if (!client) {
-      return res.status(404).json({ message: "Client not found" });
-    }
-    
-    if (client.stage !== "proposal") {
-      return res.status(400).json({ 
-        message: "Client is not in proposal stage" 
-      });
-    }
 
-    // Validate required fields for new data integration structure
-    if (!proposalData.totalDataIntegrationPoints) {
-      return res.status(400).json({
-        message: "totalDataIntegrationPoints is required"
-      });
-    }
-
-    // Validate scopes structure
-    const requiredScopes = ['scope1_directEmissions', 'scope2_energyConsumption', 'scope3_purchasedGoodsServices', 'manualDataCollection', 'decarbonizationModule'];
-    for (const scope of requiredScopes) {
-      if (!proposalData.scopes || !proposalData.scopes[scope]) {
-        return res.status(400).json({
-          message: `Missing required scope: ${scope}`
-        });
-      }
-      
-      // Check required fields for decarbonizationModule
-      if (scope === 'decarbonizationModule') {
-        if (!proposalData.scopes[scope].name || !proposalData.scopes[scope].dataType) {
-          return res.status(400).json({
-            message: `${scope} requires both name and dataType fields`
-          });
-        }
-      }
-    }
-
-    // Validate consolidatedData structure
-    if (!proposalData.consolidatedData) {
-      return res.status(400).json({
-        message: "consolidatedData is required"
-      });
-    }
-
-    const requiredConsolidatedScopes = ['scope1', 'scope2', 'scope3'];
-    for (const scope of requiredConsolidatedScopes) {
-      if (!proposalData.consolidatedData[scope]) {
-        return res.status(400).json({
-          message: `Missing consolidatedData for ${scope}`
-        });
-      }
-      
-      const scopeData = proposalData.consolidatedData[scope];
-      if (!scopeData.category || scopeData.totalDataPoints === undefined || !scopeData.collectionMethods) {
-        return res.status(400).json({
-          message: `${scope} in consolidatedData requires category, totalDataPoints, and collectionMethods`
-        });
-      }
-    }
-    
-    // Generate proposal number
-    const proposalNumber = `ZC-${clientId}-${Date.now()}`;
-    
-    // Update proposal data with new structure
-    client.proposalData = {
-      // Basic proposal info
-      proposalNumber,
-      proposalDate: new Date(),
-      validUntil: moment().add(30, 'days').toDate(),
-      
-      // Services and pricing (existing structure)
-      servicesOffered: proposalData.servicesOffered || [],
-      pricing: {
-        basePrice: proposalData.pricing?.basePrice || 0,
-        additionalServices: proposalData.pricing?.additionalServices || [],
-        discounts: proposalData.pricing?.discounts || [],
-        totalAmount: proposalData.pricing?.totalAmount || 0,
-        currency: proposalData.pricing?.currency || "INR",
-        paymentTerms: proposalData.pricing?.paymentTerms || ""
-      },
-      
-      // Terms and SLA (existing structure)
-      termsAndConditions: proposalData.termsAndConditions || "",
-      sla: {
-        responseTime: proposalData.sla?.responseTime || "",
-        resolutionTime: proposalData.sla?.resolutionTime || "",
-        availability: proposalData.sla?.availability || ""
-      },
-      
-      // New data integration fields
-      totalDataIntegrationPoints: proposalData.totalDataIntegrationPoints,
-      
-      scopes: {
-        scope1_directEmissions: {
-          name: proposalData.scopes.scope1_directEmissions?.name?.trim() || "",
-          dataType: proposalData.scopes.scope1_directEmissions?.dataType?.trim() || ""
-        },
-        scope2_energyConsumption: {
-          name: proposalData.scopes.scope2_energyConsumption?.name?.trim() || "",
-          dataType: proposalData.scopes.scope2_energyConsumption?.dataType?.trim() || ""
-        },
-        scope3_purchasedGoodsServices: {
-          name: proposalData.scopes.scope3_purchasedGoodsServices?.name?.trim() || "",
-          dataType: proposalData.scopes.scope3_purchasedGoodsServices?.dataType?.trim() || ""
-        },
-        manualDataCollection: {
-          name: proposalData.scopes.manualDataCollection?.name?.trim() || "",
-          dataType: proposalData.scopes.manualDataCollection?.dataType?.trim() || ""
-        },
-        decarbonizationModule: {
-          name: proposalData.scopes.decarbonizationModule.name.trim(),
-          dataType: proposalData.scopes.decarbonizationModule.dataType.trim()
-        }
-      },
-      
-      consolidatedData: {
-        scope1: {
-          category: proposalData.consolidatedData.scope1.category,
-          totalDataPoints: proposalData.consolidatedData.scope1.totalDataPoints,
-          collectionMethods: proposalData.consolidatedData.scope1.collectionMethods
-        },
-        scope2: {
-          category: proposalData.consolidatedData.scope2.category,
-          totalDataPoints: proposalData.consolidatedData.scope2.totalDataPoints,
-          collectionMethods: proposalData.consolidatedData.scope2.collectionMethods
-        },
-        scope3: {
-          category: proposalData.consolidatedData.scope3.category,
-          totalDataPoints: proposalData.consolidatedData.scope3.totalDataPoints,
-          collectionMethods: proposalData.consolidatedData.scope3.collectionMethods
-        }
-      }
-    };
-    
-    client.status = "proposal_submitted";
-    client.timeline.push({
-      stage: "proposal",
-      status: "proposal_submitted",
-      action: "Proposal created and sent",
-      performedBy: req.user.id,
-      notes: `Proposal ${proposalNumber} sent to client with ${proposalData.totalDataIntegrationPoints} data integration points`
-    });
-    
-    await client.save();
-    
-     // === EMAIL + PDF (NEW) ===
-    try {
-      const html = renderProposalHTML(client);
-      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_Proposal_${client.clientId}.pdf`);
-      await sendProposalCreatedEmail(client, [pdf]);
-      console.log('✉️ Proposal created email sent with PDF.');
-    } catch (e) {
-      console.error('Email/PDF (createProposal) error:', e.message);
-    }
-    // =========================
-    
-    res.status(200).json({
-      message: "Proposal created and sent successfully",
-      proposal: {
-        clientId: client.clientId,
-        proposalNumber,
-        validUntil: client.proposalData.validUntil,
-        totalAmount: client.proposalData.pricing.totalAmount,
-        totalDataIntegrationPoints: proposalData.totalDataIntegrationPoints,
-        scopes: Object.keys(proposalData.scopes),
-        consolidatedData: {
-          scope1: proposalData.consolidatedData.scope1.totalDataPoints,
-          scope2: proposalData.consolidatedData.scope2.totalDataPoints,
-          scope3: proposalData.consolidatedData.scope3.totalDataPoints
-        }
-      }
-    });
-    
-  } catch (error) {
-    console.error("Create proposal error:", error);
-    res.status(500).json({ 
-      message: "Failed to create proposal", 
-      error: error.message 
-    });
-  }
-};
-
-// Edit Proposal (Stage 3, creator-only)
-const editProposal = async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const updatedFields = req.body; // Expecting same shape as createProposal payload
-
-    // A) Only consultant_admin may edit
-    if (!req.user || req.user.userType !== "consultant_admin") {
-      return res.status(403).json({
-        message: "Only Consultant Admins can edit proposals"
-      });
-    }
-
-    // B) Find the client record
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ message: "Client not found" });
-    }
-
-    // C) Client must be in "proposal" stage
-    if (client.stage !== "proposal") {
-      return res.status(400).json({
-        message: "Cannot edit: client is not in proposal stage"
-      });
-    }
-
-    // D) Only the same consultant_admin who created the proposal may edit
-    const creatorId = client.leadInfo.createdBy.toString();;
-    if (req.user.id !== creatorId) {
-      return res.status(403).json({
-        message: "You can only edit the proposal you originally created"
-      });
-    }
-
-    // E) Validate any required fields again (optional—but recommended)
-    //    For example, ensure updatedFields.totalDataIntegrationPoints still exists, etc.
-    if (updatedFields.totalDataIntegrationPoints === undefined) {
-      return res.status(400).json({
-        message: "totalDataIntegrationPoints is required"
-      });
-    }
-    const requiredScopes = [
-      "scope1_directEmissions",
-      "scope2_energyConsumption",
-      "scope3_purchasedGoodsServices",
-      "manualDataCollection",
-      "decarbonizationModule"
-    ];
-    for (const scope of requiredScopes) {
-      if (!updatedFields.scopes || !updatedFields.scopes[scope]) {
-        return res.status(400).json({
-          message: `Missing required scope: ${scope}`
-        });
-      }
-      // decarbonizationModule still needs both fields
-      if (scope === "decarbonizationModule") {
-        if (
-          !updatedFields.scopes[scope].name ||
-          !updatedFields.scopes[scope].dataType
-        ) {
-          return res.status(400).json({
-            message: `${scope} requires both name and dataType fields`
-          });
-        }
-      }
-    }
-    if (!updatedFields.consolidatedData) {
-      return res.status(400).json({
-        message: "consolidatedData is required"
-      });
-    }
-    for (const scope of ["scope1", "scope2", "scope3"]) {
-      if (!updatedFields.consolidatedData[scope]) {
-        return res.status(400).json({
-          message: `Missing consolidatedData for ${scope}`
-        });
-      }
-      const scopeData = updatedFields.consolidatedData[scope];
-      if (
-        !scopeData.category ||
-        scopeData.totalDataPoints === undefined ||
-        !scopeData.collectionMethods
-      ) {
-        return res.status(400).json({
-          message: `${scope} in consolidatedData requires category, totalDataPoints, and collectionMethods`
-        });
-      }
-    }
-
-    // F) Overwrite all fields in client.proposalData, but preserve `createdBy` & `proposalNumber`
-    client.proposalData = {
-      createdBy: client.proposalData.createdBy,    // preserve original creator
-      proposalNumber: client.proposalData.proposalNumber,
-      proposalDate: new Date(),
-      validUntil: moment().add(30, "days").toDate(),
-
-      servicesOffered: updatedFields.servicesOffered || [],
-      pricing: {
-        basePrice: updatedFields.pricing?.basePrice || 0,
-        additionalServices: updatedFields.pricing?.additionalServices || [],
-        discounts: updatedFields.pricing?.discounts || [],
-        totalAmount: updatedFields.pricing?.totalAmount || 0,
-        currency: updatedFields.pricing?.currency || "INR",
-        paymentTerms: updatedFields.pricing?.paymentTerms || ""
-      },
-
-      termsAndConditions: updatedFields.termsAndConditions || "",
-      sla: {
-        responseTime: updatedFields.sla?.responseTime || "",
-        resolutionTime: updatedFields.sla?.resolutionTime || "",
-        availability: updatedFields.sla?.availability || ""
-      },
-
-      totalDataIntegrationPoints: updatedFields.totalDataIntegrationPoints,
-
-      scopes: {
-        scope1_directEmissions: {
-          name: updatedFields.scopes.scope1_directEmissions?.name.trim() || "",
-          dataType: updatedFields.scopes.scope1_directEmissions?.dataType.trim() || ""
-        },
-        scope2_energyConsumption: {
-          name: updatedFields.scopes.scope2_energyConsumption?.name.trim() || "",
-          dataType: updatedFields.scopes.scope2_energyConsumption?.dataType.trim() || ""
-        },
-        scope3_purchasedGoodsServices: {
-          name: updatedFields.scopes.scope3_purchasedGoodsServices?.name.trim() || "",
-          dataType: updatedFields.scopes.scope3_purchasedGoodsServices?.dataType.trim() || ""
-        },
-        manualDataCollection: {
-          name: updatedFields.scopes.manualDataCollection?.name.trim() || "",
-          dataType: updatedFields.scopes.manualDataCollection?.dataType.trim() || ""
-        },
-        decarbonizationModule: {
-          name: updatedFields.scopes.decarbonizationModule.name.trim(),
-          dataType: updatedFields.scopes.decarbonizationModule.dataType.trim()
-        }
-      },
-
-      consolidatedData: {
-        scope1: {
-          category: updatedFields.consolidatedData.scope1.category,
-          totalDataPoints: updatedFields.consolidatedData.scope1.totalDataPoints,
-          collectionMethods: updatedFields.consolidatedData.scope1.collectionMethods
-        },
-        scope2: {
-          category: updatedFields.consolidatedData.scope2.category,
-          totalDataPoints: updatedFields.consolidatedData.scope2.totalDataPoints,
-          collectionMethods: updatedFields.consolidatedData.scope2.collectionMethods
-        },
-        scope3: {
-          category: updatedFields.consolidatedData.scope3.category,
-          totalDataPoints: updatedFields.consolidatedData.scope3.totalDataPoints,
-          collectionMethods: updatedFields.consolidatedData.scope3.collectionMethods
-        }
-      }
-    };
-
-    // G) Revert client back to “registered” stage with status “submitted”
-    client.stage = "proposal";
-    client.status = "proposal_submitted";
-
-    // H) Timeline entry indicating edit
-    client.timeline.push({
-      stage: "proposal",
-      status: "proposal_submitted",
-      action: "Proposal edited and reverted to data submission",
-      performedBy: req.user.id,
-      notes: `Proposal ${client.proposalData.proposalNumber} was edited`
-    });
-
-    await client.save();
-
-     // === EMAIL + PDF (NEW) ===
-    try {
-      const html = renderProposalHTML(client);
-      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_Proposal_${client.clientId}.pdf`);
-      await sendProposalUpdatedEmail(client, [pdf]);
-      console.log('✉️ Proposal updated email sent with PDF.');
-    } catch (e) {
-      console.error('Email/PDF (editProposal) error:', e.message);
-    }
-    // =========================
-
-    return res.status(200).json({
-      message:
-        "Proposal updated successfully; client reverted to registered stage (resubmit data → moveToProposal again)",
-      proposalNumber: client.proposalData.proposalNumber,
-      client: {
-        clientId: client.clientId,
-        stage: client.stage,
-        status: client.status
-      }
-    });
-  } catch (error) {
-    console.error("Edit proposal error:", error);
-    return res.status(500).json({
-      message: "Failed to edit proposal",
-      error: error.message
-    });
-  }
-};
 
 // ─── Get Client Proposal Data (creator-only or assignedConsultant) ─────────────────────────────
 const getClientProposalData = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // A) Must be a consultant (consultant_admin or consultant)
     if (!["consultant_admin", "consultant"].includes(req.user.userType)) {
-      return res.status(403).json({
-        message: "Only Consultants can view proposal data",
-      });
+      return res.status(403).json({ message: "Only Consultants can view proposal data" });
     }
 
-    // B) Find the client record
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ message: "Client not found" });
+    if (!client) return res.status(404).json({ message: "Client not found" });
+
+    // NOW: check toggle instead of proposalNumber
+    if (!client.proposalData || !client.proposalData.submitted) {
+      return res.status(404).json({ message: "No submitted proposal (toggle) for this client" });
     }
 
-
-
-    // D) Ensure proposalData exists
-    if (!client.proposalData || !client.proposalData.proposalNumber) {
-      return res.status(404).json({
-        message: "No proposal data available for this client",
-      });
-    }
-
-    // E) Return proposalData
     return res.status(200).json({
       message: "Proposal data fetched successfully",
       proposalData: client.proposalData,
@@ -2641,115 +2355,11 @@ const getClientProposalData = async (req, res) => {
   }
 };
 
-// ─── Delete Proposal (Consultant Admin only, creator-only) ──────────────────────────────────────────
-const deleteProposal = async (req, res) => {
-  try {
-    const { clientId } = req.params;
 
-    // A) Only consultant_admin may delete
-    if (!req.user || req.user.userType !== "consultant_admin") {
-      return res.status(403).json({
-        message: "Only Consultant Admins can delete proposals",
-      });
-    }
-
-    // B) Find the client record
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ message: "Client not found" });
-    }
-
-    // C) Client must be in “proposal” stage
-    if (client.stage !== "proposal") {
-      return res.status(400).json({
-        message: "Cannot delete: client is not currently in proposal stage",
-      });
-    }
-
-    // D) Only the same consultant_admin who created the proposal may delete
-    const creatorId =  client.leadInfo.createdBy.toString();
-    if (!creatorId || req.user.id !== creatorId) {
-      return res.status(403).json({
-        message: "You can only delete the proposal you originally created",
-      });
-    }
-
-    // E) Reset proposalData to an empty skeleton
-    client.proposalData = {
-      proposalNumber: "",
-      proposalDate: null,
-      validUntil: null,
-
-      servicesOffered: [],
-      pricing: {
-        basePrice: 0,
-        additionalServices: [],
-        discounts: [],
-        totalAmount: 0,
-        currency: "",
-        paymentTerms: ""
-      },
-
-      termsAndConditions: "",
-      sla: {
-        responseTime: "",
-        resolutionTime: "",
-        availability: ""
-      },
-
-      totalDataIntegrationPoints: 0,
-
-      scopes: {
-        scope1_directEmissions: { name: "", dataType: "" },
-        scope2_energyConsumption: { name: "", dataType: "" },
-        scope3_purchasedGoodsServices: { name: "", dataType: "" },
-        manualDataCollection: { name: "", dataType: "" },
-        decarbonizationModule: { name: "", dataType: "" }
-      },
-
-      consolidatedData: {
-        scope1: { category: "", totalDataPoints: 0, collectionMethods: [] },
-        scope2: { category: "", totalDataPoints: 0, collectionMethods: [] },
-        scope3: { category: "", totalDataPoints: 0, collectionMethods: [] }
-      }
-    };
-
-    // F) Keep stage as "proposal", revert status to "proposal_pending"
-    client.stage = "proposal";
-    client.status = "proposal_pending";
-
-    // G) Log timeline entry
-    client.timeline.push({
-      stage: "proposal",
-      status: "proposal_pending",
-      action: "Proposal deleted",
-      performedBy: req.user.id,
-      notes: "Consultant Admin deleted the proposal; client remains in proposal stage"
-    });
-
-    await client.save();
-
-    return res.status(200).json({
-      message:
-        "Proposal deleted successfully; client status reverted to proposal_pending",
-      client: {
-        clientId: client.clientId,
-        stage: client.stage,
-        status: client.status,
-        proposalData: client.proposalData
-      }
-    });
-  } catch (error) {
-    console.error("Delete proposal error:", error);
-    return res.status(500).json({
-      message: "Failed to delete proposal",
-      error: error.message
-    });
-  }
-};
 
 // Accept/Reject Proposal
 // Accept/Reject Proposal - FIXED VERSION
+// Accept/Reject Proposal - FIXED
 const updateProposalStatus = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -2765,9 +2375,10 @@ const updateProposalStatus = async (req, res) => {
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
+
     if (client.stage !== "proposal" || client.status !== "proposal_submitted") {
       return res.status(400).json({
-        message: "No active proposal found for this client",
+        message: "No submitted proposal to act on for this client",
       });
     }
 
@@ -2780,6 +2391,8 @@ const updateProposalStatus = async (req, res) => {
         "Client Representative";
       client.proposalData.approvedBy = approvedByName;
 
+      // Move to Active
+      const prevStage = client.stage;
       client.stage = "active";
       client.accountDetails = {
         subscriptionStartDate: new Date(),
@@ -2799,20 +2412,18 @@ const updateProposalStatus = async (req, res) => {
         notes: "Client subscription activated for 1 year",
       });
 
-      // Try to create a client admin—but if it already exists, we still continue
+      // Try to create a client admin (best-effort)
       try {
-        await createClientAdmin(clientId, {
-          consultantId: req.user.id,
-        });
+        await createClientAdmin(clientId, { consultantId: req.user.id });
       } catch (err) {
-        console.warn(
-          `createClientAdmin threw an error but was caught: ${err.message}`
-        );
-        // We do NOT re‐throw, because we still want the client to move to active
+        console.warn(`createClientAdmin warning: ${err.message}`);
       }
 
       await client.save();
-        
+
+      // Real-time emits (corrected: use action, not "decision")
+      await emitClientStageChange(client, prevStage, req.user.id);
+      await emitClientListUpdate(client, 'updated', req.user.id);
 
       return res.status(200).json({
         message: "Proposal accepted and client account activated",
@@ -2823,6 +2434,7 @@ const updateProposalStatus = async (req, res) => {
           subscriptionEndDate: client.accountDetails.subscriptionEndDate,
         },
       });
+
     } else if (action === "reject") {
       client.status = "proposal_rejected";
       client.proposalData.rejectionReason = reason;
@@ -2835,11 +2447,9 @@ const updateProposalStatus = async (req, res) => {
       });
 
       await client.save();
-  // ADD THIS: Emit real-time updates
-        if (decision === "accept") {
-            await emitClientStageChange(client, "proposal", req.user.id);
-        }
-        await emitClientListUpdate(client, 'updated', req.user.id);
+
+      await emitClientListUpdate(client, 'updated', req.user.id);
+
       return res.status(200).json({
         message: "Proposal rejected",
         client: {
@@ -2861,6 +2471,7 @@ const updateProposalStatus = async (req, res) => {
     });
   }
 };
+
 
 // Get Clients based on user permissions
 // Updated getClients function with real-time support
@@ -4435,9 +4046,7 @@ module.exports = {
   deleteClientData,
   getClientSubmissionData,
   moveToProposal,
-  createProposal,
-  editProposal,
-  deleteProposal,
+
   getClientProposalData,
   updateProposalStatus,
   getClients,

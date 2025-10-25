@@ -471,76 +471,68 @@ function buildAllocationMaps(charts, userId) {
  * @param {{nodeId?: string, scopeIdentifier?: string, inputType?: string}} ctx
  * @returns {{allowed: boolean, reason?: string}}
  */
-async function checkOperationPermission(user, clientId, operation, ctx = {}) {
-  const { nodeId, scopeIdentifier, inputType } = ctx;
+// 🔒 Centralized permission gate for Data Collection operations
+// Only creator Consultant Admin, assigned Consultant, or Super Admin can connect/reconnect/disconnect.
+const checkOperationPermission = async (user, clientId, nodeId, scopeIdentifier, operation) => {
+  try {
+    const userId = user._id || user.id;
 
-  if (!user || !user.userType) return { allowed: false, reason: 'Unauthenticated' };
-  const role = user.userType;
-
-  // Strict client isolation for client-side roles
-  if (['client_admin', 'client_employee_head', 'employee', 'auditor'].includes(role)) {
-    if (user.clientId && user.clientId !== clientId) {
-      return { allowed: false, reason: 'Cross-client access not allowed' };
+    if (!userId || !user.userType) {
+      return { allowed: false, reason: 'Invalid user context' };
     }
-  }
 
-  // Super admin: everything
-  if (role === 'super_admin') return { allowed: true };
-
-  // Admin-only ops for connection mgmt
-  if (operation === 'disconnect' || operation === 'reconnect') {
-    if (role === 'client_admin' && user.clientId === clientId) return { allowed: true };
-    return { allowed: false, reason: 'Only Client Admin or Super Admin can manage connections' };
-  }
-
-  // Data write/edit ops
-  const isWrite =
-    operation === 'manual_data' ||
-    operation === 'csv_upload' ||
-    operation === 'edit_manual';
-
-  if (!isWrite) return { allowed: false, reason: `Unsupported operation: ${operation}` };
-
-  // Client admin (same client): can write/edit
-  if (role === 'client_admin' && user.clientId === clientId) return { allowed: true };
-
-  // From here on we enforce allocations for head/employee
-  const charts = await getChartsForPermission(clientId); // both org + process
-  if (charts.length === 0) return { allowed: false, reason: 'No active charts found' };
-
-  const userId = user._id || user.id;
-  const { headNodeIds, employeeScopeKeys, reductionScopeMap } = buildAllocationMaps(charts, userId);
-
-  // If the input refers to a reduction id, resolve to (nodeId, scopeIdentifier)
-  let effNodeId = nodeId;
-  let effScopeId = scopeIdentifier;
-  if (inputType === 'reduction' && scopeIdentifier && reductionScopeMap.has(scopeIdentifier)) {
-    const mapped = reductionScopeMap.get(scopeIdentifier);
-    effNodeId = effNodeId || mapped.nodeId;
-    effScopeId = effScopeId || mapped.scopeIdentifier;
-  }
-
-  if (role === 'client_employee_head') {
-    if (!effNodeId) return { allowed: false, reason: 'Node not specified for employee head' };
-    if (!headNodeIds.has(effNodeId)) {
-      return { allowed: false, reason: 'You can add data only to nodes allocated to you' };
+    // Super Admin always allowed
+    if (user.userType === 'super_admin') {
+      return { allowed: true, reason: 'Super admin access' };
     }
-    return { allowed: true };
-  }
 
-  if (role === 'employee') {
-    if (!effNodeId || !effScopeId) {
-      return { allowed: false, reason: 'Scope not specified for employee' };
-    }
-    const key = `${effNodeId}|${effScopeId}`;
-    if (!employeeScopeKeys.has(key)) {
-      return { allowed: false, reason: 'You can add data only to scopes allocated to you' };
-    }
-    return { allowed: true };
-  }
+    // We need client → createdBy & assignedConsultantId
+    const client = await Client.findOne(
+      { clientId },
+      { 'leadInfo.createdBy': 1, 'leadInfo.assignedConsultantId': 1 }
+    ).lean();
 
-  return { allowed: false, reason: 'Your role cannot add/edit data' };
-}
+    if (!client) {
+      return { allowed: false, reason: 'Client not found' };
+    }
+
+    const isCreatorConsultantAdmin =
+      user.userType === 'consultant_admin' &&
+      client.leadInfo?.createdBy &&
+      client.leadInfo.createdBy.toString() === userId.toString();
+
+    const isAssignedConsultant =
+      user.userType === 'consultant' &&
+      client.leadInfo?.assignedConsultantId &&
+      client.leadInfo.assignedConsultantId.toString() === userId.toString();
+
+    // 🔧 Ops that wire/unwire external sources
+    const connectOps = new Set(['connect', 'reconnect', 'disconnect']);
+
+    if (connectOps.has(operation)) {
+      if (isCreatorConsultantAdmin) {
+        return { allowed: true, reason: 'Creator consultant admin' };
+      }
+      if (isAssignedConsultant) {
+        return { allowed: true, reason: 'Assigned consultant' };
+      }
+      // ❌ Nobody else (including client_admin / employee_* / viewer / auditor)
+      return {
+        allowed: false,
+        reason:
+          'Only Super Admin, the Consultant Admin who created the client, or the currently assigned Consultant can ' +
+          operation
+      };
+    }
+
+    // Default deny for other operations unless you explicitly allow them here
+    return { allowed: false, reason: 'Insufficient permissions for this operation' };
+  } catch (err) {
+    console.error('checkOperationPermission error:', err);
+    return { allowed: false, reason: 'Permission check failed' };
+  }
+};
+
 
 
 
@@ -2309,94 +2301,106 @@ const disconnectSource = async (req, res) => {
 };
 
 // Reconnect Source
+// Reconnect Source (params-only) — no request body required
 const reconnectSource = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
-    const { connectionDetails } = req.body;
-    
-    // Check permissions for reconnect operations
-    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'reconnect');
+
+    // 🔒 Permission gate
+    const permissionCheck = await checkOperationPermission(
+      req.user, clientId, nodeId, scopeIdentifier, 'reconnect'
+    );
     if (!permissionCheck.allowed) {
-      return res.status(403).json({ 
-        message: 'Permission denied', 
-        reason: permissionCheck.reason 
+      return res.status(403).json({
+        message: 'Permission denied',
+        reason: permissionCheck.reason
       });
     }
-    
-    // Find and update scope configuration
+
+    // 🔎 Active flowchart
     const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
-}
-const flowchart = activeChart.chart;
-    if (!flowchart) {
-      return res.status(404).json({ message: 'Flowchart not found' });
+    if (!activeChart || !activeChart.chart) {
+      return res.status(404).json({ message: 'No active flowchart found' });
     }
-    
-    let updated = false;
-    for (let i = 0; i < flowchart.nodes.length; i++) {
-      if (flowchart.nodes[i].id === nodeId) {
-        const scopeIndex = flowchart.nodes[i].details.scopeDetails.findIndex(
-          s => s.scopeIdentifier === scopeIdentifier
-        );
-        
-        if (scopeIndex !== -1) {
-          const scope = flowchart.nodes[i].details.scopeDetails[scopeIndex];
-          
-          // Reconnect based on current type
-          if (scope.inputType === 'API') {
-            if (!connectionDetails?.apiEndpoint) {
-              return res.status(400).json({ message: 'API endpoint required for reconnection' });
-            }
-            scope.apiStatus = true;
-            scope.apiEndpoint = connectionDetails.apiEndpoint;
-          } else if (scope.inputType === 'IOT') {
-            if (!connectionDetails?.deviceId) {
-              return res.status(400).json({ message: 'Device ID required for reconnection' });
-            }
-            scope.iotStatus = true;
-            scope.iotDeviceId = connectionDetails.deviceId;
-          } else {
-            return res.status(400).json({ message: 'Cannot reconnect manual input type' });
-          }
-          
-          flowchart.nodes[i].details.scopeDetails[scopeIndex] = scope;
-          updated = true;
-          break;
-        }
-      }
+    const flowchart = activeChart.chart;
+
+    // 🧭 Find node & scope
+    const nodeIdx = flowchart.nodes.findIndex(n => n.id === nodeId);
+    if (nodeIdx === -1) {
+      return res.status(404).json({ message: 'Node not found' });
     }
-    
-    if (!updated) {
+
+    const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails.findIndex(
+      s => s.scopeIdentifier === scopeIdentifier
+    );
+    if (scopeIdx === -1) {
       return res.status(404).json({ message: 'Scope not found' });
     }
-    
+
+    const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
+
+    // 📦 Load last-known connection details (saved at connect/disconnect time)
+    const existingCfg = await DataCollectionConfig.findOne(
+      { clientId, nodeId, scopeIdentifier },
+      { connectionDetails: 1 }
+    ).lean();
+
+    // 🔌 Reconnect using saved values
+    if (scope.inputType === 'API') {
+      // Prefer value already on the scope (if not blank), else use last saved
+      const currentEndpoint = scope.apiEndpoint && scope.apiEndpoint.trim() !== '' ? scope.apiEndpoint.trim() : null;
+      const savedEndpoint = existingCfg?.connectionDetails?.apiEndpoint;
+      const apiEndpoint = currentEndpoint || savedEndpoint;
+
+      if (!apiEndpoint) {
+        return res.status(400).json({ message: 'No saved API endpoint found for this scope to reconnect' });
+      }
+
+      scope.apiStatus = true;
+      scope.apiEndpoint = apiEndpoint;
+    } else if (scope.inputType === 'IOT') {
+      const currentDeviceId = scope.iotDeviceId && scope.iotDeviceId.trim() !== '' ? scope.iotDeviceId.trim() : null;
+      const savedDeviceId = existingCfg?.connectionDetails?.deviceId;
+      const deviceId = currentDeviceId || savedDeviceId;
+
+      if (!deviceId) {
+        return res.status(400).json({ message: 'No saved IoT deviceId found for this scope to reconnect' });
+      }
+
+      scope.iotStatus = true;
+      scope.iotDeviceId = deviceId;
+    } else {
+      return res.status(400).json({ message: 'Cannot reconnect manual input type' });
+    }
+
+    // 💾 Persist scope updates
+    flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
     await flowchart.save();
-    
-    // Update collection config
+
+    // 🗃️ Mark config as active again (keep existing connectionDetails as-is)
     await DataCollectionConfig.findOneAndUpdate(
       { clientId, nodeId, scopeIdentifier },
       {
-        connectionDetails,
         'connectionDetails.isActive': true,
         'connectionDetails.reconnectedAt': new Date(),
         'connectionDetails.reconnectedBy': req.user._id
-      }
+      },
+      { upsert: true } // creates doc/paths if missing
     );
-    
-    res.status(200).json({
+
+    return res.status(200).json({
       message: 'Source reconnected successfully',
       scopeIdentifier
     });
-    
   } catch (error) {
     console.error('Reconnect source error:', error);
-    res.status(500).json({ 
-      message: 'Failed to reconnect source', 
-      error: error.message 
+    return res.status(500).json({
+      message: 'Failed to reconnect source',
+      error: error.message
     });
   }
 };
+
 
 
 // Create monthly summary manually (admin only)
