@@ -1,3 +1,8 @@
+// utils/dashboardEmitter.js
+const User = require("../models/User");
+const Client = require("../models/Client");
+
+
 // Helper functions to emit real-time dashboard updates
 // Add these to your existing controller functions where data changes occur
 
@@ -37,12 +42,12 @@ const emitFlowchartStatusUpdate = async (client, userId) => {
     };
     
     // Emit to affected users
-    affectedUsers.forEach(userId => {
-      global.io.to(`user_${userId}`).emit('dashboard_update', {
-        type: 'workflow_status_change',
-        data: updateData
-      });
-    });
+    affectedUsers.forEach(uid => {
+  global.io.to(`user_${uid}`).emit('dashboard_update', {
+    type: 'workflow_status_change',
+    data: updateData
+  });
+});
     
     // Also emit to super admins
     global.io.to('userType_super_admin').emit('dashboard_update', {
@@ -290,13 +295,13 @@ const emitClientListUpdate = async (client, action, userId) => {
     };
     
     // Emit to each affected user
-    for (const affectedUserId of affectedUserIds) {
-      global.io.to(`user_${affectedUserId}`).emit('client_list_update', {
-        action: action, // 'created', 'updated', 'deleted', 'stage_changed'
-        client: clientData,
-        timestamp: new Date().toISOString()
-      });
-    }
+  for (const affectedUserId of affectedUserIds) {
+  global.io.to(`user_${affectedUserId}`).emit('client_list_update', {
+    action: action,
+    client: clientData,
+    timestamp: new Date().toISOString()
+  });
+}
     
     // Also emit to user type rooms
     global.io.to('userType_super_admin').emit('client_list_update', {

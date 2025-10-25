@@ -65,6 +65,16 @@ const ProjectProfileSchema = new mongoose.Schema({
   projectType:   { type: String, required: true, trim: true },
   description:   { type: String, default: '', trim: true },
 }, { _id: false });
+
+const DetailsforEmissonProfile = new mongoose.Schema({
+  name:         { type: String, default: "" },
+  description:  { type: String, default: "" },
+  otherDetails: { type: String, default: "" }
+}, { _id: false });
+const CategoryDetailsSchema = new mongoose.Schema(
+  { details: DetailsforEmissonProfile },
+  { _id: false }
+);
 const clientSchema = new mongoose.Schema(
   {
     clientId: {
@@ -254,7 +264,8 @@ const clientSchema = new mongoose.Schema(
           phoneNumber: { type: String }
         },
       },
-      
+      // Common details schema used across Emissions Profile
+
       // Section B: Organizational Overview
       organizationalOverview: {
         industrySector: { type: String },
@@ -264,7 +275,9 @@ const clientSchema = new mongoose.Schema(
           siteName: { type: String },
           location: { type: String },
           operation: { type: String },
-          productionCapacity: { type: String }
+          productionCapacity: { type: String },
+          unit:   { type: String, default: "" },   // e.g., "employees", "m²", "t/yr"
+  remark: { type: String, default: "" }    // free-text source/notes
         }],
         totalEmployees: { type: Number },
         employeesByFacility: [{
@@ -280,37 +293,19 @@ const clientSchema = new mongoose.Schema(
         scope1: {
           stationaryCombustion: {
             included: { type: Boolean, default: false },
-            details: {
-              fuelType: { type: String },
-              quantityUsed: { type: String },
-              equipmentType: { type: String },
-              operationalHours: { type: String }
-            }
+             details: DetailsforEmissonProfile
           },
           mobileCombustion: {
             included: { type: Boolean, default: false },
-            details: {
-              vehicleType: { type: String },
-              fuelType: { type: String },
-              distanceTraveled: { type: String },
-              fuelConsumed: { type: String }
-            }
+             details: DetailsforEmissonProfile
           },
           processEmissions: {
             included: { type: Boolean, default: false },
-            details: {
-              processDescription: { type: String },
-              emissionTypes: { type: String },
-              quantitiesEmitted: { type: String }
-            }
+            details: DetailsforEmissonProfile
           },
           fugitiveEmissions: {
             included: { type: Boolean, default: false },
-            details: {
-              gasType: { type: String },
-              leakageRates: { type: String },
-              equipmentType: { type: String }
-            }
+             details: DetailsforEmissonProfile
           }
         },
         
@@ -318,20 +313,11 @@ const clientSchema = new mongoose.Schema(
         scope2: {
           purchasedElectricity: {
             included: { type: Boolean, default: false },
-            details: {
-              monthlyConsumption: { type: String },
-              annualConsumption: { type: String },
-              supplierDetails: { type: String },
-              unit: { type: String, default: "kWh" }
-            }
+            details: DetailsforEmissonProfile
           },
           purchasedSteamHeating: {
             included: { type: Boolean, default: false },
-            details: {
-              quantityPurchased: { type: String },
-              sourceSupplier: { type: String },
-              unit: { type: String }
-            }
+            details: DetailsforEmissonProfile
           }
         },
         
@@ -355,6 +341,25 @@ const clientSchema = new mongoose.Schema(
             franchises: { type: Boolean, default: false },
             investments: { type: Boolean, default: false }
           },
+           // NEW: unified details for each of the 15 categories
+categoriesDetails: {
+  businessTravel:            { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  employeeCommuting:         { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  wasteGenerated:            { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  upstreamTransportation:    { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  downstreamTransportation:  { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  purchasedGoodsAndServices: { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  capitalGoods:              { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  fuelAndEnergyRelated:      { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  upstreamLeasedAssets:      { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  downstreamLeasedAssets:    { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  processingOfSoldProducts:  { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  useOfSoldProducts:         { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  endOfLifeTreatment:        { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  franchises:                { type: CategoryDetailsSchema, default: () => ({ details: {} }) },
+  investments:               { type: CategoryDetailsSchema, default: () => ({ details: {} }) }
+},
+
           otherIndirectSources: { type: String }
         }
       },
@@ -409,149 +414,23 @@ const clientSchema = new mongoose.Schema(
     },
     
     // Stage 3: Proposal
-  // Stage 3: Proposal
+// Stage 3: Proposal (minimal – toggle + approvals)
 proposalData: {
-  proposalNumber: { type: String },
-  proposalDate: { type: Date },
-  validUntil: { type: Date },
+  // A simple toggle that “Move to Proposal” will set
+  submitted:      { type: Boolean, default: false },
+  submittedAt:    { type: Date },
+  submittedBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
-  // Service Details
-  servicesOffered: [
-    {
-      serviceName: { type: String },
-      description: { type: String },
-      deliverables: [{ type: String }],
-      timeline: { type: String }
-    }
-  ],
+  // (Optional) internal verification log (if you want to record who verified)
+  verifiedAt:     { type: Date },
+  verifiedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
-  // Pricing
-  pricing: {
-    basePrice: { type: Number },
-    additionalServices: [
-      {
-        name: { type: String },
-        price: { type: Number }
-      }
-    ],
-    discounts: [
-      {
-        type: { type: String },
-        amount: { type: Number }
-      }
-    ],
-    totalAmount: { type: Number },
-    currency: { type: String, default: "INR" },
-    paymentTerms: { type: String }
-  },
-
-  // Terms
-  termsAndConditions: { type: String },
-  sla: {
-    responseTime: { type: String },
-    resolutionTime: { type: String },
-    availability: { type: String }
-  },
-
-  // Approval
+  // Final outcome fields used by accept/reject
   clientApprovalDate: { type: Date },
-  approvedBy: { type: String },
-  signedDocument: { type: String },
-  rejectionReason: { type: String },
-
-  // ─── JSON‐derived “Data Integration Points” (no defaults) ───────────────────
-  totalDataIntegrationPoints: {
-    type: Number,
-    
-  },
-
-  scopes: {
-    scope1_directEmissions: {
-       name: {
-      type: String,
-      trim: true
-    },
-    dataType: {
-      type: String,
-      trim: true
-    }
-      // no default array here
-    },
-
-    scope2_energyConsumption: {
-       name: {
-      type: String,
-      trim: true
-    },
-    dataType: {
-      type: String,
-      
-      trim: true
-    }
-      // no default array here
-    },
-
-    scope3_purchasedGoodsServices: {
-       name: {
-      type: String,
-      trim: true
-    },
-    dataType: {
-      type: String,
-      trim: true
-    }
-      // no default array here
-    },
-
-    manualDataCollection: {
-       name: {
-      type: String,
-      trim: true
-    },
-    dataType: {
-      type: String,
-      trim: true
-    }
-      // no default array here
-    },
-
-    decarbonizationModule: {
-       name: {
-      type: String,
-      
-      trim: true
-    },
-    dataType: {
-      type: String,
-      
-      trim: true
-    }
-      // no default array here
-    }
-  },
-  
-  consolidatedData: {
-        scope1: {
-          category: { type: String },           // e.g. "Direct Emissions"
-          totalDataPoints: { type: Number },     // e.g. 12
-          collectionMethods: [{ type: String }]                  // e.g. ["API", "Manual"]
-        },
-        scope2: {
-          category: { type: String },           // e.g. "Energy Consumption"
-          totalDataPoints: { type: Number },     // e.g. 1
-          collectionMethods: [{ type: String }]                  // e.g. ["IoT"]
-        },
-        scope3: {
-          category: { type: String },           // e.g. "Purchased Goods & Services"
-          totalDataPoints: { type: Number },     // e.g. 2
-          collectionMethods: [{ type: String }]                  // e.g. ["API", "Manual"]
-        }
-      
-      // ─── End of “Data Integration Points” ───────────────────────────────────────
-  }
-  
-  // ─── End of JSON‐derived “Data Integration Points” ───────────────────────────
+  approvedBy:         { type: String },
+  rejectionReason:    { type: String }
 },
+
 
     
     // Stage 4: Active Client

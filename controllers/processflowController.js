@@ -14,7 +14,8 @@ const {
   normalizeEdges,
   createChartNotifications,
   isChartAvailable,
-  getChartUnavailableMessage
+  getChartUnavailableMessage,
+  addCEFCommentsToNodes
 } = require('../utils/chart/chartHelpers');
 
 
@@ -219,6 +220,10 @@ const assessmentLevel = normLevels;
 
     // 6) Normalize nodes based on assessmentLevel
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
+
+    
+      // ⬇️ ADD THIS
+      const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
     // 7) Normalize edges - The schema allows for many edges per node.
     const normalizedEdges = normalizeEdges(flowchartData.edges);
@@ -678,6 +683,12 @@ const updateProcessFlowchartNode = async (req, res) => {
       return out;
     };
 
+    const numOrNull = (v) => {
+      if (v === undefined || v === null || v === '') return null;
+      const n = Number(v);
+      return Number.isNaN(n) ? null : n;
+    };
+
     const normalizeCustomEF = (cef = {}) => {
       if (!cef || typeof cef !== 'object') return {};
       return { ...cef };
@@ -737,9 +748,33 @@ const updateProcessFlowchartNode = async (req, res) => {
         mergedTop.customEmissionFactor = existingScope.customEmissionFactor || null;
       }
 
+      // Ensure presence of CEF comment siblings (if you added that helper earlier)
+      if (finalEF === 'Custom') {
+        mergedTop.emissionFactorValues.customEmissionFactor =
+          ensureCEFComments(mergedTop.emissionFactorValues.customEmissionFactor || {});
+        mergedTop.customEmissionFactor =
+          ensureCEFComments(mergedTop.customEmissionFactor || {});
+      }
+
       // Carry UAD / UEF if present
       if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
       if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
+
+      // ── Merge customValues (optional) ─────────────────────────────
+      const incCV  = incomingScope.customValues || incomingScope.customValue || {};
+      const prevCV = existingScope.customValues || {};
+      const mergedCV = {
+        assetLifetime:        numOrNull( incCV.assetLifetime ?? incCV.AssetLifeTime ?? incCV.AssestLifeTime ?? incCV.assetLifeTime ?? prevCV.assetLifetime ?? null ),
+        TDLossFactor:         numOrNull( incCV.TDLossFactor ?? incCV['T&DLossFactor'] ?? incCV.TAndDLossFactor ?? prevCV.TDLossFactor ?? null ),
+        defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null )
+      };
+      if (
+        mergedCV.assetLifetime != null ||
+        mergedCV.TDLossFactor != null ||
+        mergedCV.defaultRecyclingRate != null
+      ) {
+        mergedTop.customValues = mergedCV;
+      }
 
       return mergedTop;
     };
