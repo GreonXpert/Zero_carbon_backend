@@ -13,7 +13,9 @@ const {
   createChartNotifications,
   isChartAvailable,
   getChartUnavailableMessage,
-  addCEFCommentsToNodes
+  addCEFCommentsToNodes,
+  ensureCEFComments,
+  numOrNull
 } = require('../utils/chart/chartHelpers');
 
 

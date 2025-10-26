@@ -7,7 +7,7 @@ const router = express.Router();
 // Routes for GWP
 router.post('/add', gwpController.addGWP);
 router.get('/all', gwpController.getAllGWP);
-router.get('/:id', gwpController.getGWPById);
+router.get('/:id([0-9a-fA-F]{24})', gwpController.getGWPById);
 router.put('/update/:id', gwpController.updateGWP);
 router.delete('/delete/:id', gwpController.deleteGWP);
 router.get('/chemical/:chemicalName', gwpController.getGWPByChemicalName);

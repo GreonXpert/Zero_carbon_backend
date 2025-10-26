@@ -486,5 +486,7 @@ module.exports = {
   createChartNotifications,
   isChartAvailable,
   getChartUnavailableMessage,
-  addCEFCommentsToNodes
+  addCEFCommentsToNodes,
+  ensureCEFComments,
+  numOrNull
 };
