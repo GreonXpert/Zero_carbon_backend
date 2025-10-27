@@ -67,9 +67,11 @@ const ProjectProfileSchema = new mongoose.Schema({
 }, { _id: false });
 
 const DetailsforEmissonProfile = new mongoose.Schema({
-  name:         { type: String, default: "" },
+  sourceName:         { type: String, default: "" },
   description:  { type: String, default: "" },
-  otherDetails: { type: String, default: "" }
+  facility: { type: String, default: "" },
+  emissionDataTypes: {type: String, default: "" },
+  relevantDepartment: { type: String, default: "" },
 }, { _id: false });
 const CategoryDetailsSchema = new mongoose.Schema(
   { details: DetailsforEmissonProfile },
@@ -277,7 +279,7 @@ const clientSchema = new mongoose.Schema(
           operation: { type: String },
           productionCapacity: { type: String },
           unit:   { type: String, default: "" },   // e.g., "employees", "m²", "t/yr"
-  remark: { type: String, default: "" }    // free-text source/notes
+          remark: { type: String, default: "" }    // free-text source/notes
         }],
         totalEmployees: { type: Number },
         employeesByFacility: [{
