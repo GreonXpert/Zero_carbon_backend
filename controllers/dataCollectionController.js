@@ -2301,7 +2301,7 @@ const disconnectSource = async (req, res) => {
 };
 
 // Reconnect Source
-// Reconnect Source (params-only) — no request body required
+// Reconnect Source (params-only; no validation of deviceId/apiEndpoint)
 const reconnectSource = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -2329,7 +2329,6 @@ const reconnectSource = async (req, res) => {
     if (nodeIdx === -1) {
       return res.status(404).json({ message: 'Node not found' });
     }
-
     const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails.findIndex(
       s => s.scopeIdentifier === scopeIdentifier
     );
@@ -2338,55 +2337,67 @@ const reconnectSource = async (req, res) => {
     }
 
     const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
+    const inputType = (scope.inputType || '').toUpperCase();
 
-    // 📦 Load last-known connection details (saved at connect/disconnect time)
-    const existingCfg = await DataCollectionConfig.findOne(
-      { clientId, nodeId, scopeIdentifier },
-      { connectionDetails: 1 }
-    ).lean();
-
-    // 🔌 Reconnect using saved values
-    if (scope.inputType === 'API') {
-      // Prefer value already on the scope (if not blank), else use last saved
-      const currentEndpoint = scope.apiEndpoint && scope.apiEndpoint.trim() !== '' ? scope.apiEndpoint.trim() : null;
-      const savedEndpoint = existingCfg?.connectionDetails?.apiEndpoint;
-      const apiEndpoint = currentEndpoint || savedEndpoint;
-
-      if (!apiEndpoint) {
-        return res.status(400).json({ message: 'No saved API endpoint found for this scope to reconnect' });
-      }
-
+    if (inputType === 'API') {
+      // ✅ No endpoint check — just mark active
       scope.apiStatus = true;
-      scope.apiEndpoint = apiEndpoint;
-    } else if (scope.inputType === 'IOT') {
-      const currentDeviceId = scope.iotDeviceId && scope.iotDeviceId.trim() !== '' ? scope.iotDeviceId.trim() : null;
-      const savedDeviceId = existingCfg?.connectionDetails?.deviceId;
-      const deviceId = currentDeviceId || savedDeviceId;
 
-      if (!deviceId) {
-        return res.status(400).json({ message: 'No saved IoT deviceId found for this scope to reconnect' });
-      }
+      // Persist scope changes
+      flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
+      await flowchart.save();
 
+      // Upsert config as active (do not require apiEndpoint)
+      await DataCollectionConfig.findOneAndUpdate(
+        { clientId, nodeId, scopeIdentifier },
+        {
+          $set: {
+            inputType: 'API',
+            'connectionDetails.isActive': true,
+            'connectionDetails.reconnectedAt': new Date(),
+            'connectionDetails.reconnectedBy': req.user._id
+          },
+          $setOnInsert: {
+            // keep whatever was already on the scope; empty string if missing
+            'connectionDetails.apiEndpoint': scope.apiEndpoint || ''
+          }
+        },
+        { upsert: true }
+      );
+
+    } else if (inputType === 'IOT') {
+      // ✅ No deviceId check — just mark active
       scope.iotStatus = true;
-      scope.iotDeviceId = deviceId;
+
+      // Persist scope changes
+      flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
+      await flowchart.save();
+
+      // Upsert config as active (do not require deviceId)
+      await DataCollectionConfig.findOneAndUpdate(
+        { clientId, nodeId, scopeIdentifier },
+        {
+          $set: {
+            inputType: 'IOT',
+            'connectionDetails.isActive': true,
+            'connectionDetails.reconnectedAt': new Date(),
+            'connectionDetails.reconnectedBy': req.user._id
+          },
+          $setOnInsert: {
+            // keep whatever was already on the scope; empty string if missing
+            'connectionDetails.deviceId': scope.iotDeviceId || ''
+          }
+        },
+        { upsert: true }
+      );
+
     } else {
-      return res.status(400).json({ message: 'Cannot reconnect manual input type' });
+      // Manual has nothing to reconnect — return success without changes
+      return res.status(200).json({
+        message: 'Nothing to reconnect for MANUAL input type; left unchanged',
+        scopeIdentifier
+      });
     }
-
-    // 💾 Persist scope updates
-    flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
-    await flowchart.save();
-
-    // 🗃️ Mark config as active again (keep existing connectionDetails as-is)
-    await DataCollectionConfig.findOneAndUpdate(
-      { clientId, nodeId, scopeIdentifier },
-      {
-        'connectionDetails.isActive': true,
-        'connectionDetails.reconnectedAt': new Date(),
-        'connectionDetails.reconnectedBy': req.user._id
-      },
-      { upsert: true } // creates doc/paths if missing
-    );
 
     return res.status(200).json({
       message: 'Source reconnected successfully',
@@ -2400,6 +2411,8 @@ const reconnectSource = async (req, res) => {
     });
   }
 };
+
+
 
 
 
