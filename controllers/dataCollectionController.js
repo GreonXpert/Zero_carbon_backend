@@ -603,6 +603,19 @@ const saveAPIData = async (req, res) => {
     if (!scopeConfig) {
       return res.status(400).json({ message: 'Invalid API scope configuration' });
     }
+
+    // ---- GATE: refuse API data when inactive ----
+    const cfg = await DataCollectionConfig.findOne({ clientId, nodeId, scopeIdentifier }).lean();
+    const apiGateActive = (cfg?.connectionDetails?.isActive ?? scopeConfig.apiStatus) === true;
+    if (!apiGateActive) {
+      return res.status(409).json({
+        message: 'API connection is disabled. Data not accepted.',
+        accepted: false,
+        reason: 'connection_disabled',
+        scopeIdentifier
+      });
+    }
+    // ---- END GATE ----
     // Process date/time
     const rawDate = date || moment().format('DD/MM/YYYY');
     const rawTime = time || moment().format('HH:mm:ss');
@@ -762,6 +775,19 @@ const saveIoTData = async (req, res) => {
     if (!scopeConfig) {
       return res.status(400).json({ message: 'Invalid IoT scope configuration' });
     }
+
+    // ---- GATE: refuse API data when inactive ----
+    const cfg = await DataCollectionConfig.findOne({ clientId, nodeId, scopeIdentifier }).lean();
+    const apiGateActive = (cfg?.connectionDetails?.isActive ?? scopeConfig.apiStatus) === true;
+    if (!apiGateActive) {
+      return res.status(409).json({
+        message: 'API connection is disabled. Data not accepted.',
+        accepted: false,
+        reason: 'connection_disabled',
+        scopeIdentifier
+      });
+    }
+    // ---- END GATE ----
 
     // 4) Normalize incoming IoT payload
     const iotData = dataValues || data;
@@ -2543,103 +2569,18 @@ const flowchart = activeChart.chart;
   }
 };
 
-// Disconnect Source
+// Disconnect Source (params-only; DO NOT delete endpoint/deviceId)
+
 const disconnectSource = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
-    
-    // Check permissions for disconnect operations
-    const permissionCheck = await checkOperationPermission(req.user, clientId, nodeId, scopeIdentifier, 'disconnect');
-    if (!permissionCheck.allowed) {
-      return res.status(403).json({ 
-        message: 'Permission denied', 
-        reason: permissionCheck.reason 
-      });
-    }
-    
-    // Find and update scope configuration
-    const activeChart = await getActiveFlowchart(clientId);
-    if (!activeChart) {
-      return res.status(404).json({ message: 'No active flowchart found' });
-    }
-    const flowchart = activeChart.chart;
-    if (!flowchart) {
-      return res.status(404).json({ message: 'Flowchart not found' });
-    }
-    
-    let updated = false;
-    for (let i = 0; i < flowchart.nodes.length; i++) {
-      if (flowchart.nodes[i].id === nodeId) {
-        const scopeIndex = flowchart.nodes[i].details.scopeDetails.findIndex(
-          s => s.scopeIdentifier === scopeIdentifier
-        );
-        
-        if (scopeIndex !== -1) {
-          const scope = flowchart.nodes[i].details.scopeDetails[scopeIndex];
-          
-          // Disconnect based on current type
-          if (scope.inputType === 'API') {
-            scope.apiStatus = false;
-            scope.apiEndpoint = '';
-          } else if (scope.inputType === 'IOT') {
-            scope.iotStatus = false;
-            scope.iotDeviceId = '';
-          } else {
-            return res.status(400).json({ message: 'Cannot disconnect manual input type' });
-          }
-          
-          flowchart.nodes[i].details.scopeDetails[scopeIndex] = scope;
-          updated = true;
-          break;
-        }
-      }
-    }
-    
-    if (!updated) {
-      return res.status(404).json({ message: 'Scope not found' });
-    }
-    
-    await flowchart.save();
-    
-    // Update collection config
-    await DataCollectionConfig.findOneAndUpdate(
-      { clientId, nodeId, scopeIdentifier },
-      {
-        'connectionDetails.isActive': false,
-        'connectionDetails.disconnectedAt': new Date(),
-        'connectionDetails.disconnectedBy': req.user._id
-      }
-    );
-    
-    res.status(200).json({
-      message: 'Source disconnected successfully',
-      scopeIdentifier
-    });
-    
-  } catch (error) {
-    console.error('Disconnect source error:', error);
-    res.status(500).json({ 
-      message: 'Failed to disconnect source', 
-      error: error.message 
-    });
-  }
-};
 
-// Reconnect Source
-// Reconnect Source (params-only; no validation of deviceId/apiEndpoint)
-const reconnectSource = async (req, res) => {
-  try {
-    const { clientId, nodeId, scopeIdentifier } = req.params;
-
-    // 🔒 Permission gate
+    // 🔒 Permission
     const permissionCheck = await checkOperationPermission(
-      req.user, clientId, nodeId, scopeIdentifier, 'reconnect'
+      req.user, clientId, nodeId, scopeIdentifier, 'disconnect'
     );
     if (!permissionCheck.allowed) {
-      return res.status(403).json({
-        message: 'Permission denied',
-        reason: permissionCheck.reason
-      });
+      return res.status(403).json({ message: 'Permission denied', reason: permissionCheck.reason });
     }
 
     // 🔎 Active flowchart
@@ -2649,30 +2590,98 @@ const reconnectSource = async (req, res) => {
     }
     const flowchart = activeChart.chart;
 
-    // 🧭 Find node & scope
+    // 🧭 Locate node/scope
     const nodeIdx = flowchart.nodes.findIndex(n => n.id === nodeId);
-    if (nodeIdx === -1) {
-      return res.status(404).json({ message: 'Node not found' });
+    if (nodeIdx === -1) return res.status(404).json({ message: 'Node not found' });
+
+    const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails
+      .findIndex(s => s.scopeIdentifier === scopeIdentifier);
+    if (scopeIdx === -1) return res.status(404).json({ message: 'Scope not found' });
+
+    const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
+
+    // ❗Only flip flags; keep identifiers intact.
+    if ((scope.inputType || '').toUpperCase() === 'API') {
+      scope.apiStatus = false;           // DO NOT clear scope.apiEndpoint
+    } else if ((scope.inputType || '').toUpperCase() === 'IOT') {
+      scope.iotStatus = false;           // DO NOT clear scope.iotDeviceId
+    } else {
+      return res.status(400).json({ message: 'Cannot disconnect manual input type' });
     }
-    const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails.findIndex(
-      s => s.scopeIdentifier === scopeIdentifier
+
+    flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
+    await flowchart.save();
+
+    // Mirror gate OFF in collection config, preserving endpoint/deviceId if known
+    await DataCollectionConfig.findOneAndUpdate(
+      { clientId, nodeId, scopeIdentifier },
+      {
+        $set: {
+          'connectionDetails.isActive': false,
+          'connectionDetails.disconnectedAt': new Date(),
+          'connectionDetails.disconnectedBy': req.user?._id
+        },
+        $setOnInsert: {
+          // If we create it now, seed from scope (or empty string)
+          'connectionDetails.apiEndpoint': scope.apiEndpoint || '',
+          'connectionDetails.deviceId': scope.iotDeviceId || ''
+        }
+      },
+      { upsert: true }
     );
-    if (scopeIdx === -1) {
-      return res.status(404).json({ message: 'Scope not found' });
+
+    return res.status(200).json({ message: 'Source disconnected successfully', scopeIdentifier });
+  } catch (error) {
+    console.error('Disconnect source error:', error);
+    return res.status(500).json({ message: 'Failed to disconnect source', error: error.message });
+  }
+};
+
+
+// Reconnect Source (params-only; flip false->true; never read body)
+const reconnectSource = async (req, res) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier } = req.params;
+
+    // 🔒 Permission
+    const permissionCheck = await checkOperationPermission(
+      req.user, clientId, nodeId, scopeIdentifier, 'reconnect'
+    );
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({ message: 'Permission denied', reason: permissionCheck.reason });
     }
+
+    // 🔎 Active flowchart
+    const activeChart = await getActiveFlowchart(clientId);
+    if (!activeChart || !activeChart.chart) {
+      return res.status(404).json({ message: 'No active flowchart found' });
+    }
+    const flowchart = activeChart.chart;
+
+    // 🧭 Locate node/scope
+    const nodeIdx = flowchart.nodes.findIndex(n => n.id === nodeId);
+    if (nodeIdx === -1) return res.status(404).json({ message: 'Node not found' });
+
+    const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails
+      .findIndex(s => s.scopeIdentifier === scopeIdentifier);
+    if (scopeIdx === -1) return res.status(404).json({ message: 'Scope not found' });
 
     const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
     const inputType = (scope.inputType || '').toUpperCase();
 
+    // Pull any prior config to preserve endpoint/deviceId if needed
+    const existingCfg = await DataCollectionConfig.findOne(
+      { clientId, nodeId, scopeIdentifier },
+      { connectionDetails: 1, inputType: 1 }
+    ).lean();
+
     if (inputType === 'API') {
-      // ✅ No endpoint check — just mark active
+      // ✅ flip false -> true (no body required)
       scope.apiStatus = true;
 
-      // Persist scope changes
       flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
       await flowchart.save();
 
-      // Upsert config as active (do not require apiEndpoint)
       await DataCollectionConfig.findOneAndUpdate(
         { clientId, nodeId, scopeIdentifier },
         {
@@ -2680,25 +2689,21 @@ const reconnectSource = async (req, res) => {
             inputType: 'API',
             'connectionDetails.isActive': true,
             'connectionDetails.reconnectedAt': new Date(),
-            'connectionDetails.reconnectedBy': req.user._id
-          },
-          $setOnInsert: {
-            // keep whatever was already on the scope; empty string if missing
-            'connectionDetails.apiEndpoint': scope.apiEndpoint || ''
+            'connectionDetails.reconnectedBy': req.user?._id,
+            // Preserve endpoint: prefer config, else scope, else ''
+            'connectionDetails.apiEndpoint':
+              (existingCfg?.connectionDetails?.apiEndpoint ?? scope.apiEndpoint ?? '')
           }
         },
         { upsert: true }
       );
-
     } else if (inputType === 'IOT') {
-      // ✅ No deviceId check — just mark active
+      // ✅ flip false -> true (no body required)
       scope.iotStatus = true;
 
-      // Persist scope changes
       flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
       await flowchart.save();
 
-      // Upsert config as active (do not require deviceId)
       await DataCollectionConfig.findOneAndUpdate(
         { clientId, nodeId, scopeIdentifier },
         {
@@ -2706,34 +2711,25 @@ const reconnectSource = async (req, res) => {
             inputType: 'IOT',
             'connectionDetails.isActive': true,
             'connectionDetails.reconnectedAt': new Date(),
-            'connectionDetails.reconnectedBy': req.user._id
-          },
-          $setOnInsert: {
-            // keep whatever was already on the scope; empty string if missing
-            'connectionDetails.deviceId': scope.iotDeviceId || ''
+            'connectionDetails.reconnectedBy': req.user?._id,
+            // Preserve deviceId: prefer config, else scope, else ''
+            'connectionDetails.deviceId':
+              (existingCfg?.connectionDetails?.deviceId ?? scope.iotDeviceId ?? '')
           }
         },
         { upsert: true }
       );
-
     } else {
-      // Manual has nothing to reconnect — return success without changes
       return res.status(200).json({
         message: 'Nothing to reconnect for MANUAL input type; left unchanged',
         scopeIdentifier
       });
     }
 
-    return res.status(200).json({
-      message: 'Source reconnected successfully',
-      scopeIdentifier
-    });
+    return res.status(200).json({ message: 'Source reconnected successfully', scopeIdentifier });
   } catch (error) {
     console.error('Reconnect source error:', error);
-    return res.status(500).json({
-      message: 'Failed to reconnect source',
-      error: error.message
-    });
+    return res.status(500).json({ message: 'Failed to reconnect source', error: error.message });
   }
 };
 
