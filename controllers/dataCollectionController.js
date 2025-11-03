@@ -132,7 +132,7 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
 
       case 'Upstream Transport and Distribution':
         pd.transportationSpend = getValue(['transportationSpend', 'transportation_spend']); // Tier 1
-        pd.mass = getValue(['mass', 'weight']); // Tier 2
+        pd.allocation = getValue(['allocation', 'weight']); // Tier 2
         pd.distance = getValue(['distance', 'km']); // Tier 2
         break;
 
@@ -169,7 +169,7 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
 
       case 'Downstream Transport and Distribution':
         pd.transportSpend = getValue(['transportSpend', 'transport_Spend', 'spendTransport']); // Tier 1
-        pd.mass = getValue(['mass', 'transportMass']); // Tier 2
+        pd.allocation = getValue(['allocation', 'transportMass']); // Tier 2
         pd.distance = getValue(['distance', 'transportDistance']); // Tier 2
         break;
 
