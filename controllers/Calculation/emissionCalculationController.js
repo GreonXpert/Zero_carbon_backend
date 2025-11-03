@@ -869,48 +869,46 @@ async function calculateScope3Emissions(
   break;
     }
 
-       // ───────── Upstream Transport and Distribution (4) ─────────
-    case 'Upstream Transport and Distribution':
-      if (tier === 'tier 1') {
-        const spend    = dataValues.transportationSpend     ?? 0;
-        const cumSpend = cumulativeVals.transportationSpend ?? 0;
-        const inc      = spend * ef;
-        const cum      = cumSpend * ef;
-        const uInc     = calculateUncertainty(inc, UAD, UEF);
-        const uCum     = calculateUncertainty(cum, UAD, UEF);
+    // ───────── Upstream Transport and Distribution (4) ─────────
+      case 'Upstream Transport and Distribution': {
+        if (tier === 'tier 1') {
+          const spend    = dataValues.transportationSpend     ?? 0;
+          const cumSpend = cumulativeVals.transportationSpend ?? 0;
+          const inc      = spend * ef;
+          const cum      = cumSpend * ef;
+          const uInc     = calculateUncertainty(inc, UAD, UEF);
+          const uCum     = calculateUncertainty(cum, UAD, UEF);
 
-        emissions.incoming['upstream_transport_and_distribution'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['upstream_transport_and_distribution'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      else if (tier === 'tier 2') {
-        const mass     = dataValues.mass     ?? 0;
-        const distance = dataValues.distance ?? 0;
-        const inc      = mass * distance * ef;
-        // for cumulative, multiply cumulative mass & distance if you track them separately
-        const cum      = (cumulativeVals.mass ?? 0) * (cumulativeVals.distance ?? 0) * ef;
-        const uInc     = calculateUncertainty(inc, UAD, UEF);
-        const uCum     = calculateUncertainty(cum, UAD, UEF);
+          emissions.incoming['upstream_transport_and_distribution'] = {
+            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+          };
+          emissions.cumulative['upstream_transport_and_distribution'] = {
+            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+          };
+        } else if (tier === 'tier 2') {
+          // 🔁 CHANGED: use allocation × distance × EF (fallback from legacy mass)
+          const allocation = (dataValues.allocation ?? dataValues.mass ?? 0);
+          const distance   = dataValues.distance ?? 0;
 
-        emissions.incoming['upstream_transport_and_distribution'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['upstream_transport_and_distribution'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
+          const inc  = allocation * distance * ef;
+          const cumA = (cumulativeVals.allocation ?? cumulativeVals.mass ?? 0);
+          const cumD = (cumulativeVals.distance   ?? 0);
+          const cum  = cumA * cumD * ef;
+
+          const uInc = calculateUncertainty(inc, UAD, UEF);
+          const uCum = calculateUncertainty(cum, UAD, UEF);
+
+          emissions.incoming['upstream_transport_and_distribution'] = {
+            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+          };
+          emissions.cumulative['upstream_transport_and_distribution'] = {
+            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+          };
+        }
+        break;
       }
-      break;
+
+
 
       // ───────── Waste Generated in Operation (5) ─────────
     case 'Waste Generated in Operation':
@@ -1189,52 +1187,47 @@ async function calculateScope3Emissions(
       break;
     }
 
-    // ───────── Downstream Transport & Distribution (9) ─────────
-    case 'Downstream Transport and Distribution': {
-      if (tier === 'tier 1') {
-        // Transport Spend × EF
-        const spend = dataValues.transportSpend ?? 0;
-        const cumSpend = cumulativeVals.transportSpend ?? 0;
-        const inc = spend * ef;
-        const cum = cumSpend * ef;
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
+   // ───────── Downstream Transport and Distribution (9) ─────────
+      case 'Downstream Transport and Distribution': {
+        if (tier === 'tier 1') {
+          // Transport Spend × EF
+          const spend    = dataValues.transportSpend     ?? 0;
+          const cumSpend = cumulativeVals.transportSpend ?? 0;
+          const inc      = spend * ef;
+          const cum      = cumSpend * ef;
 
-        emissions.incoming['downstream_transport_and_distribution'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['downstream_transport_and_distribution'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      else if (tier === 'tier 2') {
-        // Mass × Distance × EF
-        const mass     = dataValues.mass     ?? 0;
-        const distance = dataValues.distance ?? 0;
-        const cumMass  = cumulativeVals.mass     ?? 0;
-        const cumDist  = cumulativeVals.distance ?? 0;
-        const inc = mass * distance * ef;
-        const cum = cumMass * cumDist * ef;
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
+          const uInc = calculateUncertainty(inc, UAD, UEF);
+          const uCum = calculateUncertainty(cum, UAD, UEF);
 
-        emissions.incoming['downstream_transport_and_distribution'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['downstream_transport_and_distribution'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
+          emissions.incoming['downstream_transport_and_distribution'] = {
+            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+          };
+          emissions.cumulative['downstream_transport_and_distribution'] = {
+            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+          };
+        } else if (tier === 'tier 2') {
+          // 🔁 CHANGED: use allocation × distance × EF (fallback from legacy mass)
+          const allocation = (dataValues.allocation ?? dataValues.mass ?? 0);
+          const distance   = dataValues.distance ?? 0;
+
+          const inc   = allocation * distance * ef;
+          const cumA  = (cumulativeVals.allocation ?? cumulativeVals.mass ?? 0);
+          const cumD  = (cumulativeVals.distance   ?? 0);
+          const cum   = cumA * cumD * ef;
+
+          const uInc  = calculateUncertainty(inc, UAD, UEF);
+          const uCum  = calculateUncertainty(cum, UAD, UEF);
+
+          emissions.incoming['downstream_transport_and_distribution'] = {
+            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+          };
+          emissions.cumulative['downstream_transport_and_distribution'] = {
+            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+          };
+        }
+        break;
       }
-      break;
-    }
+
         // ───────── Processing of Sold Products (10) ─────────
     case 'Processing of Sold Products': {
       const qty    = dataValues.productQuantity     ?? 0;
