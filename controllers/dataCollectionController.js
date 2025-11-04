@@ -15,6 +15,8 @@ const {
 } = require('./Calculation/emissionIntegration');
 
 const {getActiveFlowchart} = require ('../utils/DataCollection/dataCollection');
+
+
 /**
  * Normalizes a data payload from any source (API, IOT, Manual, CSV)
  * into a standardized format for emission calculation.
@@ -25,6 +27,17 @@ const {getActiveFlowchart} = require ('../utils/DataCollection/dataCollection');
  * @returns {object} A standardized data object (pd).
  */
 function normalizeDataPayload(sourceData, scopeConfig, inputType) {
+    // ✅ If caller sent { dataValues: {...} } (as in your Manual/API/IoT requests),
+  //    use it as-is. `saveOneEntry()` will still convert to Map<number> with `toNumericMap`.
+  if (
+    sourceData &&
+    typeof sourceData === 'object' &&
+    sourceData.dataValues &&
+    typeof sourceData.dataValues === 'object'
+  ) {
+    return sourceData.dataValues;
+  }
+
   const pd = {};
 
   /**
@@ -158,14 +171,40 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
          }
         break;
 
-      case 'Upstream Leased Assets':
-      case 'Downstream Leased Assets':
-        pd.leasedArea = getValue(['leasedArea', 'leased_Area']);
-        // Tier 2+ fields
-        pd.totalArea = getValue(['totalArea', 'total_Area']);
-        pd.energyConsumption = getValue(['energyConsumption', 'energy_Consumption']);
-        pd.BuildingTotalS1_S2 = getValue(['BuildingTotalS1_S2', 'buildingTotalS1S2']);
-        break;
+      // ✅ Inside normalizeDataPayload(...) – in the Scope 3 block for Leased Assets
+case 'Upstream Leased Assets':
+case 'Downstream Leased Assets': {
+  // local helper: prefer numeric, but keep non-numeric strings
+  const pick = (obj, keys, def = 0) => {
+    for (const k of keys) {
+      if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') {
+        const n = Number(obj[k]);
+        return Number.isFinite(n) ? n : obj[k];
+      }
+    }
+    return def;
+  };
+
+  // ✅ write to pd.* (NOT normalized.*)
+  pd.leasedArea        = pick(sourceData, ['leasedArea', 'leased_area']);
+  pd.totalArea         = pick(sourceData, ['totalArea', 'total_area']);
+  pd.energyConsumption = pick(sourceData, ['energyConsumption', 'energy', 'kWh', 'MWh']);
+
+  // several spellings seen in requests
+  pd.BuildingTotalS1_S2 = pick(
+    sourceData,
+    ['BuildingTotalS1_S2', 'buildingTotalS1S2', 'BuildingTotals1_S2']
+  );
+
+  // accept occupancyEF or occupancyFactor; default to 1 so ratio never divides by 0
+  pd.occupancyEF = pick(
+    sourceData,
+    ['occupancyEF', 'occupancyFactor', 'occupancy_factor', 'OccupancyFactor'],
+    1
+  );
+  break;
+}
+
 
       case 'Downstream Transport and Distribution':
         pd.transportSpend = getValue(['transportSpend', 'transport_Spend', 'spendTransport']); // Tier 1
@@ -912,6 +951,32 @@ const saveIoTData = async (req, res) => {
 // SAVE MANUAL DATA + UPLOAD CSV DATA  (with new role rules)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Ensures we never store '' in DataEntry.emissionFactor.
+// Maps common variants and defaults to 'Custom' if blank.
+function resolveEmissionFactor(entryEF, scopeEF) {
+  const norm = v => (typeof v === 'string' ? v.trim() : '');
+
+  let v = norm(entryEF) || norm(scopeEF);
+
+  // Canonicalize known values (case-insensitive → enum-safe)
+  const map = {
+    ipcc: 'IPCC',
+    defra: 'DEFRA',
+    epa: 'EPA',
+    emissionfactorhub: 'EmissionFactorHub', // IMPORTANT: enum-safe casing
+    country: 'Country',
+    custom: 'Custom'
+  };
+  if (v) {
+    const k = v.toLowerCase();
+    if (map[k]) v = map[k];
+  }
+
+  // Final guard
+  return v || 'Custom';
+}
+
+
 /**
  * Find node & scope from Flowchart or ProcessFlowchart
  */
@@ -1060,15 +1125,26 @@ async function saveOneEntry({
     typeOfNode: node?.details?.TypeOfNode || 'Emission Source',
     // Good defaults for calc/flags — schema will handle the rest
     processingStatus: 'pending',
-    emissionCalculationStatus: 'pending'
+    emissionCalculationStatus: 'pending',
+       emissionFactor: resolveEmissionFactor(row?.emissionFactor, scope?.emissionFactor),
+
   });
 
   await entry.save();
-  // Trigger emission calculation for this DataEntry
-  await triggerEmissionCalculation(entry);
+ // Run the calculator and capture the result object (status + json)
+  const calcResult = await triggerEmissionCalculation(entry);
 
-  return entry;
+  // Persisted inside triggerEmissionCalculation:
+  //  - entry.calculatedEmissions
+  //  - emissionCalculationStatus, emissionCalculatedAt
+  //  - summary update attempt
+
+  // Return both to the caller so your response can mirror API/IoT
+  return { entry, calcResult };
 }
+
+
+
 
 /**
  * POST /api/data-collection/manual/:clientId/:nodeId/:scopeIdentifier
@@ -1110,30 +1186,38 @@ const saveManualData = async (req, res) => {
       ? entries
       : (singleEntry ? [singleEntry] : [req.body]); // backward compatibility for old shape
 
-    const savedIds = [];
-    const errors = [];
+    const saved = [];
+const errors = [];
 
-    for (let i = 0; i < rows.length; i++) {
-      try {
-        const entry = await saveOneEntry({
-          req, clientId, nodeId, scopeIdentifier, scope, node,
-          inputSource: 'MANUAL',
-          row: rows[i]
-        });
-        savedIds.push(entry._id);
-      } catch (err) {
-        errors.push({ index: i, error: err.message });
-      }
-    }
-
-    return res.status(errors.length ? 207 : 201).json({
-      success: errors.length === 0,
-      message: errors.length ? 'Manual data partially saved' : 'Manual data saved',
-      savedCount: savedIds.length,
-      failedCount: errors.length,
-      dataEntryIds: savedIds,
-      errors
+for (let i = 0; i < rows.length; i++) {
+  try {
+    const { entry, calcResult } = await saveOneEntry({
+      req, clientId, nodeId, scopeIdentifier, scope, node,
+      inputSource: 'MANUAL',
+      row: rows[i]
     });
+    saved.push({
+      dataEntryId: entry._id,
+      emissionCalculationStatus: entry.emissionCalculationStatus,
+      calculatedEmissions: entry.calculatedEmissions || null,
+      calculationResponse: calcResult?.data || null
+    });
+  } catch (err) {
+    errors.push({ index: i, error: err.message });
+  }
+}
+
+const ok = errors.length === 0;
+return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
+  success: ok,
+  message: ok
+    ? 'Manual data saved'
+    : (saved.length ? 'Manual data partially saved' : 'Manual data failed'),
+  savedCount: saved.length,
+  failedCount: errors.length,
+  results: saved,
+  errors
+});
   } catch (error) {
     console.error('saveManualData error:', error);
     return res.status(500).json({ success: false, message: 'Server error', error: error.message });
@@ -1195,34 +1279,40 @@ const uploadCSVData = async (req, res) => {
     }
 
     const saved = [];
-    const errors = [];
+const errors = [];
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      try {
-        const entry = await saveOneEntry({
-          req, clientId, nodeId, scopeIdentifier, scope, node,
-          inputSource: 'CSV',
-          row,
-          csvMeta: { fileName }
-        });
-        saved.push(entry._id);
-      } catch (err) {
-        errors.push({ row: i + 1, error: err.message });
-      }
-    }
-
-    return res.status(errors.length ? 207 : 201).json({
-      success: errors.length === 0,
-      message: errors.length
-        ? `CSV partially processed: ${saved.length} saved, ${errors.length} errors`
-        : `CSV processed: ${saved.length} rows saved`,
-      fileName,
-      savedCount: saved.length,
-      failedCount: errors.length,
-      dataEntryIds: saved,
-      errors
+for (let i = 0; i < rows.length; i++) {
+  try {
+    const { entry, calcResult } = await saveOneEntry({
+      req, clientId, nodeId, scopeIdentifier, scope, node,
+      inputSource: 'CSV',
+      row: rows[i],
+      csvMeta: { fileName }
     });
+    saved.push({
+      rowNumber: i + 1,
+      dataEntryId: entry._id,
+      emissionCalculationStatus: entry.emissionCalculationStatus,
+      calculatedEmissions: entry.calculatedEmissions || null,
+      calculationResponse: calcResult?.data || null
+    });
+  } catch (err) {
+    errors.push({ row: i + 1, error: err.message });
+  }
+}
+
+const ok = errors.length === 0;
+return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
+  success: ok,
+  message: ok
+    ? `CSV processed: ${saved.length} rows saved`
+    : `CSV partially processed: ${saved.length} saved, ${errors.length} errors`,
+  fileName,
+  savedCount: saved.length,
+  failedCount: errors.length,
+  results: saved,
+  errors
+});
   } catch (error) {
     console.error('uploadCSVData error:', error);
     return res.status(500).json({ success: false, message: 'Server error', error: error.message });

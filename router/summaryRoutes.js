@@ -6,6 +6,7 @@ const {
   getEmissionSummary,
   getMultipleSummaries,
   getFilteredSummary,
+  getLatestScope12Total,
 } = require('../controllers/Calculation/CalculationSummary');
 const { auth } = require('../middleware/auth');
 const { checkSummaryPermission } = require('../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
@@ -39,6 +40,14 @@ router.get('/:clientId/multiple', checkSummaryPermission, getMultipleSummaries);
  */
 router.get('/:clientId/filtered', checkSummaryPermission, getFilteredSummary);
 
+
+
+/**
+ * @route   GET /api/summaries/:clientId/scope12-total
+ * @desc    Return latest Scope 1 + Scope 2 total for the client by
+ *          reading the most recent EmissionSummary document
+ */
+router.get('/:clientId/scope12-total', checkSummaryPermission, getLatestScope12Total);
 
 
 module.exports = router;

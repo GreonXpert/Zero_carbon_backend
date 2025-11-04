@@ -853,6 +853,155 @@ const getFilteredSummary = async (req, res) => {
     }
 };
 
+// ---- Scope 1 + Scope 2 latest-total helper ---------------------------------
+/**
+ * Robust number caster (handles null/undefined/NaN/strings)
+ */
+const toNum = (v) => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/**
+ * Extract Scope 1 & Scope 2 CO2e from a "byScope" container which could be:
+ *  - a Map<string, {...}>
+ *  - a plain object with keys like "Scope 1", "Scope 2"
+ *  - an Array<{ scopeType: 'Scope 1'|'Scope 2', CO2e: number, ... }>
+ */
+const extractS1S2FromByScope = (byScope) => {
+  let s1 = 0, s2 = 0;
+
+  if (!byScope) return { s1, s2 };
+
+  // 1) Array form
+  if (Array.isArray(byScope)) {
+    for (const item of byScope) {
+      const label = (item?.scopeType || item?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
+      if (label === 'scope1') s1 += toNum(item?.CO2e);
+      if (label === 'scope2') s2 += toNum(item?.CO2e);
+    }
+    return { s1, s2 };
+  }
+
+  // 2) Map form
+  if (typeof byScope?.keys === 'function' && typeof byScope?.get === 'function') {
+    for (const k of byScope.keys()) {
+      const key = k.toString().toLowerCase().replace(/\s+/g, '');
+      const v = byScope.get(k);
+      if (key === 'scope1') s1 += toNum(v?.CO2e ?? v);
+      if (key === 'scope2') s2 += toNum(v?.CO2e ?? v);
+      // also allow value objects that themselves carry scopeType
+      const vt = (v?.scopeType || v?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
+      if (vt === 'scope1') s1 += toNum(v?.CO2e);
+      if (vt === 'scope2') s2 += toNum(v?.CO2e);
+    }
+    return { s1, s2 };
+  }
+
+  // 3) Plain object form
+  if (typeof byScope === 'object') {
+    for (const [k, v] of Object.entries(byScope)) {
+      const key = k.toString().toLowerCase().replace(/\s+/g, '');
+      if (key === 'scope1') s1 += toNum(v?.CO2e ?? v);
+      if (key === 'scope2') s2 += toNum(v?.CO2e ?? v);
+      // also check embedded scopeType
+      const vt = (v?.scopeType || v?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
+      if (vt === 'scope1') s1 += toNum(v?.CO2e);
+      if (vt === 'scope2') s2 += toNum(v?.CO2e);
+    }
+  }
+
+  return { s1, s2 };
+};
+
+/**
+ * GET /api/summaries/:clientId/scope12-total
+ * Always fetches the latest EmissionSummary for a client and returns:
+ *  - latestPeriod (period object)
+ *  - scope1CO2e
+ *  - scope2CO2e
+ *  - scope12TotalCO2e (= scope1 + scope2)
+ *  - sourceSummaryId
+ */
+const getLatestScope12Total = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'clientId is required',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Find the latest summary — prefer the period.to date, then updatedAt/createdAt
+    const latest = await EmissionSummary
+      .findOne({ clientId })
+      .sort({ 'period.to': -1, updatedAt: -1, createdAt: -1 })
+      .lean();
+
+    if (!latest) {
+      return res.status(404).json({
+        success: false,
+        message: 'No emission summary found for this client',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Primary: sum from high-level byScope
+    let { s1, s2 } = extractS1S2FromByScope(latest.byScope);
+
+    // Optional fallback: if byScope missing/zero, try aggregating from byNode.* if your schema has it
+    if ((s1 + s2) === 0 && latest.byNode) {
+      const nodeValues = Array.isArray(latest.byNode)
+        ? latest.byNode
+        : typeof latest.byNode === 'object'
+          ? Object.values(latest.byNode)
+          : [];
+
+      for (const nv of nodeValues) {
+        // common shapes handled:
+        // 1) nv.byScope in any of the forms (Map/object/array)
+        if (nv?.byScope) {
+          const part = extractS1S2FromByScope(nv.byScope);
+          s1 += toNum(part.s1);
+          s2 += toNum(part.s2);
+        }
+        // 2) direct keys (rare but safe)
+        if (nv?.scope1) s1 += toNum(nv.scope1?.CO2e ?? nv.scope1);
+        if (nv?.scope2) s2 += toNum(nv.scope2?.CO2e ?? nv.scope2);
+      }
+    }
+
+    const payload = {
+      success: true,
+      message: 'Latest Scope 1 + Scope 2 total fetched successfully',
+      data: {
+        clientId,
+        latestPeriod: latest.period || null,
+        scope1CO2e: s1,
+        scope2CO2e: s2,
+        scope12TotalCO2e: s1 + s2,
+        sourceSummaryId: latest._id || null
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    return res.status(200).json(payload);
+  } catch (err) {
+    console.error('getLatestScope12Total error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch Scope 1 + Scope 2 total',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+
 module.exports = {
   setSocketIO,
   calculateEmissionSummary,
@@ -862,5 +1011,6 @@ module.exports = {
   getEmissionSummary,
   getMultipleSummaries,
   getFilteredSummary,
+  getLatestScope12Total,
 
 };

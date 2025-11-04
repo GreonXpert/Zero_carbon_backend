@@ -4,6 +4,50 @@ const DataEntry = require('../../models/DataEntry');
 const Flowchart = require('../../models/Flowchart');
 const ProcessFlowchart = require('../../models/ProcessFlowchart');
 const Client = require('../../models/Client'); 
+const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
+
+
+// ADD: helper to read latest S1+S2 CO2e for the current node from Calculation Summary
+async function getNodeS1S2FromLatestSummary(clientId, nodeId) {
+  try {
+    if (!clientId || !nodeId) return 0;
+
+    // Get the latest available summary snapshot for this client
+    const summary = await EmissionSummary
+      .findOne({ clientId })
+      .sort({
+        'period.to': -1,
+        'period.year': -1,
+        'period.month': -1,
+        'period.week': -1,
+        'period.day': -1,
+        updatedAt: -1
+      })
+      .lean();
+
+    if (!summary) return 0;
+
+    // Handle Map vs object safely (summaries may store Maps)
+    const byNode =
+      summary.byNode instanceof Map
+        ? Object.fromEntries(summary.byNode)
+        : (summary.byNode || {});
+
+    const nodeRow = byNode[nodeId];
+    if (!nodeRow || !nodeRow.byScope) return 0;
+
+    // Keys are exactly 'Scope 1' and 'Scope 2' in byScope
+    const s1 = nodeRow.byScope['Scope 1']?.CO2e || 0;
+    const s2 = nodeRow.byScope['Scope 2']?.CO2e || 0;
+
+    // Summary stores totals in consistent units; we use them as-is
+    return s1 + s2;
+  } catch (err) {
+    console.error('getNodeS1S2FromLatestSummary error:', err);
+    return 0;
+  }
+}
+
 
 /**
  * Fetch scopeConfig based on client's assessmentLevel (organization/process/both)
@@ -67,6 +111,45 @@ function getAssetLifetimeFromScope(scope) {
   } catch {
     return null;
   }
+}
+
+// Read occupancy factor from data entry (preferred) or scope config (fallback).
+// Accepts 0–1 or 0–100. Returns a safe [0,1] number; defaults to 1 if invalid.
+function getOccupancyFactorFromEntry(dataValues, scopeConfig) {
+  // try common field names from data entry
+  let occ =
+    dataValues?.occupancEF ?? // as you typed
+    dataValues?.occupancyEF ??
+    dataValues?.occupancyFactor ??
+    dataValues?.occupancy ?? null;
+
+  // normalize if provided
+  if (typeof occ === 'string' && occ.trim() !== '' && !isNaN(Number(occ))) {
+    occ = Number(occ);
+  }
+  if (typeof occ === 'number' && isFinite(occ)) {
+    // support percentages e.g. 85 → 0.85
+    if (occ > 1) occ = occ / 100;
+    if (occ < 0) occ = 0;
+    if (occ > 1) occ = 1;
+    return occ;
+  }
+
+  // optional fallback from scope config if you store it there
+  const cfgOcc =
+    scopeConfig?.additionalInfo?.customValue?.occupancyFactor ??
+    scopeConfig?.customValue?.occupancyFactor ?? null;
+
+  if (typeof cfgOcc === 'number' && isFinite(cfgOcc)) {
+    let v = cfgOcc;
+    if (v > 1) v = v / 100;
+    if (v < 0) v = 0;
+    if (v > 1) v = 1;
+    return v;
+  }
+
+  // safe default so denominator stays valid
+  return 1;
 }
 
 // Helper: read T&D Loss factor from scope config (process flowchart preferred, else flowchart)
@@ -635,6 +718,13 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
 }
 
 
+// Normalize an activity string like "Travel Based", "travelBased", "Energy_Based"
+function normActivity(val) {
+  return String(val || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')     // remove spaces
+    .replace(/_/g, '');      // remove underscores
+}
 
 
 /**
@@ -655,6 +745,8 @@ async function calculateScope3Emissions(
   const cumulativeVals = dataEntry.cumulativeValues instanceof Map
     ? Object.fromEntries(dataEntry.cumulativeValues)
     : dataEntry.cumulativeValues;
+
+    
 
       // ── define your Fuel & Energy activity enum ──
   const FuelEnergyActivity = Object.freeze({
@@ -975,90 +1067,138 @@ async function calculateScope3Emissions(
      
      // ───────── Business Travel ─────────
     // ───────── Business Travel (6) ─────────
-    case 'Business Travel':
-      if (tier === 'tier 1') {
-        // Tier 1: Travel spend × travel EF  +  Hotel nights × hotel‐night EF
-        const travelSpend   = dataValues.travelSpend   ?? 0;
-        const hotelNights   = dataValues.hotelNights   ?? 0;
-        // both EFs come from whatever source is in scopeConfig.emissionFactor
-        const travelInc     = travelSpend * ef;
-        const hotelInc      = hotelNights * ef;
-        const cumTravel     = (cumulativeVals.travelSpend   ?? 0) * ef;
-        const cumHotel      = (cumulativeVals.hotelNights   ?? 0) * ef;
+   case 'Business Travel': {
+  const act = normActivity(scopeConfig.activity);  // 'travelbased' | 'hotelbased' | ''
+  if (tier === 'tier 1') {
+    // Tier 1
+    // travelBased => travelSpend × EF
+    // hotelBased  => hotelNights × EF
+    const travelSpend   = dataValues.travelSpend   ?? 0;
+    const cumTravelSpend= cumulativeVals.travelSpend ?? 0;
+    const hotelNights   = dataValues.hotelNights   ?? 0;
+    const cumHotelNights= cumulativeVals.hotelNights ?? 0;
 
-        const uTravelInc    = calculateUncertainty(travelInc, UAD, UEF);
-        const uHotelInc     = calculateUncertainty(hotelInc,  UAD, UEF);
-        const uTravelCum    = calculateUncertainty(cumTravel,  UAD, UEF);
-        const uHotelCum     = calculateUncertainty(cumHotel,   UAD, UEF);
+    if (act === 'travelbased') {
+      const inc  = travelSpend    * ef;
+      const cum  = cumTravelSpend * ef;
+      const uInc = calculateUncertainty(inc, UAD, UEF);
+      const uCum = calculateUncertainty(cum, UAD, UEF);
 
-        // break it out into two line‐items
-        emissions.incoming['business_travel'] = {
-          CO2e: travelInc,
-          combinedUncertainty: uTravelInc,
-          CO2eWithUncertainty: travelInc + uTravelInc
-        };
+      emissions.incoming['business_travel'] = {
+        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+      };
+      emissions.cumulative['business_travel'] = {
+        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+      };
+    } else if (act === 'hotelbased') {
+      const inc  = hotelNights    * ef;
+      const cum  = cumHotelNights * ef;
+      const uInc = calculateUncertainty(inc, UAD, UEF);
+      const uCum = calculateUncertainty(cum, UAD, UEF);
+
+      emissions.incoming['accommodation'] = {
+        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+      };
+      emissions.cumulative['accommodation'] = {
+        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+      };
+    } else {
+      // Fallback: keep your existing dual-line behavior (spend + nights) if activity isn’t set
+      const travelInc = travelSpend * ef;
+      const hotelInc  = hotelNights * ef;
+      const cumTravel = cumTravelSpend * ef;
+      const cumHotel  = cumHotelNights * ef;
+
+      emissions.incoming['business_travel'] = {
+        CO2e: travelInc,
+        combinedUncertainty: calculateUncertainty(travelInc, UAD, UEF),
+        CO2eWithUncertainty: travelInc + calculateUncertainty(travelInc, UAD, UEF)
+      };
+      emissions.incoming['accommodation'] = {
+        CO2e: hotelInc,
+        combinedUncertainty: calculateUncertainty(hotelInc, UAD, UEF),
+        CO2eWithUncertainty: hotelInc + calculateUncertainty(hotelInc, UAD, UEF)
+      };
+      emissions.cumulative['business_travel'] = {
+        CO2e: cumTravel,
+        combinedUncertainty: calculateUncertainty(cumTravel, UAD, UEF),
+        CO2eWithUncertainty: cumTravel + calculateUncertainty(cumTravel, UAD, UEF)
+      };
+      emissions.cumulative['accommodation'] = {
+        CO2e: cumHotel,
+        combinedUncertainty: calculateUncertainty(cumHotel, UAD, UEF),
+        CO2eWithUncertainty: cumHotel + calculateUncertainty(cumHotel, UAD, UEF)
+      };
+    }
+  } else if (tier === 'tier 2') {
+    // Tier 2
+    // travelBased => passengers × distance × EF
+    // hotelBased  => hotelNights × EF
+    const passengers     = dataValues.numberOfPassengers ?? 0;
+    const distance       = dataValues.distanceTravelled  ?? 0;
+    const hotelNights    = dataValues.hotelNights        ?? 0;
+    const cumPassengers  = cumulativeVals.numberOfPassengers ?? 0;
+    const cumDistance    = cumulativeVals.distanceTravelled  ?? 0;
+    const cumHotelNights = cumulativeVals.hotelNights        ?? 0;
+
+    if (act === 'travelbased') {
+      const inc  = passengers * distance * ef;
+      const cum  = (cumPassengers * cumDistance) * ef;
+      const uInc = calculateUncertainty(inc, UAD, UEF);
+      const uCum = calculateUncertainty(cum, UAD, UEF);
+
+      emissions.incoming['business_travel'] = {
+        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+      };
+      emissions.cumulative['business_travel'] = {
+        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+      };
+    } else if (act === 'hotelbased') {
+      const inc  = hotelNights    * ef;
+      const cum  = cumHotelNights * ef;
+      const uInc = calculateUncertainty(inc, UAD, UEF);
+      const uCum = calculateUncertainty(cum, UAD, UEF);
+
+      emissions.incoming['accommodation'] = {
+        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
+      };
+      emissions.cumulative['accommodation'] = {
+        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
+      };
+    } else {
+      // Fallback to your current “two-option” logic if activity isn’t set
+      const tripInc = passengers * distance * ef;
+      const tripCum = (cumPassengers * cumDistance) * ef;
+      emissions.incoming['business_travel'] = {
+        CO2e: tripInc,
+        combinedUncertainty: calculateUncertainty(tripInc, UAD, UEF),
+        CO2eWithUncertainty: tripInc + calculateUncertainty(tripInc, UAD, UEF)
+      };
+      emissions.cumulative['business_travel'] = {
+        CO2e: tripCum,
+        combinedUncertainty: calculateUncertainty(tripCum, UAD, UEF),
+        CO2eWithUncertainty: tripCum + calculateUncertainty(tripCum, UAD, UEF)
+      };
+
+      if (hotelNights > 0 || cumHotelNights > 0) {
+        const hotelInc = hotelNights * ef;
+        const hotelCum = cumHotelNights * ef;
         emissions.incoming['accommodation'] = {
           CO2e: hotelInc,
-          combinedUncertainty: uHotelInc,
-          CO2eWithUncertainty: hotelInc + uHotelInc
-        };
-        emissions.cumulative['business_travel'] = {
-          CO2e: cumTravel,
-          combinedUncertainty: uTravelCum,
-          CO2eWithUncertainty: cumTravel + uTravelCum
+          combinedUncertainty: calculateUncertainty(hotelInc, UAD, UEF),
+          CO2eWithUncertainty: hotelInc + calculateUncertainty(hotelInc, UAD, UEF)
         };
         emissions.cumulative['accommodation'] = {
-          CO2e: cumHotel,
-          combinedUncertainty: uHotelCum,
-          CO2eWithUncertainty: cumHotel + uHotelCum
+          CO2e: hotelCum,
+          combinedUncertainty: calculateUncertainty(hotelCum, UAD, UEF),
+          CO2eWithUncertainty: hotelCum + calculateUncertainty(hotelCum, UAD, UEF)
         };
       }
-      else if (tier === 'tier 2') {
-        // Tier 2 has two “or” cases:
-        // 1) passenger-km, 2) hotel-nights
-        const passengers    = dataValues.numberOfPassengers ?? 0;
-        const distance      = dataValues.distanceTravelled ?? 0;
-        const hotelNights   = dataValues.hotelNights       ?? 0;
+    }
+  }
+  break;
+}
 
-        // CASE A: passenger-km
-        const tripInc       = passengers * distance * ef;
-        const cumTrip       = (cumulativeVals.numberOfPassengers ?? 0)
-                            * (cumulativeVals.distanceTravelled ?? 0)
-                            * ef;
-        const uTripInc      = calculateUncertainty(tripInc, UAD, UEF);
-        const uTripCum      = calculateUncertainty(cumTrip, UAD, UEF);
-
-        emissions.incoming['business_travel'] = {
-          CO2e: tripInc,
-          combinedUncertainty: uTripInc,
-          CO2eWithUncertainty: tripInc + uTripInc
-        };
-        emissions.cumulative['business_travel'] = {
-          CO2e: cumTrip,
-          combinedUncertainty: uTripCum,
-          CO2eWithUncertainty: cumTrip + uTripCum
-        };
-
-        // CASE B: hotel nights (country lookup via your Country EF)
-        if (hotelNights > 0) {
-          const hotelInc    = hotelNights * ef;
-          const cumHotel    = (cumulativeVals.hotelNights ?? 0) * ef;
-          const uHotelInc   = calculateUncertainty(hotelInc, UAD, UEF);
-          const uHotelCum   = calculateUncertainty(cumHotel, UAD, UEF);
-
-          emissions.incoming['accommodation'] = {
-            CO2e: hotelInc,
-            combinedUncertainty: uHotelInc,
-            CO2eWithUncertainty: hotelInc + uHotelInc
-          };
-          emissions.cumulative['accommodation'] = {
-            CO2e: cumHotel,
-            combinedUncertainty: uHotelCum,
-            CO2eWithUncertainty: cumHotel + uHotelCum
-          };
-        }
-      }
-      break;
      // ───────── Employee Commuting (7) ─────────
       case 'Employee Commuting': {
         if (tier === 'tier 1') {
@@ -1105,87 +1245,112 @@ async function calculateScope3Emissions(
           // ───────── Upstream Leased Assets (8) (13) Downstream Leased Assets ─────────
    
          
-    case 'Upstream Leased Assets':
-    case 'Downstream Leased Assets': {
-      // pick the right JSON key
-      const key = categoryName === 'Upstream Leased Assets'
-        ? 'upstream_leased_assets'
-        : 'downstream_leased_assets';
+   case 'Upstream Leased Assets':
+case 'Downstream Leased Assets': {
+  const key = (categoryName === 'Upstream Leased Assets')
+    ? 'upstream_leased_assets'
+    : 'downstream_leased_assets';
 
-      const area    = dataValues.leasedArea       ?? 0;
-      const cumArea = cumulativeVals.leasedArea   ?? 0;
-      const tot     = dataValues.totalArea        ?? 0;
-      const cumTot  = cumulativeVals.totalArea    ?? 0;
-      const occupancyEF = ef; // your occupancy‐factor EF
-      const buildingTotal = dataValues.BuildingTotalS1_S2 ?? 0;
+  // helper
+  const toNum = v => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
 
-      // Tier 1
-      if (tier === 'tier 1') {
-        const inc  = area * ef;
-        const cum  = cumArea * ef;
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
+  const area         = toNum(dataValues?.leasedArea);
+  const cumArea      = toNum(cumulativeVals?.leasedArea);
+  const tot          = toNum(dataValues?.totalArea);
+  const cumTot       = toNum(cumulativeVals?.totalArea);
 
-        emissions.incoming[key] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative[key] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      // Tier 2
-      else if (tier === 'tier 2') {
-        // Case A: energy × EF
-        if ((dataValues.energyConsumption ?? 0) > 0) {
-          const ec    = dataValues.energyConsumption      ?? 0;
-          const cumEc = cumulativeVals.energyConsumption  ?? 0;
-          const incA  = ec  * ef;
-          const cumA  = cumEc * ef;
-          const uA    = calculateUncertainty(incA, UAD, UEF);
-          const uCumA = calculateUncertainty(cumA, UAD, UEF);
+  // accept both 'occupancyEF' and 'occupancyFactor' (and coerce)
+  const occ          = toNum(
+    (dataValues?.occupancyEF ?? dataValues?.occupancyFactor ?? dataValues?.occupancy_factor ?? 1)
+  ) || 1; // never 0 / falsy to avoid divide-by-zero
 
-          emissions.incoming[key] = {
-            CO2e: incA,
-            combinedUncertainty: uA,
-            CO2eWithUncertainty: incA + uA
-          };
-          emissions.cumulative[key] = {
-            CO2e: cumA,
-            combinedUncertainty: uCumA,
-            CO2eWithUncertainty: cumA + uCumA
-          };
-        }
-        // Case B: ratio‐method
-        else {
-          const ratio = (tot > 0 && occupancyEF > 0)
-            ? (area / (tot * occupancyEF))
-            : 0;
-          const incB    = ratio * buildingTotal;
-          const cumRatio= (cumTot > 0 && occupancyEF > 0)
-            ? (cumArea / (cumTot * occupancyEF))
-            : 0;
-          const cumB    = cumRatio * buildingTotal;
-          const uB      = calculateUncertainty(incB, UAD, UEF);
-          const uCumB   = calculateUncertainty(cumB, UAD, UEF);
+  // allow several key styles for BuildingTotalS1_S2 and coerce
+  const buildingTotal = toNum(
+    dataValues?.BuildingTotalS1_S2 ??
+    dataValues?.buildingTotalS1S2 ??
+    dataValues?.BuildingTotals1_S2 ?? 0
+  );
 
-          emissions.incoming[key] = {
-            CO2e: incB,
-            combinedUncertainty: uB,
-            CO2eWithUncertainty: incB + uB
-          };
-          emissions.cumulative[key] = {
-            CO2e: cumB,
-            combinedUncertainty: uCumB,
-            CO2eWithUncertainty: cumB + uCumB
-          };
-        }
-      }
-      break;
-    }
+  if (tier === 'tier 1') {
+    // area × EF
+    const inc  = area * ef;           // ef should already be resolved by your getCO2eEF()
+    const cum  = cumArea * ef;
+    const uInc = calculateUncertainty(inc, UAD, UEF);
+    const uCum = calculateUncertainty(cum, UAD, UEF);
+
+    emissions.incoming[key] = {
+      CO2e: inc,
+      combinedUncertainty: uInc,
+      CO2eWithUncertainty: inc + uInc
+    };
+    emissions.cumulative[key] = {
+      CO2e: cum,
+      combinedUncertainty: uCum,
+      CO2eWithUncertainty: cum + uCum
+    };
+  } else if (tier === 'tier 2') {
+  const act = normActivity(scopeConfig.activity); // 'energybased' | 'areabased' | ''
+  const doCaseA = act === 'energybased';
+  const doCaseB = act === 'areabased';
+
+  // Case A: energy × EF
+  if (doCaseA) {
+    const ec    = toNum(dataValues?.energyConsumption);
+    const cumEc = toNum(cumulativeVals?.energyConsumption);
+
+    const incA  = ec    * ef;
+    const cumA  = cumEc * ef;
+    const uA    = calculateUncertainty(incA, UAD, UEF);
+    const uCumA = calculateUncertainty(cumA, UAD, UEF);
+
+    emissions.incoming[key] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
+    emissions.cumulative[key] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+  }
+  // Case B: area-ratio × BuildingTotalS1_S2
+  else if (doCaseB) {
+    const ratio    = (tot > 0 && occ > 0) ? (area / (tot * occ)) : 0;
+    const cumRatio = (cumTot > 0 && occ > 0) ? (cumArea / (cumTot * occ)) : 0;
+
+    const incB  = ratio    * buildingTotal;
+    const cumB  = cumRatio * buildingTotal;
+
+    const uB    = calculateUncertainty(incB, UAD, UEF);
+    const uCumB = calculateUncertainty(cumB, UAD, UEF);
+
+    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
+    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+  }
+  // Fallback to your old heuristic (A if energyConsumption present, else B) when activity isn’t set
+  else if (toNum(dataValues?.energyConsumption) > 0) {
+    const ec    = toNum(dataValues?.energyConsumption);
+    const cumEc = toNum(cumulativeVals?.energyConsumption);
+
+    const incA  = ec    * ef;
+    const cumA  = cumEc * ef;
+    const uA    = calculateUncertainty(incA, UAD, UEF);
+    const uCumA = calculateUncertainty(cumA, UAD, UEF);
+
+    emissions.incoming[key] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
+    emissions.cumulative[key] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+  } else {
+    const ratio    = (tot > 0 && occ > 0) ? (area / (tot * occ)) : 0;
+    const cumRatio = (cumTot > 0 && occ > 0) ? (cumArea / (cumTot * occ)) : 0;
+
+    const incB  = ratio    * buildingTotal;
+    const cumB  = cumRatio * buildingTotal;
+
+    const uB    = calculateUncertainty(incB, UAD, UEF);
+    const uCumB = calculateUncertainty(cumB, UAD, UEF);
+
+    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
+    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+  }
+}
+  break;
+}
 
    // ───────── Downstream Transport and Distribution (9) ─────────
       case 'Downstream Transport and Distribution': {
@@ -1424,49 +1589,52 @@ async function calculateScope3Emissions(
           combinedUncertainty: uCum,
           CO2eWithUncertainty: cumV + uCum
         };
-      }
-      else if (tier === 'tier 2') {
-        // Case A: S1 + S2
-        const s1 = data.franchiseTotalS1Emission ?? 0;
-        const s2 = data.franchiseTotalS2Emission ?? 0;
-        if (s1 > 0 || s2 > 0) {
-          const incA  = s1 + s2;
-          const cumA  = (cum.franchiseTotalS1Emission ?? 0)
-                      + (cum.franchiseTotalS2Emission ?? 0);
-          const uA    = calculateUncertainty(incA, UAD, UEF);
-          const uCumA = calculateUncertainty(cumA, UAD, UEF);
+      } else if (tier === 'tier 2') {
+  // Case A: Emission Based (S1+S2)
+  // Case B: Energy Based (energy × EF)
+  const act = normActivity(scopeConfig.activity); // 'emissionbased' | 'energybased' | ''
 
-          emissions.incoming[key] = {
-            CO2e: incA,
-            combinedUncertainty: uA,
-            CO2eWithUncertainty: incA + uA
-          };
-          emissions.cumulative[key] = {
-            CO2e: cumA,
-            combinedUncertainty: uCumA,
-            CO2eWithUncertainty: cumA + uCumA
-          };
-        }
-        // Case B: energy × EF
-        else {
-          const ec    = data.energyConsumption ?? 0;
-          const incB  = ec * efFactor;
-          const cumB  = (cum.energyConsumption ?? 0) * efFactor;
-          const uB    = calculateUncertainty(incB, UAD, UEF);
-          const uCumB = calculateUncertainty(cumB, UAD, UEF);
+  if (act === 'emissionbased') {
+    const s1   = data.franchiseTotalS1Emission ?? 0;
+    const s2   = data.franchiseTotalS2Emission ?? 0;
+    const incA = s1 + s2;
+    const cumA = (cum.franchiseTotalS1Emission ?? 0) + (cum.franchiseTotalS2Emission ?? 0);
 
-          emissions.incoming[key] = {
-            CO2e: incB,
-            combinedUncertainty: uB,
-            CO2eWithUncertainty: incB + uB
-          };
-          emissions.cumulative[key] = {
-            CO2e: cumB,
-            combinedUncertainty: uCumB,
-            CO2eWithUncertainty: cumB + uCumB
-          };
-        }
-      }
+    const uA    = calculateUncertainty(incA, UAD, UEF);
+    const uCumA = calculateUncertainty(cumA, UAD, UEF);
+
+    emissions.incoming[key]  = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
+    emissions.cumulative[key]= { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+  }
+  else if (act === 'energybased') {
+    const ec   = data.energyConsumption ?? 0;
+    const incB = ec * efFactor;
+    const cumB = (cum.energyConsumption ?? 0) * efFactor;
+
+    const uB    = calculateUncertainty(incB, UAD, UEF);
+    const uCumB = calculateUncertainty(cumB, UAD, UEF);
+
+    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
+    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+  }
+  else {
+    // Fallback to your previous A-then-B logic if activity isn’t set
+    const s1 = data.franchiseTotalS1Emission ?? 0;
+    const s2 = data.franchiseTotalS2Emission ?? 0;
+    if (s1 > 0 || s2 > 0) {
+      const incA = s1 + s2;
+      const cumA = (cum.franchiseTotalS1Emission ?? 0) + (cum.franchiseTotalS2Emission ?? 0);
+      emissions.incoming[key]  = { CO2e: incA, combinedUncertainty: calculateUncertainty(incA, UAD, UEF), CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF) };
+      emissions.cumulative[key]= { CO2e: cumA, combinedUncertainty: calculateUncertainty(cumA, UAD, UEF), CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF) };
+    } else {
+      const ec   = data.energyConsumption ?? 0;
+      const incB = ec * efFactor;
+      const cumB = (cum.energyConsumption ?? 0) * efFactor;
+      emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: calculateUncertainty(incB, UAD, UEF), CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF) };
+      emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: calculateUncertainty(cumB, UAD, UEF), CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF) };
+    }
+  }
+}
       break;
     }
      // ───────── Investments (15) ─────────
@@ -1493,55 +1661,68 @@ async function calculateScope3Emissions(
           combinedUncertainty: uCum,
           CO2eWithUncertainty: cum + uCum
         };
-      }
-      else if (tier === 'tier 2') {
-        // Case A: (Scope1 + Scope2) × equity%
-        const s1    = dataValues.investeeScope1Emission ?? 0;
-        const s2    = dataValues.investeeScope2Emission ?? 0;
-        const share = dataValues.equitySharePercentage  ?? 0;
-        if (s1 > 0 || s2 > 0) {
-          const incA   = (s1 + s2) * share;
-          const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
-          const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
-          const cumShr = cumulativeVals.equitySharePercentage  ?? 0;
-          const cumA   = (cumS1 + cumS2) * cumShr;
+      } else if (tier === 'tier 2') {
+  // Case A: (Scope1 + Scope2) × equity%
+  // Case B: energyConsumption × EF
+  const act = normActivity(scopeConfig.activity); // 'investmentbased' | 'energybased' | ''
 
-          const uA    = calculateUncertainty(incA, UAD, UEF);
-          const uCumA = calculateUncertainty(cumA, UAD, UEF);
+  if (act === 'investmentbased') {
+    const s1    = dataValues.investeeScope1Emission ?? 0;
+    const s2    = dataValues.investeeScope2Emission ?? 0;
+    const share = dataValues.equitySharePercentage  ?? 0;
 
-          emissions.incoming['investments'] = {
-            CO2e: incA,
-            combinedUncertainty: uA,
-            CO2eWithUncertainty: incA + uA
-          };
-          emissions.cumulative['investments'] = {
-            CO2e: cumA,
-            combinedUncertainty: uCumA,
-            CO2eWithUncertainty: cumA + uCumA
-          };
-        }
-        // Case B: energyConsumption × EF
-        else if ((dataValues.energyConsumption ?? 0) > 0) {
-          const ec    = dataValues.energyConsumption;
-          const cumEc = cumulativeVals.energyConsumption ?? 0;
-          const incB  = ec * ef;
-          const cumB  = cumEc * ef;
+    const incA   = (s1 + s2) * share;
+    const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
+    const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
+    const cumShr = cumulativeVals.equitySharePercentage  ?? 0;
+    const cumA   = (cumS1 + cumS2) * cumShr;
 
-          const uB    = calculateUncertainty(incB, UAD, UEF);
-          const uCumB = calculateUncertainty(cumB, UAD, UEF);
+    const uA    = calculateUncertainty(incA, UAD, UEF);
+    const uCumA = calculateUncertainty(cumA, UAD, UEF);
 
-          emissions.incoming['investments'] = {
-            CO2e: incB,
-            combinedUncertainty: uB,
-            CO2eWithUncertainty: incB + uB
-          };
-          emissions.cumulative['investments'] = {
-            CO2e: cumB,
-            combinedUncertainty: uCumB,
-            CO2eWithUncertainty: cumB + uCumB
-          };
-        }
-      }
+    emissions.incoming['investments'] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
+    emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+  }
+  else if (act === 'energybased') {
+    const ec    = dataValues.energyConsumption ?? 0;
+    const cumEc = cumulativeVals.energyConsumption ?? 0;
+
+    const incB  = ec * ef;
+    const cumB  = cumEc * ef;
+
+    const uB    = calculateUncertainty(incB, UAD, UEF);
+    const uCumB = calculateUncertainty(cumB, UAD, UEF);
+
+    emissions.incoming['investments'] = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
+    emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+  }
+  else {
+    // Fallback to your old A-then-B heuristic when activity isn’t set
+    const s1 = dataValues.investeeScope1Emission ?? 0;
+    const s2 = dataValues.investeeScope2Emission ?? 0;
+    const share = dataValues.equitySharePercentage ?? 0;
+
+    if (s1 > 0 || s2 > 0) {
+      const incA = (s1 + s2) * share;
+      const cumS1 = cumulativeVals.investeeScope1Emission ?? 0;
+      const cumS2 = cumulativeVals.investeeScope2Emission ?? 0;
+      const cumShr = cumulativeVals.equitySharePercentage ?? 0;
+      const cumA = (cumS1 + cumS2) * cumShr;
+
+      emissions.incoming['investments'] = { CO2e: incA, combinedUncertainty: calculateUncertainty(incA, UAD, UEF), CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF) };
+      emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: calculateUncertainty(cumA, UAD, UEF), CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF) };
+    } else if ((dataValues.energyConsumption ?? 0) > 0) {
+      const ec   = dataValues.energyConsumption;
+      const cumEc= cumulativeVals.energyConsumption ?? 0;
+      const incB = ec * ef;
+      const cumB = cumEc * ef;
+
+      emissions.incoming['investments'] = { CO2e: incB, combinedUncertainty: calculateUncertainty(incB, UAD, UEF), CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF) };
+      emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: calculateUncertainty(cumB, UAD, UEF), CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF) };
+    }
+  }
+}
+
       break;
     }
 
