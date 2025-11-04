@@ -348,7 +348,15 @@ CO2e_gwp_comment: { type: String, default: '' },
     assetLifetime:         { type: Number, default: null }, // a.k.a. AssestLifeTime / AssetLifeTime
     TDLossFactor:          { type: Number, default: null }, // a.k.a. T&DLossFactor / TAndDLossFactor
     defaultRecyclingRate:  { type: Number, default: null }, // a.k.a. defaultRecylingRate,
-    equitySharePercentage: { type: Number, default: null }
+    equitySharePercentage: { type: Number, default: null }, // a.k.a. EquitySharePercentage
+    averageLifetimeEnergyConsumption: { type: Number, default: null }, // a.k.a averageLifetimeEnergyConsumption
+    usePattern: { type: String, default: null }, // a.k.a UsePattern
+    energyEfficiency: { type: Number, default: null }, // a.k.a EnergyEfficiency,
+    toIncineration: { type: Number, default: null }, // a.k.a ToIncineration
+    toLandfill: { type: Number, default: null }, // a.k.a ToLandfill
+    toDisposal: { type: Number, default: null } // a.k.a toDisposal
+
+
   },
   
   // Common fields
