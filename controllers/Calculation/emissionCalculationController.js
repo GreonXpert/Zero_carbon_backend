@@ -239,6 +239,146 @@ function getEquitySharePercentageFromScope(scope) {
 }
 
 
+function getAverageLifetimeEnergyConsumptionFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    const candidates = [
+      scope?.averageLifetimeEnergyConsumption, scope?.avgLifetimeEnergyConsumption, scope?.averageLifetimeConsumption, scope?.avgLifetimeConsumption,
+      ai?.averageLifetimeEnergyConsumption,    ai?.avgLifetimeEnergyConsumption,    ai?.averageLifetimeConsumption,    ai?.avgLifetimeConsumption,
+      cv?.averageLifetimeEnergyConsumption,    cv?.avgLifetimeEnergyConsumption,    cv?.averageLifetimeConsumption,    cv?.avgLifetimeConsumption,
+    ];
+    for (let v of candidates) {
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
+      if (typeof v === 'number' && isFinite(v) && v >= 0) return v;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+
+function getUsePatternFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    const candidates = [
+      scope?.usePattern, ai?.usePattern, cv?.usePattern,
+      scope?.usagePattern, ai?.usagePattern, cv?.usagePattern,
+      scope?.pattern, ai?.pattern, cv?.pattern,
+    ];
+    for (let v of candidates) {
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
+      if (typeof v === 'number' && isFinite(v)) {
+        // normalize percent → fraction
+        let p = v;
+        if (p > 1) p = p / 100;
+        if (p < 0) p = 0;
+        if (p > 1) p = 1;
+        return p;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+
+function getEnergyEfficiencyFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    const candidates = [
+      scope?.energyEfficiency, ai?.energyEfficiency, cv?.energyEfficiency,
+      scope?.efficiency,       ai?.efficiency,       cv?.efficiency,
+      scope?.deviceEfficiency, ai?.deviceEfficiency, cv?.deviceEfficiency,
+    ];
+    for (let v of candidates) {
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
+      if (typeof v === 'number' && isFinite(v) && v >= 0) return v;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+
+
+function asFraction01(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    if (isNaN(n)) return null;
+    v = n;
+  }
+  if (!isFinite(v)) return null;
+  if (v > 1) v = v / 100;
+  if (v < 0) v = 0;
+  if (v > 1) v = 1;
+  return v;
+}
+
+
+function getEOLDisposalFractionFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+    const candidates = [
+      scope?.toDisposal, ai?.toDisposal, cv?.toDisposal,
+      scope?.disposalShare, ai?.disposalShare, cv?.disposalShare,
+      scope?.disposalFraction, ai?.disposalFraction, cv?.disposalFraction,
+    ];
+    for (let v of candidates) {
+      const f = asFraction01(v);
+      if (f != null) return f;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function getEOLLandfillFractionFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+    const candidates = [
+      scope?.toLandfill, ai?.toLandfill, cv?.toLandfill,
+      scope?.landfillShare, ai?.landfillShare, cv?.landfillShare,
+      scope?.landfillFraction, ai?.landfillFraction, cv?.landfillFraction,
+    ];
+    for (let v of candidates) {
+      const f = asFraction01(v);
+      if (f != null) return f;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function getEOLIncinerationFractionFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+    const candidates = [
+      scope?.toIncineration, ai?.toIncineration, cv?.toIncineration,
+      scope?.incinerationShare, ai?.incinerationShare, cv?.incinerationShare,
+      scope?.incinerationFraction, ai?.incinerationFraction, cv?.incinerationFraction,
+    ];
+    for (let v of candidates) {
+      const f = asFraction01(v);
+      if (f != null) return f;
+    }
+    return null;
+  } catch { return null; }
+}
+
 /**
  * Main emission calculation function
  * Calculates emissions based on scope, category, and tier
@@ -1465,68 +1605,91 @@ case 'Downstream Leased Assets': {
       }
       break;
     }
-        // ───────── Use of Sold Products (11) ─────────
-    case 'Use of Sold Products': {
-      const qty    = dataValues.productQuantity     ?? 0;
-      const cumQty = cumulativeVals.productQuantity ?? 0;
+   // ───────── Use of Sold Products (11) ─────────
+case 'Use of Sold Products': {
+  const qty    = dataValues.productQuantity     ?? 0;
+  const cumQty = cumulativeVals.productQuantity ?? 0;
 
-      if (tier === 'tier 1') {
-        // Tier 1: productQuantity × avgLifetimeEnergyConsumption × usePhase EF
-        const avgLife = dataValues.averageLifetimeEnergyConsumption ?? 0;
-        const inc     = qty * avgLife * ef;
-        const cum     = cumQty
-                      * (cumulativeVals.averageLifetimeEnergyConsumption ?? 0)
-                      * ef;
-        const uInc    = calculateUncertainty(inc, UAD, UEF);
-        const uCum    = calculateUncertainty(cum, UAD, UEF);
+  if (tier === 'tier 1') {
+    // Tier 1: productQuantity × avgLifetimeEnergyConsumption × use-phase EF
+    const cfgAvgLife = getAverageLifetimeEnergyConsumptionFromScope(scopeConfig);
+    // prefer scope-level constant; else fall back to payload
+    const avgLifeIn  = (cfgAvgLife !== null)
+      ? cfgAvgLife
+      : (dataValues.averageLifetimeEnergyConsumption ?? 0);
+    const avgLifeCum = (cfgAvgLife !== null)
+      ? cfgAvgLife
+      : (cumulativeVals.averageLifetimeEnergyConsumption ?? 0);
 
-        emissions.incoming['use_of_sold_products'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
-        };
-        emissions.cumulative['use_of_sold_products'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
-        };
-      }
-      else if (tier === 'tier 2') {
-        // Tier 2: productQuantity × usePattern × energyEfficiency × grid EF
-        const pattern   = dataValues.usePattern       ?? 0;
-        const efficiency= dataValues.energyEfficiency ?? 0;
-        const cumPattern   = cumulativeVals.usePattern       ?? 0;
-        const cumEfficiency= cumulativeVals.energyEfficiency ?? 0;
+    const inc  = qty    * avgLifeIn  * ef;
+    const cum  = cumQty * avgLifeCum * ef;
 
-        const inc2  = qty * pattern * efficiency * gridEF;
-        const cum2  = cumQty * cumPattern * cumEfficiency * gridEF;
-        const uInc2 = calculateUncertainty(inc2, UAD, UEF);
-        const uCum2 = calculateUncertainty(cum2, UAD, UEF);
+    const uInc = calculateUncertainty(inc, UAD, UEF);
+    const uCum = calculateUncertainty(cum, UAD, UEF);
 
-        emissions.incoming['use_of_sold_products'] = {
-          CO2e: inc2,
-          combinedUncertainty: uInc2,
-          CO2eWithUncertainty: inc2 + uInc2
-        };
-        emissions.cumulative['use_of_sold_products'] = {
-          CO2e: cum2,
-          combinedUncertainty: uCum2,
-          CO2eWithUncertainty: cum2 + uCum2
-        };
-      }
-      break;
-    }
-    //─────────End-of-Life Treatment of Sold Products (12) ─────────
-   case 'End-of-Life Treatment of Sold Products': {
+    emissions.incoming['use_of_sold_products'] = {
+      CO2e: inc,
+      combinedUncertainty: uInc,
+      CO2eWithUncertainty: inc + uInc
+    };
+    emissions.cumulative['use_of_sold_products'] = {
+      CO2e: cum,
+      combinedUncertainty: uCum,
+      CO2eWithUncertainty: cum + uCum
+    };
+  }
+  else if (tier === 'tier 2') {
+    // Tier 2: productQuantity × usePattern × energyEfficiency × grid EF
+    const cfgPattern = getUsePatternFromScope(scopeConfig);
+    const cfgEff     = getEnergyEfficiencyFromScope(scopeConfig);
+
+    // prefer scope-level constants; else fall back to payload (and to cumulative for cum path)
+    const patternIn   = (cfgPattern !== null) ? cfgPattern : (dataValues.usePattern       ?? 0);
+    const effIn       = (cfgEff     !== null) ? cfgEff     : (dataValues.energyEfficiency ?? 0);
+    const patternCum  = (cfgPattern !== null) ? cfgPattern : (cumulativeVals.usePattern       ?? 0);
+    const effCum      = (cfgEff     !== null) ? cfgEff     : (cumulativeVals.energyEfficiency ?? 0);
+
+    const inc2  = qty    * patternIn  * effIn  * gridEF;
+    const cum2  = cumQty * patternCum * effCum * gridEF;
+
+    const uInc2 = calculateUncertainty(inc2, UAD, UEF);
+    const uCum2 = calculateUncertainty(cum2, UAD, UEF);
+
+    emissions.incoming['use_of_sold_products'] = {
+      CO2e: inc2,
+      combinedUncertainty: uInc2,
+      CO2eWithUncertainty: inc2 + uInc2
+    };
+    emissions.cumulative['use_of_sold_products'] = {
+      CO2e: cum2,
+      combinedUncertainty: uCum2,
+      CO2eWithUncertainty: cum2 + uCum2
+    };
+  }
+  break;
+}
+
+//─────────End-of-Life Treatment of Sold Products (12) ─────────
+case 'End-of-Life Treatment of Sold Products': {
   if (tier === 'tier 1') {
     const mass  = dataValues.massEol        ?? 0;
-    const d     = dataValues.toDisposal     ?? 0;
-    const l     = dataValues.toLandfill     ?? 0;
-    const i     = dataValues.toIncineration ?? 0;
+
+    // Prefer scope-level fractions, else fall back to payload values (and cumulative for cum path)
+    const dCfg = getEOLDisposalFractionFromScope(scopeConfig);
+    const lCfg = getEOLLandfillFractionFromScope(scopeConfig);
+    const iCfg = getEOLIncinerationFractionFromScope(scopeConfig);
+
+    const dIn   = (dCfg != null) ? dCfg : (asFraction01(dataValues.toDisposal)     ?? 0);
+    const lIn   = (lCfg != null) ? lCfg : (asFraction01(dataValues.toLandfill)     ?? 0);
+    const iIn   = (iCfg != null) ? iCfg : (asFraction01(dataValues.toIncineration) ?? 0);
+
+    const dCum  = (dCfg != null) ? dCfg : (asFraction01(cumulativeVals.toDisposal)     ?? 0);
+    const lCum  = (lCfg != null) ? lCfg : (asFraction01(cumulativeVals.toLandfill)     ?? 0);
+    const iCum  = (iCfg != null) ? iCfg : (asFraction01(cumulativeVals.toIncineration) ?? 0);
 
     // pull three EF values in order [disposal, landfill, incineration]
     let efDisp = ef, efLand = ef, efInc = ef;
-    const hub   = scopeConfig.emissionFactorValues.emissionFactorHubData;
+    const hub   = scopeConfig?.emissionFactorValues?.emissionFactorHubData;
     if (Array.isArray(hub)) {
       efDisp = hub[0]?.value ?? ef;
       efLand = hub[1]?.value ?? ef;
@@ -1534,10 +1697,8 @@ case 'Downstream Leased Assets': {
     }
 
     // 1️⃣ Disposal
-    const incDisp = mass * d * efDisp;
-    const cumDisp = (cumulativeVals.massEol ?? 0)
-                  * (cumulativeVals.toDisposal ?? 0)
-                  * efDisp;
+    const incDisp = mass * dIn * efDisp;
+    const cumDisp = (cumulativeVals.massEol ?? 0) * dCum * efDisp;
     const uDisp   = calculateUncertainty(incDisp, UAD, UEF);
 
     emissions.incoming['eol_disposal'] = {
@@ -1552,10 +1713,8 @@ case 'Downstream Leased Assets': {
     };
 
     // 2️⃣ Landfill
-    const incLand = mass * l * efLand;
-    const cumLand = (cumulativeVals.massEol ?? 0)
-                  * (cumulativeVals.toLandfill ?? 0)
-                  * efLand;
+    const incLand = mass * lIn * efLand;
+    const cumLand = (cumulativeVals.massEol ?? 0) * lCum * efLand;
     const uLand   = calculateUncertainty(incLand, UAD, UEF);
 
     emissions.incoming['eol_landfill'] = {
@@ -1570,10 +1729,8 @@ case 'Downstream Leased Assets': {
     };
 
     // 3️⃣ Incineration
-    const incInc = mass * i * efInc;
-    const cumInc = (cumulativeVals.massEol ?? 0)
-                 * (cumulativeVals.toIncineration ?? 0)
-                 * efInc;
+    const incInc = mass * iIn * efInc;
+    const cumInc = (cumulativeVals.massEol ?? 0) * iCum * efInc;
     const uInc2  = calculateUncertainty(incInc, UAD, UEF);
 
     emissions.incoming['eol_incineration'] = {
@@ -1589,6 +1746,7 @@ case 'Downstream Leased Assets': {
   }
   break;
 }
+
 
      // ───────── Franchises (14) ─────────
     case 'Franchises': {
