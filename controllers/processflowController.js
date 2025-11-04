@@ -768,12 +768,14 @@ const updateProcessFlowchartNode = async (req, res) => {
       const mergedCV = {
         assetLifetime:        numOrNull( incCV.assetLifetime ?? incCV.AssetLifeTime ?? incCV.AssestLifeTime ?? incCV.assetLifeTime ?? prevCV.assetLifetime ?? null ),
         TDLossFactor:         numOrNull( incCV.TDLossFactor ?? incCV['T&DLossFactor'] ?? incCV.TAndDLossFactor ?? prevCV.TDLossFactor ?? null ),
-        defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null )
+        defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null ),
+        equitySharePercentage: numOrNull( incCV.equitySharePercentage ?? incCV.EquitySharePercentage ?? prevCV.equitySharePercentage ?? null )
       };
       if (
         mergedCV.assetLifetime != null ||
         mergedCV.TDLossFactor != null ||
-        mergedCV.defaultRecyclingRate != null
+        mergedCV.defaultRecyclingRate != null ||
+        mergedCV.equitySharePercentage != null
       ) {
         mergedTop.customValues = mergedCV;
       }
