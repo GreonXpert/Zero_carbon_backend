@@ -347,7 +347,8 @@ CO2e_gwp_comment: { type: String, default: '' },
     customValues: {
     assetLifetime:         { type: Number, default: null }, // a.k.a. AssestLifeTime / AssetLifeTime
     TDLossFactor:          { type: Number, default: null }, // a.k.a. T&DLossFactor / TAndDLossFactor
-    defaultRecyclingRate:  { type: Number, default: null }  // a.k.a. defaultRecylingRate
+    defaultRecyclingRate:  { type: Number, default: null }, // a.k.a. defaultRecylingRate,
+    equitySharePercentage: { type: Number, default: null }
   },
   
   // Common fields

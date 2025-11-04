@@ -209,6 +209,34 @@ function getDefaultRecyclingRateFromScope(scope) {
   }
 }
 
+function getEquitySharePercentageFromScope(scope) {
+  try {
+    const ai = scope?.additionalInfo || {};
+    const cv = scope?.customValue || ai?.customValue || {};
+
+    // common keys we’ve seen in configs
+    const candidates = [
+      scope?.equitySharePercentage, scope?.equityShare, scope?.equity, scope?.sharePercentage,
+      ai?.equitySharePercentage,    ai?.equityShare,    ai?.equity,    ai?.sharePercentage,
+      cv?.equitySharePercentage,    cv?.equityShare,    cv?.equity,    cv?.sharePercentage
+    ];
+
+    for (let v of candidates) {
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
+      if (typeof v === 'number' && isFinite(v)) {
+        // normalize percent → fraction
+        if (v > 1) v = v / 100;
+        if (v < 0) v = 0;
+        if (v > 1) v = 1;
+        return v;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 
 /**
@@ -1637,94 +1665,131 @@ case 'Downstream Leased Assets': {
 }
       break;
     }
-     // ───────── Investments (15) ─────────
-    case 'Investments': {
-      if (tier === 'tier 1') {
-        // Tier 1: revenue × EF × equity%
-        const rev    = dataValues.investeeRevenue       ?? 0;
-        const share  = dataValues.equitySharePercentage ?? 0;
-        const inc    = rev * ef * share;
-        const cumRev = cumulativeVals.investeeRevenue       ?? 0;
-        const cumShr = cumulativeVals.equitySharePercentage ?? 0;
-        const cum    = cumRev * ef * cumShr;
+   // ───────── Investments (15) ─────────
+case 'Investments': {
+  // Pull equity share from scope (preferred), else fall back to payload
+  const eqCfg = getEquitySharePercentageFromScope(scopeConfig);
 
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
+  if (tier === 'tier 1') {
+    // Tier 1: revenue × EF × equity%
+    const rev     = dataValues.investeeRevenue       ?? 0;
+    const share   = (eqCfg !== null)
+      ? eqCfg
+      : (dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? 0);
 
-        emissions.incoming['investments'] = {
-          CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
+    const inc     = rev * ef * share;
+
+    const cumRev  = cumulativeVals.investeeRevenue       ?? 0;
+    const cumShr  = (eqCfg !== null)
+      ? eqCfg
+      : (cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? 0);
+
+    const cum     = cumRev * ef * cumShr;
+
+    const uInc = calculateUncertainty(inc, UAD, UEF);
+    const uCum = calculateUncertainty(cum, UAD, UEF);
+
+    emissions.incoming['investments'] = {
+      CO2e: inc,
+      combinedUncertainty: uInc,
+      CO2eWithUncertainty: inc + uInc
+    };
+    emissions.cumulative['investments'] = {
+      CO2e: cum,
+      combinedUncertainty: uCum,
+      CO2eWithUncertainty: cum + uCum
+    };
+  } else if (tier === 'tier 2') {
+    // Case A: (Scope1 + Scope2) × equity%
+    // Case B: energyConsumption × EF
+    const act = normActivity(scopeConfig.activity); // 'investmentbased' | 'energybased' | ''
+
+    if (act === 'investmentbased') {
+      const s1    = dataValues.investeeScope1Emission ?? 0;
+      const s2    = dataValues.investeeScope2Emission ?? 0;
+      const share = (eqCfg !== null)
+        ? eqCfg
+        : (dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? 0);
+
+      const incA   = (s1 + s2) * share;
+
+      const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
+      const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
+      const cumShr = (eqCfg !== null)
+        ? eqCfg
+        : (cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? 0);
+
+      const cumA   = (cumS1 + cumS2) * cumShr;
+
+      const uA    = calculateUncertainty(incA, UAD, UEF);
+      const uCumA = calculateUncertainty(cumA, UAD, UEF);
+
+      emissions.incoming['investments']  = { CO2e: incA, combinedUncertainty: uA,    CO2eWithUncertainty: incA + uA };
+      emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+    }
+    else if (act === 'energybased') {
+      const ec    = dataValues.energyConsumption ?? 0;
+      const cumEc = cumulativeVals.energyConsumption ?? 0;
+
+      const incB  = ec * ef;
+      const cumB  = cumEc * ef;
+
+      const uB    = calculateUncertainty(incB, UAD, UEF);
+      const uCumB = calculateUncertainty(cumB, UAD, UEF);
+
+      emissions.incoming['investments']   = { CO2e: incB, combinedUncertainty: uB,    CO2eWithUncertainty: incB + uB };
+      emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+    }
+    else {
+      // Fallback to your old A-then-B heuristic when activity isn’t set
+      const s1    = dataValues.investeeScope1Emission ?? 0;
+      const s2    = dataValues.investeeScope2Emission ?? 0;
+      const share = (eqCfg !== null)
+        ? eqCfg
+        : (dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? 0);
+
+      if (s1 > 0 || s2 > 0) {
+        const incA   = (s1 + s2) * share;
+        const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
+        const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
+        const cumShr = (eqCfg !== null)
+          ? eqCfg
+          : (cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? 0);
+        const cumA   = (cumS1 + cumS2) * cumShr;
+
+        emissions.incoming['investments']   = {
+          CO2e: incA,
+          combinedUncertainty: calculateUncertainty(incA, UAD, UEF),
+          CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF)
         };
         emissions.cumulative['investments'] = {
-          CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
+          CO2e: cumA,
+          combinedUncertainty: calculateUncertainty(cumA, UAD, UEF),
+          CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF)
         };
-      } else if (tier === 'tier 2') {
-  // Case A: (Scope1 + Scope2) × equity%
-  // Case B: energyConsumption × EF
-  const act = normActivity(scopeConfig.activity); // 'investmentbased' | 'energybased' | ''
+      } else if ((dataValues.energyConsumption ?? 0) > 0) {
+        const ec    = dataValues.energyConsumption;
+        const cumEc = cumulativeVals.energyConsumption ?? 0;
+        const incB  = ec * ef;
+        const cumB  = cumEc * ef;
 
-  if (act === 'investmentbased') {
-    const s1    = dataValues.investeeScope1Emission ?? 0;
-    const s2    = dataValues.investeeScope2Emission ?? 0;
-    const share = dataValues.equitySharePercentage  ?? 0;
-
-    const incA   = (s1 + s2) * share;
-    const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
-    const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
-    const cumShr = cumulativeVals.equitySharePercentage  ?? 0;
-    const cumA   = (cumS1 + cumS2) * cumShr;
-
-    const uA    = calculateUncertainty(incA, UAD, UEF);
-    const uCumA = calculateUncertainty(cumA, UAD, UEF);
-
-    emissions.incoming['investments'] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
-    emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
-  }
-  else if (act === 'energybased') {
-    const ec    = dataValues.energyConsumption ?? 0;
-    const cumEc = cumulativeVals.energyConsumption ?? 0;
-
-    const incB  = ec * ef;
-    const cumB  = cumEc * ef;
-
-    const uB    = calculateUncertainty(incB, UAD, UEF);
-    const uCumB = calculateUncertainty(cumB, UAD, UEF);
-
-    emissions.incoming['investments'] = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
-    emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
-  }
-  else {
-    // Fallback to your old A-then-B heuristic when activity isn’t set
-    const s1 = dataValues.investeeScope1Emission ?? 0;
-    const s2 = dataValues.investeeScope2Emission ?? 0;
-    const share = dataValues.equitySharePercentage ?? 0;
-
-    if (s1 > 0 || s2 > 0) {
-      const incA = (s1 + s2) * share;
-      const cumS1 = cumulativeVals.investeeScope1Emission ?? 0;
-      const cumS2 = cumulativeVals.investeeScope2Emission ?? 0;
-      const cumShr = cumulativeVals.equitySharePercentage ?? 0;
-      const cumA = (cumS1 + cumS2) * cumShr;
-
-      emissions.incoming['investments'] = { CO2e: incA, combinedUncertainty: calculateUncertainty(incA, UAD, UEF), CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF) };
-      emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: calculateUncertainty(cumA, UAD, UEF), CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF) };
-    } else if ((dataValues.energyConsumption ?? 0) > 0) {
-      const ec   = dataValues.energyConsumption;
-      const cumEc= cumulativeVals.energyConsumption ?? 0;
-      const incB = ec * ef;
-      const cumB = cumEc * ef;
-
-      emissions.incoming['investments'] = { CO2e: incB, combinedUncertainty: calculateUncertainty(incB, UAD, UEF), CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF) };
-      emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: calculateUncertainty(cumB, UAD, UEF), CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF) };
+        emissions.incoming['investments']   = {
+          CO2e: incB,
+          combinedUncertainty: calculateUncertainty(incB, UAD, UEF),
+          CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF)
+        };
+        emissions.cumulative['investments'] = {
+          CO2e: cumB,
+          combinedUncertainty: calculateUncertainty(cumB, UAD, UEF),
+          CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF)
+        };
+      }
     }
   }
+
+  break;
 }
 
-      break;
-    }
 
     // ───────── default / other Scope 3 categories ─────────
     default:
