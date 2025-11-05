@@ -11,6 +11,15 @@ const {
 const { auth } = require('../middleware/auth');
 const { checkSummaryPermission } = require('../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
 
+
+
+/**
+ * @route   GET /api/summaries/:clientId/scope12-total
+ * @desc    Return latest Scope 1 + Scope 2 total for the client by
+ *          reading the most recent EmissionSummary document
+ */
+router.get('/:clientId/scope12-total',getLatestScope12Total);
+
 // Apply authentication to all routes
 router.use(auth);
 
@@ -42,12 +51,6 @@ router.get('/:clientId/filtered', checkSummaryPermission, getFilteredSummary);
 
 
 
-/**
- * @route   GET /api/summaries/:clientId/scope12-total
- * @desc    Return latest Scope 1 + Scope 2 total for the client by
- *          reading the most recent EmissionSummary document
- */
-router.get('/:clientId/scope12-total', checkSummaryPermission, getLatestScope12Total);
 
 
 module.exports = router;

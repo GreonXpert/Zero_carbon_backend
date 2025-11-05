@@ -951,6 +951,24 @@ const saveIoTData = async (req, res) => {
 // SAVE MANUAL DATA + UPLOAD CSV DATA  (with new role rules)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Accept both { a:1, b:2 } and { dataValues:{ a:1, b:2 }, date, time, emissionFactor }
+function unwrapDataRow(row = {}) {
+  if (row && typeof row === 'object' && row.dataValues && typeof row.dataValues === 'object') {
+    const { dataValues, date, Date, time, Time, timestamp, emissionFactor, EF, ef } = row;
+    return {
+      ...(dataValues || {}),
+      // keep common meta fields if provided at top-level
+      date: date ?? Date,
+      time: time ?? Time,
+      timestamp,
+      emissionFactor: emissionFactor ?? EF ?? ef
+    };
+  }
+  return row;
+}
+
+
+
 // Ensures we never store '' in DataEntry.emissionFactor.
 // Maps common variants and defaults to 'Custom' if blank.
 function resolveEmissionFactor(entryEF, scopeEF) {
@@ -1972,86 +1990,129 @@ const handleDataChange = async (entry) => {
 
 
 
+// ✅ Returns true if the user is allowed to modify this manual entry
+async function hasManualEditRights(user, entry) {
+  // 0) Must be manual entry and editable
+  if (entry.inputType !== 'manual' || entry.isEditable === false) return false;
+
+  const userId = (user._id || user.id || '').toString();
+  const entryClientId = entry.clientId?.toString?.() || entry.clientId;
+
+  // 1) Same-client client_admin can edit
+  if (user.userType === 'client_admin' &&
+      (user.clientId?.toString?.() || user.clientId) === entryClientId) {
+    return true;
+  }
+
+  // 2) Creator of the entry can always edit/delete
+  if (entry.createdBy && entry.createdBy.toString?.() === userId) {
+    return true;
+  }
+
+  // 3) Employee Head of the node or in assignedEmployees[] on the scope
+  const ns = await findNodeScopeForEntry(entryClientId, entry.nodeId, entry.scopeIdentifier);
+  if (!ns) return false;
+
+  const empHeadId = ns.node?.details?.employeeHeadId?.toString?.();
+  if (user.userType === 'client_employee_head' && empHeadId && empHeadId === userId) {
+    return true;
+  }
+
+  const assigned = Array.isArray(ns.scope?.assignedEmployees)
+    ? ns.scope.assignedEmployees.map(x => x?.toString?.())
+    : [];
+
+  if (assigned.includes(userId)) {
+    // If they’re in assignedEmployees, allow edit/delete.
+    return true;
+  }
+
+  return false;
+}
+
+
+
 // Edit Manual Data Entry
 const editManualData = async (req, res) => {
   try {
     const { dataId } = req.params;
     const { date: rawDateInput, time: rawTimeInput, dataValues, reason } = req.body;
-    
-    // Find the data entry
+
     const entry = await DataEntry.findById(dataId);
     if (!entry) {
       return res.status(404).json({ message: 'Data entry not found' });
     }
-    
-    // Check if entry is editable
+
     if (!entry.isEditable || entry.inputType !== 'manual') {
       return res.status(403).json({ message: 'This data entry cannot be edited' });
     }
-    
-    // Check permissions for editing manual data
-    const permissionCheck = await checkOperationPermission(
-      req.user, 
-      entry.clientId, 
-      entry.nodeId, 
-      entry.scopeIdentifier, 
+
+    // 1) Try the existing permission helper
+    let permission = await checkOperationPermission(
+      req.user,
+      entry.clientId,
+      entry.nodeId,
+      entry.scopeIdentifier,
       'edit_manual'
     );
-    if (!permissionCheck.allowed) {
-      return res.status(403).json({ 
-        message: 'Permission denied', 
-        reason: permissionCheck.reason 
-      });
+
+    // 2) Fallback checks (client admin, employee head, assignedEmployees, creator)
+    if (!permission.allowed) {
+      const allowedByFallback = await hasManualEditRights(req.user, entry);
+      if (!allowedByFallback) {
+        return res.status(403).json({
+          message: 'Permission denied',
+          reason: permission.reason || 'User is not client admin, node employee head, assigned to this scope, or the creator of this entry'
+        });
+      }
     }
-    
+
     // Store previous values for history
     const previousValues = Object.fromEntries(entry.dataValues);
-    
+
     // Process date/time if provided
     if (rawDateInput || rawTimeInput) {
       const rawDate = rawDateInput || entry.date.replace(/:/g, '/');
       const rawTime = rawTimeInput || entry.time;
-      
+
       const dateMoment = moment(rawDate, ['DD/MM/YYYY', 'DD-MM-YYYY'], true);
       const timeMoment = moment(rawTime, 'HH:mm:ss', true);
-      
+
       if (!dateMoment.isValid() || !timeMoment.isValid()) {
         return res.status(400).json({ message: 'Invalid date/time format' });
       }
-      
+
       const formattedDate = dateMoment.format('DD:MM:YYYY');
       const formattedTime = timeMoment.format('HH:mm:ss');
-      
+
       const [day, month, year] = formattedDate.split(':').map(Number);
       const [hour, minute, second] = formattedTime.split(':').map(Number);
       const timestamp = new Date(year, month - 1, day, hour, minute, second);
-      
+
       entry.date = formattedDate;
       entry.time = formattedTime;
       entry.timestamp = timestamp;
     }
-    
+
     // Update data values if provided
     if (dataValues) {
       const dataMap = ensureDataIsMap(dataValues);
       entry.dataValues = dataMap;
     }
-    
-    // *** FIX: Ensure a valid user ID is passed ***
-    // The user object might have `id` or `_id`. We safely get whichever is available.
+
+    // Ensure an editor id
     const editorId = req.user._id || req.user.id;
     if (!editorId) {
-        return res.status(400).json({ message: 'Could not identify the editor. User ID is missing.' });
+      return res.status(400).json({ message: 'Could not identify the editor. User ID is missing.' });
     }
-    
-    // Add edit history with the validated editorId
+
     entry.addEditHistory(editorId, reason, previousValues, 'Manual edit');
-    
+
     await entry.save();
 
-    // After saving, re-trigger emission calculation and summary updates
+    // Recalculate summaries / emissions
     await handleDataChange(entry);
-    
+
     // Emit real-time update
     emitDataUpdate('manual-data-edited', {
       clientId: entry.clientId,
@@ -2061,24 +2122,23 @@ const editManualData = async (req, res) => {
       timestamp: entry.timestamp,
       dataValues: Object.fromEntries(entry.dataValues)
     });
-    
+
     res.status(200).json({
       message: 'Data entry updated successfully',
       dataId: entry._id
     });
-    
+
   } catch (error) {
     console.error('Edit manual data error:', error);
-    // Provide more detailed validation error messages if available
     if (error.name === 'ValidationError') {
-        return res.status(400).json({
-            message: 'Validation failed',
-            errors: error.errors
-        });
+      return res.status(400).json({
+        message: 'Validation failed',
+        errors: error.errors
+      });
     }
-    res.status(500).json({ 
-      message: 'Failed to edit data entry', 
-      error: error.message 
+    res.status(500).json({
+      message: 'Failed to edit data entry',
+      error: error.message
     });
   }
 };
@@ -2087,47 +2147,48 @@ const deleteManualData = async (req, res) => {
   try {
     const { dataId } = req.params;
 
-    // Find the data entry to be deleted
     const entry = await DataEntry.findById(dataId);
     if (!entry) {
       return res.status(404).json({ message: 'Data entry not found' });
     }
 
-    // Check if entry is deletable
     if (entry.inputType !== 'manual') {
       return res.status(403).json({ message: 'Only manual data entries can be deleted.' });
     }
 
-    // Check user permissions (re-using 'edit_manual' for deletion rights)
-    const permissionCheck = await checkOperationPermission(
+    // 1) Try existing permission helper (reuse 'edit_manual' right)
+    let permission = await checkOperationPermission(
       req.user,
       entry.clientId,
       entry.nodeId,
       entry.scopeIdentifier,
-      'edit_manual' 
+      'edit_manual'
     );
-    if (!permissionCheck.allowed) {
-      return res.status(403).json({
-        message: 'Permission denied to delete this entry.',
-        reason: permissionCheck.reason
-      });
+
+    // 2) Fallback checks
+    if (!permission.allowed) {
+      const allowedByFallback = await hasManualEditRights(req.user, entry);
+      if (!allowedByFallback) {
+        return res.status(403).json({
+          message: 'Permission denied to delete this entry.',
+          reason: permission.reason || 'User is not client admin, node employee head, assigned to this scope, or the creator of this entry'
+        });
+      }
     }
 
-    // Store details for summary recalculation before deleting
-    const { clientId, timestamp } = entry;
+    // Keep references for re-calculation and emit before delete
+    const { clientId, nodeId, scopeIdentifier, timestamp, _id } = entry;
 
-    // Delete the entry
     await entry.deleteOne();
 
-    // Trigger summary recalculation for the affected period
+    // Trigger summary recalculation for that period
     await handleDataChange({ clientId, timestamp });
 
-    // Emit real-time update
     emitDataUpdate('manual-data-deleted', {
-      clientId: entry.clientId,
-      nodeId: entry.nodeId,
-      scopeIdentifier: entry.scopeIdentifier,
-      dataId: entry._id,
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      dataId: _id,
     });
 
     res.status(200).json({
@@ -2142,6 +2203,7 @@ const deleteManualData = async (req, res) => {
     });
   }
 };
+
 
 
 // Switch Input Type
