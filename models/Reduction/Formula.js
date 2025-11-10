@@ -6,8 +6,7 @@ const VariableSchema = new mongoose.Schema({
   label:         { type: String, default: '' },
   unit:          { type: String, default: '' },
 
-  // How this variable is supplied
-  kind:          { type: String, enum: ['frozen','realtime'], required: true },
+
 
   // Update policy
   updatePolicy:  { type: String, enum: ['manual','annual_automatic'], default: 'manual' },
