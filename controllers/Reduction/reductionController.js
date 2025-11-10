@@ -5,6 +5,8 @@ const User = require('../../models/User');
 const { canManageFlowchart } = require("../../utils/Permissions/permissions");
 const { notifyReductionEvent } = require('../../utils/notifications/reductionNotifications');
 const { syncReductionWorkflow } = require('../../utils/Workflow/workflow');
+const { uploadReductionMedia, saveReductionFiles } = require('../../utils/uploads/reductionUpload');
+
 
 
 
@@ -94,31 +96,78 @@ function normalizeM2FromBody(raw = {}) {
     out.ALD = raw.ALD.map(normalizeUnitItem('L'));
   }
 
-  // accept { m2: { formulaRef:{...} } } or flattened { m2:{ formulaId, version, frozenValues } }
+  // accept { m2: { formulaRef:{...} } } or flattened { m2:{ formulaId, version, ... } }
   const ref = raw.formulaRef || {};
   const formulaId = ref.formulaId || raw.formulaId;
-  const version   = ref.version != null ? Number(ref.version) :
-                    (raw.version != null ? Number(raw.version) : undefined);
+  const version   = ref.version != null ? Number(ref.version)
+                    : (raw.version != null ? Number(raw.version) : undefined);
 
-  // frozen values: allow { variables:{ A:{value,..}, ... } } or { frozenValues:{ A: 123, ... } }
-  const incomingVars = ref.variables || raw.frozenValues || {};
-  const varsObj = {};
-  for (const [k, v] of Object.entries(incomingVars)) {
-    const val = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
-    const pol = (v && typeof v === 'object' && v.updatePolicy) ? v.updatePolicy : 'manual';
-    const ts  = (v && typeof v === 'object' && v.lastUpdatedAt) ? new Date(v.lastUpdatedAt) : new Date();
-    varsObj[k] = { value: Number(val ?? 0), updatePolicy: pol, lastUpdatedAt: ts };
+  // ---- (A) variableKinds: { U:'frozen', fNRB:'realtime', ... }
+  const incomingKinds = ref.variableKinds || raw.variableKinds || {};
+  // normalize to plain object with safe values ('frozen'|'realtime'|'manual')
+  const kindsObj = {};
+  for (const [k, v] of Object.entries(incomingKinds)) {
+    const role = String(v || '').toLowerCase();
+    if (role) {
+      // only allow expected roles; model will re-check as well
+      kindsObj[k] = (role === 'frozen' || role === 'realtime' || role === 'manual')
+        ? role
+        : role; // keep as-is; model throws if invalid
+    }
   }
 
+  // ---- (B) frozen values: allow { variables:{ A:{value,..}, ... } } or { frozenValues:{ A: 123, ... } }
+  const incomingVars = ref.variables || raw.frozenValues || {};
+const varsObj = {};
+for (const [k, v] of Object.entries(incomingVars)) {
+  // support both { value: 1.23, policy:{...}, history:[...]} and plain number
+  const baseVal = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+  const pol     = (v && typeof v === 'object' && v.updatePolicy) ? v.updatePolicy : 'manual';
+  const ts      = (v && typeof v === 'object' && v.lastUpdatedAt) ? new Date(v.lastUpdatedAt) : new Date();
+
+  const policy  = (v && typeof v === 'object' && v.policy && typeof v.policy === 'object')
+    ? {
+        isConstant: v.policy.isConstant !== false, // default true
+        schedule: {
+          frequency: v.policy.schedule?.frequency || 'monthly',
+          ...(v.policy.schedule?.fromDate ? { fromDate: new Date(v.policy.schedule.fromDate) } : {}),
+          ...(v.policy.schedule?.toDate   ? { toDate:   new Date(v.policy.schedule.toDate)   } : {})
+        }
+      }
+    : { isConstant: true, schedule: { frequency: 'monthly' } };
+
+  const history = Array.isArray(v?.history)
+    ? v.history.map(h => ({
+        value: Number(h.value),
+        from:  new Date(h.from),
+        ...(h.to ? { to: new Date(h.to) } : {}),
+        updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
+      }))
+    : undefined;
+      const varRemark = (v && typeof v === 'object' && typeof v.remark === 'string') ? v.remark : '';
+
+  varsObj[k] = {
+    value: Number(baseVal ?? 0),
+    updatePolicy: pol,
+    lastUpdatedAt: ts,
+    policy,
+    ...(history ? { history } : {}),
+    remark: varRemark
+  };
+}
+const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
   if (formulaId) {
     out.formulaRef = {
       formulaId,
       ...(version != null ? { version } : {}),
-      ...(Object.keys(varsObj).length ? { variables: varsObj } : {})
+      ...(Object.keys(kindsObj).length ? { variableKinds: kindsObj } : {}),
+      ...(Object.keys(varsObj).length   ? { variables: varsObj }     : {}),
+      ...(refRemark ? { remark: refRemark } : {})
     };
   }
   return out;
 }
+
 
 function cleanString(x) { return (typeof x === 'string') ? x.trim() : x; }
 
@@ -300,6 +349,7 @@ if (processFlowPayload) {
       await existing.validate(); // triggers recompute
       await existing.save();
 
+
       return res.status(200).json({
         success: true,
         message: 'Reduction project updated (upsert on create)',
@@ -341,6 +391,17 @@ if (processFlowPayload) {
       ...(processFlowPayload ? { processFlow: processFlowPayload } : {}) // ✅ correct source
 
     });
+
+    /* ✅ INSERT THIS BLOCK HERE — after create(), before notifications/response */
+try {
+  // Ensure reductionId is present (set in schema pre('validate'))
+  await saveReductionFiles(req, doc);
+  await doc.save(); // persist coverImage/images if any
+} catch (moveErr) {
+  console.warn('⚠ saveReductionFiles(create) warning:', moveErr.message);
+}
+/* ✅ END INSERT */
+
       // fire-and-forget notification; don't block the response
       notifyReductionEvent({
         actor: req.user,
@@ -384,7 +445,8 @@ function normalizeUnitItem(prefix) {
     EF:    Number(it?.EF ?? 0),
     GWP:   Number(it?.GWP ?? 0),
     AF:    Number(it?.AF ?? 0),
-    uncertainty: Number(it?.uncertainty ?? 0)
+    uncertainty: Number(it?.uncertainty ?? 0),
+    remark: typeof it?.remark === 'string' ? it.remark : ''  
   });
 }
 
@@ -587,16 +649,15 @@ exports.updateReduction = async (req, res) => {
     if (body.projectActivity != null) doc.projectActivity = body.projectActivity;
     if (body.scope != null) doc.scope = body.scope;
     if (body.location) {
-  doc.location.latitude  = body.location.latitude  ?? doc.location.latitude;
-  doc.location.longitude = body.location.longitude ?? doc.location.longitude;
-  if (Object.prototype.hasOwnProperty.call(body.location, 'place')) {
-    doc.location.place = body.location.place ?? doc.location.place;
-  }
-  if (Object.prototype.hasOwnProperty.call(body.location, 'address')) {
-    doc.location.address = body.location.address ?? doc.location.address;
-  }
-}
-
+      doc.location.latitude  = body.location.latitude  ?? doc.location.latitude;
+      doc.location.longitude = body.location.longitude ?? doc.location.longitude;
+      if (Object.prototype.hasOwnProperty.call(body.location, 'place')) {
+        doc.location.place = body.location.place ?? doc.location.place;
+      }
+      if (Object.prototype.hasOwnProperty.call(body.location, 'address')) {
+        doc.location.address = body.location.address ?? doc.location.address;
+      }
+    }
 
     if (body.commissioningDate) doc.commissioningDate = new Date(body.commissioningDate);
     if (body.endDate)           doc.endDate           = new Date(body.endDate);
@@ -615,41 +676,49 @@ exports.updateReduction = async (req, res) => {
     }
 
     if (req.body.processFlow) {
-  const pf = normalizeProcessFlow(req.body.processFlow, req.user);
+      const pf = normalizeProcessFlow(req.body.processFlow, req.user);
 
-  if (pf) {
-    if (!doc.processFlow) doc.processFlow = {};
-    if (pf.mode) doc.processFlow.mode = pf.mode;
-    if (pf.hasOwnProperty('flowchartId')) {
-      doc.processFlow.flowchartId = pf.flowchartId;
-    }
-    if (pf.mapping) {
-      doc.processFlow.mapping = pf.mapping;
-    }
-    if (pf.snapshot) {
-      // version bump (if existing snapshot)
-      const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
-      const nextVer = prevVer > 0 ? prevVer + 1 : (pf.snapshot.metadata?.version || 1);
-      pf.snapshot.metadata = pf.snapshot.metadata || {};
-      pf.snapshot.metadata.version = nextVer;
+      if (pf) {
+        if (!doc.processFlow) doc.processFlow = {};
+        if (pf.mode) doc.processFlow.mode = pf.mode;
+        if (pf.hasOwnProperty('flowchartId')) {
+          doc.processFlow.flowchartId = pf.flowchartId;
+        }
+        if (pf.mapping) {
+          doc.processFlow.mapping = pf.mapping;
+        }
+        if (pf.snapshot) {
+          // version bump (if existing snapshot)
+          const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
+          const nextVer = prevVer > 0 ? prevVer + 1 : (pf.snapshot.metadata?.version || 1);
+          pf.snapshot.metadata = pf.snapshot.metadata || {};
+          pf.snapshot.metadata.version = nextVer;
 
-      doc.processFlow.snapshot = pf.snapshot;
-      doc.processFlow.snapshotCreatedAt = new Date();
-      doc.processFlow.snapshotCreatedBy = req.user?.id;
+          doc.processFlow.snapshot = pf.snapshot;
+          doc.processFlow.snapshotCreatedAt = new Date();
+          doc.processFlow.snapshotCreatedBy = req.user?.id;
+        }
+      }
     }
-  }
-}
 
+    /* ✅ INSERT THIS BLOCK HERE — handle optional new uploads (append up to 5, replace cover if sent) */
+    try {
+      await saveReductionFiles(req, doc);
+    } catch (moveErr) {
+      console.warn('⚠ saveReductionFiles(update) warning:', moveErr.message);
+    }
+    /* ✅ END INSERT */
 
     await doc.validate(); // will recompute in pre('validate')
     await doc.save();
-        notifyReductionEvent({
-          actor: req.user,
-          clientId,
-          action: 'updated',
-          doc
-       }).catch(() => {});
-       syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
+
+    notifyReductionEvent({
+      actor: req.user,
+      clientId,
+      action: 'updated',
+      doc
+    }).catch(() => {});
+    syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
     res.status(200).json({ success:true, message:'Updated', data: doc });
   } catch (err) {
@@ -657,6 +726,7 @@ exports.updateReduction = async (req, res) => {
     res.status(500).json({ success:false, message:'Failed to update reduction', error: err.message });
   }
 };
+
 
 /** Recalculate explicitly (useful after small edits) */
 exports.recalculateReduction = async (req, res) => {
@@ -808,3 +878,160 @@ exports.restoreSoftDeletedReduction = async (req, res) => {
     });
   }
 };
+
+
+/**
+ * PATCH /api/reduction/:clientId/:projectId/assign-employee-head
+ * Role: client_admin
+ * Body: { employeeHeadId: "<ObjectId>" }
+ */
+exports.assignEmployeeHeadToProject = async (req, res) => {
+  try {
+    const { clientId, projectId } = req.params;
+    const { employeeHeadId } = req.body;
+
+    // 1) Only client_admin can call this
+    if (req.user?.userType !== 'client_admin') {
+      return res.status(403).json({ message: 'Only Client Admin can assign Employee Head' });
+    }
+    // Client Admin must belong to same client
+    if (req.user.clientId !== clientId) {
+      return res.status(403).json({ message: 'You can assign heads only within your organization' });
+    }
+
+    // 2) Validate head exists, type matches and same client
+    const head = await User.findOne({ _id: employeeHeadId, userType: 'client_employee_head', clientId });
+    if (!head) {
+      return res.status(404).json({ message: 'Employee Head not found in this client' });
+    }
+
+    // 3) Load project
+    const reduction = await Reduction.findOne({ clientId, projectId });
+    if (!reduction) {
+      return res.status(404).json({ message: 'Reduction project not found' });
+    }
+
+    const previousHead = reduction.assignedTeam?.employeeHeadId?.toString();
+    const isChange = previousHead && previousHead !== String(employeeHeadId);
+
+    // 4) Assign / change head
+    reduction.assignedTeam = reduction.assignedTeam || {};
+    reduction.assignedTeam.employeeHeadId = head._id;
+
+    // If head changed, drop any employees not under this head
+    if (isChange) {
+      reduction.assignedTeam.employeeIds = []; // fresh; head will add their own team
+      reduction.assignedTeam.history = reduction.assignedTeam.history || [];
+      reduction.assignedTeam.history.push({
+        action: 'change_head',
+        by: req.user.id,
+        details: { from: previousHead, to: head._id }
+      });
+    } else {
+      reduction.assignedTeam.history = reduction.assignedTeam.history || [];
+      reduction.assignedTeam.history.push({
+        action: 'assign_head',
+        by: req.user.id,
+        details: { headId: head._id }
+      });
+    }
+
+    await reduction.save();
+
+    return res.status(200).json({
+      message: 'Employee Head assigned successfully',
+      data: {
+        projectId: reduction.projectId,
+        employeeHeadId: reduction.assignedTeam.employeeHeadId,
+        employeeIds: reduction.assignedTeam.employeeIds || []
+      }
+    });
+  } catch (err) {
+    console.error('assignEmployeeHeadToProject error:', err);
+    return res.status(500).json({ message: 'Failed to assign employee head', error: err.message });
+  }
+};
+
+
+/**
+ * PATCH /api/reduction/:clientId/:projectId/assign-employees
+ * Role: client_employee_head
+ * Body: { employeeIds: ["<ObjectId>", ...] }  // full replace or additive (controlled by mode)
+ * Optional query: ?mode=add | remove | set  (default: add)
+ */
+exports.assignEmployeesToProject = async (req, res) => {
+  try {
+    const { clientId, projectId } = req.params;
+    const { employeeIds } = req.body;
+    const mode = (req.query.mode || 'add').toLowerCase(); // 'add' | 'remove' | 'set'
+
+    if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+      return res.status(400).json({ message: 'employeeIds must be a non-empty array' });
+    }
+
+    // 1) Only employee head can call
+    if (req.user?.userType !== 'client_employee_head') {
+      return res.status(403).json({ message: 'Only Employee Head can assign employees' });
+    }
+    if (req.user.clientId !== clientId) {
+      return res.status(403).json({ message: 'You can assign employees only within your organization' });
+    }
+
+    // 2) Load project & basic checks
+    const reduction = await Reduction.findOne({ clientId, projectId });
+    if (!reduction) {
+      return res.status(404).json({ message: 'Reduction project not found' });
+    }
+    if (!reduction.assignedTeam?.employeeHeadId || String(reduction.assignedTeam.employeeHeadId) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'You are not the assigned Employee Head for this project' });
+    }
+
+    // 3) Validate all employees: same client, userType 'employee', employeeHeadId == req.user.id
+    const employees = await User.find({
+      _id: { $in: employeeIds },
+      userType: 'employee',
+      clientId,
+      employeeHeadId: req.user.id
+    }).select('_id');
+
+    if (employees.length !== employeeIds.length) {
+      return res.status(400).json({ message: 'One or more employees are invalid or not under your team' });
+    }
+
+    reduction.assignedTeam = reduction.assignedTeam || {};
+    const current = new Set((reduction.assignedTeam.employeeIds || []).map(String));
+    const incoming = new Set(employeeIds.map(String));
+
+    if (mode === 'set') {
+      reduction.assignedTeam.employeeIds = Array.from(incoming);
+    } else if (mode === 'remove') {
+      incoming.forEach(id => current.delete(id));
+      reduction.assignedTeam.employeeIds = Array.from(current);
+    } else { // add
+      incoming.forEach(id => current.add(id));
+      reduction.assignedTeam.employeeIds = Array.from(current);
+    }
+
+    reduction.assignedTeam.history = reduction.assignedTeam.history || [];
+    reduction.assignedTeam.history.push({
+      action: mode === 'remove' ? 'unassign_employees' : 'assign_employees',
+      by: req.user.id,
+      details: { employeeIds, mode }
+    });
+
+    await reduction.save();
+
+    return res.status(200).json({
+      message: 'Employees updated for project',
+      data: {
+        projectId: reduction.projectId,
+        employeeHeadId: reduction.assignedTeam.employeeHeadId,
+        employeeIds: reduction.assignedTeam.employeeIds
+      }
+    });
+  } catch (err) {
+    console.error('assignEmployeesToProject error:', err);
+    return res.status(500).json({ message: 'Failed to update employees', error: err.message });
+  }
+};
+

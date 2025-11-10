@@ -58,7 +58,8 @@ const UnitItemSchema = new mongoose.Schema({
   EF:    { type: Number, required: true },      // Emission factor
   GWP:   { type: Number, required: true },      // Global warming potential
   AF:    { type: Number, required: true },      // Adjustment factor (e.g., activity/engineering factor)
-  uncertainty: { type: Number, default: 0 }     // percent; 5 = 5%
+  uncertainty: { type: Number, default: 0 },     // percent; 5 = 5%
+  remark : { type:String, default:''} //Remark
 }, {_id:false});
 
 const M2Schema = new mongoose.Schema({
@@ -76,12 +77,45 @@ const M2Schema = new mongoose.Schema({
   formulaRef: {
     formulaId:   { type: Schema.Types.ObjectId, ref: 'ReductionFormula' },
     version:     { type: Number },
+        // NEW: declare each symbol’s role at Reduction level
+    // allowed: 'frozen' | 'realtime' | 'manual'
+    variableKinds: {
+      type: Map,
+      of: { type: String, enum: ['frozen','realtime','manual'] },
+      default: undefined
+    },
+    remark: { type: String, default: '' },
+
     // frozen variables current values (and optional policy info)
-    variables:   { type: Map, of: new Schema({
-      value:        { type: Number, default: null },
-      updatePolicy: { type: String, enum: ['manual','annual_automatic'], default: 'manual' },
-      lastUpdatedAt:{ type: Date }
-    }, { _id: false }) }
+   variables: { 
+  type: Map,
+  of: new Schema({
+    // base value (used if constant, or as initial carry-forward)
+    value:        { type: Number, default: null },
+    updatePolicy: { type: String, enum: ['manual','annual_automatic'], default: 'manual' },
+    lastUpdatedAt:{ type: Date },
+
+    // NEW: per-variable policy for “frozen”
+    policy: {
+      isConstant: { type: Boolean, default: true }, // true = constant; false = periodically changing
+      schedule: {
+        frequency: { type: String, enum: ['monthly','quarterly','semiannual','yearly'], default: 'monthly' },
+        fromDate:  { type: Date },   // optional window start
+        toDate:    { type: Date }    // optional window end
+      }
+    },
+
+    // NEW: periodic value history (carry-forward if no exact period match)
+    // You can populate this during updates when a period changes.
+    history: [{
+      value:     { type: Number, required: true },
+      from:      { type: Date,   required: true },   // inclusive
+      to:        { type: Date },                     // optional; if missing, applies until next period/change
+      updatedAt: { type: Date,   default: Date.now }
+    }],
+      remark: { type: String, default: '' }
+  }, { _id: false })
+}
   }
 }, { _id: false });
 
@@ -125,6 +159,21 @@ const reductionSchema = new mongoose.Schema({
   projectPeriodDays: { type: Number, default: 0 }, // auto (end - start in days)
 
   description: { type: String, default: '' },
+
+  // --- Media (optional) ---
+    coverImage: {
+      filename:   { type: String, default: '' },       // e.g. RED-Greon001-0001.jpg
+      path:       { type: String, default: '' },       // filesystem path (server)
+      url:        { type: String, default: '' },       // public url (served from /uploads)
+      uploadedAt: { type: Date }
+    },
+    images: [{
+      filename:   { type: String, default: '' },       // e.g. RED-Greon001-0001-1.jpg
+      path:       { type: String, default: '' },
+      url:        { type: String, default: '' },
+      uploadedAt: { type: Date }
+    }],
+
 
   // Baseline Method selection
   baselineMethod: {
@@ -186,6 +235,18 @@ const reductionSchema = new mongoose.Schema({
 
 
   reductionDataEntry: { type: ReductionEntrySchema, default: () => ({ inputType:'manual', originalInputType:'manual' }) },
+
+  assignedTeam: {
+  employeeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  employeeIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', default: undefined }],
+  history: [{
+    action: { type: String, enum: ['assign_head','change_head','assign_employees','unassign_employees'], required: true },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date, default: Date.now },
+    details: { type: mongoose.Schema.Types.Mixed, default: {} }
+  }]
+},
+  
 
   // Soft delete / meta
   isDeleted: { type: Boolean, default: false },
@@ -334,9 +395,38 @@ reductionSchema.pre('validate', async function(next) {
       this.m2.LE = round6(LE);
       this.m2._debug = { Lpartials: debug };
     }
+            // --- M2 variable role validation ---
+    if (this.calculationMethodology === 'methodology2' && this.m2?.formulaRef?.formulaId) {
+      const Formula = mongoose.model('ReductionFormula');
+      const f = await Formula.findById(this.m2.formulaRef.formulaId).lean();
+      if (!f || f.isDeleted) throw new Error('Formula not found for this reduction');
+
+      const kinds = this.m2.formulaRef.variableKinds || new Map();
+      const frozenVals = this.m2.formulaRef.variables || new Map();
+
+      // Every formula symbol must have a role
+      for (const v of (f.variables || [])) {
+        const name = v.name;
+        const role = kinds.get ? kinds.get(name) : kinds[name];
+        if (!role) {
+          throw new Error(`m2.formulaRef.variableKinds is missing a role for '${name}'`);
+        }
+        if (!['frozen','realtime','manual'].includes(role)) {
+          throw new Error(`Invalid role '${role}' for '${name}' (use frozen|realtime|manual)`);
+        }
+        if (role === 'frozen') {
+          const fv = frozenVals.get ? frozenVals.get(name) : frozenVals[name];
+          const val = fv && typeof fv.value === 'number' ? fv.value : null;
+          if (val == null || !isFinite(val)) {
+            throw new Error(`Frozen variable '${name}' must have a numeric value in m2.formulaRef.variables`);
+          }
+        }
+      }
+    }
     if (this.processFlow) {
       validateProcessFlowSnapshot(this.processFlow);
     }
+
     next();
   } catch (e) {
     next(e);

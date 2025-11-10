@@ -176,6 +176,13 @@ exports.attachFormulaToReduction = async (req,res)=>{
     red.m2.formulaRef.formulaId = formula._id;
     red.m2.formulaRef.version   = version || formula.version;
 
+        // roles
+    const varKinds = req.body.variableKinds || (req.body.formulaRef && req.body.formulaRef.variableKinds) || {};
+    if (varKinds && typeof varKinds === 'object') {
+      red.m2.formulaRef.variableKinds = new Map(Object.entries(varKinds));
+    }
+
+
     // seed frozen variable values (optional)
     if (frozenValues && typeof frozenValues === 'object') {
       red.m2.formulaRef.variables = red.m2.formulaRef.variables || new Map();
@@ -183,6 +190,21 @@ exports.attachFormulaToReduction = async (req,res)=>{
         red.m2.formulaRef.variables.set(k, { value: Number(v), updatePolicy: 'manual', lastUpdatedAt: new Date() });
       }
     }
+
+        // Hard check here too (friendlier 400s than model error)
+    const missing = [];
+    const needVals = [];
+    for (const v of (formula.variables || [])) {
+      const role = (varKinds && varKinds[v.name]) || (red.m2.formulaRef.variableKinds?.get?.(v.name));
+      if (!role) missing.push(v.name);
+      if (role === 'frozen') {
+        const fv = red.m2.formulaRef.variables?.get?.(v.name);
+        if (!(fv && typeof fv.value === 'number' && isFinite(fv.value))) needVals.push(v.name);
+      }
+    }
+    if (missing.length) return res.status(400).json({ success:false, message:`Declare roles for: ${missing.join(', ')}` });
+    if (needVals.length) return res.status(400).json({ success:false, message:`Frozen values required for: ${needVals.join(', ')}` });
+
 
     await red.validate(); // recompute LE etc
     await red.save();
