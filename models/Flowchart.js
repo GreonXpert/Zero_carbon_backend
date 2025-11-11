@@ -383,7 +383,10 @@ CO2e_gwp_comment: { type: String, default: '' },
   assignedEmployees: [{
   type: mongoose.Schema.Types.ObjectId,
   ref: 'User'
-}]
+}],
+isDeleted: { type: Boolean, default: false },
+deletedAt: { type: Date },
+deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 
 // Add a pre-save hook to validate custom emission factor

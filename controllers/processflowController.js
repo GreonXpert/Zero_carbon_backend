@@ -427,12 +427,13 @@ if (!hasProcessAccess) {
 
       // Scope detail guard + whitelisting
       const rawScopes = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
-      const safeScopes = rawScopes.map(s => ({
-        scopeIdentifier: s?.scopeIdentifier,
-        scopeType: s?.scopeType,
-        // normalize name if your schema uses dataCollectionType
-        inputType: s?.inputType ?? s?.dataCollectionType
-      }));
+const safeScopes = rawScopes
+  .filter(s => !s.isDeleted) // ← add this
+  .map(s => ({
+    scopeIdentifier: s?.scopeIdentifier,
+    scopeType: s?.scopeType,
+    inputType: s?.inputType ?? s?.dataCollectionType
+  }));
 
       // Return a shallow copy with limited details
       return {
@@ -1183,6 +1184,295 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
   }
 };
 
+// Assign employees to a scope of a PROCESS node (Employee Head only)
+const assignScopeToProcessNode = async (req, res) => {
+  try {
+    // 1) Guard: only Employee Heads can assign scopes
+    if (req.user.userType !== 'client_employee_head') {
+      return res.status(403).json({
+        message: 'Only Employee Heads can assign employees to scopes'
+      });
+    }
+
+    const { clientId, nodeId } = req.params;
+    const { scopeIdentifier, employeeIds } = req.body;
+
+    // 2) Validate input
+    if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
+      return res.status(400).json({
+        message: 'clientId, nodeId, scopeIdentifier and employeeIds[] are required'
+      });
+    }
+    if (employeeIds.length === 0) {
+      return res.status(400).json({ message: 'At least one employee must be assigned' });
+    }
+
+    // 3) Same-org check
+    if (String(req.user.clientId) !== String(clientId)) {
+      return res.status(403).json({ message: 'You can only assign within your organization' });
+    }
+
+    // 4) Load the specific node from PROCESS flowchart
+    const flow = await ProcessFlowchart.findOne(
+      { clientId, 'nodes.id': nodeId, isDeleted: false },
+      { 'nodes.$': 1 }
+    );
+
+    if (!flow || !flow.nodes || flow.nodes.length === 0) {
+      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    }
+
+    const node = flow.nodes[0];
+
+    // 5) Verify this head is assigned to this PROCESS node
+    const assignedHeadId = node?.details?.employeeHeadId ? String(node.details.employeeHeadId) : null;
+    const currentUserId  = req.user.id ? String(req.user.id) : (req.user._id ? String(req.user._id) : null);
+
+    if (!assignedHeadId || assignedHeadId !== currentUserId) {
+      return res.status(403).json({
+        message: 'You are not authorized to manage this node. Only the assigned Employee Head can assign scopes.'
+      });
+    }
+
+    // 6) Locate the specific scope
+    const scope = (node.details?.scopeDetails || []).find(s => s.scopeIdentifier === scopeIdentifier);
+    if (!scope) {
+      return res.status(404).json({ message: `Scope detail '${scopeIdentifier}' not found in this node` });
+    }
+
+    // 7) Validate employee IDs (must be active employees of this client)
+    const employees = await User.find({
+      _id: { $in: employeeIds },
+      userType: 'employee',
+      clientId,
+      isActive: true
+    });
+
+    if (employees.length !== employeeIds.length) {
+      return res.status(400).json({ message: 'One or more employees not found or not in your organization' });
+    }
+
+    // 8) Remove any existing occurrences for these employees in this scope
+    await ProcessFlowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      {
+        $pull: {
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { $in: employeeIds }
+        }
+      },
+      {
+        arrayFilters: [{ 'n.id': nodeId }, { 's.scopeIdentifier': scopeIdentifier }]
+      }
+    );
+
+    // 9) Add them back (unique) + set metadata
+    const upd = await ProcessFlowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      {
+        $addToSet: {
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { $each: employeeIds }
+        },
+        $set: {
+          'nodes.$[n].details.scopeDetails.$[s].lastAssignedAt': new Date(),
+          'nodes.$[n].details.scopeDetails.$[s].assignedBy': req.user._id
+        }
+      },
+      {
+        arrayFilters: [{ 'n.id': nodeId }, { 's.scopeIdentifier': scopeIdentifier }]
+      }
+    );
+
+    if (upd.modifiedCount === 0) {
+      return res.status(500).json({ message: 'Failed to update process flowchart scope assignments' });
+    }
+
+    // 10) Update employee documents (mirror of Flowchart assigner)
+    const scopeAssignment = {
+      nodeId,
+      nodeLabel: node.label,
+      nodeType:   node.details?.nodeType || 'unknown',
+      department: node.details?.department || 'unknown',
+      location:   node.details?.location || 'unknown',
+      scopeIdentifier,
+      scopeType:  scope.scopeType,
+      inputType:  scope.inputType,
+      assignedAt: new Date(),
+      assignedBy: req.user._id
+    };
+
+    await User.updateMany(
+      { _id: { $in: employeeIds } },
+      {
+        $set: { employeeHeadId: req.user._id },
+        $addToSet: { assignedModules: JSON.stringify(scopeAssignment) }
+      }
+    );
+
+    // Prepare response
+    return res.status(200).json({
+      message: 'Employees successfully assigned to scope',
+      assignment: {
+        scope: {
+          identifier: scopeIdentifier,
+          type: scope.scopeType,
+          inputType: scope.inputType
+        },
+        node: {
+          id: nodeId,
+          label: node.label,
+          department: node.details?.department,
+          location: node.details?.location
+        },
+        employees: employees.map(e => ({ id: e._id, name: e.userName, email: e.email })),
+        assignedBy: req.user.userName,
+        assignedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error in assignScopeToProcessNode:', error);
+    return res.status(500).json({
+      message: 'Error assigning employees to scope (process flowchart)',
+      error: error.message
+    });
+  }
+};
+
+
+
+function findScopeIndex(scopes, { scopeUid, scopeIdentifier }) {
+  if (!Array.isArray(scopes)) return -1;
+  return scopes.findIndex(s =>
+    (scopeUid && (String(s.scopeUid) === String(scopeUid) || String(s._id) === String(scopeUid))) ||
+    (scopeIdentifier && s.scopeIdentifier === scopeIdentifier)
+  );
+}
+
+const softDeleteProcessScopeDetail = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+    const { scopeUid, scopeIdentifier } = req.body || {};
+
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
+
+    const pf = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
+    if (!pf) return res.status(404).json({ message: 'Process flowchart not found' });
+
+    const node = pf.nodes.find(n => n.id === nodeId);
+    if (!node) return res.status(404).json({ message: 'Node not found' });
+
+    const scopes = node?.details?.scopeDetails || [];
+    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
+    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
+    if (scopes[idx].isDeleted) {
+      return res.status(400).json({ message: 'Scope detail already soft-deleted' });
+    }
+
+    scopes[idx].isDeleted = true;
+    scopes[idx].deletedAt = new Date();
+    scopes[idx].deletedBy = req.user._id || req.user.id;
+
+    pf.markModified('nodes');
+    pf.version = (pf.version || 0) + 1;
+    pf.lastModifiedBy = req.user._id || req.user.id;
+    await pf.save();
+
+    res.status(200).json({
+      message: 'Scope detail soft-deleted (process)',
+      nodeId,
+      scope: {
+        scopeIdentifier: scopes[idx].scopeIdentifier,
+        scopeUid: scopes[idx].scopeUid || scopes[idx]._id
+      }
+    });
+  } catch (err) {
+    console.error('softDeleteProcessScopeDetail error:', err);
+    res.status(500).json({ message: 'Failed to soft-delete scope detail', error: err.message });
+  }
+};
+
+const restoreProcessScopeDetail = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+    const { scopeUid, scopeIdentifier } = req.body || {};
+
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
+
+    const pf = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
+    if (!pf) return res.status(404).json({ message: 'Process flowchart not found' });
+
+    const node = pf.nodes.find(n => n.id === nodeId);
+    if (!node) return res.status(404).json({ message: 'Node not found' });
+
+    const scopes = node?.details?.scopeDetails || [];
+    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
+    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
+    if (!scopes[idx].isDeleted) {
+      return res.status(400).json({ message: 'Scope detail is not soft-deleted' });
+    }
+
+    scopes[idx].isDeleted = false;
+    scopes[idx].deletedAt = null;
+    scopes[idx].deletedBy = null;
+
+    pf.markModified('nodes');
+    pf.version = (pf.version || 0) + 1;
+    pf.lastModifiedBy = req.user._id || req.user.id;
+    await pf.save();
+
+    res.status(200).json({
+      message: 'Scope detail restored (process)',
+      nodeId,
+      scope: {
+        scopeIdentifier: scopes[idx].scopeIdentifier,
+        scopeUid: scopes[idx].scopeUid || scopes[idx]._id
+      }
+    });
+  } catch (err) {
+    console.error('restoreProcessScopeDetail error:', err);
+    res.status(500).json({ message: 'Failed to restore scope detail', error: err.message });
+  }
+};
+
+const hardDeleteProcessScopeDetail = async (req, res) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier } = req.params;
+    const { scopeUid } = req.query || {};
+
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
+
+    const pf = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
+    if (!pf) return res.status(404).json({ message: 'Process flowchart not found' });
+
+    const node = pf.nodes.find(n => n.id === nodeId);
+    if (!node) return res.status(404).json({ message: 'Node not found' });
+
+    const scopes = node?.details?.scopeDetails || [];
+    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
+    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
+
+    const removed = scopes.splice(idx, 1)[0];
+
+    pf.markModified('nodes');
+    pf.version = (pf.version || 0) + 1;
+    pf.lastModifiedBy = req.user._id || req.user.id;
+    await pf.save();
+
+    res.status(200).json({
+      message: 'Scope detail permanently deleted (process)',
+      nodeId,
+      scope: {
+        scopeIdentifier: removed?.scopeIdentifier,
+        scopeUid: removed?.scopeUid || removed?._id
+      }
+    });
+  } catch (err) {
+    console.error('hardDeleteProcessScopeDetail error:', err);
+    res.status(500).json({ message: 'Failed to delete scope detail', error: err.message });
+  }
+};
 
 
 
@@ -1196,5 +1486,9 @@ module.exports = {
   deleteProcessNode,
   getProcessFlowchartSummary,
   restoreProcessFlowchart,
-  assignOrUnassignEmployeeHeadToNode
+  assignOrUnassignEmployeeHeadToNode,
+  assignScopeToProcessNode,
+  softDeleteProcessScopeDetail,
+  restoreProcessScopeDetail,
+  hardDeleteProcessScopeDetail  
 };

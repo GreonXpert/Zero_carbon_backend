@@ -11,7 +11,11 @@ const {
   deleteProcessNode,
   getProcessFlowchartSummary,
   restoreProcessFlowchart,
-  assignOrUnassignEmployeeHeadToNode
+  assignOrUnassignEmployeeHeadToNode,
+  assignScopeToProcessNode,
+  softDeleteProcessScopeDetail,
+  restoreProcessScopeDetail,
+  hardDeleteProcessScopeDetail
 } = require('../controllers/processflowController');
 
 const router = express.Router();
@@ -31,5 +35,19 @@ router.delete('/:clientId', deleteProcessFlowchart);                   // Delete
 router.delete('/:clientId/node/:nodeId', deleteProcessNode);           // Delete specific node
 router.patch('/:clientId/restore', restoreProcessFlowchart);           // Restore deleted flowchart (super admin only)
 router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
+router.post(
+  '/process-flowcharts/:clientId/nodes/:nodeId/assign-scope',
+  checkRole(...editRoles),
+  assignScopeToProcessNode
+);
+// Soft delete a scopeDetail (process)
+router.patch('/:clientId/node/:nodeId/scope/soft-delete', softDeleteProcessScopeDetail);
+
+// Restore a soft-deleted scopeDetail (process)
+router.patch('/:clientId/node/:nodeId/scope/restore', restoreProcessScopeDetail);
+
+// Hard delete a scopeDetail (process)
+router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteProcessScopeDetail);
+
 
 module.exports = router;
