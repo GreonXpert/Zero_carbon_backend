@@ -6,6 +6,9 @@ const Flowchart = require('../../models/Flowchart');
 const Client = require('../../models/Client');
 const moment = require('moment');
 
+// SBTi targets – to link summary emissions with SBTi trajectories
+const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
+
 
 const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
 
@@ -147,6 +150,9 @@ function ensureMapEntry(map, key, defaultValue = {}) {
   }
   return map.get(sanitizedKey);
 }
+
+
+
 
 /**
  * Calculate comprehensive emission summary for a client
@@ -422,6 +428,239 @@ function calculateTrends(current, previous) {
   };
 }
 
+
+
+
+/**
+ * Helper: get CO2e value for a given scope from a plain object or a Mongoose Map
+ */
+function getScopeCO2eFromContainer(container, scopeName) {
+  if (!container) return 0;
+
+  let entry;
+  if (container instanceof Map) {
+    entry = container.get(scopeName);
+  } else {
+    entry = container[scopeName];
+  }
+
+  if (!entry || typeof entry !== 'object') return 0;
+
+  const raw = entry.CO2e ?? entry.co2e ?? 0;
+  const num = typeof raw === 'number' ? raw : parseFloat(raw) || 0;
+  return num;
+}
+
+/**
+ * Sync SBTi emission progress whenever a YEARLY summary is saved.
+ * This writes into SbtiTarget.emissionProgress for that client + year.
+ */
+async function syncSbtiProgressFromSummary(summaryDoc) {
+  try {
+    if (!summaryDoc || !summaryDoc.clientId || !summaryDoc.period) return;
+    if (summaryDoc.period.type !== 'yearly') return; // we only track yearly vs SBTi
+
+    const clientId = summaryDoc.clientId;
+    const year = summaryDoc.period.year;
+
+    // Extract emissions from the summary per scope (tCO2e)
+    const byScope = summaryDoc.byScope || {};
+    const scope1 = getScopeCO2eFromContainer(byScope, 'Scope 1');
+    const scope2 = getScopeCO2eFromContainer(byScope, 'Scope 2');
+    const scope3 = getScopeCO2eFromContainer(byScope, 'Scope 3');
+
+    const targets = await SbtiTarget.find({ clientId }).exec();
+    if (!targets || !targets.length) return;
+
+    for (const target of targets) {
+      const baseRaw = target.baseEmission_tCO2e;
+      const base = typeof baseRaw === 'number' ? baseRaw : parseFloat(baseRaw) || 0;
+      if (!base || base <= 0) continue;
+
+      const scopeSet = target.scopeSet || 'S1S2';
+      const actualEmission = scopeSet === 'S3' ? scope3 : (scope1 + scope2);
+
+      const trajectory = Array.isArray(target.trajectory) ? target.trajectory : [];
+      let trajPoint = trajectory.find(p => p.year === year);
+
+      if (!trajPoint && trajectory.length) {
+        const sorted = [...trajectory].sort((a, b) => a.year - b.year);
+        if (year < sorted[0].year) {
+          trajPoint = sorted[0];
+        } else {
+          trajPoint = sorted[sorted.length - 1];
+        }
+      }
+
+      const targetEmissionRaw = trajPoint?.targetEmission_tCO2e;
+      const targetEmission = typeof targetEmissionRaw === 'number'
+        ? targetEmissionRaw
+        : (parseFloat(targetEmissionRaw) || base);
+
+      const requiredReduction = Math.max(0, base - targetEmission);
+      const achievedReduction = Math.max(0, base - actualEmission);
+
+      const requiredReductionPercent = base > 0 ? (requiredReduction / base) * 100 : 0;
+      const achievedReductionPercent = base > 0 ? (achievedReduction / base) * 100 : 0;
+      const percentOfTargetAchieved =
+        requiredReduction > 0 ? (achievedReduction / requiredReduction) * 100 : 0;
+
+      const progressRow = {
+        year,
+        scopeSet,
+        baselineEmission_tCO2e: base,
+        targetEmission_tCO2e: targetEmission,
+        actualEmission_tCO2e: actualEmission,
+        requiredReduction_tCO2e: requiredReduction,
+        achievedReduction_tCO2e: achievedReduction,
+        requiredReductionPercent: Number(requiredReductionPercent.toFixed(4)),
+        achievedReductionPercent: Number(achievedReductionPercent.toFixed(4)),
+        percentOfTargetAchieved: Number(percentOfTargetAchieved.toFixed(4)),
+        isOnTrack: actualEmission <= targetEmission,
+        lastUpdatedFromSummaryId: summaryDoc._id,
+      };
+
+      if (!Array.isArray(target.emissionProgress)) {
+        target.emissionProgress = [];
+      }
+
+      const idx = target.emissionProgress.findIndex(
+        (row) => row.year === year && row.scopeSet === scopeSet
+      );
+
+      if (idx >= 0) {
+        target.emissionProgress[idx] = progressRow;
+      } else {
+        target.emissionProgress.push(progressRow);
+      }
+
+      target.markModified('emissionProgress');
+      await target.save();
+    }
+  } catch (err) {
+    console.error('Error syncing SBTi emission progress from summary:', err);
+  }
+}
+
+/**
+ * Build a SBTi progress view to send along with the summary API.
+ * Uses YEARLY summary for the same year so progress is "this year's emissions vs this year's target".
+ */
+async function buildSbtiProgressForSummary(clientId, baseSummary) {
+  try {
+    if (!baseSummary || !baseSummary.period) return null;
+
+    const year = baseSummary.period.year || new Date().getUTCFullYear();
+
+    // Prefer the yearly summary for this client/year
+    let summaryForProgress = baseSummary;
+    if (baseSummary.period.type !== 'yearly') {
+      const yearly = await EmissionSummary.findOne({
+        clientId,
+        'period.type': 'yearly',
+        'period.year': year,
+      }).lean();
+      if (yearly) {
+        summaryForProgress = yearly;
+      }
+    }
+
+    const byScope = summaryForProgress.byScope || {};
+    const scope1 = getScopeCO2eFromContainer(byScope, 'Scope 1');
+    const scope2 = getScopeCO2eFromContainer(byScope, 'Scope 2');
+    const scope3 = getScopeCO2eFromContainer(byScope, 'Scope 3');
+
+    const targets = await SbtiTarget.find({ clientId }).lean();
+    if (!targets || !targets.length) return null;
+
+    const items = [];
+
+    for (const target of targets) {
+      const baseRaw = target.baseEmission_tCO2e;
+      const base = typeof baseRaw === 'number' ? baseRaw : parseFloat(baseRaw) || 0;
+      if (!base || base <= 0) continue;
+
+      const scopeSet = target.scopeSet || 'S1S2';
+      const actualEmission = scopeSet === 'S3' ? scope3 : (scope1 + scope2);
+
+      // Try to reuse stored emissionProgress row for that year/scope if available
+      let storedRow = Array.isArray(target.emissionProgress)
+        ? target.emissionProgress.find(
+            (row) => row.year === year && row.scopeSet === scopeSet
+          )
+        : null;
+
+      if (!storedRow) {
+        const trajectory = Array.isArray(target.trajectory) ? target.trajectory : [];
+        let trajPoint = trajectory.find((p) => p.year === year);
+
+        if (!trajPoint && trajectory.length) {
+          const sorted = [...trajectory].sort((a, b) => a.year - b.year);
+          if (year < sorted[0].year) {
+            trajPoint = sorted[0];
+          } else {
+            trajPoint = sorted[sorted.length - 1];
+          }
+        }
+
+        const targetEmissionRaw = trajPoint?.targetEmission_tCO2e;
+        const targetEmission = typeof targetEmissionRaw === 'number'
+          ? targetEmissionRaw
+          : (parseFloat(targetEmissionRaw) || base);
+
+        const requiredReduction = Math.max(0, base - targetEmission);
+        const achievedReduction = Math.max(0, base - actualEmission);
+
+        const requiredReductionPercent = base > 0 ? (requiredReduction / base) * 100 : 0;
+        const achievedReductionPercent = base > 0 ? (achievedReduction / base) * 100 : 0;
+        const percentOfTargetAchieved =
+          requiredReduction > 0 ? (achievedReduction / requiredReduction) * 100 : 0;
+
+        storedRow = {
+          year,
+          scopeSet,
+          baselineEmission_tCO2e: base,
+          targetEmission_tCO2e: targetEmission,
+          actualEmission_tCO2e: actualEmission,
+          requiredReduction_tCO2e: requiredReduction,
+          achievedReduction_tCO2e: achievedReduction,
+          requiredReductionPercent: Number(requiredReductionPercent.toFixed(4)),
+          achievedReductionPercent: Number(achievedReductionPercent.toFixed(4)),
+          percentOfTargetAchieved: Number(percentOfTargetAchieved.toFixed(4)),
+          isOnTrack: actualEmission <= targetEmission,
+        };
+      }
+
+      items.push({
+        targetId: target._id,
+        targetName: target.targetName,
+        targetType: target.targetType,       // 'near_term' | 'net_zero'
+        scopeSet,
+        baseYear: target.baseYear,
+        targetYear: target.targetYear,
+        baseEmission_tCO2e: base,
+        ...storedRow,
+      });
+    }
+
+    if (!items.length) return null;
+
+    // Pick a primary item for quick display (near-term S1+S2 first)
+    const primary =
+      items.find((x) => x.targetType === 'near_term' && x.scopeSet === 'S1S2') ||
+      items.find((x) => x.targetType === 'near_term') ||
+      items[0];
+
+    return { year, items, primary };
+  } catch (err) {
+    console.error('Error building SBTi progress for summary:', err);
+    return null;
+  }
+}
+
+
+
+
 /**
  * [FIXED] Save or update emission summary
  * Uses findOneAndUpdate with upsert to avoid duplicate key errors and data loss.
@@ -494,10 +733,15 @@ const saveEmissionSummary = async (summaryData) => {
 
     emitSummaryUpdate(existingSummary ? 'summary-updated' : 'summary-created', {
       clientId: summaryData.clientId,
-      summaryId: savedSummary._id,
-      period: savedSummary.period,
-      totalEmissions: savedSummary.totalEmissions
+      totalEmissions: savedSummary.totalEmissions,
+      byScope: savedSummary.byScope,
+      byCategory: savedSummary.byCategory,
+      byNode: savedSummary.byNode,
+      metadata: savedSummary.metadata
+      
     });
+    // NEW: keep SBTi emission progress in sync (only does work for YEARLY summaries)
+    await syncSbtiProgressFromSummary(savedSummary);
 
     return savedSummary;
   } catch (error) {
@@ -627,6 +871,11 @@ const getEmissionSummary = async (req, res) => {
       if (responseData[key] instanceof Map) {
         responseData[key] = Object.fromEntries(responseData[key]);
       }
+    }
+     // NEW: attach SBTi target progress (if any SBTi target exists for this client)
+    const sbtiProgress = await buildSbtiProgressForSummary(clientId, summary);
+    if (sbtiProgress) {
+      responseData.sbtiProgress = sbtiProgress;
     }
 
     return res.status(200).json({ success: true, data: responseData });
