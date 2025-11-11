@@ -48,6 +48,16 @@ async function getNodeS1S2FromLatestSummary(clientId, nodeId) {
   }
 }
 
+// Pick first numeric value among a list of keys
+function pickNumber(obj, keys, debugLabel='') {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && v !== '' && isFinite(Number(v))) {
+      return { value: Number(v), key: k };
+    }
+  }
+  return { value: 0, key: null };
+}
 
 /**
  * Fetch scopeConfig based on client's assessmentLevel (organization/process/both)
@@ -153,27 +163,37 @@ function getOccupancyFactorFromEntry(dataValues, scopeConfig) {
 }
 
 // Helper: read T&D Loss factor from scope config (process flowchart preferred, else flowchart)
-// Looks inside: additionalInfo.customValue.TDLossFactor (and a few common variants)
+// Accepts fractional (0–1) or percent (0–100). Returns null if not found.
 function getTDLossFactorFromScope(scope) {
   try {
-    const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const ai  = scope?.additionalInfo || {};
+    const cv1 = scope?.customValue      || ai?.customValue      || {};
+    const cv2 = scope?.customValues     || ai?.customValues     || {}; // <-- handle plural
 
     const candidates = [
       scope?.TDLossFactor, scope?.tdLossFactor, scope?.tdloss,
       ai?.TDLossFactor,    ai?.tdLossFactor,    ai?.tdloss,
-      cv?.TDLossFactor,    cv?.tdLossFactor,    cv?.tdloss
+      cv1?.TDLossFactor,   cv1?.tdLossFactor,   cv1?.tdloss,
+      cv2?.TDLossFactor,   cv2?.tdLossFactor,   cv2?.tdloss
     ];
 
-    for (const v of candidates) {
-      if (typeof v === 'number' && isFinite(v)) return v;
-      if (typeof v === 'string' && v.trim() && !isNaN(Number(v))) return Number(v);
+    for (let v of candidates) {
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
+      if (typeof v === 'number' && isFinite(v)) {
+        // allow 0–1 or 0–100
+        let r = v > 1 ? v / 100 : v;
+        if (r < 0) r = 0;
+        if (r > 1) r = 1;
+        return r;
+      }
     }
     return null;
   } catch {
     return null;
   }
 }
+
 
 
 // Helper: read defaultRecyclingRate from scope config (prefers process flowchart; falls back to main)
@@ -378,6 +398,49 @@ function getEOLIncinerationFractionFromScope(scope) {
     return null;
   } catch { return null; }
 }
+
+// Try to discover a grid EF for the client from Scope 2 "Purchased Electricity"
+async function getClientGridEF(clientId) {
+  const charts = [ProcessFlowchart, Flowchart]; // prefer process, then org
+  for (const Model of charts) {
+    const chart = await Model.findOne({ clientId, isActive: true }).lean();
+    if (!chart) continue;
+    for (const node of chart.nodes || []) {
+      for (const s of node?.details?.scopeDetails || []) {
+        if (s.scopeType !== 'Scope 2') continue;
+        if (s.categoryName !== 'Purchased Electricity') continue;
+
+        const src = s.emissionFactor;
+        const v   = s.emissionFactorValues || {};
+        // mirror getCO2eEF logic
+        if (src === 'Country' && v.countryData?.yearlyValues?.length) {
+          const arr = v.countryData.yearlyValues;
+          return Number(arr[arr.length - 1].value) || 0;
+        }
+        if (src === 'Custom' && v.customEmissionFactor?.CO2e != null) {
+          return Number(v.customEmissionFactor.CO2e) || 0;
+        }
+        if (src === 'EmissionFactorHub' && v.emissionFactorHubData?.value != null) {
+          return Number(v.emissionFactorHubData.value) || 0;
+        }
+        if (src === 'DEFRA' && Array.isArray(v.defraData?.ghgUnits)) {
+          const u = v.defraData.ghgUnits.find(g => /CO2E/i.test(g.unit)) || v.defraData.ghgUnits[0];
+          if (u?.ghgconversionFactor != null) return Number(u.ghgconversionFactor) || 0;
+        }
+        if (src === 'EPA' && Array.isArray(v.epaData?.ghgUnitsEPA)) {
+          const u = v.epaData.ghgUnitsEPA.find(g => /CO2E/i.test(g.unit)) || v.epaData.ghgUnitsEPA[0];
+          if (u?.ghgconversionFactor != null) return Number(u.ghgconversionFactor) || 0;
+        }
+        if (src === 'IPCC' && v.ipccData?.value != null) {
+          return Number(v.ipccData.value) || 0;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+
 
 /**
  * Main emission calculation function
@@ -1037,7 +1100,11 @@ async function calculateScope3Emissions(
   // for T&D losses we always pull the grid EF from the Country factor
     // primary EF for all standard cases
   const ef = getCO2eEF();;
-  const gridEF = getCO2eEF('Country');
+  let gridEF = getCO2eEF('Country');
+  if (!gridEF || gridEF === 0) {
+  // try to discover from client Scope 2 electricity; then fall back to local ef
+  gridEF = await getClientGridEF(dataEntry.clientId) || ef;
+}
 
   let emissions = { incoming: {}, cumulative: {} };
 
@@ -1141,12 +1208,25 @@ async function calculateScope3Emissions(
   // pull your inputs
   const fc    = dataValues.fuelConsumed           ?? 0;
   const cumFc = cumulativeVals.fuelConsumed       ?? 0;
-  const ec    = dataValues.electricityConsumption ?? 0;
-  const cumEc = cumulativeVals.electricityConsumption ?? 0;
+  // const ec    = dataValues.electricityConsumption ?? 0;
+  // const cumEc = cumulativeVals.electricityConsumption ?? 0;
   const tdCfg = getTDLossFactorFromScope(scopeConfig);
   const td    = (tdCfg !== null) ? tdCfg : (dataValues.tdLossFactor ?? dataValues.TDLossFactor ?? 0);
   const cf    = dataValues.fuelConsumption        ?? 0;
   const cumCf = cumulativeVals.fuelConsumption ?? 0;
+
+  // AFTER (robust aliases)
+const { value: ec, key: ecKey } = pickNumber(
+  dataValues,
+  ['electricityConsumption','electricity_consumed','consumed_electricity','electricity','kwh','power_consumption'],
+  'incoming-EC'
+);
+
+const { value: cumEc, key: cumEcKey } = pickNumber(
+  cumulativeVals,
+  ['electricityConsumption','electricity_consumed','consumed_electricity','electricity','kwh','power_consumption'],
+  'cumulative-EC'
+);
 
   // emission factor for all fuel‐energy buckets
   // you were using `ef` for upstream and WTT, and `gridEF` for T&D.
@@ -1175,7 +1255,7 @@ async function calculateScope3Emissions(
   // ─── B) Well-to-Tank (fuel × EF) ────────────────────
   {
     const incB = cf     * WTTEF;
-    const cumB = cumCf * upstreamEF;
+    const cumB = cumCf * WTTEF;
     const uB   = calculateUncertainty(incB, UAD, UEF);
 
     emissions.incoming['WTT'] = {
@@ -1192,6 +1272,7 @@ async function calculateScope3Emissions(
 
   // ─── C) T&D losses (electricity × tdLoss × grid EF) ─
   {
+    console.log('[T&D DEBUG]', { ec, td, gridEF });
     const incC = ec    * td * gridEF;
     const cumC = cumEc * td * gridEF;
     const uC   = calculateUncertainty(incC, UAD, UEF);
