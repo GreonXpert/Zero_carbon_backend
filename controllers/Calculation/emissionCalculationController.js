@@ -1912,19 +1912,27 @@ case 'Investments': {
 
   if (tier === 'tier 1') {
     // Tier 1: revenue × EF × equity%
-    const rev     = dataValues.investeeRevenue       ?? 0;
-    const share   = (eqCfg !== null)
-      ? eqCfg
-      : (dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? 0);
+   const rev = dataValues.investeeRevenue ?? 0;
 
-    const inc     = rev * ef * share;
+const payloadShareRaw =
+  dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? null;
 
-    const cumRev  = cumulativeVals.investeeRevenue       ?? 0;
-    const cumShr  = (eqCfg !== null)
-      ? eqCfg
-      : (cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? 0);
+const share = (eqCfg !== null)
+  ? eqCfg                              // already normalized in getEquityShare...()
+  : (asFraction01(payloadShareRaw) ?? 1);  // default to 100% if not provided
 
-    const cum     = cumRev * ef * cumShr;
+const inc = rev * ef * share;
+
+// cumulative:
+const cumRev = cumulativeVals.investeeRevenue ?? 0;
+const cumPayloadShareRaw =
+  cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? null;
+
+const cumShr = (eqCfg !== null)
+  ? eqCfg
+  : (asFraction01(cumPayloadShareRaw) ?? 1);
+
+const cum = cumRev * ef * cumShr;
 
     const uInc = calculateUncertainty(inc, UAD, UEF);
     const uCum = calculateUncertainty(cum, UAD, UEF);
@@ -1945,21 +1953,31 @@ case 'Investments': {
     const act = normActivity(scopeConfig.activity); // 'investmentbased' | 'energybased' | ''
 
     if (act === 'investmentbased') {
-      const s1    = dataValues.investeeScope1Emission ?? 0;
-      const s2    = dataValues.investeeScope2Emission ?? 0;
-      const share = (eqCfg !== null)
-        ? eqCfg
-        : (dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? 0);
+     // Tier-2 investmentbased
+const s1 = dataValues.investeeScope1Emission ?? 0;
+const s2 = dataValues.investeeScope2Emission ?? 0;
 
-      const incA   = (s1 + s2) * share;
+const payloadShareRaw =
+  dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? null;
 
-      const cumS1  = cumulativeVals.investeeScope1Emission ?? 0;
-      const cumS2  = cumulativeVals.investeeScope2Emission ?? 0;
-      const cumShr = (eqCfg !== null)
-        ? eqCfg
-        : (cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? 0);
+const share = (eqCfg !== null)
+  ? eqCfg
+  : (asFraction01(payloadShareRaw) ?? 1);
 
-      const cumA   = (cumS1 + cumS2) * cumShr;
+const incA = (s1 + s2) * share;
+
+const cumS1 = cumulativeVals.investeeScope1Emission ?? 0;
+const cumS2 = cumulativeVals.investeeScope2Emission ?? 0;
+
+const cumPayloadShareRaw =
+  cumulativeVals.equitySharePercentage ?? cumulativeVals.equityShare ?? cumulativeVals.equity ?? null;
+
+const cumShr = (eqCfg !== null)
+  ? eqCfg
+  : (asFraction01(cumPayloadShareRaw) ?? 1);
+
+const cumA = (cumS1 + cumS2) * cumShr;
+
 
       const uA    = calculateUncertainty(incA, UAD, UEF);
       const uCumA = calculateUncertainty(cumA, UAD, UEF);
