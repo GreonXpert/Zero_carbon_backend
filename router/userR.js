@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { auth, checkRole, checkPermission } = require("../middleware/auth"); // Using the comprehensive auth from middleware folder
+const { uploadUserImage } = require("../utils/uploads/userImageUpload");
 
 const {
   login,
@@ -38,12 +39,14 @@ router.post("/verify-reset-token", verifyResetToken); // Optional endpoint
 router.use(auth); // Using the comprehensive auth middleware
 
 // User creation routes (role-specific)
-router.post("/consultant-admin", checkRole('super_admin'), createConsultantAdmin); // Super Admin only
-router.post("/consultant", checkRole('consultant_admin'), createConsultant); // Consultant Admin only
-router.post("/employee-head", checkRole('client_admin'), createEmployeeHead); // Client Admin only
-router.post("/employee", checkRole('client_employee_head'), createEmployee); // Employee Head only
-router.post("/auditor", checkRole('client_admin'), createAuditor); // Client Admin only
-router.post("/viewer", checkRole('client_admin'), createViewer); // Client Admin only
+router.post("/consultant-admin", uploadUserImage, checkRole('super_admin'), createConsultantAdmin);
+router.post("/consultant", uploadUserImage, checkRole('consultant_admin'), createConsultant);
+ router.post("/employee-head", uploadUserImage, checkRole('client_admin'), createEmployeeHead);
+
+
+router.post("/employee", uploadUserImage, checkRole('client_employee_head'), createEmployee);
+router.post("/auditor", uploadUserImage, checkRole('client_admin'), createAuditor);
+ router.post("/viewer", uploadUserImage, checkRole('client_admin'), createViewer);
 
 
 
@@ -58,7 +61,7 @@ router.delete("/remove-assignment", removeAssignment);
 
 // User management routes
 router.get("/", getUsers); // Get users based on hierarchy
-router.put("/:userId", updateUser); // Update user details
+router.put("/:userId", uploadUserImage, updateUser);
 router.delete("/:userId", deleteUser); // Delete user with hierarchy control and notifications
 router.patch("/:userId/toggle-status", toggleUserStatus); // Activate/Deactivate user
 

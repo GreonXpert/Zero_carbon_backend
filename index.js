@@ -78,6 +78,10 @@ app.use(cors({
     credentials: true,
 }));
 
+// in index.js / server.js once:
+app.use('/uploads', express.static('uploads'));
+
+
 // Routes
 app.use("/api/users", userR);
 app.use("/api/clients", clientR);

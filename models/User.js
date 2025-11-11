@@ -60,6 +60,15 @@ const userSchema = new mongoose.Schema(
     // Viewer specific
     viewerPurpose: { type: String },
     viewerExpiryDate: { type: Date },
+
+        // Profile image metadata
+    profileImage: {
+      filename: { type: String },
+      path:     { type: String },
+      url:      { type: String },
+      uploadedAt: { type: Date },
+      storedAt: { type: String } // folder hint
+    },
     
     // Permissions
     permissions: {

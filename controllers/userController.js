@@ -9,6 +9,10 @@ const Notification = require("../models/Notification");
 // Import the notification controller
 const { createUserStatusNotification } = require("./notificationControllers");
 const Flowchart = require('../models/Flowchart');
+const { saveUserProfileImage } = require('../utils/uploads/userImageUpload');
+
+
+
 
 // Initialize Super Admin Account from Environment Variables
 const initializeSuperAdmin = async () => {
@@ -125,7 +129,8 @@ const login = async (req, res) => {
       companyName: user.companyName,
       clientId: user.clientId,
       permissions: user.permissions,
-      isFirstLogin: user.isFirstLogin
+      isFirstLogin: user.isFirstLogin,
+      profileImage: user.profileImage || null
     };
     
     res.status(200).json({
@@ -198,6 +203,10 @@ const createConsultantAdmin = async (req, res) => {
     });
     
     await consultantAdmin.save();
+        // optional profile image
+      try { await saveUserProfileImage(req, consultantAdmin); } catch (e) {
+      console.warn('profile image save skipped:', e.message);
+    }
     
     // Send welcome email
     const emailSubject = "Welcome to ZeroCarbon - Consultant Admin Account";
@@ -293,6 +302,10 @@ const createConsultant = async (req, res) => {
     });
     
     await consultant.save();
+
+        try { await saveUserProfileImage(req, consultant); } catch (e) {
+      console.warn('profile image save skipped:', e.message);
+    }
 
     // Send welcome email
     const emailSubject = "Welcome to ZeroCarbon - Consultant Account";
@@ -476,6 +489,11 @@ const createEmployeeHead = async (req, res) => {
           }
         });
         await head.save();
+         
+        try { await saveUserProfileImage(req, head); } catch (e) {
+         console.warn('profile image save skipped:', e.message);
+       }
+
         results.created.push({ id: head._id, email: head.email, userName: head.userName, department: head.department, location: head.location });
       } catch (err) {
         results.errors.push({ input: data, error: err.message });
@@ -550,6 +568,11 @@ const createEmployee = async (req, res) => {
           }
         });
         await emp.save();
+
+          try { await saveUserProfileImage(req, emp); } catch (e) {
+         console.warn('profile image save skipped:', e.message);
+         }
+
         results.created.push({ id: emp._id, email: emp.email, userName: emp.userName });
       } catch (err) {
         results.errors.push({ input: data, error: err.message });
@@ -626,6 +649,11 @@ const createAuditor = async (req, res) => {
     });
     
     await auditor.save();
+
+        try { await saveUserProfileImage(req, auditor); } catch (e) {
+      console.warn('profile image save skipped:', e.message);
+    }
+
     
     res.status(201).json({
       message: "Auditor created successfully",
@@ -702,6 +730,11 @@ const createViewer = async (req, res) => {
     });
     
     await viewer.save();
+
+        try { await saveUserProfileImage(req, viewer); } catch (e) {
+      console.warn('profile image save skipped:', e.message);
+    }
+
     
     res.status(201).json({
       message: "Viewer created successfully",
@@ -1160,9 +1193,9 @@ async function handleClientAdminDeletion(userToDelete, deletedBy) {
 const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const updateData = req.body;
+    const updateData = { ...req.body };
 
-    // Remove sensitive fields from update
+    // Remove sensitive/immutable fields
     delete updateData.password;
     delete updateData.userType;
     delete updateData.clientId;
@@ -1170,91 +1203,68 @@ const updateUser = async (req, res) => {
     delete updateData.consultantAdminId;
     delete updateData.parentUser;
 
-    // Find user to update
     const userToUpdate = await User.findById(userId);
-    if (!userToUpdate) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!userToUpdate) return res.status(404).json({ message: "User not found" });
 
-    // Check permissions based on hierarchy, but always allow self-edit
+    // ── Permissions (unchanged from your logic) ──
     let canUpdate = false;
     const errorMessage = "You don't have permission to update this user";
 
-    // If the logged-in user is editing their own account, allow it
     if (userToUpdate._id.toString() === req.user.id) {
       canUpdate = true;
     } else {
       switch (req.user.userType) {
         case "super_admin":
-          // Super admin can update all users except other super admins
-          canUpdate =
-            userToUpdate.userType !== "super_admin" ||
-            userToUpdate._id.toString() === req.user.id;
+          canUpdate = (userToUpdate.userType !== "super_admin") ||
+                      (userToUpdate._id.toString() === req.user.id);
           break;
-
-        case "consultant_admin":
-          // Can update: their consultants, client admins of their clients
+        case "consultant_admin": {
           if (userToUpdate.userType === "consultant") {
-            canUpdate =
-              userToUpdate.consultantAdminId?.toString() === req.user.id;
+            canUpdate = userToUpdate.consultantAdminId?.toString() === req.user.id;
           } else if (userToUpdate.userType === "client_admin") {
-            // Check if this client admin belongs to a client managed by this consultant admin
             const client = await Client.findOne({
               clientId: userToUpdate.clientId,
               $or: [
                 { "leadInfo.consultantAdminId": req.user.id },
-                {
-                  "leadInfo.assignedConsultantId": {
-                    $in: await getConsultantIds(req.user.id),
-                  },
-                },
+                { "leadInfo.assignedConsultantId": { $in: await getConsultantIds(req.user.id) } }
               ],
             });
             canUpdate = !!client;
           }
           break;
-
+        }
         case "client_admin":
-          // Can update: employee heads, employees, auditors, viewers in their organization
           canUpdate =
             userToUpdate.clientId === req.user.clientId &&
-            ["client_employee_head", "employee", "auditor", "viewer"].includes(
-              userToUpdate.userType
-            );
+            ["client_employee_head", "employee", "auditor", "viewer"].includes(userToUpdate.userType);
           break;
-
         case "client_employee_head":
-          // Can only update employees they created
           canUpdate =
             userToUpdate.userType === "employee" &&
-            userToUpdate.createdBy.toString() === req.user.id;
+            userToUpdate.createdBy?.toString() === req.user.id;
           break;
-
         default:
           canUpdate = false;
       }
     }
 
-    if (!canUpdate) {
-      return res.status(403).json({ message: errorMessage });
+    if (!canUpdate) return res.status(403).json({ message: errorMessage });
+
+    // Apply allowed field updates
+    Object.assign(userToUpdate, updateData);
+    await userToUpdate.save();
+
+    // If a new file was uploaded, move & save metadata
+    try { await saveUserProfileImage(req, userToUpdate); } catch (e) {
+      console.warn('profile image save skipped:', e.message);
     }
 
-    // Update user
-    const updatedUser = await User.findByIdAndUpdate(userId, updateData, {
-      new: true,
-      runValidators: true,
-    }).select("-password");
+    const sanitized = await User.findById(userId).select('-password');
+    res.status(200).json({ message: "User updated successfully", user: sanitized });
 
-    res.status(200).json({
-      message: "User updated successfully",
-      user: updatedUser,
-    });
   } catch (error) {
     console.error("Update user error:", error);
-    res.status(500).json({
-      message: "Failed to update user",
-      error: error.message,
-    });
+    res.status(500).json({ message: "Failed to update user", error: error.message });
   }
 };
 
