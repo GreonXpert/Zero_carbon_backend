@@ -24,6 +24,7 @@ const router = express.Router();
 router.use(auth);
 
 const editRoles = ['consultant_admin', 'super_admin', 'client_admin'];
+const employeeRoles = ['employee_head', 'client_employee_head'];
 
 // Process flowchart operations
 router.post('/save', saveProcessFlowchart);                             // Create/Update process flowchart
@@ -37,7 +38,7 @@ router.patch('/:clientId/restore', restoreProcessFlowchart);           // Restor
 router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
 router.post(
   '/process-flowcharts/:clientId/nodes/:nodeId/assign-scope',
-  checkRole(...editRoles),
+  checkRole(...employeeRoles),
   assignScopeToProcessNode
 );
 // Soft delete a scopeDetail (process)
