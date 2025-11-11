@@ -15,6 +15,40 @@ const SupplierEngagementYearSchema = new mongoose.Schema({
   percentSuppliersWithSBTs: { type: Number, default: 0 }, // computed
 }, { _id: false });
 
+
+/**
+ * Year-by-year progress of *emissions vs SBTi target*.
+ * This will be driven by CalculationSummary (yearly summaries).
+ */
+const EmissionProgressYearSchema = new mongoose.Schema({
+  year: { type: Number, required: true },
+  scopeSet: { type: String, enum: ['S1S2', 'S3'], default: 'S1S2' },
+
+  baselineEmission_tCO2e: { type: Number, default: 0 },
+  targetEmission_tCO2e: { type: Number, default: 0 },
+  actualEmission_tCO2e: { type: Number, default: 0 },
+
+  requiredReduction_tCO2e: { type: Number, default: 0 },  // base - target
+  achievedReduction_tCO2e: { type: Number, default: 0 },  // base - actual
+
+  // Percent vs base
+  requiredReductionPercent: { type: Number, default: 0 },   // required / base * 100
+  achievedReductionPercent: { type: Number, default: 0 },   // achieved / base * 100
+
+  // How much of the SBT “gap” we already covered
+  percentOfTargetAchieved: { type: Number, default: 0 },    // achieved / required * 100
+
+  isOnTrack: { type: Boolean, default: false },
+
+  lastUpdatedFromSummaryId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'EmissionSummary',
+    default: null,
+  },
+}, { _id: false });
+
+
+
 const FlagSchema = new mongoose.Schema({
   flagSharePercent: { type: Number, default: 0 }, // % of total emissions that are FLAG-related
   scope1CoveragePercent: { type: Number, default: 0 },
@@ -107,6 +141,9 @@ const SbtiTargetSchema = new mongoose.Schema({
   supplierEngagement: [SupplierEngagementYearSchema],
   flag: FlagSchema,
   coverage: CoverageSchema,
+
+    // Emissions-vs-target progress per year (kept in sync with CalculationSummary)
+  emissionProgress: [EmissionProgressYearSchema],
 
   // Generated trajectory
   trajectory: [TrajectoryPointSchema],
