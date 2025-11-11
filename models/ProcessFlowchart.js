@@ -327,6 +327,7 @@ CO2e_gwp_comment: { type: String, default: '' },
     type: String,
     description: 'Measurement units (e.g., kg, litres, tonnes)'
   },
+
   
   // Scope 2 specific fields
   country: { type: String },
@@ -375,7 +376,12 @@ CO2e_gwp_comment: { type: String, default: '' },
   assignedEmployees: [{
   type: mongoose.Schema.Types.ObjectId,
   ref: 'User'
-}]
+}],
+assignedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+lastAssignedAt: { type: Date },
+isDeleted: { type: Boolean, default: false },
+deletedAt: { type: Date },
+deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 
 
