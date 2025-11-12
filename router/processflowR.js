@@ -37,7 +37,7 @@ router.delete('/:clientId/node/:nodeId', deleteProcessNode);           // Delete
 router.patch('/:clientId/restore', restoreProcessFlowchart);           // Restore deleted flowchart (super admin only)
 router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
 router.post(
-  '/process-flowcharts/:clientId/nodes/:nodeId/assign-scope',
+  '/:clientId/nodes/:nodeId/assign-scope',
   checkRole(...employeeRoles),
   assignScopeToProcessNode
 );
