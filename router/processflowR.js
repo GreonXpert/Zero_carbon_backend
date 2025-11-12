@@ -13,6 +13,7 @@ const {
   restoreProcessFlowchart,
   assignOrUnassignEmployeeHeadToNode,
   assignScopeToProcessNode,
+  removeAssignmentProcess,  
   softDeleteProcessScopeDetail,
   restoreProcessScopeDetail,
   hardDeleteProcessScopeDetail
@@ -41,6 +42,15 @@ router.post(
   checkRole(...employeeRoles),
   assignScopeToProcessNode
 );
+
+// Remove employees from a PROCESS node scope (Employee Head only)
+router.delete(
+  '/:clientId/nodes/:nodeId/remove-scope-assignment',
+  checkRole(...employeeRoles),
+  removeAssignmentProcess
+);
+
+
 // Soft delete a scopeDetail (process)
 router.patch('/:clientId/node/:nodeId/scope/soft-delete', softDeleteProcessScopeDetail);
 

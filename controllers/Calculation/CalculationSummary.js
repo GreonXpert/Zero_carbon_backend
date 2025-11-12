@@ -1636,6 +1636,1151 @@ const getLatestScope12Total = async (req, res) => {
 };
 
 
+// Get top & low emitters by category, scope and emission source (emission factor)
+const getTopLowEmissionStats = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const {
+      periodType,  // daily | weekly | monthly | yearly | all-time (optional)
+      year,
+      month,
+      day,
+      week,
+      limit: limitRaw, // how many top / bottom items to return, default 5
+    } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'clientId is required',
+      });
+    }
+
+    // ---------- small helpers ----------
+    const safeNum = (v) => {
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const toEntries = (maybeMap) => {
+      if (!maybeMap) return [];
+      if (maybeMap instanceof Map) return Array.from(maybeMap.entries());
+      if (typeof maybeMap === 'object') return Object.entries(maybeMap);
+      return [];
+    };
+
+    const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10)) : 5;
+
+    // ---------- Step 1: fetch base summary (same logic style as getFilteredSummary) ----------
+    let query = { clientId };
+    let fullSummary = null;
+
+    if (periodType) {
+      query['period.type'] = periodType;
+      if (year) query['period.year'] = parseInt(year, 10);
+      if (month) query['period.month'] = parseInt(month, 10);
+      if (day) query['period.day'] = parseInt(day, 10);
+      if (week) query['period.week'] = parseInt(week, 10);
+
+      fullSummary = await EmissionSummary.findOne(query).lean();
+    } else {
+      // if periodType not specified, just take the latest summary
+      fullSummary = await EmissionSummary.findOne({ clientId })
+        .sort({ 'period.to': -1 })
+        .lean();
+    }
+
+    if (!fullSummary) {
+      return res.status(404).json({
+        success: false,
+        message: 'No summary data found for the specified client and period.',
+      });
+    }
+
+    // This includes type, year, month, etc. so you know *which period* these top/low stats belong to
+    const period = fullSummary.period;
+    const totalCO2e = safeNum(fullSummary.totalEmissions?.CO2e);
+
+    // ---------- Step 2: categories (top / low) ----------
+    const categoryEntries = toEntries(fullSummary.byCategory);
+    const categoryList = categoryEntries.map(([name, data]) => {
+      const co2e = safeNum(data?.CO2e);
+      return {
+        categoryName: name,
+        scopeType: data?.scopeType || null,
+        CO2e: co2e,
+        percentage:
+          totalCO2e > 0
+            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
+            : 0,
+      };
+    });
+
+    const sortedCategoriesDesc = [...categoryList].sort((a, b) => b.CO2e - a.CO2e);
+
+    const topCategories = sortedCategoriesDesc.slice(0, limit);
+    const bottomCategories = [...categoryList]
+      .filter(c => c.CO2e > 0)
+      .sort((a, b) => a.CO2e - b.CO2e)
+      .slice(0, limit);
+
+    const highestCategory = topCategories[0] || null;
+    const lowestCategory = bottomCategories[0] || null;
+
+    // ---------- Step 3: scopes (Scope 1 / 2 / 3, high & low) ----------
+    const scopeTypes = ['Scope 1', 'Scope 2', 'Scope 3'];
+    const scopeList = [];
+
+    for (const scopeType of scopeTypes) {
+      const sData = fullSummary.byScope?.[scopeType];
+      if (!sData) continue;
+
+      const co2e = safeNum(sData.CO2e);
+      scopeList.push({
+        scopeType,
+        CO2e: co2e,
+        breakdown: sData, // keep full object (CO2, CH4, etc.)
+        percentage:
+          totalCO2e > 0
+            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
+            : 0,
+      });
+    }
+
+    const sortedScopesDesc = [...scopeList].sort((a, b) => b.CO2e - a.CO2e);
+    const sortedScopesAsc = [...scopeList].sort((a, b) => a.CO2e - b.CO2e);
+
+    const highestScope = sortedScopesDesc[0] || null;
+    const lowestScope = sortedScopesAsc.find(s => s.CO2e > 0) || null;
+
+    // ---------- Step 4: activities (top / low) ----------
+    // Uses byActivity: key = activityName, value = { scopeType, categoryName, CO2e, ... }
+    const activityEntries = toEntries(fullSummary.byActivity);
+    const activityList = activityEntries.map(([name, data]) => {
+      const co2e = safeNum(data?.CO2e);
+      return {
+        activityName: name,
+        scopeType: data?.scopeType || null,
+        categoryName: data?.categoryName || null,
+        CO2e: co2e,
+        percentage:
+          totalCO2e > 0
+            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
+            : 0,
+      };
+    });
+
+    const sortedActivitiesDesc = [...activityList].sort((a, b) => b.CO2e - a.CO2e);
+    const topActivities = sortedActivitiesDesc.slice(0, limit);
+    const bottomActivities = [...activityList]
+      .filter(a => a.CO2e > 0)
+      .sort((a, b) => a.CO2e - b.CO2e)
+      .slice(0, limit);
+
+    const highestActivity = topActivities[0] || null;
+    const lowestActivity = bottomActivities[0] || null;
+
+    // ---------- Step 5: departments (top / low) ----------
+    // Uses byDepartment: key = departmentName, value = { CO2e, CO2, CH4, N2O, uncertainty, dataPointCount, nodeCount }
+    const departmentEntries = toEntries(fullSummary.byDepartment);
+    const departmentList = departmentEntries.map(([name, data]) => {
+      const co2e = safeNum(data?.CO2e);
+      return {
+        departmentName: name,
+        CO2e: co2e,
+        nodeCount: safeNum(data?.nodeCount),
+        percentage:
+          totalCO2e > 0
+            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
+            : 0,
+      };
+    });
+
+    const sortedDepartmentsDesc = [...departmentList].sort((a, b) => b.CO2e - a.CO2e);
+    const topDepartments = sortedDepartmentsDesc.slice(0, limit);
+    const bottomDepartments = [...departmentList]
+      .filter(d => d.CO2e > 0)
+      .sort((a, b) => a.CO2e - b.CO2e)
+      .slice(0, limit);
+
+    const highestDepartment = topDepartments[0] || null;
+    const lowestDepartment = bottomDepartments[0] || null;
+
+    // ---------- Step 6: emission sources (byEmissionFactor) ----------
+    // This is your "emission source" breakdown in the model
+    const sourceEntries = toEntries(fullSummary.byEmissionFactor);
+    const sourceList = sourceEntries.map(([name, data]) => {
+      const co2e = safeNum(data?.CO2e);
+      const dataPointCount = safeNum(data?.dataPointCount);
+      const scopeTypesFromSource = Array.isArray(data?.scopeTypes)
+        ? data.scopeTypes
+        : data?.scopeTypes && typeof data.scopeTypes === 'object'
+          ? Object.keys(data.scopeTypes)
+          : [];
+
+      return {
+        sourceName: name,
+        CO2e: co2e,
+        dataPointCount,
+        scopeTypes: scopeTypesFromSource,
+        percentage:
+          totalCO2e > 0
+            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
+            : 0,
+      };
+    });
+
+    const sortedSourcesDesc = [...sourceList].sort((a, b) => b.CO2e - a.CO2e);
+    const topSources = sortedSourcesDesc.slice(0, limit);
+    const bottomSources = [...sourceList]
+      .filter(s => s.CO2e > 0)
+      .sort((a, b) => a.CO2e - b.CO2e)
+      .slice(0, limit);
+
+    const highestSource = topSources[0] || null;
+    const lowestSource = bottomSources[0] || null;
+
+    // ---------- Step 7: respond ----------
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+
+        // 👇 This tells you exactly which period: type, year, month, etc.
+        period,
+
+        totalEmissions: fullSummary.totalEmissions || null,
+
+        categories: {
+          highest: highestCategory,
+          lowest: lowestCategory,
+          top: topCategories,
+          bottom: bottomCategories,
+          count: categoryList.length,
+        },
+
+        scopes: {
+          highest: highestScope,
+          lowest: lowestScope,
+          all: scopeList,
+        },
+
+        activities: {
+          highest: highestActivity,
+          lowest: lowestActivity,
+          top: topActivities,
+          bottom: bottomActivities,
+          count: activityList.length,
+        },
+
+        departments: {
+          highest: highestDepartment,
+          lowest: lowestDepartment,
+          top: topDepartments,
+          bottom: bottomDepartments,
+          count: departmentList.length,
+        },
+
+        emissionSources: {
+          highest: highestSource,
+          lowest: lowestSource,
+          top: topSources,
+          bottom: bottomSources,
+          count: sourceList.length,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error in getTopLowEmissionStats:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get top/low emission stats',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Get highest / lowest emitting scopeIdentifier (and dates) using raw DataEntry documents,
+ * and provide hierarchical breakdown (within each scopeIdentifier) by:
+ *   - nodes (which nodes contribute most for that scopeIdentifier)
+ *   - locations
+ *   - departments
+ *
+ * All scopeIdentifiers are sorted from highest → lowest total CO2e.
+ *
+ * GET /api/summaries/:clientId/scope-identifiers/extremes
+ *
+ * Query params (all optional):
+ *   - periodType = daily | weekly | monthly | yearly | all-time (default: monthly)
+ *   - year, month, week, day (same pattern as getEmissionSummary)
+ */
+const getScopeIdentifierEmissionExtremes = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    let { periodType = 'monthly', year, month, week, day } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'clientId is required',
+      });
+    }
+
+    const allowedTypes = ['daily', 'weekly', 'monthly', 'yearly', 'all-time'];
+    if (!allowedTypes.includes(periodType)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid periodType. Use one of: ${allowedTypes.join(', ')}`,
+      });
+    }
+
+    // Same defaulting style as getEmissionSummary
+    const now = moment.utc();
+    const y = year ? parseInt(year, 10) : now.year();
+    const m = month ? parseInt(month, 10) : now.month() + 1;
+    const w = week ? parseInt(week, 10) : now.isoWeek();
+    const d = day ? parseInt(day, 10) : now.date();
+
+    const { from, to } = buildDateRange(periodType, y, m, w, d);
+
+    // Only processed entries, like calculateEmissionSummary
+    const dataEntries = await DataEntry.find({
+      clientId,
+      processingStatus: 'processed',
+      timestamp: { $gte: from, $lte: to },
+    }).lean();
+
+    if (!dataEntries.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'No processed data entries found for this client in the requested period',
+      });
+    }
+
+    // Try to get node metadata (department, location, label) from active flowchart.
+    // If no flowchart is found, we still return stats, but department/location will be "Unknown".
+    let nodeMetaMap = new Map();
+    try {
+      const activeChart = await getActiveFlowchart(clientId);
+      const flowchart = activeChart?.chart;
+      if (flowchart && Array.isArray(flowchart.nodes)) {
+        flowchart.nodes.forEach(node => {
+          nodeMetaMap.set(node.id, {
+            nodeId: node.id,
+            label: node.label || 'Unnamed node',
+            department: node.details?.department || 'Unknown',
+            location: node.details?.location || 'Unknown',
+          });
+        });
+      }
+    } catch (e) {
+      console.warn(
+        'getScopeIdentifierEmissionExtremes: failed to load active flowchart, using Unknown for department/location',
+        e?.message
+      );
+      nodeMetaMap = new Map();
+    }
+
+    // Helper: format a "DD:MM:YYYY" string from entry
+    const getDateStringFromEntry = (entry) => {
+      if (entry.date && typeof entry.date === 'string') {
+        // already in "DD:MM:YYYY" format from DataEntry model
+        return entry.date;
+      }
+      if (entry.timestamp) {
+        const dt = moment.utc(entry.timestamp);
+        const dayStr = String(dt.date()).padStart(2, '0');
+        const monthStr = String(dt.month() + 1).padStart(2, '0');
+        const yearStr = String(dt.year());
+        return `${dayStr}:${monthStr}:${yearStr}`;
+      }
+      return null;
+    };
+
+    const safeNum = (v) => {
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    // Build stats per scopeIdentifier
+    const scopeStatsMap = new Map();
+
+    for (const entry of dataEntries) {
+      const scopeIdentifier = entry.scopeIdentifier || 'Unknown';
+      const emissionValues = extractEmissionValues(entry.calculatedEmissions);
+      const co2e = safeNum(emissionValues?.CO2e);
+      const dateStr = getDateStringFromEntry(entry);
+      const nodeId = entry.nodeId || 'Unknown';
+
+      const nodeMeta = nodeMetaMap.get(nodeId) || {};
+      const nodeLabel = nodeMeta.label || null;
+      const department = nodeMeta.department || 'Unknown';
+      const location = nodeMeta.location || 'Unknown';
+
+      if (!scopeStatsMap.has(scopeIdentifier)) {
+        scopeStatsMap.set(scopeIdentifier, {
+          scopeIdentifier,
+          totalCO2e: 0,
+          entriesCount: 0,
+          maxEntry: null,
+          minEntry: null,
+          dailyTotals: new Map(),      // date -> total CO2e for that date
+          nodes: new Map(),            // nodeId -> { nodeId, nodeLabel, department, location, totalCO2e, entriesCount }
+          locations: new Map(),        // location -> { location, totalCO2e, entriesCount }
+          departments: new Map(),      // department -> { department, totalCO2e, entriesCount }
+        });
+      }
+
+      const stat = scopeStatsMap.get(scopeIdentifier);
+
+      stat.totalCO2e += co2e;
+      stat.entriesCount += 1;
+
+      // Track per-entry max/min (for “on which date” at entry level)
+      const entryInfo = {
+        entryId: entry._id,
+        nodeId,
+        scopeType: entry.scopeType,
+        CO2e: co2e,
+        date: dateStr,
+        time: entry.time || null,
+        timestamp: entry.timestamp,
+        inputType: entry.inputType,
+      };
+
+      // Max single entry for this scopeIdentifier
+      if (!stat.maxEntry || co2e > stat.maxEntry.CO2e) {
+        stat.maxEntry = entryInfo;
+      }
+
+      // Min single entry for this scopeIdentifier (ignore zero emissions)
+      if (co2e > 0) {
+        if (!stat.minEntry || co2e < stat.minEntry.CO2e) {
+          stat.minEntry = entryInfo;
+        }
+      }
+
+      // Track daily totals for this scopeIdentifier
+      if (dateStr) {
+        const prev = stat.dailyTotals.get(dateStr) || 0;
+        stat.dailyTotals.set(dateStr, prev + co2e);
+      }
+
+      // ---------- node aggregation within this scopeIdentifier ----------
+      if (!stat.nodes.has(nodeId)) {
+        stat.nodes.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department,
+          location,
+          totalCO2e: 0,
+          entriesCount: 0,
+        });
+      }
+      const nodeStat = stat.nodes.get(nodeId);
+      nodeStat.totalCO2e += co2e;
+      nodeStat.entriesCount += 1;
+
+      // ---------- location aggregation within this scopeIdentifier ----------
+      const locKey = location || 'Unknown';
+      if (!stat.locations.has(locKey)) {
+        stat.locations.set(locKey, {
+          location: locKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+        });
+      }
+      const locStat = stat.locations.get(locKey);
+      locStat.totalCO2e += co2e;
+      locStat.entriesCount += 1;
+
+      // ---------- department aggregation within this scopeIdentifier ----------
+      const deptKey = department || 'Unknown';
+      if (!stat.departments.has(deptKey)) {
+        stat.departments.set(deptKey, {
+          department: deptKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+        });
+      }
+      const deptStat = stat.departments.get(deptKey);
+      deptStat.totalCO2e += co2e;
+      deptStat.entriesCount += 1;
+    }
+
+    // Convert map → plain arrays and compute max/min day per scopeIdentifier
+    let allStats = Array.from(scopeStatsMap.values()).map((stat) => {
+      const dailyTotalsArray = Array.from(stat.dailyTotals.entries()).map(([date, value]) => ({
+        date,
+        CO2e: value,
+      }));
+
+      let maxDay = null;
+      let minDay = null;
+
+      if (dailyTotalsArray.length) {
+        maxDay = dailyTotalsArray.reduce(
+          (max, cur) => (cur.CO2e > max.CO2e ? cur : max),
+          dailyTotalsArray[0]
+        );
+
+        const positiveDays = dailyTotalsArray.filter((d) => d.CO2e > 0);
+        if (positiveDays.length) {
+          minDay = positiveDays.reduce(
+            (min, cur) => (cur.CO2e < min.CO2e ? cur : min),
+            positiveDays[0]
+          );
+        }
+      }
+
+      // Convert inner maps (nodes / locations / departments) to sorted arrays high → low
+      const nodesArray = Array.from(stat.nodes.values()).sort(
+        (a, b) => b.totalCO2e - a.totalCO2e
+      );
+
+      const locationsArray = Array.from(stat.locations.values()).sort(
+        (a, b) => b.totalCO2e - a.totalCO2e
+      );
+
+      const departmentsArray = Array.from(stat.departments.values()).sort(
+        (a, b) => b.totalCO2e - a.totalCO2e
+      );
+
+      return {
+        scopeIdentifier: stat.scopeIdentifier,
+        totalCO2e: stat.totalCO2e,
+        entriesCount: stat.entriesCount,
+        maxEntry: stat.maxEntry,        // single entry with highest emission
+        minEntry: stat.minEntry,        // single entry with lowest (non-zero) emission
+        dailyTotals: dailyTotalsArray,  // all days for this scopeIdentifier
+        maxDay,                         // day with highest total CO2e for this scopeIdentifier
+        minDay,                         // day with lowest positive total CO2e
+        nodes: nodesArray,              // node-wise hierarchy, high → low
+        locations: locationsArray,      // location-wise within this scopeIdentifier
+        departments: departmentsArray,  // department-wise within this scopeIdentifier
+      };
+    });
+
+    if (!allStats.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'No scopeIdentifier statistics could be computed',
+      });
+    }
+
+    // Sort all scopeIdentifiers high → low for a hierarchical view
+    allStats.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    // Overall highest & lowest scopeIdentifier by TOTAL emissions
+    const highestByTotal = allStats[0] || null;
+    const lowestByTotal =
+      allStats
+        .slice()
+        .reverse()
+        .find((s) => s.totalCO2e > 0) || null;
+
+    // Build period object (similar style to getEmissionSummary)
+    const period = {
+      type: periodType,
+      from,
+      to,
+    };
+    if (periodType !== 'all-time') {
+      period.year = y;
+    }
+    if (periodType === 'monthly' || periodType === 'daily') {
+      period.month = m;
+    }
+    if (periodType === 'weekly') {
+      period.week = w;
+    }
+    if (periodType === 'daily') {
+      period.day = d;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        period,
+        scopeIdentifiers: {
+          highestByTotal, // includes maxDay + maxEntry (with date)
+          lowestByTotal,  // includes minDay + minEntry (with date)
+          // full list of scopeIdentifiers, high → low, with nodes/locations/departments inside each
+          all: allStats,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error in getScopeIdentifierEmissionExtremes:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to compute scopeIdentifier emission stats',
+      error: error.message,
+    });
+  }
+};
+
+
+
+/**
+ * Hierarchical emissions view:
+ *  - scopeIdentifier  → node → entries
+ *  - node             → entries (global node ranking)
+ *  - location         → node → entries
+ *  - department       → node → entries
+ *  - scopeType        → scopeIdentifier → node → entries
+ *
+ * For a given client + period, this returns:
+ *  - all scopeIdentifiers, sorted from highest to lowest total CO2e
+ *  - under each scopeIdentifier, all nodes, sorted high → low
+ *  - under each node, all entries, sorted high → low
+ *  - global node ranking (which node has more / less emissions overall)
+ *  - location-wise hierarchy (high → low)
+ *  - department-wise hierarchy (high → low)
+ *  - scopeType-wise hierarchy (Scope 1/2/3, high → low)
+ *
+ * GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ *
+ * Query params (all optional):
+ *   - periodType = daily | weekly | monthly | yearly | all-time (default: monthly)
+ *   - year, month, week, day (same pattern as getEmissionSummary)
+ */
+const getScopeIdentifierHierarchy = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    let { periodType = 'monthly', year, month, week, day } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'clientId is required',
+      });
+    }
+
+    const allowedTypes = ['daily', 'weekly', 'monthly', 'yearly', 'all-time'];
+    if (!allowedTypes.includes(periodType)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid periodType. Use one of: ${allowedTypes.join(', ')}`,
+      });
+    }
+
+    // --------- Resolve period parts (fall back to "now" if not provided) ---------
+    const now = moment.utc();
+    const y = year ? parseInt(year, 10) : now.year();
+    const m = month ? parseInt(month, 10) : now.month() + 1;
+    const w = week ? parseInt(week, 10) : now.isoWeek();
+    const d = day ? parseInt(day, 10) : now.date();
+
+    const { from, to } = buildDateRange(periodType, y, m, w, d);
+
+    // --------- Load processed entries for the client & period ---------
+    const dataEntries = await DataEntry.find({
+      clientId,
+      processingStatus: 'processed',
+      timestamp: { $gte: from, $lte: to },
+    }).lean();
+
+    if (!dataEntries.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'No processed data entries found for this client in the requested period',
+      });
+    }
+
+    // --------- Load active flowchart to get node metadata (department, location, label) ---------
+    const flowchartDoc = await Flowchart.findOne({ clientId, isActive: true }).lean();
+    const nodeMetaMap = new Map(); // nodeId -> { nodeId, label, department, location }
+
+    if (flowchartDoc && flowchartDoc.chart && Array.isArray(flowchartDoc.chart.nodes)) {
+      flowchartDoc.chart.nodes.forEach((node) => {
+        nodeMetaMap.set(node.id, {
+          nodeId: node.id,
+          label: node.label || 'Unnamed node',
+          department: node.details?.department || 'Unknown',
+          location: node.details?.location || 'Unknown',
+        });
+      });
+    }
+
+    // --------- Small helpers ---------
+    const safeNum = (v) => {
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const getDateStringFromEntry = (entry) => {
+      if (entry.date && typeof entry.date === 'string') {
+        // already in "DD:MM:YYYY" format from DataEntry model
+        return entry.date;
+      }
+      if (entry.timestamp) {
+        const dt = moment.utc(entry.timestamp);
+        const dayStr = String(dt.date()).padStart(2, '0');
+        const monthStr = String(dt.month() + 1).padStart(2, '0');
+        const yearStr = String(dt.year());
+        return `${dayStr}:${monthStr}:${yearStr}`;
+      }
+      return null;
+    };
+
+    // ───────────────────────────────────────────────
+    // MAPS for hierarchy
+    // ───────────────────────────────────────────────
+
+    // scopeIdentifier → node → entries
+    const scopeIdentifierMap = new Map();
+
+    // Global node totals (across all scopeIdentifiers)
+    const globalNodeMap = new Map();
+
+    // location → node → entries
+    const locationMap = new Map();
+
+    // department → node → entries
+    const departmentMap = new Map();
+
+    // scopeType ("Scope 1/2/3") → scopeIdentifier → node → entries
+    const scopeTypeMap = new Map();
+
+    let totalCO2e = 0;
+
+    // ───────────────────────────────────────────────
+    // MAIN LOOP – one pass over DataEntry
+    // ───────────────────────────────────────────────
+    for (const entry of dataEntries) {
+      const scopeIdentifier = entry.scopeIdentifier || 'Unknown';
+      const nodeId = entry.nodeId || 'Unknown';
+      const scopeType = entry.scopeType || 'Unknown';
+
+      const nodeMeta = nodeMetaMap.get(nodeId) || {};
+      const nodeLabel = nodeMeta.label || null;
+      const department = nodeMeta.department || 'Unknown';
+      const location = nodeMeta.location || 'Unknown';
+
+      const emissionValues = extractEmissionValues(entry.calculatedEmissions);
+      const co2e = safeNum(emissionValues?.CO2e);
+      const dateStr = getDateStringFromEntry(entry);
+
+      totalCO2e += co2e;
+
+      const entryInfo = {
+        entryId: entry._id,
+        nodeId,
+        nodeLabel,
+        department,
+        location,
+        scopeType,
+        scopeIdentifier,
+        CO2e: co2e,
+        date: dateStr,
+        time: entry.time || null,
+        timestamp: entry.timestamp,
+        inputType: entry.inputType,
+        dataValues: entry.dataValues || null,
+      };
+
+      // ---------- 1) scopeIdentifier → node → entries ----------
+      if (!scopeIdentifierMap.has(scopeIdentifier)) {
+        scopeIdentifierMap.set(scopeIdentifier, {
+          scopeIdentifier,
+          totalCO2e: 0,
+          entriesCount: 0,
+          nodes: new Map(), // nodeId -> nodeStat
+          entries: [],      // all entries under this scopeIdentifier
+        });
+      }
+      const scopeStat = scopeIdentifierMap.get(scopeIdentifier);
+      scopeStat.totalCO2e += co2e;
+      scopeStat.entriesCount += 1;
+      scopeStat.entries.push(entryInfo);
+
+      if (!scopeStat.nodes.has(nodeId)) {
+        scopeStat.nodes.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department,
+          location,
+          totalCO2e: 0,
+          entriesCount: 0,
+          entries: [],
+        });
+      }
+      const scopeNodeStat = scopeStat.nodes.get(nodeId);
+      scopeNodeStat.totalCO2e += co2e;
+      scopeNodeStat.entriesCount += 1;
+      scopeNodeStat.entries.push(entryInfo);
+
+      // ---------- 2) Global node totals (node wise) ----------
+      if (!globalNodeMap.has(nodeId)) {
+        globalNodeMap.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department,
+          location,
+          totalCO2e: 0,
+          entriesCount: 0,
+          entries: [],
+        });
+      }
+      const globalNodeStat = globalNodeMap.get(nodeId);
+      globalNodeStat.totalCO2e += co2e;
+      globalNodeStat.entriesCount += 1;
+      globalNodeStat.entries.push(entryInfo);
+
+      // ---------- 3) location → node → entries ----------
+      const locationKey = location || 'Unknown';
+      if (!locationMap.has(locationKey)) {
+        locationMap.set(locationKey, {
+          location: locationKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+          nodes: new Map(),
+          entries: [],
+        });
+      }
+      const locStat = locationMap.get(locationKey);
+      locStat.totalCO2e += co2e;
+      locStat.entriesCount += 1;
+      locStat.entries.push(entryInfo);
+
+      if (!locStat.nodes.has(nodeId)) {
+        locStat.nodes.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department,
+          location: locationKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+          entries: [],
+        });
+      }
+      const locNodeStat = locStat.nodes.get(nodeId);
+      locNodeStat.totalCO2e += co2e;
+      locNodeStat.entriesCount += 1;
+      locNodeStat.entries.push(entryInfo);
+
+      // ---------- 4) department → node → entries ----------
+      const departmentKey = department || 'Unknown';
+      if (!departmentMap.has(departmentKey)) {
+        departmentMap.set(departmentKey, {
+          department: departmentKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+          nodes: new Map(),
+          entries: [],
+        });
+      }
+      const deptStat = departmentMap.get(departmentKey);
+      deptStat.totalCO2e += co2e;
+      deptStat.entriesCount += 1;
+      deptStat.entries.push(entryInfo);
+
+      if (!deptStat.nodes.has(nodeId)) {
+        deptStat.nodes.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department: departmentKey,
+          location,
+          totalCO2e: 0,
+          entriesCount: 0,
+          entries: [],
+        });
+      }
+      const deptNodeStat = deptStat.nodes.get(nodeId);
+      deptNodeStat.totalCO2e += co2e;
+      deptNodeStat.entriesCount += 1;
+      deptNodeStat.entries.push(entryInfo);
+
+      // ---------- 5) scopeType ("Scope 1/2/3") → scopeIdentifier → node → entries ----------
+      const scopeTypeKey = scopeType || 'Unknown';
+      if (!scopeTypeMap.has(scopeTypeKey)) {
+        scopeTypeMap.set(scopeTypeKey, {
+          scopeType: scopeTypeKey,
+          totalCO2e: 0,
+          entriesCount: 0,
+          scopeIdentifiers: new Map(), // scopeIdentifier -> { ... }
+          entries: [],
+        });
+      }
+      const scopeTypeStat = scopeTypeMap.get(scopeTypeKey);
+      scopeTypeStat.totalCO2e += co2e;
+      scopeTypeStat.entriesCount += 1;
+      scopeTypeStat.entries.push(entryInfo);
+
+      if (!scopeTypeStat.scopeIdentifiers.has(scopeIdentifier)) {
+        scopeTypeStat.scopeIdentifiers.set(scopeIdentifier, {
+          scopeIdentifier,
+          totalCO2e: 0,
+          entriesCount: 0,
+          nodes: new Map(), // nodeId -> nodeStat
+          entries: [],
+        });
+      }
+      const stScopeStat = scopeTypeStat.scopeIdentifiers.get(scopeIdentifier);
+      stScopeStat.totalCO2e += co2e;
+      stScopeStat.entriesCount += 1;
+      stScopeStat.entries.push(entryInfo);
+
+      if (!stScopeStat.nodes.has(nodeId)) {
+        stScopeStat.nodes.set(nodeId, {
+          nodeId,
+          nodeLabel,
+          department,
+          location,
+          totalCO2e: 0,
+          entriesCount: 0,
+          entries: [],
+        });
+      }
+      const stNodeStat = stScopeStat.nodes.get(nodeId);
+      stNodeStat.totalCO2e += co2e;
+      stNodeStat.entriesCount += 1;
+      stNodeStat.entries.push(entryInfo);
+    }
+
+    if (!scopeIdentifierMap.size) {
+      return res.status(404).json({
+        success: false,
+        message: 'No scopeIdentifier statistics could be computed',
+      });
+    }
+
+    // ───────────────────────────────────────────────
+    // Convert maps → plain arrays and sort high → low
+    // ───────────────────────────────────────────────
+
+    // --- scopeIdentifier hierarchy ---
+    let scopeList = Array.from(scopeIdentifierMap.values()).map((scopeStat) => {
+      const nodesArray = Array.from(scopeStat.nodes.values()).map((nodeStat) => {
+        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e); // entries high → low
+        return nodeStat;
+      });
+
+      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e); // nodes high → low
+      scopeStat.entries.sort((a, b) => b.CO2e - a.CO2e);     // all entries high → low
+
+      return {
+        scopeIdentifier: scopeStat.scopeIdentifier,
+        totalCO2e: scopeStat.totalCO2e,
+        entriesCount: scopeStat.entriesCount,
+        nodes: nodesArray,
+        entries: scopeStat.entries,
+      };
+    });
+
+    scopeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    const highestScopeIdentifier = scopeList[0] || null;
+    const lowestScopeIdentifier =
+      scopeList
+        .slice()
+        .reverse()
+        .find((s) => s.totalCO2e > 0) || null;
+
+    // --- global node ranking (node wise) ---
+    let nodeList = Array.from(globalNodeMap.values()).map((nodeStat) => {
+      nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+      return nodeStat;
+    });
+    nodeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    const highestNode = nodeList[0] || null;
+    const lowestNode =
+      nodeList
+        .slice()
+        .reverse()
+        .find((n) => n.totalCO2e > 0) || null;
+
+    // --- location hierarchy ---
+    let locationList = Array.from(locationMap.values()).map((locStat) => {
+      const nodesArray = Array.from(locStat.nodes.values()).map((nodeStat) => {
+        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+        return nodeStat;
+      });
+
+      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
+      locStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+
+      return {
+        location: locStat.location,
+        totalCO2e: locStat.totalCO2e,
+        entriesCount: locStat.entriesCount,
+        nodes: nodesArray,
+        entries: locStat.entries,
+      };
+    });
+
+    locationList.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    const highestLocation = locationList[0] || null;
+    const lowestLocation =
+      locationList
+        .slice()
+        .reverse()
+        .find((l) => l.totalCO2e > 0) || null;
+
+    // --- department hierarchy ---
+    let departmentList = Array.from(departmentMap.values()).map((deptStat) => {
+      const nodesArray = Array.from(deptStat.nodes.values()).map((nodeStat) => {
+        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+        return nodeStat;
+      });
+
+      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
+      deptStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+
+      return {
+        department: deptStat.department,
+        totalCO2e: deptStat.totalCO2e,
+        entriesCount: deptStat.entriesCount,
+        nodes: nodesArray,
+        entries: deptStat.entries,
+      };
+    });
+
+    departmentList.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    const highestDepartment = departmentList[0] || null;
+    const lowestDepartment =
+      departmentList
+        .slice()
+        .reverse()
+        .find((dpt) => dpt.totalCO2e > 0) || null;
+
+    // --- scopeType hierarchy ("Scope 1/2/3") ---
+    let scopeTypeList = Array.from(scopeTypeMap.values()).map((scopeTypeStat) => {
+      const scopesArray = Array.from(scopeTypeStat.scopeIdentifiers.values()).map((stScopeStat) => {
+        const nodesArray = Array.from(stScopeStat.nodes.values()).map((nodeStat) => {
+          nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+          return nodeStat;
+        });
+
+        nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
+        stScopeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+
+        return {
+          scopeIdentifier: stScopeStat.scopeIdentifier,
+          totalCO2e: stScopeStat.totalCO2e,
+          entriesCount: stScopeStat.entriesCount,
+          nodes: nodesArray,
+          entries: stScopeStat.entries,
+        };
+      });
+
+      scopesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
+      scopeTypeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
+
+      return {
+        scopeType: scopeTypeStat.scopeType,
+        totalCO2e: scopeTypeStat.totalCO2e,
+        entriesCount: scopeTypeStat.entriesCount,
+        scopeIdentifiers: scopesArray,
+        entries: scopeTypeStat.entries,
+      };
+    });
+
+    scopeTypeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
+
+    const highestScopeType = scopeTypeList[0] || null;
+    const lowestScopeType =
+      scopeTypeList
+        .slice()
+        .reverse()
+        .find((st) => st.totalCO2e > 0) || null;
+
+    // ───────────────────────────────────────────────
+    // Build period object (similar to other controllers)
+    // ───────────────────────────────────────────────
+    const period = {
+      type: periodType,
+      from,
+      to,
+    };
+    if (periodType !== 'all-time') {
+      period.year = y;
+    }
+    if (periodType === 'monthly' || periodType === 'daily') {
+      period.month = m;
+    }
+    if (periodType === 'weekly') {
+      period.week = w;
+    }
+    if (periodType === 'daily') {
+      period.day = d;
+    }
+
+    const totalEntries = dataEntries.length;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        period,
+        totals: {
+          totalEntries,
+          totalCO2e,
+        },
+
+        // ⬇️ ScopeIdentifier → Node → Entries (what you already had)
+        scopeIdentifierHierarchy: {
+          highestScopeIdentifier,
+          lowestScopeIdentifier,
+          list: scopeList, // full hierarchy high → low
+        },
+
+        // ⬇️ Global node ranking (node wise – also kept as "nodeTotals" for backwards compatibility)
+        nodeTotals: {
+          highestNode,
+          lowestNode,
+          list: nodeList,
+        },
+        nodeHierarchy: {
+          highestNode,
+          lowestNode,
+          list: nodeList,
+        },
+
+        // ⬇️ Location wise hierarchy
+        locationHierarchy: {
+          highestLocation,
+          lowestLocation,
+          list: locationList,
+        },
+
+        // ⬇️ Department wise hierarchy
+        departmentHierarchy: {
+          highestDepartment,
+          lowestDepartment,
+          list: departmentList,
+        },
+
+        // ⬇️ Scope wise hierarchy (Scope 1 / 2 / 3)
+        scopeTypeHierarchy: {
+          highestScopeType,
+          lowestScopeType,
+          list: scopeTypeList,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error in getScopeIdentifierHierarchy:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to compute scopeIdentifier hierarchy',
+      error: error.message,
+    });
+  }
+};
+
+
+
+
 module.exports = {
   setSocketIO,
   calculateEmissionSummary,
@@ -1646,5 +2791,9 @@ module.exports = {
   getMultipleSummaries,
   getFilteredSummary,
   getLatestScope12Total,
+  getTopLowEmissionStats,
+  getScopeIdentifierEmissionExtremes,
+  getScopeIdentifierHierarchy, 
+    
 
 };

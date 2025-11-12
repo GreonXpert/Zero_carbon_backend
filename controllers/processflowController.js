@@ -1338,6 +1338,132 @@ const assignScopeToProcessNode = async (req, res) => {
 };
 
 
+// Remove employees from a PROCESS node scope (Employee Head only)
+const removeAssignmentProcess = async (req, res) => {
+  try {
+    // 1) Only Employee Heads can remove employees from scopes
+    if (req.user.userType !== 'client_employee_head') {
+      return res.status(403).json({
+        message: 'Only Employee Heads can remove employees from scopes (process flowchart)'
+      });
+    }
+
+    const { clientId, nodeId } = req.params;
+    const { scopeIdentifier, employeeIds } = req.body;
+
+    // 2) Validate input
+    if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
+      return res.status(400).json({
+        message: 'clientId, nodeId, scopeIdentifier and employeeIds[] are required'
+      });
+    }
+
+    if (employeeIds.length === 0) {
+      return res.status(400).json({
+        message: 'At least one employee must be provided to remove'
+      });
+    }
+
+    // 3) Same-organization check
+    if (String(req.user.clientId) !== String(clientId)) {
+      return res.status(403).json({
+        message: 'You can only manage assignments within your organization'
+      });
+    }
+
+    // 4) Load the specific node from PROCESS flowchart
+    const flow = await ProcessFlowchart.findOne(
+      { clientId, 'nodes.id': nodeId, isDeleted: false },
+      { 'nodes.$': 1 }
+    );
+
+    if (!flow || !flow.nodes || flow.nodes.length === 0) {
+      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    }
+
+    const node = flow.nodes[0];
+
+    // 5) Verify this Employee Head is assigned to this PROCESS node
+    const assignedHeadId = node?.details?.employeeHeadId
+      ? String(node.details.employeeHeadId)
+      : null;
+    const currentUserId = req.user.id
+      ? String(req.user.id)
+      : (req.user._id ? String(req.user._id) : null);
+
+    if (!assignedHeadId || assignedHeadId !== currentUserId) {
+      return res.status(403).json({
+        message:
+          'You are not authorized to manage this node. Only the assigned Employee Head can remove scope assignments.'
+      });
+    }
+
+    // 6) Locate the specific scope
+    const scope = (node.details?.scopeDetails || []).find(
+      s => s.scopeIdentifier === scopeIdentifier
+    );
+    if (!scope) {
+      return res.status(404).json({
+        message: `Scope detail '${scopeIdentifier}' not found in this node`
+      });
+    }
+
+    // 7) Remove employees from this scope's assignedEmployees
+    await ProcessFlowchart.updateOne(
+      { clientId, 'nodes.id': nodeId },
+      {
+        $pull: {
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': {
+            $in: employeeIds
+          }
+        }
+      },
+      {
+        arrayFilters: [
+          { 'n.id': nodeId },
+          { 's.scopeIdentifier': scopeIdentifier }
+        ]
+      }
+    );
+
+    // 8) Remove the assignment records from each employee's assignedModules
+    await User.updateMany(
+      { _id: { $in: employeeIds } },
+      {
+        $pull: {
+          assignedModules: {
+            // same pattern as removeAssignment in userController
+            $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${scopeIdentifier}".*`
+          }
+        }
+      }
+    );
+
+    return res.status(200).json({
+      message: 'Employees removed from process scope successfully',
+      node: {
+        id: nodeId,
+        label: node.label,
+        department: node.details?.department,
+        location: node.details?.location
+      },
+      scope: {
+        scopeIdentifier,
+        scopeType: scope.scopeType,
+        inputType: scope.inputType
+      },
+      removedEmployees: employeeIds
+    });
+  } catch (error) {
+    console.error('❌ Error in removeAssignmentProcess:', error);
+    return res.status(500).json({
+      message: 'Error removing employees from scope (process flowchart)',
+      error: error.message
+    });
+  }
+};
+
+
 
 function findScopeIndex(scopes, { scopeUid, scopeIdentifier }) {
   if (!Array.isArray(scopes)) return -1;
@@ -1488,6 +1614,7 @@ module.exports = {
   restoreProcessFlowchart,
   assignOrUnassignEmployeeHeadToNode,
   assignScopeToProcessNode,
+  removeAssignmentProcess,  
   softDeleteProcessScopeDetail,
   restoreProcessScopeDetail,
   hardDeleteProcessScopeDetail  

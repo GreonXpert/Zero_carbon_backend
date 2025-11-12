@@ -7,6 +7,10 @@ const {
   getMultipleSummaries,
   getFilteredSummary,
   getLatestScope12Total,
+  getTopLowEmissionStats,
+  getScopeIdentifierEmissionExtremes,
+  getScopeIdentifierHierarchy, 
+  
 } = require('../controllers/Calculation/CalculationSummary');
 const { auth } = require('../middleware/auth');
 const { checkSummaryPermission } = require('../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
@@ -50,6 +54,64 @@ router.get('/:clientId/multiple', checkSummaryPermission, getMultipleSummaries);
 router.get('/:clientId/filtered', checkSummaryPermission, getFilteredSummary);
 
 
+/**
+ * @route   GET /api/summaries/:clientId/top-low
+ * @desc    Get top & low emitters:
+ *          - highest & lowest category (by CO2e)
+ *          - highest & lowest scope (Scope 1/2/3)
+ *          - highest & lowest emission source (byEmissionFactor)
+ * @query   periodType=daily|weekly|monthly|yearly|all-time (optional)
+ * @query   year=<YYYY> (optional)
+ * @query   month=<1-12> (optional)
+ * @query   week=<1-53> (optional)
+ * @query   day=<1-31> (optional)
+ * @query   limit=<N> (optional, default: 5)
+ */
+router.get(
+  '/:clientId/top-low',
+  checkSummaryPermission,
+  getTopLowEmissionStats
+);
+
+
+/**
+ * @route   GET /api/summaries/:clientId/scope-identifiers/extremes
+ * @desc    For each scopeIdentifier, show:
+ *          - totalCO2e in the period
+ *          - highest single-entry emission + date/time
+ *          - lowest (non-zero) single-entry emission + date/time
+ *          - daily totals and max/min emission day
+ *          Also returns overall highest & lowest scopeIdentifier by total emissions.
+ *
+ * @query   periodType=daily|weekly|monthly|yearly|all-time (optional, default: monthly)
+ * @query   year=<YYYY> (optional, defaults like getEmissionSummary)
+ * @query   month=<1-12> (optional)
+ * @query   week=<1-53> (optional)
+ * @query   day=<1-31> (optional)
+ */
+router.get(
+  '/:clientId/scope-identifiers/extremes',
+  checkSummaryPermission,
+  getScopeIdentifierEmissionExtremes
+);
+
+
+/**
+ * @route   GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ * @desc    Hierarchical view of emissions by scopeIdentifier → node → entries,
+ *          with everything sorted from high to low, plus global node ranking.
+ *
+ * @query   periodType=daily|weekly|monthly|yearly|all-time (optional, default: monthly)
+ * @query   year=<YYYY> (optional)
+ * @query   month=<1-12> (optional)
+ * @query   week=<1-53> (optional)
+ * @query   day=<1-31> (optional)
+ */
+router.get(
+  '/:clientId/hierarchy',
+  checkSummaryPermission,
+  getScopeIdentifierHierarchy
+);
 
 
 
