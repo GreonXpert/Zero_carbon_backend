@@ -1580,7 +1580,13 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
   }
 };
 
-// Utility: find scope index by uid or identifier
+
+
+
+
+
+
+// --- helper: find scope by uid or identifier ---
 function findScopeIndex(scopes, { scopeUid, scopeIdentifier }) {
   if (!Array.isArray(scopes)) return -1;
   return scopes.findIndex(s =>
@@ -1589,108 +1595,20 @@ function findScopeIndex(scopes, { scopeUid, scopeIdentifier }) {
   );
 }
 
-// SOFT DELETE one scopeDetail from a node
-const softDeleteScopeDetail = async (req, res) => {
-  try {
-    const { clientId, nodeId } = req.params;
-    const { scopeUid, scopeIdentifier } = req.body || {};
-
-    const canManage = await canManageFlowchart(req.user, clientId);
-    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
-
-    const flowchart = await Flowchart.findOne({ clientId, isDeleted: false, isActive: true });
-    if (!flowchart) return res.status(404).json({ message: 'Flowchart not found' });
-
-    const node = flowchart.nodes.find(n => n.id === nodeId);
-    if (!node) return res.status(404).json({ message: 'Node not found' });
-
-    const scopes = node?.details?.scopeDetails || [];
-    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
-    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
-
-    if (scopes[idx].isDeleted) {
-      return res.status(400).json({ message: 'Scope detail already soft-deleted' });
-    }
-
-    scopes[idx].isDeleted = true;
-    scopes[idx].deletedAt = new Date();
-    scopes[idx].deletedBy = req.user._id || req.user.id;
-
-    flowchart.markModified('nodes');
-    flowchart.version = (flowchart.version || 0) + 1;
-    flowchart.lastModifiedBy = req.user._id || req.user.id;
-    await flowchart.save();
-
-    res.status(200).json({
-      message: 'Scope detail soft-deleted',
-      nodeId,
-      scope: {
-        scopeIdentifier: scopes[idx].scopeIdentifier,
-        scopeUid: scopes[idx].scopeUid || scopes[idx]._id
-      }
-    });
-  } catch (err) {
-    console.error('softDeleteScopeDetail error:', err);
-    res.status(500).json({ message: 'Failed to soft-delete scope detail', error: err.message });
-  }
-};
-
-// RESTORE one soft-deleted scopeDetail
-const restoreScopeDetail = async (req, res) => {
-  try {
-    const { clientId, nodeId } = req.params;
-    const { scopeUid, scopeIdentifier } = req.body || {};
-
-    const canManage = await canManageFlowchart(req.user, clientId);
-    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
-
-    const flowchart = await Flowchart.findOne({ clientId, isDeleted: false, isActive: true });
-    if (!flowchart) return res.status(404).json({ message: 'Flowchart not found' });
-
-    const node = flowchart.nodes.find(n => n.id === nodeId);
-    if (!node) return res.status(404).json({ message: 'Node not found' });
-
-    const scopes = node?.details?.scopeDetails || [];
-    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
-    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
-
-    if (!scopes[idx].isDeleted) {
-      return res.status(400).json({ message: 'Scope detail is not soft-deleted' });
-    }
-
-    scopes[idx].isDeleted = false;
-    scopes[idx].deletedAt = null;
-    scopes[idx].deletedBy = null;
-
-    flowchart.markModified('nodes');
-    flowchart.version = (flowchart.version || 0) + 1;
-    flowchart.lastModifiedBy = req.user._id || req.user.id;
-    await flowchart.save();
-
-    res.status(200).json({
-      message: 'Scope detail restored',
-      nodeId,
-      scope: {
-        scopeIdentifier: scopes[idx].scopeIdentifier,
-        scopeUid: scopes[idx].scopeUid || scopes[idx]._id
-      }
-    });
-  } catch (err) {
-    console.error('restoreScopeDetail error:', err);
-    res.status(500).json({ message: 'Failed to restore scope detail', error: err.message });
-  }
-};
-
-// HARD DELETE (permanently remove) one scopeDetail from a node
+// --- HARD DELETE one scopeDetail from a node ---
 const hardDeleteScopeDetail = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     const { scopeUid } = req.query || {};
 
-    const canManage = await canManageFlowchart(req.user, clientId);
-    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
+    // permission object pattern used elsewhere in controller
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm?.allowed) {
+      return res.status(403).json({ message: 'Permission denied', reason: perm?.reason });
+    }
 
-    const flowchart = await Flowchart.findOne({ clientId, isDeleted: false, isActive: true });
+    // ✅ use only isActive:true (you don't store isDeleted on Flowchart)
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
     if (!flowchart) return res.status(404).json({ message: 'Flowchart not found' });
 
     const node = flowchart.nodes.find(n => n.id === nodeId);
@@ -1702,12 +1620,13 @@ const hardDeleteScopeDetail = async (req, res) => {
 
     const removed = scopes.splice(idx, 1)[0];
 
+    // persist
     flowchart.markModified('nodes');
     flowchart.version = (flowchart.version || 0) + 1;
     flowchart.lastModifiedBy = req.user._id || req.user.id;
     await flowchart.save();
 
-    res.status(200).json({
+    return res.status(200).json({
       message: 'Scope detail permanently deleted',
       nodeId,
       scope: {
@@ -1717,7 +1636,7 @@ const hardDeleteScopeDetail = async (req, res) => {
     });
   } catch (err) {
     console.error('hardDeleteScopeDetail error:', err);
-    res.status(500).json({ message: 'Failed to delete scope detail', error: err.message });
+    return res.status(500).json({ message: 'Failed to delete scope detail', error: err.message });
   }
 };
 
@@ -1733,7 +1652,5 @@ module.exports = {
   getConsolidatedSummary,
   updateFlowchartNode,
   assignOrUnassignEmployeeHeadToNode,
-  softDeleteScopeDetail,
-  restoreScopeDetail,
   hardDeleteScopeDetail
 };

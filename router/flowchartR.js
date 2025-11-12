@@ -40,11 +40,7 @@ router.delete('/:clientId/node/:nodeId', deleteFlowchartNode);
 router.patch('/:clientId/node/:nodeId', updateFlowchartNode); 
 router.patch('/:clientId/restore', restoreFlowchart); 
 router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
-// Soft delete a scopeDetail
-router.patch('/:clientId/node/:nodeId/scope/soft-delete', softDeleteScopeDetail);
 
-// Restore a soft-deleted scopeDetail
-router.patch('/:clientId/node/:nodeId/scope/restore', restoreScopeDetail);
 
 // Hard delete a scopeDetail (permanent)
 router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteScopeDetail);
