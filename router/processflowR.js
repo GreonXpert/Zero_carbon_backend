@@ -14,8 +14,7 @@ const {
   assignOrUnassignEmployeeHeadToNode,
   assignScopeToProcessNode,
   removeAssignmentProcess,  
-  softDeleteProcessScopeDetail,
-  restoreProcessScopeDetail,
+ 
   hardDeleteProcessScopeDetail
 } = require('../controllers/processflowController');
 
@@ -51,11 +50,6 @@ router.delete(
 );
 
 
-// Soft delete a scopeDetail (process)
-router.patch('/:clientId/node/:nodeId/scope/soft-delete', softDeleteProcessScopeDetail);
-
-// Restore a soft-deleted scopeDetail (process)
-router.patch('/:clientId/node/:nodeId/scope/restore', restoreProcessScopeDetail);
 
 // Hard delete a scopeDetail (process)
 router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteProcessScopeDetail);
