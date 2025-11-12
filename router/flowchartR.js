@@ -10,8 +10,7 @@ const {
   updateFlowchartNode,
   restoreFlowchart,
   assignOrUnassignEmployeeHeadToNode,
-   softDeleteScopeDetail,
-  restoreScopeDetail,
+ 
   hardDeleteScopeDetail
  
 } = require('../controllers/flowchartController');
