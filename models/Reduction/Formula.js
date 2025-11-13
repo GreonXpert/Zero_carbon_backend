@@ -16,12 +16,7 @@ const VariableSchema = new mongoose.Schema({
   lastValue:     { type: Number, default: null },
   lastUpdatedAt: { type: Date },
 
-  // Provenance
-  lineage: {
-    source:   { type: String, default: '' },     // e.g. "Bureau of Energy"
-    method:   { type: String, default: '' },     // free text
-    doc_link: { type: String, default: '' }      // URL
-  }
+  
 }, { _id: false });
 
 const ReductionFormulaSchema = new mongoose.Schema({
@@ -35,6 +30,12 @@ const ReductionFormulaSchema = new mongoose.Schema({
 
   // Optional versioning
   version:     { type: Number, default: 1 },
+  // Provenance
+  lineage: {
+    source:   { type: String, default: '' },     // e.g. "Bureau of Energy"
+    method:   { type: String, default: '' },     // free text
+    doc_link: { type: String, default: '' }      // URL
+  },
 
   // Who can see/edit (you can also enforce via routes)
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
