@@ -290,6 +290,212 @@ const emitDataUpdate = (eventType, data) => {
   }
 };
 
+// ===== Client workflow sync helpers (mirror source state to Client.workflowTracking.dataInputPoints) =====
+async function loadClientForPoints(clientId) {
+  // Only load the fields we mutate
+  const client = await Client.findOne(
+    { clientId },
+    {
+      'workflowTracking.dataInputPoints': 1
+    }
+  );
+  return client;
+}
+
+const makePointId = (nodeId, scopeIdentifier) => `${nodeId}::${scopeIdentifier}`;
+
+// Remove any point with same nodeId/scopeIdentifier from all three buckets
+function removeFromAllTypes(client, nodeId, scopeIdentifier) {
+  if (!client?.workflowTracking?.dataInputPoints) return;
+
+  const dip = client.workflowTracking.dataInputPoints;
+  for (const key of ['manual', 'api', 'iot']) {
+    const arr = dip[key]?.inputs || [];
+    const next = arr.filter(p => !(p.nodeId === nodeId && p.scopeIdentifier === scopeIdentifier));
+    dip[key].inputs = next;
+    client.updateInputPointCounts(key);
+  }
+}
+
+// Upsert a point into a specific bucket
+function upsertIntoType(client, type, payload) {
+  const dip = client.workflowTracking.dataInputPoints;
+  const list = dip[type].inputs || [];
+  const existingIdx = list.findIndex(
+    p => p.nodeId === payload.nodeId && p.scopeIdentifier === payload.scopeIdentifier
+  );
+
+  if (type === 'manual') {
+    const base = {
+      pointId: makePointId(payload.nodeId, payload.scopeIdentifier),
+      pointName: payload.scopeIdentifier,
+      nodeId: payload.nodeId,
+      scopeIdentifier: payload.scopeIdentifier,
+      status: 'not_started',
+      lastUpdatedBy: payload.userId,
+      lastUpdatedAt: new Date()
+    };
+    if (existingIdx >= 0) list[existingIdx] = { ...list[existingIdx], ...base };
+    else list.push(base);
+  }
+
+  if (type === 'api') {
+    const base = {
+      pointId: makePointId(payload.nodeId, payload.scopeIdentifier),
+      endpoint: payload.apiEndpoint || '',
+      nodeId: payload.nodeId,
+      scopeIdentifier: payload.scopeIdentifier,
+      status: 'pending',
+      connectionStatus: payload.connected ? 'connected' : 'not_connected',
+      lastConnectionTest: payload.connected ? new Date() : undefined,
+      lastUpdatedBy: payload.userId,
+      lastUpdatedAt: new Date()
+    };
+    if (existingIdx >= 0) {
+      list[existingIdx] = {
+        ...list[existingIdx],
+        ...base,
+        endpoint: base.endpoint || list[existingIdx].endpoint
+      };
+    } else list.push(base);
+  }
+
+  if (type === 'iot') {
+    const base = {
+      pointId: makePointId(payload.nodeId, payload.scopeIdentifier),
+      deviceName: payload.deviceName || 'IoT Device',
+      deviceId: payload.deviceId || '',
+      nodeId: payload.nodeId,
+      scopeIdentifier: payload.scopeIdentifier,
+      status: 'pending',
+      connectionStatus: payload.connected ? 'connected' : 'disconnected',
+      lastDataReceived: undefined,
+      lastUpdatedBy: payload.userId,
+      lastUpdatedAt: new Date()
+    };
+    if (existingIdx >= 0) {
+      list[existingIdx] = {
+        ...list[existingIdx],
+        ...base,
+        deviceId: base.deviceId || list[existingIdx].deviceId
+      };
+    } else list.push(base);
+  }
+
+  dip[type].inputs = list;
+  client.updateInputPointCounts(type);
+}
+
+// Public helpers the routes will call
+async function reflectSwitchInputTypeInClient({
+  clientId,
+  previousType,     // 'manual' | 'API' | 'IOT'
+  newType,          // 'manual' | 'API' | 'IOT'
+  nodeId,
+  scopeIdentifier,
+  connectionDetails,
+  userId
+}) {
+  const client = await loadClientForPoints(clientId);
+  if (!client) return;
+
+  // 1) Remove from all lists (so we don't duplicate)
+  removeFromAllTypes(client, nodeId, scopeIdentifier);
+
+  // 2) Add to new bucket
+  if (newType === 'manual') {
+    upsertIntoType(client, 'manual', { nodeId, scopeIdentifier, userId });
+  } else if (newType === 'API') {
+    upsertIntoType(client, 'api', {
+      nodeId,
+      scopeIdentifier,
+      userId,
+      apiEndpoint: connectionDetails?.apiEndpoint || '',
+      connected: !!connectionDetails?.isActive || !!connectionDetails?.apiStatus
+    });
+  } else if (newType === 'IOT') {
+    upsertIntoType(client, 'iot', {
+      nodeId,
+      scopeIdentifier,
+      userId,
+      deviceId: connectionDetails?.deviceId || '',
+      deviceName: connectionDetails?.deviceName || 'IoT Device',
+      connected: !!connectionDetails?.isActive || !!connectionDetails?.iotStatus
+    });
+  }
+
+  await client.save();
+}
+
+async function reflectDisconnectInClient({ clientId, nodeId, scopeIdentifier, inputType, userId }) {
+  const client = await loadClientForPoints(clientId);
+  if (!client) return;
+
+  const dip = client.workflowTracking.dataInputPoints;
+
+  if ((inputType || '').toUpperCase() === 'API') {
+    const list = dip.api.inputs || [];
+    const idx = list.findIndex(p => p.nodeId === nodeId && p.scopeIdentifier === scopeIdentifier);
+    if (idx >= 0) {
+      list[idx].connectionStatus = 'not_connected'; // API enum
+      list[idx].lastUpdatedBy = userId;
+      list[idx].lastUpdatedAt = new Date();
+    } else {
+      // create a stub record if it didn't exist
+      upsertIntoType(client, 'api', {
+        nodeId, scopeIdentifier, userId,
+        apiEndpoint: '',
+        connected: false
+      });
+    }
+    dip.api.inputs = list;
+    client.updateInputPointCounts('api');
+  }
+
+  if ((inputType || '').toUpperCase() === 'IOT') {
+    const list = dip.iot.inputs || [];
+    const idx = list.findIndex(p => p.nodeId === nodeId && p.scopeIdentifier === scopeIdentifier);
+    if (idx >= 0) {
+      list[idx].connectionStatus = 'disconnected'; // IoT enum
+      list[idx].lastUpdatedBy = userId;
+      list[idx].lastUpdatedAt = new Date();
+    } else {
+      upsertIntoType(client, 'iot', {
+        nodeId, scopeIdentifier, userId,
+        deviceId: '',
+        deviceName: 'IoT Device',
+        connected: false
+      });
+    }
+    dip.iot.inputs = list;
+    client.updateInputPointCounts('iot');
+  }
+
+  await client.save();
+}
+
+async function reflectReconnectInClient({ clientId, nodeId, scopeIdentifier, inputType, userId, endpoint, deviceId }) {
+  const client = await loadClientForPoints(clientId);
+  if (!client) return;
+
+  if ((inputType || '').toUpperCase() === 'API') {
+    upsertIntoType(client, 'api', {
+      nodeId, scopeIdentifier, userId,
+      apiEndpoint: endpoint || '',
+      connected: true
+    });
+  }
+  if ((inputType || '').toUpperCase() === 'IOT') {
+    upsertIntoType(client, 'iot', {
+      nodeId, scopeIdentifier, userId,
+      deviceId: deviceId || '',
+      deviceName: 'IoT Device',
+      connected: true
+    });
+  }
+
+  await client.save();
+}
 
 
 
@@ -2284,7 +2490,24 @@ const flowchart = activeChart.chart;
       return res.status(404).json({ message: 'Scope not found' });
     }
     
-    await flowchart.save();
+        await flowchart.save();
+
+    // 🔁 Mirror change into Client.workflowTracking.dataInputPoints
+    await reflectSwitchInputTypeInClient({
+      clientId,
+      previousType,
+      newType: newInputType,
+      nodeId,
+      scopeIdentifier,
+      connectionDetails: {
+        apiEndpoint: flowchart.nodes[i].details.scopeDetails[scopeIndex].apiEndpoint || connectionDetails?.apiEndpoint,
+        deviceId:    flowchart.nodes[i].details.scopeDetails[scopeIndex].iotDeviceId || connectionDetails?.deviceId,
+        apiStatus:   flowchart.nodes[i].details.scopeDetails[scopeIndex].apiStatus,
+        iotStatus:   flowchart.nodes[i].details.scopeDetails[scopeIndex].iotStatus,
+        isActive:    true
+      },
+      userId: req.user?._id
+    });
     
     res.status(200).json({
       message: `Input type switched to ${newInputType} successfully`,
@@ -2781,7 +3004,14 @@ const disconnectSource = async (req, res) => {
       },
       { upsert: true }
     );
-
+        // 🔁 Mirror disconnect to Client.workflowTracking.dataInputPoints
+    await reflectDisconnectInClient({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      inputType: scope.inputType,
+      userId: req.user?._id
+    });
     return res.status(200).json({ message: 'Source disconnected successfully', scopeIdentifier });
   } catch (error) {
     console.error('Disconnect source error:', error);
@@ -2849,6 +3079,16 @@ const reconnectSource = async (req, res) => {
         },
         { upsert: true }
       );
+           await reflectReconnectInClient({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        inputType: 'API',
+        userId: req.user?._id,
+        endpoint: scope.apiEndpoint || existingCfg?.connectionDetails?.apiEndpoint
+      });
+
+
     } else if (inputType === 'IOT') {
       // ✅ flip false -> true (no body required)
       scope.iotStatus = true;
@@ -2871,6 +3111,14 @@ const reconnectSource = async (req, res) => {
         },
         { upsert: true }
       );
+      await reflectReconnectInClient({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        inputType: 'IOT',
+        userId: req.user?._id,
+        deviceId: scope.iotDeviceId || existingCfg?.connectionDetails?.deviceId
+      });
     } else {
       return res.status(200).json({
         message: 'Nothing to reconnect for MANUAL input type; left unchanged',
