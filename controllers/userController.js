@@ -11,6 +11,9 @@ const { createUserStatusNotification } = require("./notificationControllers");
 const Flowchart = require('../models/Flowchart');
 const { saveUserProfileImage } = require('../utils/uploads/userImageUpload');
 
+const { getNormalizedLevels } = require("../utils/Permissions/permissions");
+
+
 
 
 
@@ -368,7 +371,16 @@ const createClientAdmin = async (clientId, clientData) => {
       userType: "client_admin",
       clientId: clientId,
     });
-    if (existingClientAdmin) {
+       if (existingClientAdmin) {
+   try {
+     const levels = getNormalizedLevels(client); // normalize from client document
+     if (Array.isArray(levels) && levels.length) {
+       existingClientAdmin.assessmentLevel = levels;
+       await existingClientAdmin.save();
+     }
+   } catch (e) {
+     console.warn('Skipping assessmentLevel sync to existing client_admin:', e.message);
+   }
       // If it already exists, just link it and return without throwing
       client.accountDetails.clientAdminId = existingClientAdmin._id;
       await client.save();
@@ -393,6 +405,7 @@ const createClientAdmin = async (clientId, clientData) => {
         "Not provided",
       companyName: companyName,
       clientId: clientId,
+      assessmentLevel: getNormalizedLevels(client),
       createdBy: clientData.consultantId,
       permissions: {
         canViewAllClients: false,
@@ -411,6 +424,17 @@ const createClientAdmin = async (clientId, clientData) => {
     client.accountDetails.clientAdminId = clientAdmin._id;
     client.accountDetails.defaultPassword = defaultPassword;
     await client.save();
+
+     // 🔄 Mirror to all users that belong to this client
+ try {
+   const User = require("../models/User");
+   await User.updateMany(
+     { clientId: clientId },
+     { $set: { assessmentLevel: nextLevels } }
+   );
+ } catch (e) {
+   console.warn('Skipping user assessmentLevel sync:', e.message);
+ }
 
     // Send the welcome email
     const emailSubject = "Welcome to ZeroCarbon - Your Account is Active";
