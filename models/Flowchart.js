@@ -384,6 +384,11 @@ CO2e_gwp_comment: { type: String, default: '' },
   type: mongoose.Schema.Types.ObjectId,
   ref: 'User'
 }],
+fromOtherChart: {
+  type: Boolean,
+  default: false,
+  description: 'true if this scope was imported from ProcessFlowchart'
+},
 isDeleted: { type: Boolean, default: false },
 deletedAt: { type: Date },
 deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -441,7 +446,14 @@ const NodeSchema = new mongoose.Schema({
     
     // Node metadata
     additionalDetails: { type: mongoose.Schema.Types.Mixed, default: {} }
-  }
+  },
+  // --- in NodeSchema.details (add alongside department/location etc.)
+fromOtherChart: {
+  type: Boolean,
+  default: false,
+  description: 'true if this node was imported from ProcessFlowchart'
+}
+
 });
 
 const EdgeSchema = new mongoose.Schema({

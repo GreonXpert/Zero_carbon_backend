@@ -377,6 +377,13 @@ CO2e_gwp_comment: { type: String, default: '' },
   type: mongoose.Schema.Types.ObjectId,
   ref: 'User'
 }],
+// --- in ScopeDetailSchema
+fromOtherChart: {
+  type: Boolean,
+  default: false,
+  description: 'true if this scope was imported from Flowchart'
+},
+
 assignedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 lastAssignedAt: { type: Date },
 isDeleted: { type: Boolean, default: false },
@@ -422,7 +429,15 @@ const NodeSchema = new mongoose.Schema({
     scopeDetails: [ScopeDetailSchema],
     
     // Node metadata
-    additionalDetails: { type: mongoose.Schema.Types.Mixed, default: {} }
+    additionalDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+    // --- in NodeSchema.details
+fromOtherChart: {
+  type: Boolean,
+  default: false,
+  description: 'true if this node was imported from Flowchart'
+}
+
   }
 });
 
