@@ -52,6 +52,89 @@ const {
 
 
 
+/**
+ * Returns an array of "nodes" with scopeDetails that can be fed to mergePoints()
+ * depending on submissionData.assessmentLevel:
+ *  - organization → Flowchart nodes
+ *  - process → ProcessFlowchart nodes
+ *  - both → union of both
+ *
+ * We also de-duplicate by (nodeId + scopeIdentifier) across charts.
+ */
+async function getMergedNodesForAssessment(clientId) {
+  // 1) read assessment level
+  const client = await Client.findOne(
+    { clientId },
+    { 'submissionData.assessmentLevel': 1, _id: 0 }
+  ).lean();
+
+  const levels = Array.isArray(client?.submissionData?.assessmentLevel)
+    ? client.submissionData.assessmentLevel.map(s => String(s).toLowerCase())
+    : [];
+
+  const hasOrg = levels.includes('organization');
+  const hasProc = levels.includes('process');
+
+  // 2) fetch charts (don’t throw if one is missing)
+  const [orgChart, procChart] = await Promise.all([
+    hasOrg ? Flowchart.findOne({ clientId, isActive: true }).lean() : null,
+    hasProc ? ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean() : null
+  ]);
+
+  // 3) flatten nodes → (node, scope) pairs that actually have scopeDetails
+  const pickScoped = (chart, chartType) => {
+    if (!chart?.nodes?.length) return [];
+    const list = [];
+    for (const node of chart.nodes) {
+      const scopes = node?.details?.scopeDetails || [];
+      for (const s of scopes) {
+        // normalize inputType shape
+        const inputType = (s.inputType || '').toString().toLowerCase();
+        list.push({
+          chartType,
+          id: node.id,
+          label: node.label,
+          details: {
+            ...node.details,
+            // keep only this scope in a single-scope node shell so mergePoints can iterate
+            scopeDetails: [s]
+          }
+        });
+      }
+    }
+    return list;
+  };
+
+  let raw = [];
+  if (hasOrg) raw = raw.concat(pickScoped(orgChart, 'flowchart'));
+  if (hasProc) raw = raw.concat(pickScoped(procChart, 'processflowchart'));
+
+  // 4) de-duplicate on (nodeId + scopeIdentifier) to avoid doubles when people mirror scopes
+  const seen = new Set();
+  const unique = [];
+  for (const n of raw) {
+    const scopeId = n.details.scopeDetails[0]?.scopeIdentifier || 'Unknown';
+    const key = `${n.id}::${scopeId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(n);
+  }
+
+  // 5) regroup back to nodes with scopeDetails[] like Flowchart expects
+  //    (merge of scopes per node id)
+  const nodeMap = new Map();
+  for (const n of unique) {
+    const base = nodeMap.get(n.id) || { id: n.id, label: n.label, details: { ...n.details, scopeDetails: [] } };
+    const scope = n.details.scopeDetails[0];
+    base.details.scopeDetails.push(scope);
+    nodeMap.set(n.id, base);
+  }
+
+  return Array.from(nodeMap.values());
+}
+
+
+
 
 // Additional helper function to emit targeted updates based on filters
 const emitTargetedClientUpdate = async (client, action, userId, additionalFilters = {}) => {
@@ -415,20 +498,22 @@ const syncDataInputPoints = async (req, res) => {
       return newList;
     };
 
-    // Merge each type
+        // Merge each type from BOTH charts depending on assessmentLevel
+    const mergedNodes = await getMergedNodesForAssessment(clientId);
+
     client.workflowTracking.dataInputPoints.manual.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.manual.inputs,
-      flowchart.nodes,
+      mergedNodes,
       'manual'
     );
     client.workflowTracking.dataInputPoints.api.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.api.inputs,
-      flowchart.nodes,
+      mergedNodes,
       'api'
     );
     client.workflowTracking.dataInputPoints.iot.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.iot.inputs,
-      flowchart.nodes,
+      mergedNodes,
       'iot'
     );
 

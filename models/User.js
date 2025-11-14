@@ -79,7 +79,12 @@ const userSchema = new mongoose.Schema(
       canEditBoundaries: { type: Boolean, default: false },
       canSubmitData: { type: Boolean, default: false },
       canAudit: { type: Boolean, default: false }
-    }
+    },
+     assessmentLevel: {
+      type: [String],
+      enum: ['reduction', 'decarbonization', 'organization', 'process', 'both'],
+      default: []
+    },
   },
   { timestamps: true }
 );
