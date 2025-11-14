@@ -1,5 +1,6 @@
 const Flowchart = require ('../../models/Flowchart');
 const ProcessFlowchart =require ('../../models/ProcessFlowchart');
+const Client = require('../../models/Client');
 
 /**
  * Return the assessmentLevel as a normalized lowercase array.
