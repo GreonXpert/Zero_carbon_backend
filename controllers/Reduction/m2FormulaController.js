@@ -69,7 +69,7 @@ exports.updateFormula = async (req,res)=>{
     const doc = await ReductionFormula.findById(req.params.formulaId);
     if (!doc || doc.isDeleted) return res.status(404).json({ success:false, message:'Not found' });
 
-    const { name, description, expression, variables, version } = req.body;
+    const { name, description, link, expression, variables, version } = req.body;
 
     if (expression) Parser.parse(expression); // validate expression
 
