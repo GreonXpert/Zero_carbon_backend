@@ -51,6 +51,7 @@ const dataCollectionController = require('./controllers/dataCollectionController
 const netReductionController = require('./controllers/Reduction/netReductionController');
 const netReductionSummaryController = require('./controllers/Reduction/netReductionSummaryController');
 const sbtiController = require('./controllers/Decabonization/sbtiController');
+const transportFlowRouter = require('./router/transportFlowR');
 
 
 // Import models for real-time features
@@ -91,6 +92,7 @@ app.use("/api/gwp", gwpRoutes);
 app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
 app.use("/api/processflow", processFlowR);
+app.use('/api/transport-flowchart', transportFlowRouter);
 // app.use('/api/data-entry', dataEntryRoutes);
 app.use('/api/emission-factor-hub', EmissionFactorHub);
 app.use('/api', iotRoutes);
