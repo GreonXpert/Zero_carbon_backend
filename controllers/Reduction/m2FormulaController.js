@@ -76,6 +76,7 @@ exports.updateFormula = async (req,res)=>{
     if (name != null)        doc.name = name;
     if (description != null) doc.description = description;
     if (expression != null)  doc.expression = expression;
+    if (link != null)        doc.link = link;
     if (Array.isArray(variables)) doc.variables = variables;
     if (version != null)     doc.version = version;
 
