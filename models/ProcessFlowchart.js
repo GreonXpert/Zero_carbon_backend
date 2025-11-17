@@ -25,7 +25,11 @@ const ScopeDetailSchema = new mongoose.Schema({
     default: 'manual',
     description: 'Data input method for this specific scope'
   },
-  
+  fromOtherChart: {
+  type: Boolean,
+  default: false,
+  description: 'true if this node was imported from Flowchart'
+},
   // Whether this scope is connected to API/IOT
   apiStatus: { 
     type: Boolean, 
@@ -432,11 +436,7 @@ const NodeSchema = new mongoose.Schema({
     additionalDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
 
     // --- in NodeSchema.details
-fromOtherChart: {
-  type: Boolean,
-  default: false,
-  description: 'true if this node was imported from Flowchart'
-}
+
 
   }
 });

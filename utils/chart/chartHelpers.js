@@ -39,6 +39,7 @@ const normalizeScopeDetail = (scope) => {
     projectActivityType:  scope.projectActivityType || 'null',
     inputType:            scope.inputType          || 'manual',
     apiStatus:            scope.apiStatus          || false,
+    fromOtherChart:       scope.fromOtherChart     || false,
     apiEndpoint:          scope.apiEndpoint        || '',
     iotStatus:            scope.iotStatus          || false,
     iotDeviceId:          scope.iotDeviceId        || '',
@@ -306,6 +307,7 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
                 scopeType: scope.scopeType,
                 categoryName: scope.categoryName,
                 activity: scope.activity,
+
                
               }))
             : [],// Empty scopeDetails for basic view
