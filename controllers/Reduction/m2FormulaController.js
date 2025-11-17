@@ -19,14 +19,14 @@ exports.createFormula = async (req,res)=>{
     const err = ensureRole(req);
     if (err) return res.status(403).json({ success:false, message: err });
 
-    const { name, description, expression, variables, version } = req.body;
+    const { name, description,link, expression, variables, version } = req.body;
     if (!name || !expression) return res.status(400).json({ success:false, message:'name & expression required' });
 
     // quick parse check
     Parser.parse(expression);
 
     const doc = await ReductionFormula.create({
-      name, description: description||'', expression, variables: variables||[], version: version||1,
+      name, description: description||'',link, expression, variables: variables||[], version: version||1,
       createdBy: req.user._id || req.user.id
     });
 

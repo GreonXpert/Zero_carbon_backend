@@ -334,7 +334,8 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
         latitude:          d.latitude          || null,
         employeeHeadId:    d.employeeHeadId    || null,
         scopeDetails:      d.scopeDetails      || [],
-        additionalDetails: d.additionalDetails || {}
+        additionalDetails: d.additionalDetails || {},
+        fromOtherChart:    d.fromOtherChart    || false,
       }
     };
   });
