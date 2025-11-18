@@ -451,6 +451,21 @@ proposalData: {
       },
       subscriptionType: { type: String },
       
+       // Pending subscription reactivation / renewal request
+      pendingSubscriptionRequest: {
+        action: { type: String, enum: ["reactivate", "renew"] },
+        status: {
+          type: String,
+          enum: ["pending", "approved", "rejected"],
+          default: "pending"
+        },
+        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        requestedAt: { type: Date },
+        decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        decidedAt: { type: Date },
+        note: { type: String }
+      },
+
       // Access Control
       isActive: { type: Boolean, default: true },
       suspensionReason: { type: String },

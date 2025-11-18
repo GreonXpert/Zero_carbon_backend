@@ -3007,66 +3007,212 @@ const manageSubscription = async (req, res) => {
   try {
     const { clientId } = req.params;
     const { action, reason, extensionDays } = req.body;
-    
-    // Check permissions
+
+    // 1) Basic permission check
     if (!["super_admin", "consultant_admin"].includes(req.user.userType)) {
-      return res.status(403).json({ 
-        message: "Only Super Admin and Consultant Admin can manage subscriptions" 
+      return res.status(403).json({
+        message: "Only Super Admin and Consultant Admin can manage subscriptions"
       });
     }
-    
+
+    // 2) Fetch client
     const client = await Client.findOne({ clientId });
-    const previousStatus = client.accountDetails.subscriptionStatus;
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
-    
+
     if (client.stage !== "active") {
-      return res.status(400).json({ 
-        message: "Client is not in active stage" 
+      return res.status(400).json({
+        message: "Client is not in active stage"
       });
     }
-    
+
+    const previousStatus = client.accountDetails.subscriptionStatus;
+
+    // 3) Validate action
+    const allowedActions = ["suspend", "reactivate", "extend", "renew"];
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({
+        message: "Invalid action. Use: suspend, reactivate, extend, or renew"
+      });
+    }
+
+    // 4) NEW: If Consultant Admin is trying to re-activate / renew an EXPIRED subscription
+    if (
+      req.user.userType === "consultant_admin" &&
+      client.accountDetails.subscriptionStatus === "expired" &&
+      (action === "reactivate" || action === "renew")
+    ) {
+      const pending = client.accountDetails.pendingSubscriptionRequest;
+
+      // Prevent duplicate requests
+      if (pending && pending.status === "pending") {
+        return res.status(400).json({
+          message: "A subscription reactivation/renewal request is already pending with the Super Admin",
+          subscriptionStatus: client.accountDetails.subscriptionStatus,
+          pendingRequest: pending
+        });
+      }
+
+      // Create / overwrite pending request
+      client.accountDetails.pendingSubscriptionRequest = {
+        action,
+        status: "pending",
+        requestedBy: req.user._id,
+        requestedAt: new Date(),
+        note: reason || ""
+      };
+
+      // Add to timeline
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action:
+          action === "reactivate"
+            ? "Subscription reactivation requested"
+            : "Subscription renewal requested",
+        performedBy: req.user.id,
+        notes: reason || "Request sent to Super Admin for approval"
+      });
+
+      await client.save();
+
+      // Notify all Super Admins
+      try {
+        const superAdmins = await User.find({
+          userType: "super_admin",
+          isActive: true
+        }).select("_id email userName");
+
+        for (const sa of superAdmins) {
+          try {
+            const notif = new Notification({
+              title:
+                action === "reactivate"
+                  ? `Subscription Reactivation Request – ${client.clientId}`
+                  : `Subscription Renewal Request – ${client.clientId}`,
+              message: `
+${req.user.userName} (${req.user.userType}) has requested to ${action === "reactivate" ? "reactivate" : "renew"} the subscription for client ${client.clientId} (${client.leadInfo?.companyName || "Unknown Company"}).
+Reason: ${reason || "Not provided."}
+Current status: ${client.accountDetails.subscriptionStatus}.
+              `.trim(),
+              priority: "high",
+              createdBy: req.user.id,
+              creatorType: req.user.userType,
+              targetUsers: [sa._id],
+              targetClients: [client.clientId],
+              status: "published",
+              publishedAt: new Date(),
+              isSystemNotification: true,
+              systemAction: "subscription_reactivation_request",
+              relatedEntity: {
+                type: "client",
+                id: client._id
+              }
+            });
+
+            await notif.save();
+
+            if (global.io && global.broadcastNotification) {
+              try {
+                await global.broadcastNotification(notif);
+              } catch (broadcastErr) {
+                console.error(
+                  "Warning: could not broadcast subscription reactivation notification:",
+                  broadcastErr
+                );
+              }
+            }
+
+            // Optional: email to super admin (safe-guarded)
+            if (typeof sendMail === "function" && sa.email) {
+              const emailSubject =
+                action === "reactivate"
+                  ? `ZeroCarbon – Subscription Reactivation Request: ${client.clientId}`
+                  : `ZeroCarbon – Subscription Renewal Request: ${client.clientId}`;
+              const emailMessage = `
+Dear ${sa.userName || "Super Admin"},
+
+${req.user.userName} (${req.user.userType}) has requested to ${action === "reactivate" ? "reactivate" : "renew"} the subscription for client ${client.clientId} (${client.leadInfo?.companyName || "Unknown Company"}).
+
+Reason: ${reason || "Not provided."}
+Current status: ${client.accountDetails.subscriptionStatus}.
+
+Please review this request in ZeroCarbon and approve or reject it.
+
+Best regards,
+ZeroCarbon System
+              `.trim();
+
+              await sendMail(sa.email, emailSubject, emailMessage);
+            }
+          } catch (innerErr) {
+            console.error(
+              "Warning: could not create or send subscription request notification/email:",
+              innerErr
+            );
+          }
+        }
+      } catch (notifErr) {
+        console.error("Warning: could not fetch super admins for subscription request:", notifErr);
+      }
+
+      return res.status(202).json({
+        message:
+          "Subscription request has been sent to Super Admin for approval. The client will be activated only after approval.",
+        subscriptionStatus: client.accountDetails.subscriptionStatus,
+        pendingRequest: client.accountDetails.pendingSubscriptionRequest
+      });
+    }
+
+    // 5) Existing logic for Super Admin (and for non-expired Consultant Admin actions)
     switch (action) {
-      case "suspend":
+      case "suspend": {
         client.accountDetails.subscriptionStatus = "suspended";
         client.accountDetails.isActive = false;
-        client.accountDetails.suspensionReason = reason;
+        client.accountDetails.suspensionReason = reason || "Suspended by admin";
         client.accountDetails.suspendedBy = req.user.id;
         client.accountDetails.suspendedAt = new Date();
-        
+
         // Deactivate all client users
         await User.updateMany(
           { clientId: client.clientId },
           { isActive: false }
         );
-        
+
         client.timeline.push({
           stage: "active",
           status: "suspended",
           action: "Subscription suspended",
           performedBy: req.user.id,
-          notes: reason
+          notes: reason || "Subscription suspended"
         });
-        
         break;
-        
-      case "reactivate":
+      }
+
+      case "reactivate": {
         client.accountDetails.subscriptionStatus = "active";
         client.accountDetails.isActive = true;
-        client.accountDetails.suspensionReason = null;
-        client.accountDetails.suspendedBy = null;
-        client.accountDetails.suspendedAt = null;
-        
-        // Reactivate client admin only
-        await User.updateOne(
-          { 
-            _id: client.accountDetails.clientAdminId,
-            userType: "client_admin"
-          },
+        client.accountDetails.suspensionReason = undefined;
+        client.accountDetails.suspendedBy = undefined;
+        client.accountDetails.suspendedAt = undefined;
+
+        // Reactivate all client users
+        await User.updateMany(
+          { clientId: client.clientId },
           { isActive: true }
         );
-        
+
+        // If there was a pending subscription request, mark it as approved
+        if (
+          client.accountDetails.pendingSubscriptionRequest &&
+          client.accountDetails.pendingSubscriptionRequest.status === "pending"
+        ) {
+          client.accountDetails.pendingSubscriptionRequest.status = "approved";
+          client.accountDetails.pendingSubscriptionRequest.decidedBy = req.user._id;
+          client.accountDetails.pendingSubscriptionRequest.decidedAt = new Date();
+        }
+
         client.timeline.push({
           stage: "active",
           status: "active",
@@ -3074,31 +3220,52 @@ const manageSubscription = async (req, res) => {
           performedBy: req.user.id,
           notes: "Account reactivated"
         });
-        
         break;
-        
-      case "extend":
-        const currentEndDate = moment(client.accountDetails.subscriptionEndDate);
-        const newEndDate = currentEndDate.add(extensionDays || 30, 'days');
-        
+      }
+
+      case "extend": {
+        const currentEndDate = client.accountDetails.subscriptionEndDate
+          ? moment(client.accountDetails.subscriptionEndDate)
+          : moment();
+        const daysToAdd = Number(extensionDays) || 30;
+        const newEndDate = currentEndDate.add(daysToAdd, "days");
+
         client.accountDetails.subscriptionEndDate = newEndDate.toDate();
-        
+
         client.timeline.push({
           stage: "active",
           status: client.accountDetails.subscriptionStatus,
           action: "Subscription extended",
           performedBy: req.user.id,
-          notes: `Extended by ${extensionDays || 30} days`
+          notes: `Extended by ${daysToAdd} days`
         });
-        
         break;
-        
-      case "renew":
+      }
+
+      case "renew": {
         client.accountDetails.subscriptionStartDate = new Date();
-        client.accountDetails.subscriptionEndDate = moment().add(1, 'year').toDate();
+        client.accountDetails.subscriptionEndDate = moment()
+          .add(1, "year")
+          .toDate();
         client.accountDetails.subscriptionStatus = "active";
         client.accountDetails.isActive = true;
-        
+
+        // Reactivate all client users (in case they were inactive)
+        await User.updateMany(
+          { clientId: client.clientId },
+          { isActive: true }
+        );
+
+        // If there was a pending subscription request, mark it as approved
+        if (
+          client.accountDetails.pendingSubscriptionRequest &&
+          client.accountDetails.pendingSubscriptionRequest.status === "pending"
+        ) {
+          client.accountDetails.pendingSubscriptionRequest.status = "approved";
+          client.accountDetails.pendingSubscriptionRequest.decidedBy = req.user._id;
+          client.accountDetails.pendingSubscriptionRequest.decidedAt = new Date();
+        }
+
         client.timeline.push({
           stage: "active",
           status: "active",
@@ -3106,50 +3273,49 @@ const manageSubscription = async (req, res) => {
           performedBy: req.user.id,
           notes: "Renewed for 1 year"
         });
-        
         break;
-        
+      }
+
       default:
-        return res.status(400).json({ 
-          message: "Invalid action. Use: suspend, reactivate, extend, or renew" 
+        return res.status(400).json({
+          message: "Invalid action. Use: suspend, reactivate, extend, or renew"
         });
     }
-    
+
+    // 6) Save & emit updates
     await client.save();
 
-    // ADD THIS: Emit real-time updates
-    await emitClientListUpdate(client, 'updated', req.user.id);
+    // Emit for client list dashboards
+    if (typeof emitClientListUpdate === "function") {
+      await emitClientListUpdate(client, "subscription_changed", req.user.id);
+    }
 
-    // ADD THIS: Targeted update for users viewing clients by subscription status
-    await emitTargetedClientUpdate(
-        client,
-        'subscription_changed',
-        req.user.id,
-        {
-            stage: 'active',
-            subscriptionStatus: client.accountDetails.subscriptionStatus,
-            previousStatus: previousStatus
-        }
-    );
+    // Emit for pages filtered by subscription status
+    if (typeof emitTargetedClientUpdate === "function") {
+      await emitTargetedClientUpdate(client, "subscription_changed", req.user.id, {
+        stage: client.stage,
+        subscriptionStatus: client.accountDetails.subscriptionStatus,
+        previousStatus
+      });
+    }
 
-
-    res.status(200).json({
-      message: `Subscription ${action} successful`,
-      subscription: {
-        status: client.accountDetails.subscriptionStatus,
-        endDate: client.accountDetails.subscriptionEndDate,
-        isActive: client.accountDetails.isActive
-      }
+    return res.status(200).json({
+      message: "Subscription updated successfully",
+      subscriptionStatus: client.accountDetails.subscriptionStatus,
+      subscriptionStartDate: client.accountDetails.subscriptionStartDate,
+      subscriptionEndDate: client.accountDetails.subscriptionEndDate,
+      accountDetails: client.accountDetails
     });
-    
   } catch (error) {
     console.error("Manage subscription error:", error);
-    res.status(500).json({ 
-      message: "Failed to manage subscription", 
-      error: error.message 
+    return res.status(500).json({
+      message: "Failed to manage subscription",
+      error: error.message
     });
   }
 };
+
+
 
 
 

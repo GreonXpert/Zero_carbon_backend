@@ -262,7 +262,7 @@ case 'Downstream Leased Assets': {
         break;
 
       case 'Investments':
-        pd.equitySharePercentage = getValue(['equitySharePercentage', 'equity_share_percentage']);
+        // pd.equitySharePercentage = getValue(['equitySharePercentage', 'equity_share_percentage']);
         // Tier 1
         pd.investeeRevenue = getValue(['investeeRevenue', 'investee_revenue']);
         // Tier 2 Case A
