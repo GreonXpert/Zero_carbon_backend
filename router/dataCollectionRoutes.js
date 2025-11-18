@@ -20,6 +20,10 @@ const {
   getCurrentCumulative
 } = require('../controllers/dataCollectionController');
 
+const {
+  getDataCompletionStats,
+} = require('../controllers/DataCollection/dataCompletionController');
+
 // Configure multer for CSV uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -104,6 +108,15 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect
 // Get Collection Status
 // GET /api/data-collection/clients/:clientId/collection-status
 router.get('/clients/:clientId/collection-status', getCollectionStatus);
+
+
+// Data completion statistics for emission (Flowchart + ProcessFlowchart)
+router.get(
+  '/clients/:clientId/data-completion',
+  auth, // or whatever auth you use
+  getDataCompletionStats
+);
+
 
 // ============== Public IoT Endpoint (No Auth) ==============
 // This endpoint is for IoT devices that may not support complex authentication

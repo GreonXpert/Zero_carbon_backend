@@ -16,6 +16,12 @@ const {
   updateManualNetReductionEntry
 } = require('../../controllers/Reduction/netReductionController');
 
+// NEW: net-reduction data completion / frequency stats
+const {
+  getNetReductionCompletionStats
+} = require('../../controllers/DataCollection/dataCompletionController');
+
+
 router.use(auth);
 
 // :calculationMethodology must be 'methodology1' (methodology2 later)
@@ -25,6 +31,15 @@ router.post('/:clientId/:projectId/:calculationMethodology/iot',    saveIotNetRe
 router.post('/:clientId/:projectId/:calculationMethodology/csv',    upload.single('file'), uploadCsvNetReduction);
 
 router.get('/:clientId/:projectId/:calculationMethodology/stats',   getNetReductionStats);
+
+
+// ---------------------------------------------------
+// Net Reduction data completion (frequency-based) stats
+// GET /api/net-reduction/:clientId/data-completion
+// ---------------------------------------------------
+router.get('/:clientId/data-completion',  getNetReductionCompletionStats);
+
+
 
 router.get(
   '/',
