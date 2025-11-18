@@ -143,11 +143,21 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
         pd.tdLossFactor = getValue(['tdLossFactor', 'td_loss_factor']);
         break;
 
-      case 'Upstream Transport and Distribution':
-        pd.transportationSpend = getValue(['transportationSpend', 'transportation_spend']); // Tier 1
-        pd.allocation = getValue(['allocation', 'weight']); // Tier 2
-        pd.distance = getValue(['distance', 'km']); // Tier 2
-        break;
+      case 'Upstream Transport and Distribution':{
+      const spend = getValue([
+        'transportationSpend', 'transportation_spend',
+        'transportSpend', 'transport_Spend', 'spendTransport'
+      ]);
+
+      // expose under BOTH keys so whatever the calculator expects will be present
+      pd.transportationSpend = spend; // canonical name used in formulas
+      pd.transportSpend = spend;
+
+      pd.allocation = getValue(['allocation', 'weight']);           // Tier 2
+      pd.distance   = getValue(['distance', 'km']);                 // Tier 2
+      break;
+    }
+
 
       case 'Waste Generated in Operation':
         pd.wasteMass = getValue(['wasteMass', 'mass_waste']);
@@ -206,12 +216,20 @@ case 'Downstream Leased Assets': {
 }
 
 
-      case 'Downstream Transport and Distribution':
-        pd.transportSpend = getValue(['transportSpend', 'transport_Spend', 'spendTransport']); // Tier 1
-        pd.allocation = getValue(['allocation', 'transportMass']); // Tier 2
-        pd.distance = getValue(['distance', 'transportDistance']); // Tier 2
-        break;
+     case 'Downstream Transport and Distribution': {
+      const spend = getValue([
+        'transportSpend', 'transport_Spend', 'spendTransport',
+        'transportationSpend', 'transportation_spend'
+      ]);
 
+      // again expose under BOTH keys
+      pd.transportSpend        = spend; // canonical for downstream Tier 1
+      pd.transportationSpend   = spend;
+
+      pd.allocation = getValue(['allocation', 'transportMass', 'weight']);      // Tier 2
+      pd.distance   = getValue(['distance', 'transportDistance', 'km']);        // Tier 2
+      break;
+    }
       case 'Processing of Sold Products':
         pd.productQuantity = getValue(['productQuantity', 'product_quantity']);
         pd.customerType = getValue(['customerType', 'customer_type'], ''); // Tier 2
@@ -1029,12 +1047,12 @@ const saveIoTData = async (req, res) => {
       return res.status(400).json({ message: 'Invalid IoT scope configuration' });
     }
 
-    // ---- GATE: refuse API data when inactive ----
+    // ---- GATE: refuse IoT data when inactive ----
     const cfg = await DataCollectionConfig.findOne({ clientId, nodeId, scopeIdentifier }).lean();
-    const apiGateActive = (cfg?.connectionDetails?.isActive ?? scopeConfig.apiStatus) === true;
-    if (!apiGateActive) {
+    const iotGateActive = (cfg?.connectionDetails?.isActive ?? scopeConfig.iotStatus) === true;
+    if (!iotGateActive) {
       return res.status(409).json({
-        message: 'API connection is disabled. Data not accepted.',
+        message: 'iotStatus connection is disabled. Data not accepted.',
         accepted: false,
         reason: 'connection_disabled',
         scopeIdentifier
@@ -1085,7 +1103,7 @@ const saveIoTData = async (req, res) => {
       emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
       sourceDetails: {
         iotDeviceId: scopeConfig.iotDeviceId,
-        uploadedBy: req.user?._id, // Set to optional chaining
+        uploadedBy: req.user?._id, // optional chaining
         dataSource: 'IOT'
       },
       isEditable: false,
@@ -1103,7 +1121,7 @@ const saveIoTData = async (req, res) => {
         $setOnInsert: {
           scopeType: scopeConfig.scopeType,
           inputType: 'IOT',
-          createdBy: req.user?._id // Set to optional chaining
+          createdBy: req.user?._id // optional chaining
         }
       },
       { upsert: true, new: true }
@@ -1113,7 +1131,7 @@ const saveIoTData = async (req, res) => {
 
     // 10) Prepare calculated emissions for response
     const { incoming: inMap, cumulative: cumMap, metadata } = entry.calculatedEmissions || {};
-    const mapToObject = m => m instanceof Map ? Object.fromEntries(m) : (m || {});
+    const mapToObject = m => (m instanceof Map ? Object.fromEntries(m) : (m || {}));
 
     // 11) Emit a real-time update
     emitDataUpdate('iot-data-saved', {
@@ -1134,13 +1152,12 @@ const saveIoTData = async (req, res) => {
       }
     });
 
-      // 🔁 NEW: push updated data-completion stats for this client
+    // 🔁 push updated data-completion stats for this client
     if (global.broadcastDataCompletionUpdate) {
       global.broadcastDataCompletionUpdate(clientId);
     }
 
-
-    // 12) Return the same shape as your API endpoint
+    // 12) Response
     res.status(201).json({
       message: 'IoT data saved successfully',
       dataId: entry._id,
@@ -1163,6 +1180,7 @@ const saveIoTData = async (req, res) => {
     });
   }
 };
+
 
 
 
