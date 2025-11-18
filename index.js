@@ -57,6 +57,12 @@ const transportFlowRouter = require('./router/transportFlowR');
 // Import models for real-time features
 const User = require('./models/User');
 const Notification = require('./models/Notification');
+const {
+  setSocketIO,
+  broadcastDataCompletionUpdate,
+  broadcastNetReductionCompletionUpdate
+} = require('./controllers/DataCollection/dataCompletionController');
+const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
 
 dotenv.config();
 
@@ -128,6 +134,7 @@ calculationSummaryController.setSocketIO(io);
 netReductionController.setSocketIO(io);
 netReductionSummaryController.setSocketIO(io);
 sbtiController.setSocketIO(io);
+dataCompletionController.setSocketIO(io);
 
 
 // 🔐 Socket.IO Authentication Middleware
@@ -746,6 +753,72 @@ io.on('connection', (socket) => {
         console.log(`📡 Socket ${socket.id} left rooms for client: ${clientId}`);
     });
 
+        // 🆕 Subscribe to data completion updates for a client
+    socket.on('subscribe-to-data-completion', async (clientId) => {
+        try {
+            const effectiveClientId = clientId || socket.clientId;
+            if (!effectiveClientId) {
+                return socket.emit('data-completion-error', {
+                    message: 'clientId is required to subscribe to data completion stats'
+                });
+            }
+
+            const roomName = `data-completion-${effectiveClientId}`;
+            socket.join(roomName);
+            console.log(`📊 Socket ${socket.id} joined data completion room: ${roomName}`);
+
+            // Send initial snapshot immediately
+            const stats =
+                await dataCompletionController.calculateDataCompletionStatsForClient(
+                    effectiveClientId
+                );
+
+            socket.emit('data-completion-update', {
+                clientId: effectiveClientId,
+                stats,
+                initial: true,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('Error in subscribe-to-data-completion:', error);
+            socket.emit('data-completion-error', {
+                message: 'Failed to subscribe to data completion',
+                error: error.message
+            });
+        }
+    });
+
+    // 🆕 One-time request for latest data completion stats
+    socket.on('request-data-completion', async (clientId) => {
+        try {
+            const effectiveClientId = clientId || socket.clientId;
+            if (!effectiveClientId) {
+                return socket.emit('data-completion-error', {
+                    message: 'clientId is required to request data completion stats'
+                });
+            }
+
+            const stats =
+                await dataCompletionController.calculateDataCompletionStatsForClient(
+                    effectiveClientId
+                );
+
+            socket.emit('data-completion-update', {
+                clientId: effectiveClientId,
+                stats,
+                initial: false,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('Error in request-data-completion:', error);
+            socket.emit('data-completion-error', {
+                message: 'Failed to get data completion stats',
+                error: error.message
+            });
+        }
+    });
+
+
     // 🔌 Handle disconnect
     socket.on('disconnect', () => {
         console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
@@ -930,7 +1003,12 @@ const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
 global.broadcastNotification = broadcastNotification;
 global.broadcastDashboardUpdate = broadcastDashboardUpdate;
 global.getUnreadCountForUser = getUnreadCountForUser;
-global.getTargetUsersForNotification = getTargetUsersForNotification;
+global.getTargetUsersForNotification = getTargetUsersForNotification
+// For DataEntry / emissions
+global.broadcastDataCompletionUpdate = broadcastDataCompletionUpdate;
+// For NetReductionEntry / reduction projects
+global.broadcastNetReductionCompletionUpdate = broadcastNetReductionCompletionUpdate;
+
 
 // 🆕 Periodic summary health check and updates
 setInterval(async () => {

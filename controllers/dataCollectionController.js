@@ -957,6 +957,14 @@ const saveAPIData = async (req, res) => {
         metadata: metadata || {}
       }
     });
+
+    
+    // 🔁 NEW: push updated data-completion stats for this client
+    if (global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(clientId);
+    }
+
+
     res.status(201).json({
       message: 'API data saved successfully',
       dataId: entry._id,
@@ -1125,6 +1133,12 @@ const saveIoTData = async (req, res) => {
         metadata: metadata || {}
       }
     });
+
+      // 🔁 NEW: push updated data-completion stats for this client
+    if (global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(clientId);
+    }
+
 
     // 12) Return the same shape as your API endpoint
     res.status(201).json({
@@ -1430,6 +1444,11 @@ for (let i = 0; i < rows.length; i++) {
     errors.push({ index: i, error: err.message });
   }
 }
+    // 🔁 NEW: only broadcast if we actually saved something
+    if (saved.length > 0 && global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(clientId);
+    }
+
 
 const ok = errors.length === 0;
 return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
@@ -1524,6 +1543,10 @@ for (let i = 0; i < rows.length; i++) {
     errors.push({ row: i + 1, error: err.message });
   }
 }
+  // 🔁 NEW: broadcast data-completion if any rows were saved
+    if (saved.length > 0 && global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(clientId);
+    }
 
 const ok = errors.length === 0;
 return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
@@ -2329,6 +2352,11 @@ const editManualData = async (req, res) => {
       dataValues: Object.fromEntries(entry.dataValues)
     });
 
+       // 🔁 NEW: broadcast updated completion stats for this client
+    if (global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(entry.clientId);
+    }
+
     res.status(200).json({
       message: 'Data entry updated successfully',
       dataId: entry._id
@@ -2396,6 +2424,12 @@ const deleteManualData = async (req, res) => {
       scopeIdentifier,
       dataId: _id,
     });
+
+        // 🔁 NEW: broadcast data-completion stats after delete
+    if (global.broadcastDataCompletionUpdate) {
+      global.broadcastDataCompletionUpdate(clientId);
+    }
+
 
     res.status(200).json({
       message: 'Data entry deleted successfully. Summaries have been updated.'

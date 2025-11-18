@@ -484,6 +484,12 @@ fresh.forEach(entry => {
   });
 });
 
+// After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
+
 // Respond with fresh docs
 return res.status(201).json({
   success: true,
@@ -592,6 +598,11 @@ const payload = fresh.map(e => {
     lowNetReduction: e.lowNetReduction
   };
 });
+// After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
 
 return res.status(201).json({
   success: true,
@@ -649,7 +660,11 @@ return res.status(201).json({
           cumulativeNetReduction: entry.cumulativeNetReduction,
           highNetReduction: entry.highNetReduction,
           lowNetReduction: entry.lowNetReduction
-        });
+        });// After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
         return res.status(201).json({ success: true, message: 'Net reduction saved (API, m1)', data: entry });
       }
 
@@ -688,6 +703,10 @@ return res.status(201).json({
           lowNetReduction: entry.lowNetReduction
         });
         
+// After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
 
         return res.status(201).json({
     success: true,
@@ -757,6 +776,12 @@ return res.status(201).json({
           lowNetReduction: entry.lowNetReduction
         });
 
+        // After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
+
         return res.status(201).json({ success: true, message: 'Net reduction saved (IOT, m1)', data: entry });
       }
 
@@ -791,6 +816,12 @@ const { netInFormula, LE, finalNet } =
               highNetReduction: entry.highNetReduction,
               lowNetReduction: entry.lowNetReduction
             });
+
+            // After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
               
               return res.status(201).json({
           success: true,
@@ -940,6 +971,12 @@ const { netInFormula, LE, finalNet } =
           lowNetReduction: saved[saved.length-1].lowNetReduction
         } : null
       });
+
+      // After successful NetReductionEntry save and emitNR(...)
+if (global.broadcastNetReductionCompletionUpdate) {
+  global.broadcastNetReductionCompletionUpdate(clientId);
+}
+
 
       return res.status(201).json({
     success: true,
