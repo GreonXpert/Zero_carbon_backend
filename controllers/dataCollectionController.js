@@ -2577,6 +2577,14 @@ const flowchart = activeChart.chart;
 };
 
 
+// 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)
+const formatDateToYMD = (d) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 // 🔍 Helper: Build MongoDB filter object for DataEntry list
 const buildDataEntryFilters = (req) => {
   const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -2613,46 +2621,32 @@ const buildDataEntryFilters = (req) => {
     period // e.g. today, last_7_days, this_month
   } = req.query;
 
-  // Simple equality filters
-  if (inputType) {
-    // allow comma separated values: manual,API
-    const values = inputType.split(',').map(v => v.trim());
-    filter.inputType = values.length > 1 ? { $in: values } : values[0];
-  }
+  // ---------- SIMPLE EQUALITY / LIST FILTERS ----------
 
-  if (scopeType) {
-    const values = scopeType.split(',').map(v => v.trim());
-    filter.scopeType = values.length > 1 ? { $in: values } : values[0];
-  }
+  const buildListFilter = (value) => {
+    if (!value) return undefined;
+    const values = value.split(',').map(v => v.trim()).filter(Boolean);
+    return values.length > 1 ? { $in: values } : values[0];
+  };
 
-  if (nodeType) {
-    const values = nodeType.split(',').map(v => v.trim());
-    filter.nodeType = values.length > 1 ? { $in: values } : values[0];
-  }
+  const inputTypeFilter        = buildListFilter(inputType);
+  const scopeTypeFilter        = buildListFilter(scopeType);
+  const nodeTypeFilter         = buildListFilter(nodeType);
+  const emissionFactorFilter   = buildListFilter(emissionFactor);
+  const approvalStatusFilter   = buildListFilter(approvalStatus);
+  const validationStatusFilter = buildListFilter(validationStatus);
+  const processingStatusFilter = buildListFilter(processingStatus);
 
-  if (emissionFactor) {
-    const values = emissionFactor.split(',').map(v => v.trim());
-    filter.emissionFactor = values.length > 1 ? { $in: values } : values[0];
-  }
-
-  if (approvalStatus) {
-    const values = approvalStatus.split(',').map(v => v.trim());
-    filter.approvalStatus = values.length > 1 ? { $in: values } : values[0];
-  }
-
-  if (validationStatus) {
-    const values = validationStatus.split(',').map(v => v.trim());
-    filter.validationStatus = values.length > 1 ? { $in: values } : values[0];
-  }
-
-  if (processingStatus) {
-    const values = processingStatus.split(',').map(v => v.trim());
-    filter.processingStatus = values.length > 1 ? { $in: values } : values[0];
-  }
+  if (inputTypeFilter)        filter.inputType        = inputTypeFilter;
+  if (scopeTypeFilter)        filter.scopeType        = scopeTypeFilter;
+  if (nodeTypeFilter)         filter.nodeType         = nodeTypeFilter;
+  if (emissionFactorFilter)   filter.emissionFactor   = emissionFactorFilter;
+  if (approvalStatusFilter)   filter.approvalStatus   = approvalStatusFilter;
+  if (validationStatusFilter) filter.validationStatus = validationStatusFilter;
+  if (processingStatusFilter) filter.processingStatus = processingStatusFilter;
 
   if (typeof isSummary !== 'undefined') {
-    // isSummary=true or isSummary=false
-    if (isSummary === 'true') filter.isSummary = true;
+    if (isSummary === 'true')  filter.isSummary = true;
     if (isSummary === 'false') filter.isSummary = false;
   }
 
@@ -2664,51 +2658,64 @@ const buildDataEntryFilters = (req) => {
     }
   }
 
-  // 📅 Date / Time range filter using timestamp field
-  // UI will send: startDate=YYYY-MM-DD, endDate=YYYY-MM-DD
-  // Optionally: startTime=HH:mm:ss, endTime=HH:mm:ss
-  const timestampRange = {};
+  // ---------- DATE / TIME FILTERS (BASED ON `date` FIELD) ----------
 
-  // Period shortcuts (if you want quick filters like today, last_7_days, this_month)
-  if (period) {
+  // IMPORTANT CHANGE:
+  // Previously: we built a range on `timestamp`.
+  // Now: we build the range on `date` (string 'YYYY-MM-DD' saved from user).
+
+  const dateRange = {};
+
+  // 1) Period shortcuts only when explicit start/endDate are NOT provided
+  if (period && !startDate && !endDate) {
     const now = new Date();
-    let from, to;
+    let fromDate, toDate;
 
     if (period === 'today') {
-      from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      to   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      toDate   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     } else if (period === 'last_7_days') {
-      to   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-      from = new Date(to);
-      from.setDate(from.getDate() - 6); // last 7 days including today
-      from.setHours(0, 0, 0, 0);
+      toDate   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - 6); // last 7 days including today
     } else if (period === 'this_month') {
-      from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-      to   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      toDate   = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     }
 
-    if (from && to) {
-      timestampRange.$gte = from;
-      timestampRange.$lte = to;
+    if (fromDate && toDate) {
+      const fromStr = formatDateToYMD(fromDate);
+      const toStr   = formatDateToYMD(toDate);
+      dateRange.$gte = fromStr;
+      dateRange.$lte = toStr;
     }
   }
 
-  // Explicit startDate / endDate override period if provided
+  // 2) Explicit startDate / endDate override period if provided
   if (startDate) {
-    const start = new Date(`${startDate}T${startTime || '00:00:00'}`);
-    timestampRange.$gte = start;
+    dateRange.$gte = startDate; // 'YYYY-MM-DD' string
   }
 
   if (endDate) {
-    const end = new Date(`${endDate}T${endTime || '23:59:59'}`);
-    timestampRange.$lte = end;
+    dateRange.$lte = endDate;   // 'YYYY-MM-DD' string
   }
 
-  if (Object.keys(timestampRange).length > 0) {
-    filter.timestamp = timestampRange;
+  if (Object.keys(dateRange).length > 0) {
+    // filter by `date` field (NOT timestamp)
+    filter.date = dateRange;
   }
 
-  // 🔎 Text search across some fields
+  // (Optional) very simple same-day time range filter if you want:
+  // only makes sense when startDate === endDate.
+  if ((startTime || endTime) && startDate && endDate && startDate === endDate) {
+    const timeRange = {};
+    if (startTime) timeRange.$gte = startTime; // 'HH:mm:ss'
+    if (endTime)   timeRange.$lte = endTime;
+    filter.time = timeRange;
+  }
+
+  // ---------- TEXT SEARCH ----------
+
   if (search && search.trim()) {
     const regex = new RegExp(search.trim(), 'i');
     filter.$or = [
@@ -2751,19 +2758,15 @@ const buildDataEntrySort = (req) => {
 
 
 // Get Data Entries with enhanced authorization and strict client isolation
-// 📦 Controller: Get Data Entries with filtering + sorting + pagination
 const getDataEntries = async (req, res) => {
   try {
-    // 1) Build filters & sort
     const filters = buildDataEntryFilters(req);
     const sort = buildDataEntrySort(req);
 
-    // 2) Pagination
     const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const skip  = (page - 1) * limit;
 
-    // 3) Query DB
     const [entries, total] = await Promise.all([
       DataEntry.find(filters)
         .sort(sort)
