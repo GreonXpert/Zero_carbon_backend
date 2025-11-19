@@ -2576,220 +2576,230 @@ const flowchart = activeChart.chart;
   }
 };
 
+
+// 🔍 Helper: Build MongoDB filter object for DataEntry list
+const buildDataEntryFilters = (req) => {
+  const { clientId, nodeId, scopeIdentifier } = req.params;
+
+  // Basic required filter: always by clientId
+  const filter = { clientId };
+
+  // Optional path params
+  if (nodeId) {
+    filter.nodeId = nodeId;
+  }
+  if (scopeIdentifier) {
+    filter.scopeIdentifier = scopeIdentifier;
+  }
+
+  // Query params for filtering
+  const {
+    inputType,
+    scopeType,
+    nodeType,
+    emissionFactor,
+    approvalStatus,
+    validationStatus,
+    processingStatus,
+    isSummary,
+    tags,
+    search,
+
+    // date / time filters
+    startDate,
+    endDate,
+    startTime,
+    endTime,
+    period // e.g. today, last_7_days, this_month
+  } = req.query;
+
+  // Simple equality filters
+  if (inputType) {
+    // allow comma separated values: manual,API
+    const values = inputType.split(',').map(v => v.trim());
+    filter.inputType = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (scopeType) {
+    const values = scopeType.split(',').map(v => v.trim());
+    filter.scopeType = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (nodeType) {
+    const values = nodeType.split(',').map(v => v.trim());
+    filter.nodeType = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (emissionFactor) {
+    const values = emissionFactor.split(',').map(v => v.trim());
+    filter.emissionFactor = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (approvalStatus) {
+    const values = approvalStatus.split(',').map(v => v.trim());
+    filter.approvalStatus = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (validationStatus) {
+    const values = validationStatus.split(',').map(v => v.trim());
+    filter.validationStatus = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (processingStatus) {
+    const values = processingStatus.split(',').map(v => v.trim());
+    filter.processingStatus = values.length > 1 ? { $in: values } : values[0];
+  }
+
+  if (typeof isSummary !== 'undefined') {
+    // isSummary=true or isSummary=false
+    if (isSummary === 'true') filter.isSummary = true;
+    if (isSummary === 'false') filter.isSummary = false;
+  }
+
+  // Tags filter: tags=tag1,tag2
+  if (tags) {
+    const tagArray = tags.split(',').map(t => t.trim()).filter(Boolean);
+    if (tagArray.length) {
+      filter.tags = { $in: tagArray };
+    }
+  }
+
+  // 📅 Date / Time range filter using timestamp field
+  // UI will send: startDate=YYYY-MM-DD, endDate=YYYY-MM-DD
+  // Optionally: startTime=HH:mm:ss, endTime=HH:mm:ss
+  const timestampRange = {};
+
+  // Period shortcuts (if you want quick filters like today, last_7_days, this_month)
+  if (period) {
+    const now = new Date();
+    let from, to;
+
+    if (period === 'today') {
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      to   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    } else if (period === 'last_7_days') {
+      to   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      from = new Date(to);
+      from.setDate(from.getDate() - 6); // last 7 days including today
+      from.setHours(0, 0, 0, 0);
+    } else if (period === 'this_month') {
+      from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
+      to   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    }
+
+    if (from && to) {
+      timestampRange.$gte = from;
+      timestampRange.$lte = to;
+    }
+  }
+
+  // Explicit startDate / endDate override period if provided
+  if (startDate) {
+    const start = new Date(`${startDate}T${startTime || '00:00:00'}`);
+    timestampRange.$gte = start;
+  }
+
+  if (endDate) {
+    const end = new Date(`${endDate}T${endTime || '23:59:59'}`);
+    timestampRange.$lte = end;
+  }
+
+  if (Object.keys(timestampRange).length > 0) {
+    filter.timestamp = timestampRange;
+  }
+
+  // 🔎 Text search across some fields
+  if (search && search.trim()) {
+    const regex = new RegExp(search.trim(), 'i');
+    filter.$or = [
+      { scopeIdentifier: regex },
+      { nodeId: regex },
+      { notes: regex },
+      { externalId: regex },
+      { 'sourceDetails.dataSource': regex }
+    ];
+  }
+
+  return filter;
+};
+
+// ⬇️ Helper: Build sort object
+const buildDataEntrySort = (req) => {
+  let { sortBy = 'timestamp', sortOrder = 'desc' } = req.query;
+
+  // Allowed sort fields (you can add more)
+  const allowedSortFields = [
+    'timestamp',
+    'date',
+    'time',
+    'inputType',
+    'scopeType',
+    'nodeType',
+    'approvalStatus',
+    'validationStatus',
+    'processingStatus'
+  ];
+
+  if (!allowedSortFields.includes(sortBy)) {
+    sortBy = 'timestamp';
+  }
+
+  const order = sortOrder === 'asc' ? 1 : -1;
+  return { [sortBy]: order };
+};
+
+
+
 // Get Data Entries with enhanced authorization and strict client isolation
+// 📦 Controller: Get Data Entries with filtering + sorting + pagination
 const getDataEntries = async (req, res) => {
   try {
-    const { clientId, nodeId, scopeIdentifier } = req.params;
-    const { 
-      page = 1, 
-      limit = 20, 
-      inputType, 
-      startDate, 
-      endDate, 
-      sortBy = 'timestamp', 
-      sortOrder = 'desc',
-      includeSummaries = 'false'
-    } = req.query;
-    
-    // CRITICAL: Prevent cross-client data access
-    const userClientId = req.user.clientId;
-    const userId = req.user._id || req.user.id;
-    
-    // For client-side users, enforce strict client isolation
-    if (['client_admin', 'client_employee_head', 'employee', 'auditor'].includes(req.user.userType)) {
-      if (userClientId !== clientId) {
-        return res.status(403).json({ 
-          message: 'Access denied',
-          details: 'You cannot access data from another client organization',
-          yourClient: userClientId,
-          requestedClient: clientId
-        });
-      }
-    }
-    
-    // Check permissions with full parameters
-    const hasPermission = await checkDataPermission(req.user, clientId, 'read', nodeId, scopeIdentifier);
-    if (!hasPermission) {
-      return res.status(403).json({ 
-        message: 'Permission denied',
-        details: 'You do not have access to view data entries for this client/node/scope'
-      });
-    }
-    
-    // Build base query
-    let query = { clientId };
-    
-    // Include or exclude summaries
-    if (includeSummaries === 'false') {
-      query.isSummary = { $ne: true };
-    }
-    
-    // Apply role-based filtering
-    if (req.user.userType === 'client_employee_head') {
-      // Employee heads can only see data from their assigned nodes
-      // Find scope configuration
-const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
-}
-const flowchart = activeChart.chart;
-      if (flowchart) {
-        const assignedNodeIds = flowchart.nodes
-          .filter(n => n.details.employeeHeadId?.toString() === userId.toString())
-          .map(n => n.id);
-        
-        if (nodeId) {
-          // Verify they are assigned to the requested node
-          if (!assignedNodeIds.includes(nodeId)) {
-            return res.status(403).json({ 
-              message: 'Access denied',
-              details: 'You can only access data from nodes assigned to you'
-            });
-          }
-          query.nodeId = nodeId;
-        } else {
-          // Filter to only their assigned nodes
-          if (assignedNodeIds.length > 0) {
-            query.nodeId = { $in: assignedNodeIds };
-          } else {
-            // No assigned nodes
-            return res.status(200).json({
-              data: [],
-              pagination: { page: 1, limit: parseInt(limit), total: 0, pages: 0 },
-              message: 'No nodes assigned to you'
-            });
-          }
-        }
-      }
-    } else if (req.user.userType === 'employee') {
-      // Employees can only see data from scopes they are assigned to
-      const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
-}
-const flowchart = activeChart.chart;
-      if (flowchart) {
-        const assignedScopes = [];
-        
-        // Find all scopes assigned to this employee
-        flowchart.nodes.forEach(node => {
-          node.details.scopeDetails.forEach(scope => {
-            const assignedEmployees = scope.assignedEmployees || [];
-            if (assignedEmployees.map(id => id.toString()).includes(userId.toString())) {
-              assignedScopes.push({
-                nodeId: node.id,
-                scopeIdentifier: scope.scopeIdentifier
-              });
-            }
-          });
-        });
-        
-        if (nodeId && scopeIdentifier) {
-          // Verify they are assigned to the requested scope
-          const isAssigned = assignedScopes.some(
-            s => s.nodeId === nodeId && s.scopeIdentifier === scopeIdentifier
-          );
-          if (!isAssigned) {
-            return res.status(403).json({ 
-              message: 'Access denied',
-              details: 'You can only access data from scopes assigned to you'
-            });
-          }
-          query.nodeId = nodeId;
-          query.scopeIdentifier = scopeIdentifier;
-        } else {
-          // Filter to only their assigned scopes
-          if (assignedScopes.length > 0) {
-            query.$or = assignedScopes.map(s => ({
-              nodeId: s.nodeId,
-              scopeIdentifier: s.scopeIdentifier
-            }));
-          } else {
-            // No assigned scopes
-            return res.status(200).json({
-              data: [],
-              pagination: { page: 1, limit: parseInt(limit), total: 0, pages: 0 },
-              message: 'No scopes assigned to you'
-            });
-          }
-        }
-      }
-    } else {
-      // Client admin and auditors - add nodeId/scope to query if provided
-      if (nodeId) query.nodeId = nodeId;
-      if (scopeIdentifier) query.scopeIdentifier = scopeIdentifier;
-    }
-    
-    // Add other filters
-    if (inputType) query.inputType = inputType;
-    
-    // Date filtering
-    if (startDate || endDate) {
-      query.timestamp = {};
-      if (startDate) {
-        query.timestamp.$gte = moment(startDate, 'DD:MM:YYYY').startOf('day').toDate();
-      }
-      if (endDate) {
-        query.timestamp.$lte = moment(endDate, 'DD:MM:YYYY').endOf('day').toDate();
-      }
-    }
-    
-    // Pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const [data, total] = await Promise.all([
-      DataEntry.find(query)
-        .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+    // 1) Build filters & sort
+    const filters = buildDataEntryFilters(req);
+    const sort = buildDataEntrySort(req);
+
+    // 2) Pagination
+    const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const skip  = (page - 1) * limit;
+
+    // 3) Query DB
+    const [entries, total] = await Promise.all([
+      DataEntry.find(filters)
+        .sort(sort)
         .skip(skip)
-        .limit(parseInt(limit))
-        .populate('sourceDetails.uploadedBy', 'userName')
-        .populate('lastEditedBy', 'userName')
+        .limit(limit)
         .lean(),
-      DataEntry.countDocuments(query)
+      DataEntry.countDocuments(filters)
     ]);
-    
-    // Convert Maps to objects for response
-    const formattedData = data.map(entry => ({
-      ...entry,
-      dataValues: entry.dataValues instanceof Map ? Object.fromEntries(entry.dataValues) : entry.dataValues,
-      cumulativeValues: entry.cumulativeValues instanceof Map ? Object.fromEntries(entry.cumulativeValues) : entry.cumulativeValues,
-      highData: entry.highData instanceof Map ? Object.fromEntries(entry.highData) : entry.highData,
-      lowData: entry.lowData instanceof Map ? Object.fromEntries(entry.lowData) : entry.lowData,
-      lastEnteredData: entry.lastEnteredData instanceof Map ? Object.fromEntries(entry.lastEnteredData) : entry.lastEnteredData
-    }));
-    
-    res.status(200).json({
-      data: formattedData,
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Data entries fetched successfully',
+      data: entries,
+      filtersApplied: filters,
+      sort,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit))
-      },
-      accessInfo: {
-        userType: req.user.userType,
-        clientId: req.user.clientId,
-        accessLevel: req.user.userType === 'super_admin' ? 'Full Access - All Companies' : 
-                    req.user.userType === 'client_admin' ? 'Full Client Access - Own Company Only' :
-                    req.user.userType === 'consultant_admin' ? 'Consultant Admin Access' :
-                    req.user.userType === 'consultant' ? 'Consultant Access' :
-                    req.user.userType === 'client_employee_head' ? 'Employee Head - Assigned Nodes Only' :
-                    req.user.userType === 'employee' ? 'Employee - Assigned Scopes Only' :
-                    'Limited Access',
-        restrictions: req.user.userType === 'client_employee_head' ? 'Only assigned nodes' :
-                     req.user.userType === 'employee' ? 'Only assigned scopes' :
-                     'None'
+        currentPage: page,
+        totalPages,
+        totalItems: total,
+        itemsPerPage: limit,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1
       }
     });
-    
   } catch (error) {
-    console.error('Get data entries error:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch data entries', 
-      error: error.message 
+    console.error('Error getting data entries:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get data entries',
+      error: error.message
     });
   }
 };
+
 
 // Get Collection Status with enhanced authorization and strict client isolation
 const getCollectionStatus = async (req, res) => {

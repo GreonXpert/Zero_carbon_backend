@@ -436,47 +436,56 @@ proposalData: {
 
     
     // Stage 4: Active Client
-    accountDetails: {
-      clientAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-      defaultPassword: { type: String },
-      passwordChanged: { type: Boolean, default: false },
-      
-      // Subscription Details
-      subscriptionStartDate: { type: Date },
-      subscriptionEndDate: { type: Date },
-      subscriptionStatus: {
-        type: String,
-        enum: ["active", "suspended", "expired", "grace_period"],
-        default: "active"
-      },
-      subscriptionType: { type: String },
-      
-       // Pending subscription reactivation / renewal request
-      pendingSubscriptionRequest: {
-        action: { type: String, enum: ["reactivate", "renew"] },
-        status: {
-          type: String,
-          enum: ["pending", "approved", "rejected"],
-          default: "pending"
-        },
-        requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        requestedAt: { type: Date },
-        decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        decidedAt: { type: Date },
-        note: { type: String }
-      },
+accountDetails: {
+  clientAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  defaultPassword: { type: String },
+  passwordChanged: { type: Boolean, default: false },
 
-      // Access Control
-      isActive: { type: Boolean, default: true },
-      suspensionReason: { type: String },
-      suspendedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-      suspendedAt: { type: Date },
-      
-      // Usage Metrics
-      activeUsers: { type: Number, default: 0 },
-      lastLoginDate: { type: Date },
-      dataSubmissions: { type: Number, default: 0 }
+  // Subscription Details
+  subscriptionStartDate: { type: Date },
+  subscriptionEndDate: { type: Date },
+  subscriptionStatus: {
+    type: String,
+    enum: ["active", "suspended", "expired", "grace_period"],
+    default: "active"
+  },
+  subscriptionType: { type: String },
+
+  // 🔹 Subscription workflow (consultant → consultant admin / super admin)
+  pendingSubscriptionRequest: {
+    action: {
+      type: String,
+      // 👇 make sure these include the values you send from Postman / frontend
+      enum: ["suspend", "reactivate", "renew", "extend"],
     },
+    status: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+    },
+    reason: { type: String },
+
+    // who created the request (consultant or client_admin etc.)
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    requestedAt: { type: Date },
+
+    // who approved/rejected (consultant_admin / super_admin)
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    reviewedAt: { type: Date },
+    reviewComment: { type: String },
+  },
+
+  // Access Control
+  isActive: { type: Boolean, default: true },
+  suspensionReason: { type: String },
+  suspendedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  suspendedAt: { type: Date },
+
+  // Usage Metrics
+  activeUsers: { type: Number, default: 0 },
+  lastLoginDate: { type: Date },
+  dataSubmissions: { type: Number, default: 0 },
+},
     
     // Timeline tracking
     timeline: [{
