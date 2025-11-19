@@ -18,7 +18,9 @@ const {
   getClients,
   getClientById,
   assignConsultant,
-  manageSubscription,
+   manageSubscription,
+  getPendingSubscriptionApprovals,
+  getClientsExpiringSoon,
   getDashboardMetrics,
   updateFlowchartStatus,
   updateProcessFlowchartStatus,
@@ -67,7 +69,12 @@ router.get("/:clientId/proposal-data", getClientProposalData); // Get proposal d
 router.patch("/:clientId/assign-consultant", assignConsultant); // Assign consultant (existing)
 router.patch("/:clientId/change-consultant", changeConsultant); // Change consultant (new)
 router.patch("/:clientId/remove-consultant", removeConsultant); // Remove consultant (new)
-router.patch("/:clientId/subscription", manageSubscription); // Manage subscription
+// Subscription management
+router.patch("/:clientId/subscription", manageSubscription); // Manage subscription (suspend/reactivate/renew/extend)
+
+// Subscription helper lists
+router.get("/subscription/pending-approvals", getPendingSubscriptionApprovals); // Consultant Admin: pending approvals
+router.get("/subscription/expiring-soon", getClientsExpiringSoon); // Consultant Admin: expiring within N days (default 30)
 
 // General Routes
 router.get("/", getClients); // Get all clients (filtered by permissions)

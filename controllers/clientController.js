@@ -3003,319 +3003,506 @@ const assignConsultant = async (req, res) => {
 };
 
 // Manage subscription
+// Supports actions: suspend, reactivate, renew, extend
+// - consultant: can request suspend / reactivate (creates pending request)
+// - consultant_admin / super_admin: can directly suspend/reactivate/renew/extend
+//   and also implicitly approve matching pending requests
 const manageSubscription = async (req, res) => {
   try {
     const { clientId } = req.params;
     const { action, reason, extensionDays } = req.body;
 
-    // 1) Basic permission check
-    if (!["super_admin", "consultant_admin"].includes(req.user.userType)) {
-      return res.status(403).json({
-        message: "Only Super Admin and Consultant Admin can manage subscriptions"
+    const actor = req.user;
+    const actorType = actor.userType;
+
+    // 1) Validate action
+    const allowedActions = ["suspend", "reactivate", "renew", "extend"];
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({
+        message: "Invalid action. Use: suspend, reactivate, renew, or extend",
       });
     }
 
-    // 2) Fetch client
-    const client = await Client.findOne({ clientId });
+    // 2) Load client
+    const client = await Client.findOne({
+      clientId,
+      isDeleted: { $ne: true },
+    });
+
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
 
     if (client.stage !== "active") {
       return res.status(400).json({
-        message: "Client is not in active stage"
+        message: "Subscription actions are only allowed for clients in Active stage",
       });
     }
 
-    const previousStatus = client.accountDetails.subscriptionStatus;
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const now = new Date();
+    const pending = client.accountDetails.pendingSubscriptionRequest || null;
 
-    // 3) Validate action
-    const allowedActions = ["suspend", "reactivate", "extend", "renew"];
-    if (!allowedActions.includes(action)) {
-      return res.status(400).json({
-        message: "Invalid action. Use: suspend, reactivate, extend, or renew"
-      });
-    }
+    // Helper to approve a matching pending request
+    const approveMatchingPendingRequest = () => {
+      if (!pending || pending.status !== "pending") return;
 
-    // 4) NEW: If Consultant Admin is trying to re-activate / renew an EXPIRED subscription
-    if (
-      req.user.userType === "consultant_admin" &&
-      client.accountDetails.subscriptionStatus === "expired" &&
-      (action === "reactivate" || action === "renew")
-    ) {
-      const pending = client.accountDetails.pendingSubscriptionRequest;
+      // Approve if:
+      // - admin performs same action, OR
+      // - admin performs 'renew' when consultant requested 'reactivate'
+      const isMatch =
+        pending.action === action ||
+        (action === "renew" && pending.action === "reactivate");
 
-      // Prevent duplicate requests
-      if (pending && pending.status === "pending") {
-        return res.status(400).json({
-          message: "A subscription reactivation/renewal request is already pending with the Super Admin",
-          subscriptionStatus: client.accountDetails.subscriptionStatus,
-          pendingRequest: pending
+      if (!isMatch) return;
+
+      pending.status = "approved";
+      pending.reviewedBy = actor._id;
+      pending.reviewedAt = new Date();
+      pending.reviewComment = reason || "";
+    };
+
+    // 3) Consultant FLOW – can only create requests
+    if (actorType === "consultant") {
+      if (!["suspend", "reactivate"].includes(action)) {
+        return res.status(403).json({
+          message:
+            "Consultants can only request suspension or reactivation. Renew/extend can be done by Consultant Admin.",
         });
       }
 
-      // Create / overwrite pending request
+      // Do not allow multiple pending requests
+      if (pending && pending.status === "pending") {
+        return res.status(400).json({
+          message:
+            "There is already a pending subscription request for this client.",
+          pendingRequest: pending,
+        });
+      }
+
+      // Create new pending request
       client.accountDetails.pendingSubscriptionRequest = {
         action,
         status: "pending",
-        requestedBy: req.user._id,
+        reason:
+          reason ||
+          (action === "suspend"
+            ? "Consultant requested subscription suspension"
+            : "Consultant requested subscription reactivation"),
+        requestedBy: actor._id,
         requestedAt: new Date(),
-        note: reason || ""
+        reviewedBy: undefined,
+        reviewedAt: undefined,
+        reviewComment: undefined,
       };
 
-      // Add to timeline
       client.timeline.push({
         stage: client.stage,
         status: client.status,
         action:
-          action === "reactivate"
-            ? "Subscription reactivation requested"
-            : "Subscription renewal requested",
-        performedBy: req.user.id,
-        notes: reason || "Request sent to Super Admin for approval"
+          action === "suspend"
+            ? "Subscription suspension requested"
+            : "Subscription reactivation requested",
+        performedBy: actor._id,
+        notes: reason || "",
       });
 
       await client.save();
 
-      // Notify all Super Admins
-      try {
-        const superAdmins = await User.find({
-          userType: "super_admin",
-          isActive: true
-        }).select("_id email userName");
-
-        for (const sa of superAdmins) {
-          try {
-            const notif = new Notification({
-              title:
-                action === "reactivate"
-                  ? `Subscription Reactivation Request – ${client.clientId}`
-                  : `Subscription Renewal Request – ${client.clientId}`,
-              message: `
-${req.user.userName} (${req.user.userType}) has requested to ${action === "reactivate" ? "reactivate" : "renew"} the subscription for client ${client.clientId} (${client.leadInfo?.companyName || "Unknown Company"}).
-Reason: ${reason || "Not provided."}
-Current status: ${client.accountDetails.subscriptionStatus}.
-              `.trim(),
-              priority: "high",
-              createdBy: req.user.id,
-              creatorType: req.user.userType,
-              targetUsers: [sa._id],
-              targetClients: [client.clientId],
-              status: "published",
-              publishedAt: new Date(),
-              isSystemNotification: true,
-              systemAction: "subscription_reactivation_request",
-              relatedEntity: {
-                type: "client",
-                id: client._id
-              }
-            });
-
-            await notif.save();
-
-            if (global.io && global.broadcastNotification) {
-              try {
-                await global.broadcastNotification(notif);
-              } catch (broadcastErr) {
-                console.error(
-                  "Warning: could not broadcast subscription reactivation notification:",
-                  broadcastErr
-                );
-              }
-            }
-
-            // Optional: email to super admin (safe-guarded)
-            if (typeof sendMail === "function" && sa.email) {
-              const emailSubject =
-                action === "reactivate"
-                  ? `ZeroCarbon – Subscription Reactivation Request: ${client.clientId}`
-                  : `ZeroCarbon – Subscription Renewal Request: ${client.clientId}`;
-              const emailMessage = `
-Dear ${sa.userName || "Super Admin"},
-
-${req.user.userName} (${req.user.userType}) has requested to ${action === "reactivate" ? "reactivate" : "renew"} the subscription for client ${client.clientId} (${client.leadInfo?.companyName || "Unknown Company"}).
-
-Reason: ${reason || "Not provided."}
-Current status: ${client.accountDetails.subscriptionStatus}.
-
-Please review this request in ZeroCarbon and approve or reject it.
-
-Best regards,
-ZeroCarbon System
-              `.trim();
-
-              await sendMail(sa.email, emailSubject, emailMessage);
-            }
-          } catch (innerErr) {
-            console.error(
-              "Warning: could not create or send subscription request notification/email:",
-              innerErr
-            );
-          }
-        }
-      } catch (notifErr) {
-        console.error("Warning: could not fetch super admins for subscription request:", notifErr);
-      }
-
       return res.status(202).json({
-        message:
-          "Subscription request has been sent to Super Admin for approval. The client will be activated only after approval.",
-        subscriptionStatus: client.accountDetails.subscriptionStatus,
-        pendingRequest: client.accountDetails.pendingSubscriptionRequest
+        message: `Subscription ${action} request has been sent to Consultant Admin.`,
+        pendingRequest: client.accountDetails.pendingSubscriptionRequest,
       });
     }
 
-    // 5) Existing logic for Super Admin (and for non-expired Consultant Admin actions)
+    // 4) Admin FLOW – consultant_admin / super_admin can apply actions directly
+    if (!["consultant_admin", "super_admin"].includes(actorType)) {
+      return res.status(403).json({
+        message:
+          "Only Consultant Admin and Super Admin can directly manage subscriptions.",
+      });
+    }
+
+    // For admin we apply actual state changes
     switch (action) {
       case "suspend": {
+        // Already suspended?
+        if (client.accountDetails.subscriptionStatus === "suspended") {
+          return res
+            .status(400)
+            .json({ message: "Subscription is already suspended." });
+        }
+
         client.accountDetails.subscriptionStatus = "suspended";
         client.accountDetails.isActive = false;
-        client.accountDetails.suspensionReason = reason || "Suspended by admin";
-        client.accountDetails.suspendedBy = req.user.id;
-        client.accountDetails.suspendedAt = new Date();
+        client.accountDetails.suspensionReason =
+          reason || "Suspended by admin";
+        client.accountDetails.suspendedBy = actor._id;
+        client.accountDetails.suspendedAt = now;
+        client.status = "suspended";
 
-        // Deactivate all client users
-        await User.updateMany(
-          { clientId: client.clientId },
-          { isActive: false }
-        );
+        approveMatchingPendingRequest();
 
         client.timeline.push({
-          stage: "active",
-          status: "suspended",
+          stage: client.stage,
+          status: client.status,
           action: "Subscription suspended",
-          performedBy: req.user.id,
-          notes: reason || "Subscription suspended"
+          performedBy: actor._id,
+          notes: reason || "Subscription suspended by admin",
         });
         break;
       }
 
       case "reactivate": {
+        if (
+          client.accountDetails.subscriptionStatus === "active" &&
+          client.accountDetails.isActive
+        ) {
+          return res
+            .status(400)
+            .json({ message: "Subscription is already active." });
+        }
+
+        // Reactivate without touching dates
         client.accountDetails.subscriptionStatus = "active";
         client.accountDetails.isActive = true;
         client.accountDetails.suspensionReason = undefined;
         client.accountDetails.suspendedBy = undefined;
         client.accountDetails.suspendedAt = undefined;
+        client.status = "active";
 
-        // Reactivate all client users
-        await User.updateMany(
-          { clientId: client.clientId },
-          { isActive: true }
-        );
-
-        // If there was a pending subscription request, mark it as approved
-        if (
-          client.accountDetails.pendingSubscriptionRequest &&
-          client.accountDetails.pendingSubscriptionRequest.status === "pending"
-        ) {
-          client.accountDetails.pendingSubscriptionRequest.status = "approved";
-          client.accountDetails.pendingSubscriptionRequest.decidedBy = req.user._id;
-          client.accountDetails.pendingSubscriptionRequest.decidedAt = new Date();
-        }
+        approveMatchingPendingRequest();
 
         client.timeline.push({
-          stage: "active",
-          status: "active",
+          stage: client.stage,
+          status: client.status,
           action: "Subscription reactivated",
-          performedBy: req.user.id,
-          notes: "Account reactivated"
-        });
-        break;
-      }
-
-      case "extend": {
-        const currentEndDate = client.accountDetails.subscriptionEndDate
-          ? moment(client.accountDetails.subscriptionEndDate)
-          : moment();
-        const daysToAdd = Number(extensionDays) || 30;
-        const newEndDate = currentEndDate.add(daysToAdd, "days");
-
-        client.accountDetails.subscriptionEndDate = newEndDate.toDate();
-
-        client.timeline.push({
-          stage: "active",
-          status: client.accountDetails.subscriptionStatus,
-          action: "Subscription extended",
-          performedBy: req.user.id,
-          notes: `Extended by ${daysToAdd} days`
+          performedBy: actor._id,
+          notes: reason || "Subscription reactivated by admin",
         });
         break;
       }
 
       case "renew": {
-        client.accountDetails.subscriptionStartDate = new Date();
-        client.accountDetails.subscriptionEndDate = moment()
-          .add(1, "year")
-          .toDate();
+        // Renew means: start a fresh cycle from today (or keep existing start if you prefer)
+        const days =
+          Number.isFinite(Number(extensionDays)) && Number(extensionDays) > 0
+            ? Number(extensionDays)
+            : 365; // default 1 year if not sent
+
+        const newStart = now;
+        const newEnd = new Date(now.getTime() + days * msPerDay);
+
+        client.accountDetails.subscriptionStartDate = newStart;
+        client.accountDetails.subscriptionEndDate = newEnd;
         client.accountDetails.subscriptionStatus = "active";
         client.accountDetails.isActive = true;
+        client.status = "renewed";
 
-        // Reactivate all client users (in case they were inactive)
-        await User.updateMany(
-          { clientId: client.clientId },
-          { isActive: true }
-        );
-
-        // If there was a pending subscription request, mark it as approved
-        if (
-          client.accountDetails.pendingSubscriptionRequest &&
-          client.accountDetails.pendingSubscriptionRequest.status === "pending"
-        ) {
-          client.accountDetails.pendingSubscriptionRequest.status = "approved";
-          client.accountDetails.pendingSubscriptionRequest.decidedBy = req.user._id;
-          client.accountDetails.pendingSubscriptionRequest.decidedAt = new Date();
-        }
+        approveMatchingPendingRequest(); // this will also approve a pending "reactivate" request
 
         client.timeline.push({
-          stage: "active",
-          status: "active",
+          stage: client.stage,
+          status: client.status,
           action: "Subscription renewed",
-          performedBy: req.user.id,
-          notes: "Renewed for 1 year"
+          performedBy: actor._id,
+          notes:
+            reason ||
+            `Subscription renewed for ${days} days (until ${newEnd.toISOString()})`,
+        });
+        break;
+      }
+
+      case "extend": {
+        if (!client.accountDetails.subscriptionEndDate) {
+          return res.status(400).json({
+            message:
+              "Cannot extend subscription because subscriptionEndDate is not set.",
+          });
+        }
+
+        const days = Number(extensionDays);
+        if (!Number.isFinite(days) || days <= 0) {
+          return res.status(400).json({
+            message:
+              "extensionDays must be a positive number when using action 'extend'.",
+          });
+        }
+
+        const currentEnd = client.accountDetails.subscriptionEndDate;
+        const newEnd = new Date(currentEnd.getTime() + days * msPerDay);
+
+        client.accountDetails.subscriptionEndDate = newEnd;
+
+        // If previously expired, you might want to bring it back to active
+        if (client.accountDetails.subscriptionStatus === "expired") {
+          client.accountDetails.subscriptionStatus = "active";
+          client.accountDetails.isActive = true;
+          client.status = "active";
+        }
+
+        approveMatchingPendingRequest();
+
+        client.timeline.push({
+          stage: client.stage,
+          status: client.status,
+          action: "Subscription extended",
+          performedBy: actor._id,
+          notes:
+            reason ||
+            `Subscription extended by ${days} days (until ${newEnd.toISOString()})`,
         });
         break;
       }
 
       default:
-        return res.status(400).json({
-          message: "Invalid action. Use: suspend, reactivate, extend, or renew"
-        });
+        return res.status(400).json({ message: "Unsupported action" });
     }
 
-    // 6) Save & emit updates
+    // Save all changes
     await client.save();
 
-    // Emit for client list dashboards
-    if (typeof emitClientListUpdate === "function") {
-      await emitClientListUpdate(client, "subscription_changed", req.user.id);
-    }
-
-    // Emit for pages filtered by subscription status
-    if (typeof emitTargetedClientUpdate === "function") {
-      await emitTargetedClientUpdate(client, "subscription_changed", req.user.id, {
-        stage: client.stage,
-        subscriptionStatus: client.accountDetails.subscriptionStatus,
-        previousStatus
-      });
-    }
-
     return res.status(200).json({
-      message: "Subscription updated successfully",
-      subscriptionStatus: client.accountDetails.subscriptionStatus,
-      subscriptionStartDate: client.accountDetails.subscriptionStartDate,
-      subscriptionEndDate: client.accountDetails.subscriptionEndDate,
-      accountDetails: client.accountDetails
+      message: `Subscription ${action} action completed successfully.`,
+      client: {
+        clientId: client.clientId,
+        stage: client.stage,
+        status: client.status,
+        accountDetails: client.accountDetails,
+      },
     });
-  } catch (error) {
-    console.error("Manage subscription error:", error);
+  } catch (err) {
+    console.error("manageSubscription error:", err);
     return res.status(500).json({
       message: "Failed to manage subscription",
-      error: error.message
+      error: err.message,
     });
   }
 };
 
 
+
+
+const getPendingSubscriptionApprovals = async (req, res) => {
+  try {
+    if (!["consultant_admin", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        message:
+          "Only Consultant Admin and Super Admin can view pending subscription approvals",
+      });
+    }
+
+    const clients = await Client.find({
+      stage: "active",
+      "accountDetails.pendingSubscriptionRequest.status": "pending",
+    })
+      .populate(
+        "accountDetails.pendingSubscriptionRequest.requestedBy",
+        "userName email userType"
+      )
+      .select(
+        "clientId stage status leadInfo.companyName accountDetails.subscriptionStatus accountDetails.subscriptionEndDate accountDetails.pendingSubscriptionRequest"
+      );
+
+    const requests = clients.map((c) => {
+      const reqObj = c.accountDetails.pendingSubscriptionRequest || {};
+      return {
+        clientId: c.clientId,
+        companyName: c.leadInfo?.companyName,
+        stage: c.stage,
+        status: c.status,
+        subscriptionStatus: c.accountDetails.subscriptionStatus,
+        subscriptionEndDate: c.accountDetails.subscriptionEndDate,
+        pendingRequest: {
+          action: reqObj.action,
+          status: reqObj.status,
+          reason: reqObj.reason,
+          requestedAt: reqObj.requestedAt,
+          requestedBy: reqObj.requestedBy,
+        },
+      };
+    });
+
+    return res.status(200).json({
+      count: requests.length,
+      requests,
+    });
+  } catch (err) {
+    console.error("getPendingSubscriptionApprovals error:", err);
+    return res.status(500).json({
+      message: "Failed to fetch pending subscription approvals",
+      error: err.message,
+    });
+  }
+};
+
+
+
+const getClientsExpiringSoon = async (req, res) => {
+  try {
+    // Consultant, Consultant Admin and Super Admin can view expiring subscriptions
+    if (
+      !["consultant", "consultant_admin", "super_admin"].includes(
+        req.user.userType
+      )
+    ) {
+      return res.status(403).json({
+        message:
+          "Only Consultant, Consultant Admin and Super Admin can view expiring subscriptions",
+      });
+    }
+
+    const days = parseInt(req.query.days, 10) || 30; // default 30 days
+    const now = moment().startOf("day");
+    const windowEnd = moment().add(days, "days").endOf("day");
+
+    const clients = await Client.find({
+      stage: "active",
+      "accountDetails.subscriptionEndDate": {
+        $gte: now.toDate(),
+        $lte: windowEnd.toDate(),
+      },
+      "accountDetails.subscriptionStatus": { $in: ["active", "grace_period"] },
+    })
+      .populate("accountDetails.clientAdminId", "userName email")
+      .select(
+        "clientId stage status leadInfo.companyName accountDetails.subscriptionStatus accountDetails.subscriptionEndDate accountDetails.clientAdminId"
+      );
+
+    const result = clients.map((c) => {
+      const endDate = c.accountDetails.subscriptionEndDate;
+      const daysRemaining = moment(endDate).diff(now, "days");
+
+      return {
+        clientId: c.clientId,
+        companyName: c.leadInfo?.companyName,
+        stage: c.stage,
+        status: c.status,
+        subscriptionStatus: c.accountDetails.subscriptionStatus,
+        subscriptionEndDate: endDate,
+        daysRemaining,
+        clientAdmin: c.accountDetails.clientAdminId
+          ? {
+              id: c.accountDetails.clientAdminId._id,
+              userName: c.accountDetails.clientAdminId.userName,
+              email: c.accountDetails.clientAdminId.email,
+            }
+          : null,
+      };
+    });
+
+    return res.status(200).json({
+      daysWindow: days,
+      count: result.length,
+      clients: result,
+    });
+  } catch (err) {
+    console.error("getClientsExpiringSoon error:", err);
+    return res.status(500).json({
+      message: "Failed to fetch expiring subscriptions",
+      error: err.message,
+    });
+  }
+};
+
+
+
+const checkUpcomingSubscriptionExpiries = async (daysBefore = 30) => {
+  try {
+    const now = moment();
+    const windowEnd = moment().add(daysBefore, "days").endOf("day");
+
+    const expiringClients = await Client.find({
+      stage: "active",
+      "accountDetails.subscriptionEndDate": {
+        $gt: now.toDate(),
+        $lte: windowEnd.toDate()
+      },
+      "accountDetails.subscriptionStatus": { $in: ["active", "grace_period"] },
+      "accountDetails.subscriptionExpiryWarningSentFor30Days": { $ne: true }
+    })
+      .populate("accountDetails.clientAdminId", "userName email userType")
+      .populate("assignedConsultantId", "userName email userType");
+
+    const consultantAdmins = await User.find({
+      userType: "consultant_admin",
+      isActive: true
+    }).select("_id userName email");
+
+    for (const client of expiringClients) {
+      const endDate = moment(client.accountDetails.subscriptionEndDate);
+      const daysLeft = endDate.diff(now, "days");
+
+      const targetUserIds = [];
+
+      // Client Admin
+      if (client.accountDetails.clientAdminId) {
+        targetUserIds.push(client.accountDetails.clientAdminId._id);
+      }
+
+      // Assigned Consultant
+      if (client.assignedConsultantId) {
+        targetUserIds.push(client.assignedConsultantId._id);
+      }
+
+      // All Consultant Admins
+      for (const admin of consultantAdmins) {
+        targetUserIds.push(admin._id);
+      }
+
+      if (targetUserIds.length === 0) {
+        continue;
+      }
+
+      try {
+        const notif = new Notification({
+          title: `Subscription Expiry Warning – ${client.clientId}`,
+          message: `
+The subscription for client ${client.clientId} (${client.leadInfo?.companyName || "Unknown Company"}) is going to expire in approximately ${daysLeft} day(s).
+
+Current end date: ${endDate.format("DD/MM/YYYY")}
+
+Please take necessary action (renew or extend the subscription) before expiry.
+          `.trim(),
+          priority: "high",
+          createdBy: null,
+          creatorType: "system",
+          targetUsers: targetUserIds,
+          targetClients: [client.clientId],
+          status: "published",
+          publishedAt: new Date(),
+          isSystemNotification: true,
+          systemAction: "subscription_expiry_warning",
+          relatedEntity: {
+            type: "client",
+            id: client._id
+          }
+        });
+
+        await notif.save();
+
+        if (global.io && global.broadcastNotification) {
+          try {
+            await global.broadcastNotification(notif);
+          } catch (broadcastErr) {
+            console.error("Warning: could not broadcast expiry warning notification:", broadcastErr);
+          }
+        }
+      } catch (notifErr) {
+        console.error("Warning: could not create expiry warning notification:", notifErr);
+      }
+
+      // Mark warning as sent to avoid duplicate
+      client.accountDetails.subscriptionExpiryWarningSentFor30Days = true;
+      await client.save();
+    }
+
+    console.log(`Processed ${expiringClients.length} upcoming subscription expiries (within ${daysBefore} days).`);
+
+  } catch (error) {
+    console.error("checkUpcomingSubscriptionExpiries error:", error);
+  }
+};
 
 
 
@@ -4304,6 +4491,8 @@ module.exports = {
   getClientById,
   assignConsultant,
   manageSubscription,
+  getPendingSubscriptionApprovals,
+  getClientsExpiringSoon,  
   getDashboardMetrics,
   checkExpiredSubscriptions,
   updateFlowchartStatus,
