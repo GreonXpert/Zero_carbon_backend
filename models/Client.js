@@ -487,6 +487,14 @@ accountDetails: {
   dataSubmissions: { type: Number, default: 0 },
 },
     
+    sandboxId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'ClientSandbox' 
+  },
+  sandboxActive: { 
+    type: Boolean, 
+    default: false 
+  },
     // Timeline tracking
     timeline: [{
       stage: { type: String },
@@ -502,6 +510,7 @@ accountDetails: {
     deletedAt: { type: Date },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },
+
   { timestamps: true }
 );
 
