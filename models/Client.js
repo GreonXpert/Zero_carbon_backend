@@ -85,6 +85,11 @@ const clientSchema = new mongoose.Schema(
       required: true,
       index: true
     },
+    // ===== NEW: SANDBOX FLAG =====
+    sandbox: { 
+      type: Boolean, 
+      default: false 
+    },
     
     stage: {
       type: String,
@@ -487,14 +492,7 @@ accountDetails: {
   dataSubmissions: { type: Number, default: 0 },
 },
     
-    sandboxId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'ClientSandbox' 
-  },
-  sandboxActive: { 
-    type: Boolean, 
-    default: false 
-  },
+
     // Timeline tracking
     timeline: [{
       stage: { type: String },
@@ -513,6 +511,32 @@ accountDetails: {
 
   { timestamps: true }
 );
+
+
+// ===== NEW: ENFORCE SANDBOX/ACTIVE INVARIANTS =====
+clientSchema.pre('save', function(next) {
+  // Enforce the invariant: if sandbox === true then isActive === false
+  // and if isActive === true then sandbox === false
+  if (this.sandbox === true && this.isActive === true) {
+    return next(new Error('Client cannot be both sandbox and active'));
+  }
+  
+  // Auto-adjust to maintain invariant
+  if (this.isModified('sandbox')) {
+    if (this.sandbox === true) {
+      this.isActive = false;
+    }
+  }
+  
+  if (this.isModified('isActive')) {
+    if (this.isActive === true) {
+      this.sandbox = false;
+    }
+  }
+  
+  next();
+});
+
 
 
 // --- Normalize assessmentLevel on every save (handles legacy values) ---
@@ -561,6 +585,7 @@ clientSchema.index({ "accountDetails.subscriptionEndDate": 1 });
 clientSchema.index({ "workflowTracking.assignedConsultantId": 1 });
 clientSchema.index({ "workflowTracking.flowchartStatus": 1 });
 clientSchema.index({ "workflowTracking.processFlowchartStatus": 1 });
+clientSchema.index({ sandbox: 1 }); // NEW INDEX
 
 
 // Counter Schema for ClientID generation
@@ -571,6 +596,14 @@ const counterSchema = new mongoose.Schema({
 
 const Counter = mongoose.model("Counter", counterSchema);
 
+// ===== NEW: SANDBOX COUNTER =====
+const sandboxCounterSchema = new mongoose.Schema({
+  _id: { type: String, required: true },
+  seq: { type: Number, default: 0 }
+});
+
+const SandboxCounter = mongoose.model("SandboxCounter", sandboxCounterSchema);
+
 // Static method to generate ClientID
 clientSchema.statics.generateClientId = async function() {
   const counter = await Counter.findByIdAndUpdate(
@@ -579,12 +612,25 @@ clientSchema.statics.generateClientId = async function() {
     { new: true, upsert: true }
   );
   
-  const paddedNumber = counter.seq < 1000 
-    ? counter.seq.toString().padStart(3, '0') 
-    : counter.seq.toString();
-    
+  // Production IDs start from Greon0 followed by padded numbers
+  const paddedNumber = counter.seq.toString().padStart(3, '0');
+  return `Greon0${paddedNumber}`;
+};
+
+// ===== NEW: Generate Sandbox Client ID =====
+clientSchema.statics.generateSandboxClientId = async function() {
+  const counter = await SandboxCounter.findByIdAndUpdate(
+    { _id: "sandboxClientId" },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  
+  // Sandbox IDs: Greon01, Greon02, etc. (no leading 0 after Greon)
+  const paddedNumber = counter.seq.toString().padStart(2, '0');
   return `Greon${paddedNumber}`;
 };
+
+
 
 // Method to calculate data completeness
 clientSchema.methods.calculateDataCompleteness = function() {

@@ -14,7 +14,13 @@ const userSchema = new mongoose.Schema(
     address: { type: String, required: true },
     companyName: { type: String },
     isFirstLogin: { type: Boolean, default: true },
-    isActive: { type: Boolean, default: true },
+    isActive: { type: Boolean, default: false },
+
+    // ===== NEW: SANDBOX FLAG =====
+    sandbox: { 
+      type: Boolean, 
+      default: false 
+    },
     
     // Hierarchical relationships
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -89,10 +95,58 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+
+// ===== NEW: ENFORCE SANDBOX/ACTIVE INVARIANTS =====
+userSchema.pre('save', function(next) {
+  // Enforce the invariant: if sandbox === true then isActive === false
+  // and if isActive === true then sandbox === false
+  if (this.sandbox === true && this.isActive === true) {
+    return next(new Error('User cannot be both sandbox and active'));
+  }
+  
+  // Auto-adjust to maintain invariant
+  if (this.isModified('sandbox')) {
+    if (this.sandbox === true) {
+      this.isActive = false;
+    }
+  }
+  
+  if (this.isModified('isActive')) {
+    if (this.isActive === true) {
+      this.sandbox = false;
+    }
+  }
+  
+  next();
+});
+
+// ===== NEW: Method to check if user has sandbox access =====
+userSchema.methods.hasSandboxAccess = function(route) {
+  if (!this.sandbox) return true; // Non-sandbox users have full access
+  
+  // Define sandbox-allowed routes
+  const sandboxAllowedRoutes = [
+    '/api/dashboard',
+    '/api/profile',
+    '/api/clients/own', // View own client data
+    '/api/proposal/view',
+    '/api/submission/status',
+    '/api/flowchart/view',
+    '/api/reports/basic',
+    // Add more allowed routes as needed
+  ];
+  
+  // Check if the route starts with any allowed pattern
+  return sandboxAllowedRoutes.some(allowed => 
+    route.startsWith(allowed)
+  );
+};
+
 // Index for efficient queries
 userSchema.index({ clientId: 1 });
 userSchema.index({ userType: 1 });
 userSchema.index({ createdBy: 1 });
 userSchema.index({ email: 1 });
+userSchema.index({ sandbox: 1 });
 
 module.exports = mongoose.model("User", userSchema);
