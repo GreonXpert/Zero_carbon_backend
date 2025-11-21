@@ -27,11 +27,6 @@ router.get('/:clientId/scope12-total',getLatestScope12Total);
 // Apply authentication to all routes
 router.use(auth);
 
-/**
- * @route   GET /api/summaries/:clientId
- * @desc    Get emission summary for a specific period
- */
-router.get('/:clientId', checkSummaryPermission, getEmissionSummary);
 
 /**
  * @route   GET /api/summaries/:clientId/multiple
@@ -112,6 +107,13 @@ router.get(
   checkSummaryPermission,
   getScopeIdentifierHierarchy
 );
+
+/**
+ * @route   GET /api/summaries/:clientId
+ * @desc    Get emission summary for a specific period
+ */
+router.get('/:clientId', checkSummaryPermission, getEmissionSummary);
+
 
 
 
