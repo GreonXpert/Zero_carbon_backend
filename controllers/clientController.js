@@ -1078,11 +1078,13 @@ const createLead = async (req, res) => {
     }
 
     // Generate a new Client ID
-    const clientId = await Client.generateClientId();
+     const seq = await Client.getNextClientSequence();      // 1, 2, 3, ...
+    const clientId = Client.buildClientIdForStage(seq, "lead"); 
 
     // Create the new lead
     const newClient = new Client({
       clientId,
+       clientSequenceNumber: seq, // 1, 2, 3, ...
       stage: "lead",
       status: "contacted",
       leadInfo: {
@@ -1103,6 +1105,7 @@ const createLead = async (req, res) => {
         createdBy: req.user.id // ← store who created
         // createdAt is auto‐populated by schema default
       },
+      
       timeline: [{
         stage: "lead",
         status: "contacted",
@@ -1822,11 +1825,40 @@ const submitClientData = async (req, res) => {
     };
 
     // Recalculate dataCompleteness (uses submissionData.* fields)
-    client.submissionData.dataCompleteness =
-      client.calculateDataCompleteness();
+    const dataCompleteness = client.calculateDataCompleteness();
+client.submissionData.dataCompleteness = dataCompleteness;
 
 // 8) Update status + timeline
     client.status = "submitted";
+
+      // 🔹 NEW: make sure we have a sequence number
+    if (!client.clientSequenceNumber) {
+      // Try to parse from existing clientId (e.g. Lead_Greon001)
+      const match = client.clientId && client.clientId.match(/(\d+)$/);
+      if (match) {
+        client.clientSequenceNumber = parseInt(match[1], 10);
+      } else {
+        // Fallback for very old data
+        const seq = await Client.getNextClientSequence();
+        client.clientSequenceNumber = seq;
+      }
+    }
+
+    // 🔹 Update clientId to Sandbox_GreonXXX for this stage
+    client.clientId = Client.buildClientIdForStage(
+      client.clientSequenceNumber,
+      "registered"
+    );
+
+     // 🔹 NEW: Sandbox ID (Stage 2)
+    if (!client.sandboxClientId) {
+      client.sandboxClientId = `Sandbox_${client.clientId}`;
+    }
+
+    client.submissionData.validationStatus = "validated";
+    client.submissionData.validatedAt = new Date();
+    client.submissionData.validatedBy = req.user.id;
+
     if (!client.timeline) client.timeline = [];
 
     client.timeline.push({
@@ -1843,7 +1875,7 @@ const submitClientData = async (req, res) => {
 
     // 🔹 NEW STEP: create sandbox client_admin user when data submission is completed
     try {
-      await createClientAdmin(clientId, {
+      await createClientAdmin(client.clientId, {
         consultantId: req.user.id,
         sandbox: true, // ✅ this is a sandbox user
       });
@@ -2569,6 +2601,22 @@ const updateProposalStatus = async (req, res) => {
       const prevStage = client.stage;
       client.stage = "active";
 
+      
+      // 🔹 NEW: final clientId for active stage (GreonXXX)
+      if (!client.clientSequenceNumber) {
+        const match = client.clientId && client.clientId.match(/(\d+)$/);
+        if (match) {
+          client.clientSequenceNumber = parseInt(match[1], 10);
+        } else {
+          const seq = await Client.getNextClientSequence();
+          client.clientSequenceNumber = seq;
+        }
+      }
+      client.clientId = Client.buildClientIdForStage(
+        client.clientSequenceNumber,
+        "active"
+      );
+
       // IMPORTANT: when client becomes active, it's no longer sandbox
       client.sandbox = false;
 
@@ -2610,7 +2658,7 @@ const updateProposalStatus = async (req, res) => {
 
       // 5) Try to create a client admin (best-effort, not blocking)
        try {
-        await createClientAdmin(clientId, {
+        await createClientAdmin(client.clientId, {
           consultantId: req.user.id,
           sandbox: false, // ✅ once active, user is no longer sandbox
         });

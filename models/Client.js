@@ -79,12 +79,21 @@ const CategoryDetailsSchema = new mongoose.Schema(
 );
 const clientSchema = new mongoose.Schema(
   {
+    
     clientId: {
       type: String,
       unique: true,
       required: true,
       index: true
     },
+    
+     // 🔹 Shared numeric part for all stages (Lead / Sandbox / Final)
+    clientSequenceNumber: {
+      type: Number,
+      unique: true,
+      sparse: true, // allows null for old records
+    },
+    
     // ===== NEW: SANDBOX FLAG =====
     sandbox: { 
       type: Boolean, 
@@ -603,6 +612,28 @@ const sandboxCounterSchema = new mongoose.Schema({
 });
 
 const SandboxCounter = mongoose.model("SandboxCounter", sandboxCounterSchema);
+
+// 🔹 Get next sequence number for client IDs (001, 002, 003, ...)
+clientSchema.statics.getNextClientSequence = async function () {
+  const counter = await Counter.findByIdAndUpdate(
+    { _id: "clientId" },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return counter.seq; // 1, 2, 3, ...
+};
+
+// 🔹 Build clientId text based on stage + sequence number
+clientSchema.statics.buildClientIdForStage = function (sequenceNumber, stage) {
+  const padded = sequenceNumber.toString().padStart(3, "0");
+
+  if (stage === "lead") return `Lead_Greon${padded}`;        // Lead_Greon001
+  if (stage === "registered") return `Sandbox_Greon${padded}`; // Sandbox_Greon001
+  if (stage === "active") return `Greon${padded}`;             // Greon001
+
+  // Fallback – treat others as final
+  return `Greon${padded}`;
+};
 
 // Static method to generate ClientID
 clientSchema.statics.generateClientId = async function() {
