@@ -2,6 +2,24 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Client = require('../models/Client');
 
+/**
+ * Generate JWT token with sandbox status
+ */
+const generateToken = (user) => {
+  const payload = {
+    id: user._id,
+    email: user.email,
+    userType: user.userType,
+    clientId: user.clientId || null,
+    sandbox: user.sandbox || false,  // Include sandbox status
+    isActive: user.isActive
+  };
+  
+  return jwt.sign(payload, process.env.JWT_SECRET || "your-secret-key", {
+    expiresIn: "24h"
+  });
+};
+
 const auth = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
@@ -310,6 +328,85 @@ const optionalAuth = async (req, res, next) => {
     next(); // Continue without authentication
   }
 };
+
+/**
+ * Verify client ownership or admin access
+ */
+const verifyClientAccess = async (req, res, next) => {
+  try {
+    const clientId = req.params.clientId || req.body.clientId;
+    
+    if (!clientId) {
+      return res.status(400).json({ 
+        message: "Client ID required" 
+      });
+    }
+    
+    // Super admin can access all
+    if (req.user.userType === "super_admin") {
+      return next();
+    }
+    
+    // Check if user belongs to this client
+    if (req.user.clientId === clientId) {
+      // Additional check for sandbox users
+      if (req.user.sandbox) {
+        const Client = require("../models/Client");
+        const client = await Client.findOne({ clientId });
+        
+        if (!client || !client.sandbox) {
+          return res.status(403).json({ 
+            message: "Sandbox users can only access sandbox client data",
+            isSandbox: true
+          });
+        }
+      }
+      return next();
+    }
+    
+    // Consultant admin can access their assigned clients
+    if (req.user.userType === "consultant_admin") {
+      const Client = require("../models/Client");
+      const client = await Client.findOne({ 
+        clientId,
+        "leadInfo.consultantAdminId": req.user.id
+      });
+      
+      if (client) {
+        return next();
+      }
+    }
+    
+    // Consultant can access assigned clients
+    if (req.user.userType === "consultant") {
+      const Client = require("../models/Client");
+      const client = await Client.findOne({
+        clientId,
+        $or: [
+          { "leadInfo.assignedConsultantId": req.user.id },
+          { "workflowTracking.assignedConsultantId": req.user.id }
+        ]
+      });
+      
+      if (client) {
+        return next();
+      }
+    }
+    
+    return res.status(403).json({ 
+      message: "Access denied to this client",
+      isSandbox: req.user.sandbox
+    });
+    
+  } catch (error) {
+    console.error("Verify client access error:", error);
+    res.status(500).json({ 
+      message: "Error verifying client access" 
+    });
+  }
+};
+
+
 module.exports = {
   auth,
   checkRole,
@@ -319,5 +416,7 @@ module.exports = {
   enforceClientAccess,
   adminOnly,
   superAdminOnly,
-  optionalAuth
+  optionalAuth,
+  verifyClientAccess,
+  generateToken
 };

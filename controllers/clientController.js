@@ -1699,119 +1699,194 @@ const moveToDataSubmission = async (req, res) => {
 
 
 // Submit Client Data (Stage 2)
+// Submit Client Data (Stage 2)
+// Submit Client Data (Stage 2)
 const submitClientData = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const submissionData = req.body;
-    
-    // Check permissions
+
+    // Body can be { submissionData: {...} } (new) or flat (old)
+    const inbound = (req.body && (req.body.submissionData || req.body)) || {};
+
+    // 1) Permission check
     if (!["consultant_admin", "consultant"].includes(req.user.userType)) {
-      return res.status(403).json({ 
-        message: "Only Consultants can submit client data" 
+      return res.status(403).json({
+        message: "Only Consultants can submit client data",
       });
     }
-    
+
+    // 2) Basic sanity checks for required fields
+    if (!inbound.companyInfo || !inbound.companyInfo.primaryContactPerson) {
+      return res.status(400).json({
+        success: false,
+        message: "companyInfo.primaryContactPerson is required",
+      });
+    }
+
+    const companyInfo = inbound.companyInfo;
+    const primaryContactPerson = companyInfo.primaryContactPerson;
+
+    // 3) Fetch client and check stage
     const client = await Client.findOne({ clientId });
-    
+
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
-    
+
     if (client.stage !== "registered") {
-      return res.status(400).json({ 
-        message: "Client is not in data submission stage" 
+      return res.status(400).json({
+        message: "Client is not in data submission stage",
       });
     }
-      // ─── EMAIL VALIDATION ──────────────────────────────────────────────────
-    // Extract emails from both sources
-    const primaryContactEmail = submissionData?.companyInfo?.primaryContactPerson?.email;
+
+    // 4) EMAIL VALIDATION (against User collection)
+    const primaryContactEmail = primaryContactPerson.email || undefined;
     const leadInfoEmail = client.leadInfo?.email;
-    
-    // Collect emails to check (remove duplicates and empty values)
-    const emailsToCheck = [...new Set([primaryContactEmail, leadInfoEmail].filter(Boolean))];
-    
+
+    const emailsToCheck = [
+      ...new Set([primaryContactEmail, leadInfoEmail].filter(Boolean)),
+    ];
+
     if (emailsToCheck.length > 0) {
-      // Check if any of these emails already exist in User database
       const existingUsers = await User.find({
-        email: { $in: emailsToCheck }
-      }).select('email userType clientId');
-      
+        email: { $in: emailsToCheck },
+      }).select("email userType clientId");
+
       if (existingUsers.length > 0) {
-        // Build detailed error message
-        const conflictDetails = existingUsers.map(user => ({
+        const conflictDetails = existingUsers.map((user) => ({
           email: user.email,
           userType: user.userType,
-          clientId: user.clientId
+          clientId: user.clientId,
         }));
-        
+
         return res.status(409).json({
           message: "Email address already exists in user database",
           conflictingEmails: conflictDetails,
-          details: "The following email(s) are already registered with existing users. Please use different email addresses or contact system administrator."
+          details:
+            "The following email(s) are already registered with existing users. Please use different email addresses or contact system administrator.",
         });
       }
     }
-    // ─── END EMAIL VALIDATION ──────────────────────────────────────────────
-          // --- NORMALIZE & VALIDATE assessmentLevel + conditional sections ---
-      const inbound = req.body?.submissionData || {};
-      const normalizedLevels = normalizeAssessmentLevels(inbound.assessmentLevel);
 
-      if (normalizedLevels.length === 0) {
-        return res.status(400).json({ message: "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)" });
-      }
+    // 5) NORMALIZE + VALIDATE assessmentLevel
+    const normalizedLevels = normalizeAssessmentLevels(
+      inbound.assessmentLevel
+    );
 
-      // Ensure we validate what will be saved
-      const submissionPreview = { ...inbound, assessmentLevel: normalizedLevels };
-      const { errors } = validateSubmissionForLevels(submissionPreview, normalizedLevels);
+    if (!normalizedLevels || normalizedLevels.length === 0) {
+      return res.status(400).json({
+        message:
+          "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)",
+      });
+    }
 
-      if (errors.length) {
-        return res.status(400).json({ message: "Validation error", errors });
-      }
-    // Update submission data
-   client.submissionData = {
-  ...inbound,
-  assessmentLevel: normalizedLevels,
-  submittedAt: new Date(),
-  submittedBy: req.user.id
-};  
-    
+    const submissionPreview = {
+      ...inbound,
+      assessmentLevel: normalizedLevels,
+    };
+
+    const { errors } = validateSubmissionForLevels(
+      submissionPreview,
+      normalizedLevels
+    );
+
+    if (errors && errors.length) {
+      return res.status(400).json({
+        message: "Validation error",
+        errors,
+      });
+    }
+
+    // 6) MARK CLIENT AS SANDBOX HERE
+    //    This is the missing piece: after data submission, the client becomes a sandbox client.
+    client.sandbox = true;
+
+    // If you want sandbox clients to be "inactive" in your access control,
+    // uncomment this block (optional – depends on your business logic):
+    //
+    // if (client.accountDetails && typeof client.accountDetails.isActive === "boolean") {
+    //   client.accountDetails.isActive = false;
+    // }
+
+    // 7) UPDATE submissionData on the client
+    //    Keep schema field names EXACTLY as defined in Client.js:
+    //    assessmentLevel, projectProfile, companyInfo, organizationalOverview,
+    //    emissionsProfile, ghgDataManagement, additionalNotes, supportingDocuments, etc.
+    client.submissionData = {
+      // keep any existing internal fields if present (e.g. validationStatus, reviewNotes)
+      ...(client.submissionData?.toObject?.() || client.submissionData || {}),
+      ...inbound,
+      assessmentLevel: normalizedLevels,
+      submittedAt: new Date(),
+      submittedBy: req.user.id,
+    };
+
+    // Recalculate dataCompleteness (uses submissionData.* fields)
+    client.submissionData.dataCompleteness =
+      client.calculateDataCompleteness();
+
+// 8) Update status + timeline
     client.status = "submitted";
+    if (!client.timeline) client.timeline = [];
+
     client.timeline.push({
       stage: "registered",
       status: "submitted",
       action: "Data submitted",
       performedBy: req.user.id,
-      notes: "Client data submission completed"
+      notes: "Client data submission completed",
+      timestamp: new Date(),
     });
-    
+
+    // Save the submission + sandbox flag on the client first
     await client.save();
 
+    // 🔹 NEW STEP: create sandbox client_admin user when data submission is completed
+    try {
+      await createClientAdmin(clientId, {
+        consultantId: req.user.id,
+        sandbox: true, // ✅ this is a sandbox user
+      });
+    } catch (err) {
+      console.warn(
+        `createClientAdmin (sandbox, submitClientData) warning: ${err.message}`
+      );
+      // Do not block the main flow if user creation fails
+    }
+
+    // 9) Generate PDF + send email (non-blocking for main logic)
     try {
       const html = renderClientDataHTML(client);
-      const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_ClientData_${client.clientId}.pdf`);
+      const pdf = await htmlToPdfBuffer(
+        html,
+        `ZeroCarbon_ClientData_${client.clientId}.pdf`
+      );
       await sendClientDataSubmittedEmail(client, [pdf]);
-      console.log('✉️ Client data submitted email sent with PDF.');
+      console.log("✉️ Client data submitted email sent with PDF.");
     } catch (e) {
-      console.error('Email/PDF (submitClientData) error:', e.message);
+      console.error("Email/PDF (submitClientData) error:", e.message);
     }
-    
-    res.status(200).json({
+
+    // 10) Response
+    return res.status(200).json({
       message: "Client data submitted successfully",
       client: {
         clientId: client.clientId,
         stage: client.stage,
-        status: client.status
-      }
+        status: client.status,
+        sandbox: client.sandbox,
+      },
     });
-    
   } catch (error) {
     console.error("Submit client data error:", error);
-    res.status(500).json({ 
-      message: "Failed to submit client data", 
-      error: error.message 
+    return res.status(500).json({
+      message: "Failed to submit client data",
+      error: error.message,
     });
   }
 };
+
+
 
 // ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
 // ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
@@ -2447,11 +2522,14 @@ const getClientProposalData = async (req, res) => {
 // Accept/Reject Proposal
 // Accept/Reject Proposal - FIXED VERSION
 // Accept/Reject Proposal - FIXED
+// Accept / Reject Proposal and activate client
+// Accept / Reject Proposal and activate client
 const updateProposalStatus = async (req, res) => {
   try {
     const { clientId } = req.params;
     const { action, reason } = req.body;
 
+    // Only consultant_admin can change proposal status
     if (req.user.userType !== "consultant_admin") {
       return res.status(403).json({
         message: "Only Consultant Admins can update proposal status",
@@ -2463,55 +2541,99 @@ const updateProposalStatus = async (req, res) => {
       return res.status(404).json({ message: "Client not found" });
     }
 
+    // Must be in proposal stage with a submitted proposal
     if (client.stage !== "proposal" || client.status !== "proposal_submitted") {
       return res.status(400).json({
         message: "No submitted proposal to act on for this client",
       });
     }
 
+    // Ensure proposalData object exists
+    if (!client.proposalData) {
+      client.proposalData = {};
+    }
+
     if (action === "accept") {
+      // 1) Mark proposal as accepted
       client.status = "proposal_accepted";
       client.proposalData.clientApprovalDate = new Date();
+
       const approvedByName =
         client.submissionData?.companyInfo?.primaryContactPerson?.name ||
         client.leadInfo?.contactPersonName ||
         "Client Representative";
+
       client.proposalData.approvedBy = approvedByName;
 
-      // Move to Active
+      // 2) Move to Active stage
       const prevStage = client.stage;
       client.stage = "active";
-      client.accountDetails = {
-        subscriptionStartDate: new Date(),
-        subscriptionEndDate: moment().add(1, "year").toDate(),
-        subscriptionStatus: "active",
-        isActive: true,
-        activeUsers: 1,
-        lastLoginDate: null,
-        dataSubmissions: 0,
-      };
 
+      // IMPORTANT: when client becomes active, it's no longer sandbox
+      client.sandbox = false;
+
+      // 3) Initialize / update account details for active subscription
+      if (!client.accountDetails) {
+        client.accountDetails = {};
+      }
+
+      client.accountDetails.subscriptionStartDate = new Date();
+      client.accountDetails.subscriptionEndDate = moment()
+        .add(1, "year")
+        .toDate();
+      client.accountDetails.subscriptionStatus = "active";
+      client.accountDetails.isActive = true;
+
+      // Keep existing counts if present, otherwise set defaults
+      if (
+        typeof client.accountDetails.activeUsers !== "number" ||
+        client.accountDetails.activeUsers <= 0
+      ) {
+        client.accountDetails.activeUsers = 1;
+      }
+      if (typeof client.accountDetails.dataSubmissions !== "number") {
+        client.accountDetails.dataSubmissions = 0;
+      }
+
+      // NOTE: we DO NOT touch client.accountDetails.pendingSubscriptionRequest
+      // so Mongoose does not try to cast it from undefined -> Object.
+
+      // 4) Timeline entry
       client.timeline.push({
         stage: "active",
         status: "active",
         action: "Proposal accepted and account activated",
         performedBy: req.user.id,
         notes: "Client subscription activated for 1 year",
+        timestamp: new Date(),
       });
 
-      // Try to create a client admin (best-effort)
-      try {
-        await createClientAdmin(clientId, { consultantId: req.user.id });
+      // 5) Try to create a client admin (best-effort, not blocking)
+       try {
+        await createClientAdmin(clientId, {
+          consultantId: req.user.id,
+          sandbox: false, // ✅ once active, user is no longer sandbox
+        });
       } catch (err) {
         console.warn(`createClientAdmin warning: ${err.message}`);
       }
-
+      // 6) Save client
       await client.save();
 
-      // Real-time emits (corrected: use action, not "decision")
-      await emitClientStageChange(client, prevStage, req.user.id);
-      await emitClientListUpdate(client, 'updated', req.user.id);
+      // 7) Real-time events
+      try {
+        await emitClientStageChange(client, prevStage, req.user.id);
+      } catch (err) {
+        console.warn(`emitClientStageChange warning: ${err.message}`);
+      }
 
+      try {
+        await emitClientListUpdate(client, "updated", req.user.id);
+      } catch (err) {
+        console.warn(`emitClientListUpdate warning: ${err.message}`);
+      }
+
+      // 8) Response
       return res.status(200).json({
         message: "Proposal accepted and client account activated",
         client: {
@@ -2519,23 +2641,30 @@ const updateProposalStatus = async (req, res) => {
           stage: client.stage,
           status: client.accountDetails.subscriptionStatus,
           subscriptionEndDate: client.accountDetails.subscriptionEndDate,
+          sandbox: client.sandbox,
         },
       });
-
     } else if (action === "reject") {
+      // Reject flow
       client.status = "proposal_rejected";
       client.proposalData.rejectionReason = reason;
+
       client.timeline.push({
         stage: "proposal",
         status: "proposal_rejected",
         action: "Proposal rejected",
         performedBy: req.user.id,
         notes: reason || "Client rejected the proposal",
+        timestamp: new Date(),
       });
 
       await client.save();
 
-      await emitClientListUpdate(client, 'updated', req.user.id);
+      try {
+        await emitClientListUpdate(client, "updated", req.user.id);
+      } catch (err) {
+        console.warn(`emitClientListUpdate warning: ${err.message}`);
+      }
 
       return res.status(200).json({
         message: "Proposal rejected",
@@ -2543,6 +2672,7 @@ const updateProposalStatus = async (req, res) => {
           clientId: client.clientId,
           stage: client.stage,
           status: client.status,
+          sandbox: client.sandbox,
         },
       });
     } else {
@@ -2558,6 +2688,8 @@ const updateProposalStatus = async (req, res) => {
     });
   }
 };
+
+
 
 
 // Get Clients based on user permissions

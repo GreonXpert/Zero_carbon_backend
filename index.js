@@ -31,7 +31,6 @@ const m2FormulaR = require('./router/Reduction/m2FormulaR'); // 🆕 Corrected p
 const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR'); // 🆕 Corrected path
 const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes'); // 🆕 Corrected path
 
-const sandboxRouter = require('./router/sandboxR');
 
 
 // Import notification routes
@@ -55,6 +54,7 @@ const netReductionController = require('./controllers/Reduction/netReductionCont
 const netReductionSummaryController = require('./controllers/Reduction/netReductionSummaryController');
 const sbtiController = require('./controllers/Decabonization/sbtiController');
 const transportFlowRouter = require('./router/transportFlowR');
+const sandboxRoutes = require('./router/sandboxRoutes');
 
 
 // Import models for real-time features
@@ -95,6 +95,7 @@ app.use('/uploads', express.static('uploads'));
 // Routes
 app.use("/api/users", userR);
 app.use("/api/clients", clientR);
+app.use('/api/sandbox', sandboxRoutes);
 app.use("/api/flowchart", flowchartR);
 app.use("/api/defra", defraDataR);
 app.use("/api/gwp", gwpRoutes);
@@ -120,7 +121,6 @@ app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
-app.use('/api/sandbox', sandboxRouter);
 
 // Create HTTP server and bind Socket.io
 const server = http.createServer(app);
