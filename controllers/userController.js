@@ -61,6 +61,7 @@ const initializeSuperAdmin = async () => {
 };
 
 // Universal Login for all user types
+// Universal Login for all user types
 const login = async (req, res) => {
   try {
     const { login: loginIdentifier, password } = req.body;
@@ -71,10 +72,14 @@ const login = async (req, res) => {
       });
     }
     
-    // Find user by email or userName
+    // ✅ Find user by email or userName, allowing either:
+    //    - isActive === true  (normal live users)
+    //    - sandbox === true   (test/onboarding users)
     const user = await User.findOne({
-      $or: [{ email: loginIdentifier }, { userName: loginIdentifier }],
-      isActive: true
+      $and: [
+        { $or: [{ email: loginIdentifier }, { userName: loginIdentifier }] },
+        { $or: [{ isActive: true }, { sandbox: true }] }
+      ]
     }).populate('createdBy', 'userName email');
     
     if (!user) {
@@ -86,8 +91,8 @@ const login = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
     
-    // Check if client is active (for client-related users)
-    if (user.clientId) {
+    // ✅ Check client status ONLY for non-sandbox users
+    if (user.clientId && !user.sandbox) {
       const client = await Client.findOne({ 
         clientId: user.clientId,
         "accountDetails.isActive": true 
@@ -99,6 +104,7 @@ const login = async (req, res) => {
         });
       }
     }
+    // 🔸 If user.sandbox === true, we SKIP client check completely.
     
     // Update first login status
     if (user.isFirstLogin) {
@@ -106,14 +112,15 @@ const login = async (req, res) => {
       await user.save();
     }
     
-    // Prepare token payload
+    // ✅ Include sandbox info in token payload
     const tokenPayload = {
       id: user._id,
       email: user.email,
       userName: user.userName,
       userType: user.userType,
       clientId: user.clientId,
-      permissions: user.permissions
+      permissions: user.permissions,
+      sandbox: user.sandbox === true
     };
     
     // Generate JWT token
@@ -121,7 +128,7 @@ const login = async (req, res) => {
       expiresIn: "24h"
     });
     
-    // Prepare response data
+    // ✅ Also return sandbox flag in response user data
     const userData = {
       id: user._id,
       email: user.email,
@@ -133,7 +140,8 @@ const login = async (req, res) => {
       clientId: user.clientId,
       permissions: user.permissions,
       isFirstLogin: user.isFirstLogin,
-      profileImage: user.profileImage || null
+      profileImage: user.profileImage || null,
+      sandbox: user.sandbox === true
     };
     
     res.status(200).json({
@@ -150,6 +158,8 @@ const login = async (req, res) => {
     });
   }
 };
+
+
 
 // Create Consultant Admin (Super Admin only)
 const createConsultantAdmin = async (req, res) => {

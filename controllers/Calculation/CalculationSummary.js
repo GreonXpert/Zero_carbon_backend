@@ -1023,7 +1023,8 @@ const getFilteredSummary = async (req, res) => {
     // ---------- Step 2: determine if we use ADVANCED multi-filter mode ----------
 
     const multiScopes = normalizeArray(scopes);
-    const multiLocations = normalizeArray(locations);
+    // 🔹 CHANGED: allow single `location` to be treated as advanced
+    const multiLocations = normalizeArray(locations || location);
     const multiNodeIds = normalizeArray(nodeIds);
     const multiDepartments = normalizeArray(departments);
     const multiActivities = normalizeArray(activities);
@@ -1084,6 +1085,7 @@ const getFilteredSummary = async (req, res) => {
           byScope: scopeTotals,
           totalCO2e: safeNum(nodeData.CO2e),       // total all scopes
           selectedScopeCO2e,                       // only selected scopes
+          CO2: safeNum(nodeData.CO2),
           CH4: safeNum(nodeData.CH4),
           N2O: safeNum(nodeData.N2O),
           uncertainty: safeNum(nodeData.uncertainty),
@@ -1137,7 +1139,16 @@ const getFilteredSummary = async (req, res) => {
             byScope: {},
             byLocation: [],
             byDepartment: [],
-            nodes: []
+            nodes: [],
+            primary: [],
+            // 🔹 NEW: empty dropdowns for UI
+            dropdowns: {
+              locations: [],
+              departments: [],
+              scopes: [],
+              categories: [],
+              nodes: []
+            }
           }
         });
       }
@@ -1162,7 +1173,6 @@ const getFilteredSummary = async (req, res) => {
       for (const n of nodes) {
         // sum totals only from selected scopes
         totalFilteredEmissions.CO2e += n.selectedScopeCO2e;
-        // For CO2 / CH4 / N2O, we use node-level values (already total for all scopes)
         totalFilteredEmissions.CO2 += safeNum(n.CO2);
         totalFilteredEmissions.CH4 += safeNum(n.CH4);
         totalFilteredEmissions.N2O += safeNum(n.N2O);
@@ -1210,6 +1220,24 @@ const getFilteredSummary = async (req, res) => {
         ...data
       }));
 
+      // 🔹 NEW: categories array (NOT location-specific; filtered by scope/category if given)
+      const categoriesArr = [];
+      for (const [catName, catData] of toEntries(fullSummary.byCategory)) {
+        if (multiScopes.length && !selectedScopes.includes(catData.scopeType)) continue;
+        if (multiCategories.length && !multiCategories.includes(catName)) continue;
+
+        categoriesArr.push({
+          categoryName: catName,
+          scopeType: catData.scopeType,
+          CO2e: safeNum(catData.CO2e),
+          CO2: safeNum(catData.CO2),
+          CH4: safeNum(catData.CH4),
+          N2O: safeNum(catData.N2O),
+          uncertainty: safeNum(catData.uncertainty),
+          dataPointCount: safeNum(catData.dataPointCount)
+        });
+      }
+
       // choose primary array for sorting (node / location / department / scope)
       let primaryArr;
       switch (sortBy) {
@@ -1241,6 +1269,31 @@ const getFilteredSummary = async (req, res) => {
         primaryArr = primaryArr.slice(0, limit);
       }
 
+      // 🔹 NEW: dropdown lists for cascading filters on FRONTEND
+      const dropdownLocations = Array.from(
+        new Set(nodes.map(n => n.location || 'Unknown'))
+      ).sort();
+
+      const dropdownDepartments = Array.from(
+        new Set(nodes.map(n => n.department || 'Unknown'))
+      ).sort();
+
+      const dropdownScopes = scopesArr
+        .filter(s => s.CO2e > 0 || s.dataPointCount > 0)
+        .map(s => s.scopeType);
+
+      const dropdownCategories = categoriesArr
+        .map(c => c.categoryName)
+        .sort();
+
+      const dropdownNodes = nodes.map(n => ({
+        nodeId: n.nodeId,
+        nodeLabel: n.nodeLabel,
+        location: n.location,
+        department: n.department,
+        CO2e: n.selectedScopeCO2e
+      }));
+
       return res.status(200).json({
         success: true,
         filterType: 'advanced',
@@ -1266,7 +1319,15 @@ const getFilteredSummary = async (req, res) => {
           byLocation: locationsArr,
           byDepartment: departmentsArr,
           nodes,          // full filtered node list
-          primary: primaryArr  // main sorted list (nodes / locations / departments / scopes)
+          primary: primaryArr,  // main sorted list (nodes / locations / departments / scopes)
+          categories: categoriesArr,
+          dropdowns: {
+            locations: dropdownLocations,
+            departments: dropdownDepartments,
+            scopes: dropdownScopes,
+            categories: dropdownCategories,
+            nodes: dropdownNodes
+          }
         }
       });
     }
@@ -1446,19 +1507,52 @@ const getFilteredSummary = async (req, res) => {
           message: `Location '${location}' not found in this summary period.`
         });
       }
+
       const locationNodes = {};
       const nodeEntries = fullSummary.byNode instanceof Map
         ? fullSummary.byNode.entries()
         : Object.entries(fullSummary.byNode || {});
+
+      // 🔹 NEW: aggregate byScope & byDepartment ONLY for this location (legacy mode)
+      const scopeTotals = {
+        'Scope 1': { CO2e: 0, dataPointCount: 0 },
+        'Scope 2': { CO2e: 0, dataPointCount: 0 },
+        'Scope 3': { CO2e: 0, dataPointCount: 0 }
+      };
+      const departmentAgg = {};
+
       for (const [id, nodeData] of nodeEntries) {
-        if (nodeData.location === location) locationNodes[id] = nodeData;
+        if (nodeData.location === location) {
+          locationNodes[id] = nodeData;
+
+          // scopes
+          if (nodeData.byScope) {
+            for (const s of ['Scope 1', 'Scope 2', 'Scope 3']) {
+              const sData = nodeData.byScope[s];
+              if (!sData) continue;
+              scopeTotals[s].CO2e += safeNum(sData.CO2e);
+              if (safeNum(sData.CO2e) > 0) scopeTotals[s].dataPointCount += 1;
+            }
+          }
+
+          // departments
+          const deptName = nodeData.department || 'Unknown';
+          if (!departmentAgg[deptName]) {
+            departmentAgg[deptName] = { CO2e: 0, nodeCount: 0 };
+          }
+          departmentAgg[deptName].CO2e += safeNum(nodeData.CO2e);
+          departmentAgg[deptName].nodeCount += 1;
+        }
       }
+
       filteredData = {
         locationName: location,
         period: fullSummary.period,
         emissions: locationData,
         nodes: locationNodes,
         nodeCount: locationData.nodeCount,
+        byScope: scopeTotals,
+        byDepartment: departmentAgg,
         percentage:
           fullSummary.totalEmissions.CO2e > 0
             ? ((locationData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
@@ -1485,6 +1579,7 @@ const getFilteredSummary = async (req, res) => {
     });
   }
 };
+
 
 
 // ---- Scope 1 + Scope 2 latest-total helper ---------------------------------
