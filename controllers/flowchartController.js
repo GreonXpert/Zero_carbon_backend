@@ -471,19 +471,55 @@ const getFlowchart = async (req, res) => {
       return res.status(404).json({ message: 'Flowchart not found' });
     }
 
-    // 3) Assessment-level availability
-   const client = await Client.findOne(
+// 3) Assessment-level availability (more tolerant + fallbacks)
+const isPrivileged =
+  ['super_admin', 'consultant_admin'].includes(req.user.userType);
+
+// Helper to normalize levels (same logic as Client.js)
+const normalizeLevels = (raw) => {
+  const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+  let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
+  arr = arr
+    .map(v => String(v || '').trim().toLowerCase())
+    .flatMap(v => {
+      if (!v) return [];
+      if (v === 'organisation') return ['organization'];
+      if (v === 'both') return ['organization', 'process'];
+      return [v];
+    })
+    .filter(v => ALLOWED.includes(v))
+    .filter((v, i, a) => a.indexOf(v) === i);
+
+  return arr;
+};
+
+// Load client's assessment level
+const client = await Client.findOne(
   { clientId },
   { 'submissionData.assessmentLevel': 1, _id: 0 }
 ).lean();
 
-if (!client) return res.status(404).json({ message: 'Client not found' });
+if (!client) {
+  return res.status(404).json({ message: 'Client not found' });
+}
 
-if (!canAccessModule(client, 'organization')) {
+// Collect levels from client, flowchart and user as fallback
+const clientLevels   = normalizeLevels(client?.submissionData?.assessmentLevel);
+const chartLevels    = normalizeLevels(flowchart?.assessmentLevel);
+const userLevels     = normalizeLevels(req.user?.assessmentLevel);
+const effectiveLevels = [...new Set([
+  ...clientLevels,
+  ...chartLevels,
+  ...userLevels
+])];
+
+// If privileged (super_admin / consultant_admin), always allow
+if (!isPrivileged && !effectiveLevels.includes('organization')) {
   return res.status(403).json({
     message: 'Flowchart is not available for this client',
     reason: 'assessmentLevel does not include "organization"',
-    assessmentLevel: getNormalizedLevels(client),
+    assessmentLevel: effectiveLevels,
     required: 'organization'
   });
 }
