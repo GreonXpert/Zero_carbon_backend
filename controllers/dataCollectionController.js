@@ -2465,84 +2465,96 @@ const deleteManualData = async (req, res) => {
 
 
 // Switch Input Type
+// Switch Input Type
 const switchInputType = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     const { inputType: newInputType, connectionDetails } = req.body;
-    
-    // Check permissions for switching input type - only client_admin allowed
+
+    // ✅ Only client_admin of the SAME client
     if (req.user.userType !== 'client_admin' || req.user.clientId !== clientId) {
-      return res.status(403).json({ 
-        message: 'Permission denied. Only Client Admin can switch input types.' 
+      return res.status(403).json({
+        message: 'Permission denied. Only Client Admin can switch input types.'
       });
     }
-    
+
+    // ✅ Validate input type
     if (!newInputType || !['manual', 'API', 'IOT'].includes(newInputType)) {
       return res.status(400).json({ message: 'Invalid input type' });
     }
-    
-    // Get flowchart
-    // Find scope configuration
-const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
-}
-const flowchart = activeChart.chart;
-    
-    // Find and update scope configuration
-    let updated = false;
-    for (let i = 0; i < flowchart.nodes.length; i++) {
-      if (flowchart.nodes[i].id === nodeId) {
-        const scopeIndex = flowchart.nodes[i].details.scopeDetails.findIndex(
-          s => s.scopeIdentifier === scopeIdentifier
-        );
-        
-        if (scopeIndex !== -1) {
-          const scope = flowchart.nodes[i].details.scopeDetails[scopeIndex];
-          const previousType = scope.inputType;
-          
-          // Update input type
-          scope.inputType = newInputType;
-          
-          // Reset previous connection details
-          scope.apiStatus = false;
-          scope.apiEndpoint = '';
-          scope.iotStatus = false;
-          scope.iotDeviceId = '';
-          
-          // Set new connection details
-          if (newInputType === 'API' && connectionDetails?.apiEndpoint) {
-            scope.apiEndpoint = connectionDetails.apiEndpoint;
-            scope.apiStatus = true;
-          } else if (newInputType === 'IOT' && connectionDetails?.deviceId) {
-            scope.iotDeviceId = connectionDetails.deviceId;
-            scope.iotStatus = true;
-          }
-          
-          flowchart.nodes[i].details.scopeDetails[scopeIndex] = scope;
-          updated = true;
-          
-          // Update or create collection config
-          const config = await DataCollectionConfig.findOneAndUpdate(
-            { clientId, nodeId, scopeIdentifier },
-            {
-              inputType: newInputType,
-              connectionDetails: newInputType === 'manual' ? {} : connectionDetails,
-              lastModifiedBy: req.user._id
-            },
-            { upsert: true, new: true }
-          );
-          
-          break;
-        }
-      }
+
+    // ✅ Load the active Flowchart as a real Mongoose document
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'No active flowchart found' });
     }
-    
+
+    let updated = false;
+    let previousType = null;
+    let updatedScopeState = null; // to send to Client.workflowTracking
+
+    // 🔍 Find node + scope and update them
+    for (const node of flowchart.nodes) {
+      if (node.id !== nodeId) continue;
+
+      const scopes = Array.isArray(node.details?.scopeDetails)
+        ? node.details.scopeDetails
+        : [];
+
+      const scope = scopes.find(s => s.scopeIdentifier === scopeIdentifier);
+      if (!scope) break;
+
+      previousType = scope.inputType;
+
+      // 1) Update input type
+      scope.inputType = newInputType;
+
+      // 2) Reset previous connection flags
+      scope.apiStatus = false;
+      scope.apiEndpoint = '';
+      scope.iotStatus = false;
+      scope.iotDeviceId = '';
+
+      // 3) Apply new connection details (if any)
+      if (newInputType === 'API' && connectionDetails?.apiEndpoint) {
+        scope.apiEndpoint = connectionDetails.apiEndpoint;
+        scope.apiStatus = true;
+      } else if (newInputType === 'IOT' && connectionDetails?.deviceId) {
+        scope.iotDeviceId = connectionDetails.deviceId;
+        scope.iotStatus = true;
+      }
+
+      updatedScopeState = {
+        apiEndpoint: scope.apiEndpoint,
+        iotDeviceId: scope.iotDeviceId,
+        apiStatus: scope.apiStatus,
+        iotStatus: scope.iotStatus
+      };
+
+      // mark the nested path as modified
+      flowchart.markModified('nodes');
+
+      // 4) Upsert DataCollectionConfig
+      await DataCollectionConfig.findOneAndUpdate(
+        { clientId, nodeId, scopeIdentifier },
+        {
+          inputType: newInputType,
+          connectionDetails: newInputType === 'manual' ? {} : (connectionDetails || {}),
+          lastModifiedBy: req.user._id
+        },
+        { upsert: true, new: true }
+      );
+
+      updated = true;
+      break;
+    }
+
     if (!updated) {
       return res.status(404).json({ message: 'Scope not found' });
     }
-    
-        await flowchart.save();
+
+    // ✅ Persist flowchart changes
+    await flowchart.save();
 
     // 🔁 Mirror change into Client.workflowTracking.dataInputPoints
     await reflectSwitchInputTypeInClient({
@@ -2552,29 +2564,29 @@ const flowchart = activeChart.chart;
       nodeId,
       scopeIdentifier,
       connectionDetails: {
-        apiEndpoint: flowchart.nodes[i].details.scopeDetails[scopeIndex].apiEndpoint || connectionDetails?.apiEndpoint,
-        deviceId:    flowchart.nodes[i].details.scopeDetails[scopeIndex].iotDeviceId || connectionDetails?.deviceId,
-        apiStatus:   flowchart.nodes[i].details.scopeDetails[scopeIndex].apiStatus,
-        iotStatus:   flowchart.nodes[i].details.scopeDetails[scopeIndex].iotStatus,
-        isActive:    true
+        apiEndpoint: updatedScopeState?.apiEndpoint || connectionDetails?.apiEndpoint,
+        deviceId: updatedScopeState?.iotDeviceId || connectionDetails?.deviceId,
+        apiStatus: updatedScopeState?.apiStatus,
+        iotStatus: updatedScopeState?.iotStatus,
+        isActive: true
       },
       userId: req.user?._id
     });
-    
-    res.status(200).json({
+
+    return res.status(200).json({
       message: `Input type switched to ${newInputType} successfully`,
       scopeIdentifier,
       newInputType
     });
-    
   } catch (error) {
     console.error('Switch input type error:', error);
-    res.status(500).json({ 
-      message: 'Failed to switch input type', 
-      error: error.message 
+    return res.status(500).json({
+      message: 'Failed to switch input type',
+      error: error.message
     });
   }
 };
+
 
 
 // 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)
