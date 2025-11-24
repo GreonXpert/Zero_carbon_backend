@@ -471,163 +471,70 @@ const getFlowchart = async (req, res) => {
       return res.status(404).json({ message: 'Flowchart not found' });
     }
 
-// 3) Assessment-level availability (more tolerant + fallbacks)
-const isPrivileged =
-  ['super_admin', 'consultant_admin'].includes(req.user.userType);
+    // 3) Check assessmentLevel only for non-privileged roles
+    const client = await Client.findOne(
+      { clientId },
+      { 'submissionData.assessmentLevel': 1, _id: 0 }
+    ).lean();
 
-// Helper to normalize levels (same logic as Client.js)
-const normalizeLevels = (raw) => {
-  const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
-  let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    const normalizeLevels = (raw) => {
+      const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+      let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      arr = arr
+        .map(v => String(v || '').trim().toLowerCase())
+        .flatMap(v => v === 'both' ? ['organization', 'process'] : [v])
+        .filter(v => ALLOWED.includes(v))
+        .filter((v, i, a) => a.indexOf(v) === i);
+      return arr;
+    };
 
-  arr = arr
-    .map(v => String(v || '').trim().toLowerCase())
-    .flatMap(v => {
-      if (!v) return [];
-      if (v === 'organisation') return ['organization'];
-      if (v === 'both') return ['organization', 'process'];
-      return [v];
-    })
-    .filter(v => ALLOWED.includes(v))
-    .filter((v, i, a) => a.indexOf(v) === i);
+    const clientLevels = normalizeLevels(client?.submissionData?.assessmentLevel);
+    const userLevels = normalizeLevels(req.user?.assessmentLevel);
+    const effectiveLevels = [...new Set([...clientLevels, ...userLevels])];
 
-  return arr;
-};
+    const privilegedRoles = ['super_admin', 'consultant_admin', 'consultant'];
+    const isPrivileged = privilegedRoles.includes(req.user.userType);
 
-// Load client's assessment level
-const client = await Client.findOne(
-  { clientId },
-  { 'submissionData.assessmentLevel': 1, _id: 0 }
-).lean();
+    // Only restrict when neither side includes organization
+    if (!isPrivileged && !effectiveLevels.includes('organization')) {
+      return res.status(403).json({
+        message: 'Flowchart is not available for this client',
+        reason: 'assessmentLevel does not include "organization"',
+        assessmentLevel: effectiveLevels,
+        required: 'organization'
+      });
+    }
 
-if (!client) {
-  return res.status(404).json({ message: 'Client not found' });
-}
-
-// Collect levels from client, flowchart and user as fallback
-const clientLevels   = normalizeLevels(client?.submissionData?.assessmentLevel);
-const chartLevels    = normalizeLevels(flowchart?.assessmentLevel);
-const userLevels     = normalizeLevels(req.user?.assessmentLevel);
-const effectiveLevels = [...new Set([
-  ...clientLevels,
-  ...chartLevels,
-  ...userLevels
-])];
-
-// If privileged (super_admin / consultant_admin), always allow
-if (!isPrivileged && !effectiveLevels.includes('organization')) {
-  return res.status(403).json({
-    message: 'Flowchart is not available for this client',
-    reason: 'assessmentLevel does not include "organization"',
-    assessmentLevel: effectiveLevels,
-    required: 'organization'
-  });
-}
-    // 4) Filter nodes by role
+    // 4) Filter nodes based on role (keep existing code)
     let filteredNodes = flowchart.nodes;
 
-    // Employee Head: show only nodes explicitly assigned to this head (primary rule),
-    // fallback to department/location match if assignment isn't set yet.
     if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
       const assigned = flowchart.nodes.filter(n =>
         n?.details?.employeeHeadId &&
         n.details.employeeHeadId.toString?.() === req.user.id
       );
-
-      filteredNodes = assigned.length > 0
-        ? assigned
-        : flowchart.nodes.filter(n =>
-            n?.details?.department === req.user.department ||
-            n?.details?.location === req.user.location
-          );
+      filteredNodes = assigned.length > 0 ? assigned : flowchart.nodes.filter(n =>
+        n?.details?.department === req.user.department ||
+        n?.details?.location === req.user.location
+      );
     }
 
-// Employee / Auditor / Viewer
-if (['employee', 'auditor', 'viewer'].includes(req.user.userType) && !permissionCheck.fullAccess) {
-  if (req.user.userType === 'employee') {
-    // Employees: return FULL details but only for scopes assigned to them
-    const userIdStr = String(req.user.id);
-    filteredNodes = flowchart.nodes.reduce((acc, node) => {
-      const base = typeof node.toObject === 'function' ? node.toObject() : node;
-      const rawScopes = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
-
-      // keep only scopes where this employee is assigned
-      const assignedScopes = rawScopes.filter(s => {
-        const assigned = Array.isArray(s?.assignedEmployees) ? s.assignedEmployees : [];
-        return assigned.map(x => String(x)).includes(userIdStr);
-      });
-
-      if (assignedScopes.length > 0) {
-        acc.push({
-          ...base,
-          details: {
-            ...base.details,
-            // IMPORTANT: give full objects for assigned scopes only
-            scopeDetails: assignedScopes
-          }
-        });
+    // Return data
+    return res.status(200).json({
+      success: true,
+      clientId,
+      totalNodes: filteredNodes.length,
+      flowchart: {
+        ...flowchart.toObject(),
+        nodes: filteredNodes
       }
-      return acc;
-    }, []);
-  } else {
-    // Auditors/Viewers: keep your existing safe/limited view
-    filteredNodes = flowchart.nodes.map(node => {
-      const base = typeof node.toObject === 'function' ? node.toObject() : node;
-      const scope = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
-      return {
-        ...base,
-        details: {
-          ...base.details,
-          scopeDetails: scope.map(s => ({
-            scopeIdentifier: s.scopeIdentifier,
-            scopeType: s.scopeType,
-            inputType: s.inputType ?? s.dataCollectionType
-          }))
-        }
-      };
     });
-  }
-}
-
-
-    // 5) Format nodes for React Flow
-    const rfNodes = filteredNodes.map(n => ({
-      id: n.id,
-      data: {
-        label: n.label,
-        details: n.details
-      },
-      position: n.position,
-      ...(n.parentNode ? { parentNode: n.parentNode } : {})
-    }));
-
-    // 6) Filter edges to only those connecting visible nodes
-    const visibleIds = new Set(rfNodes.map(n => n.id));
-    const rfEdges = flowchart.edges
-      .filter(e => visibleIds.has(e.source) && visibleIds.has(e.target))
-      .map(e => ({ id: e.id, source: e.source, target: e.target }));
-
-    // 7) Response
-    const response = {
-      clientId: flowchart.clientId,
-      createdBy: flowchart.createdBy,
-      creatorType: flowchart.creatorType,
-      lastModifiedBy: flowchart.lastModifiedBy,
-      version: flowchart.version,
-      createdAt: flowchart.createdAt,
-      updatedAt: flowchart.updatedAt,
-      nodes: rfNodes,
-      edges: rfEdges,
-      permissions: {
-        canEdit: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType),
-        canDelete: permissionCheck.fullAccess && ['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType)
-      }
-    };
-
-    return res.status(200).json(response);
   } catch (error) {
-    console.error('Error fetching flowchart:', error);
-    return res.status(500).json({ message: 'Failed to fetch flowchart', error: error.message });
+    console.error('❌ Error fetching flowchart:', error);
+    return res.status(500).json({
+      message: 'Failed to fetch flowchart',
+      error: error.message
+    });
   }
 };
 
