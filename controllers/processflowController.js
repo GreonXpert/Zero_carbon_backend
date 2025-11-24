@@ -188,24 +188,35 @@ const saveProcessFlowchart = async (req, res) => {
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
-    if (client.stage !== 'active') {
+
+    // 👉 Sandbox flags
+    const isSandboxClient = client.sandbox === true;
+    const isSandboxUser   = req.user.sandbox === true;
+
+    // ❗ For NON-sandbox clients we keep the strict rule:
+    //    process flowcharts can only be created for active clients.
+    // ✅ For sandbox clients we SKIP this stage check so that you can test before "active".
+    if (!isSandboxClient && client.stage !== 'active') {
       return res.status(400).json({ 
         message: 'Process flowcharts can only be created for active clients' 
       });
     }
 
     // 3) Check process flowchart availability (array-aware)
-const normLevels = getNormalizedLevels(client);  // ['process', ...] as applicable
-if (!canAccessProcess(client)) {
-  return res.status(403).json({
-    message: 'Process flowchart is not available for this client',
-    reason: 'assessmentLevel does not include "process"',
-    assessmentLevel: normLevels,
-    required: 'process'
-  });
-}
-// keep a normalized value for downstream usage
-const assessmentLevel = normLevels;
+    const normLevels = getNormalizedLevels(client);  // ['process', ...] as applicable
+
+    // ❗ For NON-sandbox clients, still enforce assessmentLevel.
+    // ✅ For sandbox clients, allow even if assessmentLevel doesn't yet include 'process'.
+    if (!isSandboxClient && !canAccessProcess(client)) {
+      return res.status(403).json({
+        message: 'Process flowchart is not available for this client',
+        reason: 'assessmentLevel does not include "process"',
+        assessmentLevel: normLevels,
+        required: 'process'
+      });
+    }
+    // keep a normalized value for downstream usage
+    const assessmentLevel = normLevels;
 
     // 4) Auto-update client workflow status when consultant starts creating process flowchart
     if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
@@ -222,10 +233,9 @@ const assessmentLevel = normLevels;
 
     // 6) Normalize nodes based on assessmentLevel
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
-
     
-      // ⬇️ ADD THIS
-      const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
+    // ⬇️ ADD THIS
+    const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
     // 7) Normalize edges - The schema allows for many edges per node.
     const normalizedEdges = normalizeEdges(flowchartData.edges);
@@ -298,16 +308,15 @@ const assessmentLevel = normLevels;
     };
 
     const hasOrg  = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
-const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
+    const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
 
-if (hasProc && !hasOrg) {
-  responseData.hasFullScopeDetails = true;
-  responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level).';
-} else if (hasProc && hasOrg) {
-  responseData.hasFullScopeDetails = false;
-  responseData.message = 'Process flowchart saved with basic details only (full scope details available in the main flowchart).';
-}
-
+    if (hasProc && !hasOrg) {
+      responseData.hasFullScopeDetails = true;
+      responseData.message = 'Process flowchart saved with complete scope details (flowchart not available for this assessment level).';
+    } else if (hasProc && hasOrg) {
+      responseData.hasFullScopeDetails = false;
+      responseData.message = 'Process flowchart saved with basic details only (full scope details available in the main flowchart).';
+    }
 
     res.status(isNew ? 201 : 200).json({ 
       message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',

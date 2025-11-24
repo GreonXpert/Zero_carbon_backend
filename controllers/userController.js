@@ -365,20 +365,37 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     // Derive the email, name, etc. from client data
     const companyName =
       client.submissionData?.companyInfo?.companyName ||
-      client.leadInfo?.companyName;
+      client.leadInfo?.companyName ||
+      "Client";
+
     const primaryContact =
       client.submissionData?.companyInfo?.primaryContactPerson || {};
-    const email = primaryContact.email || client.leadInfo?.email;
+
+    const email =
+      primaryContact.email ||
+      client.leadInfo?.email;
+
     const phone =
-      primaryContact.phoneNumber || client.leadInfo?.mobileNumber;
+      primaryContact.phoneNumber ||
+      primaryContact.contactNumber ||
+      client.leadInfo?.mobileNumber;
+
     const contactName =
-      primaryContact.name || client.leadInfo?.contactPersonName;
+      primaryContact.name ||
+      primaryContact.contactPersonName ||
+      client.leadInfo?.contactPersonName ||
+      companyName ||
+      "Client Admin";
 
     if (!email) {
       throw new Error("No email found for client admin creation");
     }
 
-    // 1) Check if a client_admin with this email and clientId already exists
+    const levels = getNormalizedLevels(client); // normalized assessmentLevel
+
+    // =========================================================================
+    // 1) Try to find an existing client_admin for THIS final clientId
+    // =========================================================================
     let existingClientAdmin = await User.findOne({
       email: email,
       userType: "client_admin",
@@ -387,15 +404,21 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
     if (existingClientAdmin) {
       try {
-        // 🔹 NEW: update sandbox flag if explicitly passed
+        // 🔹 Update sandbox / active flags if explicitly passed
         if (typeof clientData.sandbox === "boolean") {
-          existingClientAdmin.sandbox = clientData.sandbox;
+          if (clientData.sandbox === true) {
+            existingClientAdmin.sandbox = true;
+            existingClientAdmin.isActive = false;
+          } else {
+            existingClientAdmin.isActive = true; // pre-save hook will force sandbox=false
+          }
         }
 
-        const levels = getNormalizedLevels(client); // normalize from client document
         if (Array.isArray(levels) && levels.length) {
           existingClientAdmin.assessmentLevel = levels;
         }
+
+        existingClientAdmin.companyName = companyName;
 
         await existingClientAdmin.save();
       } catch (e) {
@@ -405,17 +428,58 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         );
       }
 
-      // If it already exists, just link it and return without throwing
+      if (!client.accountDetails) client.accountDetails = {};
       client.accountDetails.clientAdminId = existingClientAdmin._id;
       await client.save();
+
       return existingClientAdmin;
     }
 
-    // 2) If not found, generate a default password and create a new user
-    const cleanCompanyName = companyName.replace(/[^a-zA-Z0-9]/g, "");
+    // =========================================================================
+    // 1b) If we're moving from sandbox → active, try to REUSE sandbox user
+    //     This happens when clientData.sandbox === false (live account)
+    // =========================================================================
+    if (clientData.sandbox === false) {
+      // Any sandbox client_admin with this email
+      let sandboxAdmin = await User.findOne({
+        email: email,
+        userType: "client_admin",
+        sandbox: true,
+      });
+
+      if (sandboxAdmin) {
+        // ✅ Upgrade sandbox user to live client admin
+        sandboxAdmin.clientId = clientId;       // <--- update clientId to ACTIVE
+        sandboxAdmin.sandbox  = false;          // leave sandbox mode
+        sandboxAdmin.isActive = true;           // now active user
+        sandboxAdmin.companyName = companyName;
+
+        if (Array.isArray(levels) && levels.length) {
+          sandboxAdmin.assessmentLevel = levels;
+        }
+
+        await sandboxAdmin.save();
+
+        if (!client.accountDetails) client.accountDetails = {};
+        client.accountDetails.clientAdminId = sandboxAdmin._id;
+        // keep existing defaultPassword if already set
+        await client.save();
+
+        return sandboxAdmin;
+      }
+    }
+
+    // =========================================================================
+    // 2) No existing or sandbox user – create a brand new client_admin
+    // =========================================================================
+    const cleanCompanyName = (companyName || "Client")
+      .toString()
+      .replace(/[^a-zA-Z0-9]/g, "");
     const year = new Date().getFullYear();
     const defaultPassword = `${cleanCompanyName}@${year}`;
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
+
+    const isSandbox = clientData.sandbox === true;
 
     const clientAdmin = new User({
       email: email,
@@ -429,10 +493,13 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         "Not provided",
       companyName: companyName,
       clientId: clientId,
-      assessmentLevel: getNormalizedLevels(client),
+      assessmentLevel: levels,
       createdBy: clientData.consultantId,
-      // 🔹 NEW: sandbox flag – true for submitted stage, false for active stage
-      sandbox: clientData.sandbox === true,
+      // 🔹 Flags:
+      //    - Sandbox user (submitted stage) => sandbox = true, isActive = false
+      //    - Live user   (active stage)     => sandbox = false, isActive = true
+      sandbox: isSandbox,
+      isActive: isSandbox ? false : true,
       permissions: {
         canViewAllClients: false,
         canManageUsers: true,
@@ -447,18 +514,17 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     await clientAdmin.save();
 
     // Update the client document with the new clientAdminId
+    if (!client.accountDetails) client.accountDetails = {};
     client.accountDetails.clientAdminId = clientAdmin._id;
     client.accountDetails.defaultPassword = defaultPassword;
     await client.save();
 
-    // 🔁 (unchanged) mirror assessmentLevel etc. to other users if you already had that logic here
-    // ... keep your existing sync code and email sending code as-is ...
-
+    // Send activation email (same as before)
     const emailSubject = "Welcome to ZeroCarbon - Your Account is Active";
     const emailMessage = `
       Dear ${contactName},
 
-      Your ZeroCarbon account has been activated successfully.
+      Your ZeroCarbon account has been ${isSandbox ? "created in sandbox mode" : "activated successfully"}.
 
       Login Credentials:
       Email: ${email}
@@ -466,9 +532,11 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
       Please change your password after first login.
 
-      Your subscription is valid until: ${moment(
+      Your subscription is valid until: ${
         client.accountDetails.subscriptionEndDate
-      ).format("DD/MM/YYYY")}
+          ? moment(client.accountDetails.subscriptionEndDate).format("DD/MM/YYYY")
+          : "N/A"
+      }
     `;
     await sendMail(email, emailSubject, emailMessage);
 

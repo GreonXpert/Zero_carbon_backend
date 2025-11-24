@@ -305,19 +305,27 @@ const saveFlowchart = async (req, res) => {
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    // 3) Check flowchart availability based on assessment level (array-aware)
-const levels = getNormalizedLevels(client); // e.g., ['organization','process'] etc.
-if (!canAccessModule(client, 'organization')) {
-  return res.status(403).json({
-    message: 'Flowchart is not available for this client',
-    reason: 'assessmentLevel does not include "organization"',
-    assessmentLevel: levels,
-    required: 'organization'
-  });
-}
-// keep a normalized value for downstream usage
-const assessmentLevel = levels;
+    // 2.1) Sandbox flags
+    const isSandboxClient = client.sandbox === true;
+    const isSandboxUser   = req.user.sandbox === true;
 
+    // 3) Check flowchart availability based on assessment level (array-aware)
+    const levels = getNormalizedLevels(client); // e.g. ['organization','process'] etc.
+
+    // 👉 For NON-sandbox clients we keep the strict rule.
+    // 👉 For sandbox clients we **allow** flowchart even if assessmentLevel is not yet perfect,
+    //    so consultants can test during onboarding.
+    if (!isSandboxClient && !canAccessModule(client, 'organization')) {
+      return res.status(403).json({
+        message: 'Flowchart is not available for this client',
+        reason: 'assessmentLevel does not include "organization"',
+        assessmentLevel: levels,
+        required: 'organization'
+      });
+    }
+
+    // keep a normalized value for downstream usage
+    const assessmentLevel = levels;
 
     // 4) Auto-update client workflow status when consultant starts creating flowchart
     if (['consultant', 'consultant_admin'].includes(req.user.userType)) {
@@ -343,7 +351,7 @@ const assessmentLevel = levels;
     // 7) Normalize & validate nodes - flowchart always includes full scope details when available
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'flowchart');
     
-    // ⬇️ ADD THIS: guarantee comment fields on all custom EF values
+    // ⬇️ guarantee comment fields on all custom EF values
     const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
     // 8) Normalize edges
@@ -408,14 +416,14 @@ const assessmentLevel = levels;
       assessmentLevel: assessmentLevel
     };
 
-   const hasOrg = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
-const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
+    const hasOrg = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
+    const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
 
-if (hasOrg && hasProc) {
-  responseData.note = 'Flowchart contains full scope details. Process flowchart available with basic structure only.';
-} else if (hasOrg && !hasProc) {
-  responseData.note = 'Flowchart contains full scope details. Process flowchart not available for this assessment level.';
-}
+    if (hasOrg && hasProc) {
+      responseData.note = 'Flowchart contains full scope details. Process flowchart available with basic structure only.';
+    } else if (hasOrg && !hasProc) {
+      responseData.note = 'Flowchart contains full scope details. Process flowchart not available for this assessment level.';
+    }
 
     // 13) Respond
     return res.status(isNew ? 201 : 200).json(responseData);
@@ -437,7 +445,7 @@ if (hasOrg && hasProc) {
       error:   error.message
     });
   }
-};
+}
 
 // Get single Flowchart with proper permissions
 // Get single Flowchart with proper permissions

@@ -6,10 +6,14 @@ const Notification = require("../models/Notification");
 const moment = require("moment");
 const { emailQueue } = require("../utils/emailQueue");
 const { withTimeout } = require('../utils/queueUtils');
-
+const mongoose = require("mongoose"); 
 // Add these imports at the top of your clientController.js file
 const Flowchart = require("../models/Flowchart");
 const ProcessFlowchart = require("../models/ProcessFlowchart");
+
+// ⬇️ NEW imports for reductions + sandbox audit + (optional) SBTi
+const Reduction = require("../models/Reduction/Reduction");        // adjust path if needed
+const SbtiTarget = require("../models/Decarbonization/SbtiTarget"); // adjust path if needed
 
 const {
   createLeadActionNotification,
@@ -50,9 +54,145 @@ const {
   validateSubmissionForLevels
 } = require('../utils/assessmentLevel');
 
-const { createClientSandbox } = require('./sandboxController');
 
 
+
+
+/**
+ * Helper: when a client moves from sandbox/proposal → active,
+ * update clientId for:
+ *  - Users
+ *  - Flowcharts
+ *  - ProcessFlowcharts
+ *  - Reductions
+ *  - Decarbonization (raw collection 'decarbonizations')
+ *
+ * Also writes a SandboxAudit entry (who did it, when, what changed).
+ */
+async function updateClientIdReferencesOnActivation(oldClientId, newClientId, actorUserId, actionLabel = 'proposal_accept') {
+  if (!oldClientId || !newClientId || oldClientId === newClientId) {
+    return;
+  }
+
+  const conn = mongoose.connection;
+  const results = {};
+
+  // 1) Users: move them from old clientId → new clientId, and activate them
+  try {
+    const userRes = await User.updateMany(
+      { clientId: oldClientId },
+      {
+        $set: {
+          clientId: newClientId,
+          sandbox: false,
+          isActive: true,
+        },
+      }
+    );
+    results.users = {
+      matched: userRes.matchedCount ?? userRes.n ?? 0,
+      modified: userRes.modifiedCount ?? userRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] User update error:', err.message);
+    results.users = { error: err.message };
+  }
+
+  // 2) Flowcharts
+  try {
+    const fcRes = await Flowchart.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.flowcharts = {
+      matched: fcRes.matchedCount ?? fcRes.n ?? 0,
+      modified: fcRes.modifiedCount ?? fcRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] Flowchart update error:', err.message);
+    results.flowcharts = { error: err.message };
+  }
+
+  // 3) Process Flowcharts
+  try {
+    const pfcRes = await ProcessFlowchart.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.processFlowcharts = {
+      matched: pfcRes.matchedCount ?? pfcRes.n ?? 0,
+      modified: pfcRes.modifiedCount ?? pfcRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] ProcessFlowchart update error:', err.message);
+    results.processFlowcharts = { error: err.message };
+  }
+
+  // 4) Reductions
+  try {
+    const redRes = await Reduction.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.reductions = {
+      matched: redRes.matchedCount ?? redRes.n ?? 0,
+      modified: redRes.modifiedCount ?? redRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] Reduction update error:', err.message);
+    results.reductions = { error: err.message };
+  }
+
+  // 5) Decarbonization collection (raw collection name)
+  try {
+    const decarbColl = conn.collection('decarbonizations'); // same name used in sandboxController
+    const decRes = await decarbColl.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.decarbonizations = {
+      matched: decRes.matchedCount ?? decRes.n ?? 0,
+      modified: decRes.modifiedCount ?? decRes.nModified ?? 0,
+    };
+  } catch (err) {
+    // Not fatal – maybe collection does not exist yet
+    console.warn('[updateClientIdReferencesOnActivation] Decarbonization update warning:', err.message);
+    results.decarbonizations = { warning: err.message };
+  }
+
+  //6) (Optional) if you also want to update SBTi targets by model
+  try {
+    const sbtiRes = await SbtiTarget.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.sbtiTargets = {
+      matched: sbtiRes.matchedCount ?? sbtiRes.n ?? 0,
+      modified: sbtiRes.modifiedCount ?? sbtiRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.warn('[updateClientIdReferencesOnActivation] SBTi update warning:', err.message);
+    results.sbtiTargets = { warning: err.message };
+  }
+
+  // 7) Write an audit log entry (who, when, what)
+  try {
+    if (actorUserId) {
+      await SandboxAudit.create({
+        oldClientId,
+        newClientId,
+        updatedBy: actorUserId,
+        action: actionLabel,
+        reason: 'Client moved to active. ClientId and related documents updated.',
+        meta: results,
+      });
+    }
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] SandboxAudit create error:', err.message);
+  }
+
+  return results;
+}
 
 /**
  * Returns an array of "nodes" with scopeDetails that can be fed to mergePoints()
@@ -2559,7 +2699,7 @@ const getClientProposalData = async (req, res) => {
 const updateProposalStatus = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { action, reason } = req.body;
+    const { action, reason, sandboxStatus } = req.body; // 🔹 NEW: sandboxStatus
 
     // Only consultant_admin can change proposal status
     if (req.user.userType !== "consultant_admin") {
@@ -2585,8 +2725,14 @@ const updateProposalStatus = async (req, res) => {
       client.proposalData = {};
     }
 
+    // ⬅️ Save the OLD clientId before we change it
+    const oldClientId = client.clientId;
+
+    // ==========================
+    // ACCEPT FLOW
+    // ==========================
     if (action === "accept") {
-      // 1) Mark proposal as accepted
+      // 1) Mark proposal as accepted (business meaning)
       client.status = "proposal_accepted";
       client.proposalData.clientApprovalDate = new Date();
 
@@ -2597,12 +2743,13 @@ const updateProposalStatus = async (req, res) => {
 
       client.proposalData.approvedBy = approvedByName;
 
-      // 2) Move to Active stage
       const prevStage = client.stage;
-      client.stage = "active";
 
-      
-      // 🔹 NEW: final clientId for active stage (GreonXXX)
+      // 2) Move to Active stage (as per your requirement)
+      client.stage = "active";
+      client.status = "active"; // 🔹 explicitly set active
+
+      // 3) Build / keep sequence and generate ACTIVE clientId (GreonXXX)
       if (!client.clientSequenceNumber) {
         const match = client.clientId && client.clientId.match(/(\d+)$/);
         if (match) {
@@ -2612,15 +2759,23 @@ const updateProposalStatus = async (req, res) => {
           client.clientSequenceNumber = seq;
         }
       }
-      client.clientId = Client.buildClientIdForStage(
+
+      const newClientId = Client.buildClientIdForStage(
         client.clientSequenceNumber,
         "active"
       );
+      client.clientId = newClientId;
 
-      // IMPORTANT: when client becomes active, it's no longer sandbox
-      client.sandbox = false;
+      // 4) Sandbox handling (NEW LOGIC)
+      //
+      // - If sandboxStatus is provided (true/false) → override sandbox flag
+      // - If sandboxStatus is NOT provided → DO NOT modify sandbox value
+      if (typeof sandboxStatus === "boolean") {
+        client.sandbox = sandboxStatus;
+      }
+      // (previously you had: client.sandbox = false; we removed that to respect sandboxStatus)
 
-      // 3) Initialize / update account details for active subscription
+      // 5) Initialize / update account details for active subscription
       if (!client.accountDetails) {
         client.accountDetails = {};
       }
@@ -2643,32 +2798,54 @@ const updateProposalStatus = async (req, res) => {
         client.accountDetails.dataSubmissions = 0;
       }
 
-      // NOTE: we DO NOT touch client.accountDetails.pendingSubscriptionRequest
-      // so Mongoose does not try to cast it from undefined -> Object.
-
-      // 4) Timeline entry
+      // 6) Timeline entry
       client.timeline.push({
         stage: "active",
         status: "active",
         action: "Proposal accepted and account activated",
         performedBy: req.user.id,
-        notes: "Client subscription activated for 1 year",
+        notes:
+          reason ||
+          (typeof sandboxStatus === "boolean"
+            ? `Client activation; sandboxStatus = ${sandboxStatus}`
+            : "Client subscription activated for 1 year"),
         timestamp: new Date(),
       });
 
-      // 5) Try to create a client admin (best-effort, not blocking)
-       try {
-        await createClientAdmin(client.clientId, {
+      // 7) Save client FIRST (so newClientId is persistent)
+      await client.save();
+
+      // 8) Update references in all related collections
+      //    - Users (sandbox → active, clientId updated)
+      //    - Flowchart / ProcessFlowchart
+      //    - Reduction
+      //    - Decarbonization
+      try {
+        await updateClientIdReferencesOnActivation(
+          oldClientId,
+          newClientId,
+          req.user.id,
+          "proposal_accept"
+        );
+      } catch (err) {
+        console.error(
+          "updateClientIdReferencesOnActivation error:",
+          err.message
+        );
+        // We don't fail the main request for this, but we log it.
+      }
+
+      // 9) Best-effort: create a client admin if needed
+      try {
+        await createClientAdmin(newClientId, {
           consultantId: req.user.id,
-          sandbox: false, // ✅ once active, user is no longer sandbox
+          sandbox: typeof sandboxStatus === "boolean" ? sandboxStatus : false,
         });
       } catch (err) {
         console.warn(`createClientAdmin warning: ${err.message}`);
       }
-      // 6) Save client
-      await client.save();
 
-      // 7) Real-time events
+      // 10) Real-time events
       try {
         await emitClientStageChange(client, prevStage, req.user.id);
       } catch (err) {
@@ -2681,7 +2858,7 @@ const updateProposalStatus = async (req, res) => {
         console.warn(`emitClientListUpdate warning: ${err.message}`);
       }
 
-      // 8) Response
+      // 11) Response
       return res.status(200).json({
         message: "Proposal accepted and client account activated",
         client: {
@@ -2692,8 +2869,12 @@ const updateProposalStatus = async (req, res) => {
           sandbox: client.sandbox,
         },
       });
-    } else if (action === "reject") {
-      // Reject flow
+    }
+
+    // ==========================
+    // REJECT FLOW
+    // ==========================
+    else if (action === "reject") {
       client.status = "proposal_rejected";
       client.proposalData.rejectionReason = reason;
 
@@ -2723,7 +2904,12 @@ const updateProposalStatus = async (req, res) => {
           sandbox: client.sandbox,
         },
       });
-    } else {
+    }
+
+    // ==========================
+    // INVALID ACTION
+    // ==========================
+    else {
       return res.status(400).json({
         message: "Invalid action. Use 'accept' or 'reject'",
       });
@@ -2736,6 +2922,8 @@ const updateProposalStatus = async (req, res) => {
     });
   }
 };
+
+
 
 
 
