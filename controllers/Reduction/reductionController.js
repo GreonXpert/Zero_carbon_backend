@@ -634,98 +634,185 @@ exports.getAllReductions = async (req, res) => {
 
 
 /** Update + recalc */
+/** Update + recalc */
 exports.updateReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
     const perm = await canCreateOrEdit(req.user, clientId);
-    if (!perm.ok) return res.status(403).json({ success:false, message: perm.reason });
+    if (!perm.ok) {
+      return res.status(403).json({ success: false, message: perm.reason });
+    }
 
-    const doc = await Reduction.findOne({ clientId, projectId, isDeleted:false });
-    if (!doc) return res.status(404).json({ success:false, message:'Not found' });
+    const doc = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
 
-    // Patch allowed fields
+    // ---------- 1) Unpack body ----------
     const body = req.body || {};
-    if (body.projectName != null) doc.projectName = body.projectName;
-    if (body.projectActivity != null) doc.projectActivity = body.projectActivity;
-    if (body.scope != null) doc.scope = body.scope;
-    if (body.location) {
-      doc.location.latitude  = body.location.latitude  ?? doc.location.latitude;
-      doc.location.longitude = body.location.longitude ?? doc.location.longitude;
-      if (Object.prototype.hasOwnProperty.call(body.location, 'place')) {
-        doc.location.place = body.location.place ?? doc.location.place;
-      }
-      if (Object.prototype.hasOwnProperty.call(body.location, 'address')) {
-        doc.location.address = body.location.address ?? doc.location.address;
-      }
-    }
+    const {
+      projectName,
+      projectActivity,
+      scope,
+      location,
+      category,
+      commissioningDate,
+      endDate,
+      description,
+      baselineMethod,
+      baselineJustification,
+      calculationMethodology,
+      m1,
+      m2
+    } = body;
 
-    if (body.commissioningDate) doc.commissioningDate = new Date(body.commissioningDate);
-    if (body.endDate)           doc.endDate           = new Date(body.endDate);
-    if (body.description != null) doc.description = body.description;
+    // ---------- 2) Optional reductionDataEntry (manual / API / IOT) ----------
+    let reductionEntryPayload = null;
+    const hasEntry =
+      Object.prototype.hasOwnProperty.call(body, 'reductionDataEntry') ||
+      Object.prototype.hasOwnProperty.call(body, 'reductionDateEntry');
 
-    if (body.baselineMethod != null) doc.baselineMethod = body.baselineMethod;
-    if (body.baselineJustification != null) doc.baselineJustification = body.baselineJustification;
-
-    if (body.calculationMethodology) doc.calculationMethodology = body.calculationMethodology;
-
-    if (doc.calculationMethodology === 'methodology1' && body.m1) {
-      if (Array.isArray(body.m1.ABD)) doc.m1.ABD = body.m1.ABD.map(normalizeUnitItem('B'));
-      if (Array.isArray(body.m1.APD)) doc.m1.APD = body.m1.APD.map(normalizeUnitItem('P'));
-      if (Array.isArray(body.m1.ALD)) doc.m1.ALD = body.m1.ALD.map(normalizeUnitItem('L'));
-      if (body.m1.bufferPercent != null) doc.m1.bufferPercent = Number(body.m1.bufferPercent);
-    }
-
-    if (req.body.processFlow) {
-      const pf = normalizeProcessFlow(req.body.processFlow, req.user);
-
-      if (pf) {
-        if (!doc.processFlow) doc.processFlow = {};
-        if (pf.mode) doc.processFlow.mode = pf.mode;
-        if (pf.hasOwnProperty('flowchartId')) {
-          doc.processFlow.flowchartId = pf.flowchartId;
-        }
-        if (pf.mapping) {
-          doc.processFlow.mapping = pf.mapping;
-        }
-        if (pf.snapshot) {
-          // version bump (if existing snapshot)
-          const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
-          const nextVer = prevVer > 0 ? prevVer + 1 : (pf.snapshot.metadata?.version || 1);
-          pf.snapshot.metadata = pf.snapshot.metadata || {};
-          pf.snapshot.metadata.version = nextVer;
-
-          doc.processFlow.snapshot = pf.snapshot;
-          doc.processFlow.snapshotCreatedAt = new Date();
-          doc.processFlow.snapshotCreatedBy = req.user?.id;
-        }
+    if (hasEntry) {
+      try {
+        const incomingEntry = readReductionEntryFromBody(body);
+        reductionEntryPayload = normalizeReductionDataEntry(incomingEntry);
+      } catch (e) {
+        return res.status(400).json({ success: false, message: e.message });
       }
     }
 
-    /* ✅ INSERT THIS BLOCK HERE — handle optional new uploads (append up to 5, replace cover if sent) */
+    // ---------- 3) Optional processFlow payload ----------
+    let processFlowPayload;
+    if (body.processFlow) {
+      processFlowPayload = normalizeProcessFlow(body.processFlow, req.user);
+    }
+
+    // ---------- 4) Patch basic project fields ----------
+    if (projectName != null)       doc.projectName = projectName;
+    if (projectActivity != null)   doc.projectActivity = projectActivity;
+    if (scope != null)             doc.scope = scope;
+    if (category != null)          doc.category = category;
+
+    if (location) {
+      doc.location.latitude  = location.latitude  ?? doc.location.latitude;
+      doc.location.longitude = location.longitude ?? doc.location.longitude;
+
+      if (Object.prototype.hasOwnProperty.call(location, 'place')) {
+        doc.location.place = location.place ?? doc.location.place;
+      }
+      if (Object.prototype.hasOwnProperty.call(location, 'address')) {
+        doc.location.address = location.address ?? doc.location.address;
+      }
+    }
+
+    if (commissioningDate) doc.commissioningDate = new Date(commissioningDate);
+    if (endDate)           doc.endDate           = new Date(endDate);
+    if (description != null)           doc.description = description;
+    if (baselineMethod != null)        doc.baselineMethod = baselineMethod;
+    if (baselineJustification != null) doc.baselineJustification = baselineJustification;
+
+    if (calculationMethodology) {
+      doc.calculationMethodology = calculationMethodology;
+    }
+
+    // ---------- 5) Methodology-specific data (M1 / M2) ----------
+
+    // M1 (ABD/APD/ALD + bufferPercent)
+    if (doc.calculationMethodology === 'methodology1' && m1) {
+      if (Array.isArray(m1.ABD)) {
+        doc.m1.ABD = m1.ABD.map(normalizeUnitItem('B'));
+      }
+      if (Array.isArray(m1.APD)) {
+        doc.m1.APD = m1.APD.map(normalizeUnitItem('P'));
+      }
+      if (Array.isArray(m1.ALD)) {
+        doc.m1.ALD = m1.ALD.map(normalizeUnitItem('L'));
+      }
+      if (m1.bufferPercent != null) {
+        doc.m1.bufferPercent = Number(m1.bufferPercent);
+      }
+      // (optional) leave doc.m2 as is; it is ignored when methodology1
+    }
+
+    // M2 (ALD + formulaRef)
+    if (doc.calculationMethodology === 'methodology2' && m2) {
+      doc.m2 = normalizeM2FromBody(m2);
+      // (optional) M1 is kept as historical config; not used when methodology2
+    }
+
+    // ---------- 6) reductionDataEntry (input type / endpoint / device) ----------
+    if (reductionEntryPayload) {
+      doc.reductionDataEntry = {
+        ...(doc.reductionDataEntry?.toObject?.() ?? {}),
+        ...reductionEntryPayload
+      };
+    }
+
+    // ---------- 7) processFlow (snapshot / mapping / version bump) ----------
+    if (processFlowPayload) {
+      if (!doc.processFlow) doc.processFlow = {};
+
+      if (processFlowPayload.mode) {
+        doc.processFlow.mode = processFlowPayload.mode;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(processFlowPayload, 'flowchartId')) {
+        doc.processFlow.flowchartId = processFlowPayload.flowchartId;
+      }
+
+      if (processFlowPayload.mapping) {
+        doc.processFlow.mapping = processFlowPayload.mapping;
+      }
+
+      if (processFlowPayload.snapshot) {
+        const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
+        const nextVer =
+          prevVer > 0
+            ? prevVer + 1
+            : (processFlowPayload.snapshot.metadata?.version || 1);
+
+        processFlowPayload.snapshot.metadata =
+          processFlowPayload.snapshot.metadata || {};
+        processFlowPayload.snapshot.metadata.version = nextVer;
+
+        doc.processFlow.snapshot = processFlowPayload.snapshot;
+        doc.processFlow.snapshotCreatedAt = new Date();
+        doc.processFlow.snapshotCreatedBy = req.user?.id;
+      }
+    }
+
+    // ---------- 8) Media uploads (coverImage + extra images) ----------
     try {
       await saveReductionFiles(req, doc);
     } catch (moveErr) {
       console.warn('⚠ saveReductionFiles(update) warning:', moveErr.message);
     }
-    /* ✅ END INSERT */
 
-    await doc.validate(); // will recompute in pre('validate')
+    // ---------- 9) Recalculate + save ----------
+    await doc.validate(); // invokes pre('validate') in model to recompute M1/M2, endpoints, etc.
     await doc.save();
 
+    // ---------- 10) Notifications / workflow sync ----------
     notifyReductionEvent({
       actor: req.user,
       clientId,
       action: 'updated',
       doc
     }).catch(() => {});
+
     syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
-    res.status(200).json({ success:true, message:'Updated', data: doc });
+    return res.status(200).json({ success: true, message: 'Updated', data: doc });
   } catch (err) {
     console.error('updateReduction error:', err);
-    res.status(500).json({ success:false, message:'Failed to update reduction', error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update reduction',
+      error: err.message
+    });
   }
 };
+
 
 
 /** Recalculate explicitly (useful after small edits) */
