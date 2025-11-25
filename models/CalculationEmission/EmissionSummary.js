@@ -239,7 +239,70 @@ const emissionSummarySchema = new mongoose.Schema({
     hasErrors: { type: Boolean, default: false },
     errors: [String],
     calculationDuration: Number // in milliseconds
+  },
+  reductionSummary: {
+  totalNetReduction: { type: Number, default: 0 },   // tCO2e
+  entriesCount:      { type: Number, default: 0 },
+
+  // Array so frontend can list all projects
+  byProject: [{
+    projectId:        { type: String },
+    projectName:      { type: String },
+    projectActivity:  { type: String },
+    category:         { type: String },
+    scope:            { type: String },   // text like "Scope 1", "Scope 2", etc.
+    location:         { type: String },   // formatted label, e.g. "Mumbai, India"
+    methodology:      { type: String },   // methodology1 / methodology2 / unknown
+    totalNetReduction:{ type: Number, default: 0 },
+    entriesCount:     { type: Number, default: 0 }
+  }],
+
+  // Simple objects keyed by name, e.g. "Scope 1", "Energy Efficiency"
+  byCategory: {
+    type: Map,
+    of: new mongoose.Schema({
+      totalNetReduction: { type: Number, default: 0 },
+      entriesCount:      { type: Number, default: 0 }
+    }, { _id: false }),
+    default: {}
+  },
+
+  byScope: {
+    type: Map,
+    of: new mongoose.Schema({
+      totalNetReduction: { type: Number, default: 0 },
+      entriesCount:      { type: Number, default: 0 }
+    }, { _id: false }),
+    default: {}
+  },
+
+  byLocation: {
+    type: Map,
+    of: new mongoose.Schema({
+      totalNetReduction: { type: Number, default: 0 },
+      entriesCount:      { type: Number, default: 0 }
+    }, { _id: false }),
+    default: {}
+  },
+
+  byProjectActivity: {
+    type: Map,
+    of: new mongoose.Schema({
+      totalNetReduction: { type: Number, default: 0 },
+      entriesCount:      { type: Number, default: 0 }
+    }, { _id: false }),
+    default: {}
+  },
+
+  byMethodology: {
+    type: Map,
+    of: new mongoose.Schema({
+      totalNetReduction: { type: Number, default: 0 },
+      entriesCount:      { type: Number, default: 0 }
+    }, { _id: false }),
+    default: {}
   }
+},
 }, {
   timestamps: true,
   indexes: [
