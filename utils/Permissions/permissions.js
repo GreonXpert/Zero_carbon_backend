@@ -197,6 +197,7 @@ const canAssignHeadToNode = async (user, clientId) => {
 
 
 // Check if user can view flowchart
+// Check if user can view flowchart
 const canViewFlowchart = async (user, clientId) => {
   // Super admin can view all
   if (user.userType === 'super_admin') {
