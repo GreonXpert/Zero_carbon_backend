@@ -4,7 +4,7 @@ const SummaryNetReduction = require('../../models/Reduction/SummaryNetReduction'
 const NetReductionEntry   = require('../../models/Reduction/NetReductionEntry');
 const Reduction           = require('../../models/Reduction/Reduction');
 const Client              = require('../../models/Client');
-const EmissionSummary    = require('././models/CalculationEmission/EmissionSummary');
+const EmissionSummary    = require('../../models/CalculationEmission/EmissionSummary');
 
 // --- Socket wiring for real-time net-reduction summary updates ---
 let io;
