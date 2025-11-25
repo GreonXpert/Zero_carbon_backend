@@ -627,233 +627,329 @@ return res.status(201).json({
 
 
 
-  /** API: M1 { value, apiEndpoint? } | M2 { variables:{}, apiEndpoint? } + date?, time? */
-  exports.saveApiNetReduction = async (req, res) => {
+// ==============================================
+// 1) API NET REDUCTION – AUTH REMOVED HERE ✅
+// ==============================================
+
+/**
+ * BEFORE:
+ *   - This function called canWriteReductionData(req.user, clientId)
+ *   - It also used req.user._id / req.user.id in sourceDetails.uploadedBy
+ *
+ * NOW:
+ *   - NO permission check; works without auth token
+ *   - uploadedBy is left undefined (optional)
+ */
+exports.saveApiNetReduction = async (req, res) => {
+  try {
+    const { clientId, projectId, calculationMethodology } = req.params;
+
+    // 🚫 REMOVED: auth + permission check for external API ingestion
+    // const can = await canWriteReductionData(req.user, clientId);
+    // if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
+
+    let ctx;
     try {
-      const { clientId, projectId, calculationMethodology } = req.params;
-      const can = await canWriteReductionData(req.user, clientId);
-      if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
-
-      let ctx;
-      try {
-        ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'api');
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
-      }
-
-      const when = parseDateTimeOrNowIST(req.body.date, req.body.time);
-      const apiEndpoint = req.body.apiEndpoint || '';
-
-      if (ctx.mode === 'm1') {
-        const value = Number(req.body.value);
-        if (!isFinite(value)) return res.status(400).json({ success:false, message:'value must be numeric' });
-
-        const entry = await NetReductionEntry.create({
-          clientId, projectId, calculationMethodology,
-          inputType: 'API',
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: 'API',
-            apiEndpoint
-          },
-          date: when.date, time: when.time, timestamp: when.timestamp,
-          inputValue: value,
-          emissionReductionRate: ctx.rate
-        });
-        try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
-       
-        emitNR('net-reduction:api-saved', {
-          clientId, projectId, calculationMethodology, mode: 'm1',
-          entryId: entry._id, date: entry.date, time: entry.time,
-          netReduction: entry.netReduction,
-          cumulativeNetReduction: entry.cumulativeNetReduction,
-          highNetReduction: entry.highNetReduction,
-          lowNetReduction: entry.lowNetReduction
-        });// After successful NetReductionEntry save and emitNR(...)
-if (global.broadcastNetReductionCompletionUpdate) {
-  global.broadcastNetReductionCompletionUpdate(clientId);
-}
-
-        return res.status(201).json({ success: true, message: 'Net reduction saved (API, m1)', data: entry });
-      }
-
-      // ---- M2 path ----
-      const incoming = req.body.variables || {};
-      try {
-        const { netInFormula, LE, finalNet } =
-  evaluateM2WithPolicy(ctx.doc, ctx.formula, incoming, when.timestamp);
-
-
-        const entry = await NetReductionEntry.create({
-          clientId, projectId, calculationMethodology,
-          formulaId: ctx.formula._id,
-          variables: incoming,
-          netReductionInFormula: netInFormula,
-          netReduction: finalNet,
-          inputType: 'API',
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: 'API',
-            apiEndpoint
-          },
-          inputValue: 0,
-          emissionReductionRate: 0,
-          date: when.date, time: when.time, timestamp: when.timestamp
-        });
-        try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
-
-        emitNR('net-reduction:api-saved', {
-          clientId, projectId, calculationMethodology, mode: 'm2',
-          entryId: entry._id, date: entry.date, time: entry.time,
-          netReductionInFormula: entry.netReductionInFormula,
-          netReduction: entry.netReduction,
-          cumulativeNetReduction: entry.cumulativeNetReduction,
-          highNetReduction: entry.highNetReduction,
-          lowNetReduction: entry.lowNetReduction
-        });
-        
-// After successful NetReductionEntry save and emitNR(...)
-if (global.broadcastNetReductionCompletionUpdate) {
-  global.broadcastNetReductionCompletionUpdate(clientId);
-}
-
-        return res.status(201).json({
-    success: true,
-    message: 'Net reduction saved (API, m2)',
-    data: {
-      clientId, projectId,
-      date: entry.date, time: entry.time,
-      variables: entry.variables,
-      netReductionInFormula: entry.netReductionInFormula,
-      LE,                         // <-- add this
-      netReduction: entry.netReduction,
-      cumulativeNetReduction: entry.cumulativeNetReduction,
-      highNetReduction: entry.highNetReduction,
-      lowNetReduction: entry.lowNetReduction
+      ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'api');
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
     }
-  });
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
+
+    const when = parseDateTimeOrNowIST(req.body.date, req.body.time);
+    const apiEndpoint = req.body.apiEndpoint || '';
+
+    if (ctx.mode === 'm1') {
+      const value = Number(req.body.value);
+      if (!isFinite(value)) {
+        return res.status(400).json({ success: false, message: 'value must be numeric' });
       }
-    } catch (err) {
-      return res.status(500).json({ success:false, message:'Failed to save net reduction (API)', error: err.message });
+
+      const net = value * ctx.rate;
+
+      const entry = await NetReductionEntry.create({
+        clientId,
+        projectId,
+        calculationMethodology,
+        inputType: 'API',
+        sourceDetails: {
+          // uploadedBy: undefined (no user),
+          dataSource: 'API',
+          apiEndpoint
+        },
+        date: when.date,
+        time: when.time,
+        timestamp: when.timestamp,
+        inputValue: value,
+        emissionReductionRate: ctx.rate,
+        netReduction: net
+      });
+
+      try {
+        await recomputeClientNetReductionSummary(clientId);
+      } catch (e) {
+        console.warn('summary recompute failed:', e.message);
+      }
+
+      emitNR('net-reduction:api-saved', {
+        clientId,
+        projectId,
+        calculationMethodology,
+        mode: 'm1',
+        entryId: entry._id,
+        date: entry.date,
+        time: entry.time,
+        netReduction: entry.netReduction,
+        cumulativeNetReduction: entry.cumulativeNetReduction,
+        highNetReduction: entry.highNetReduction,
+        lowNetReduction: entry.lowNetReduction
+      });
+
+      if (global.broadcastNetReductionCompletionUpdate) {
+        global.broadcastNetReductionCompletionUpdate(clientId);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: 'Net reduction saved (API, m1)',
+        data: entry
+      });
     }
-  };
 
-
-  /** IOT: M1 { value, deviceId? } | M2 { variables:{}, deviceId? } + date?, time? */
-  exports.saveIotNetReduction = async (req, res) => {
+    // M2 path
+    const incoming = req.body.variables || {};
     try {
-      const { clientId, projectId, calculationMethodology } = req.params;
-      const can = await canWriteReductionData(req.user, clientId);
-      if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
+      const { netInFormula, LE, finalNet } = evaluateM2WithPolicy(
+        ctx.doc,
+        ctx.formula,
+        incoming,
+        when.timestamp
+      );
 
-      let ctx;
+      const entry = await NetReductionEntry.create({
+        clientId,
+        projectId,
+        calculationMethodology,
+        formulaId: ctx.formula._id,
+        variables: incoming,
+        netReductionInFormula: netInFormula,
+        netReduction: finalNet,
+        inputType: 'API',
+        sourceDetails: {
+          // uploadedBy: undefined,
+          dataSource: 'API',
+          apiEndpoint
+        },
+        inputValue: 0,
+        emissionReductionRate: 0,
+        date: when.date,
+        time: when.time,
+        timestamp: when.timestamp
+      });
+
       try {
-        ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'iot');
+        await recomputeClientNetReductionSummary(clientId);
       } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
+        console.warn('summary recompute failed:', e.message);
       }
 
-      const when = parseDateTimeOrNowIST(req.body.date, req.body.time);
-      const deviceId = req.body.deviceId || '';
+      emitNR('net-reduction:api-saved', {
+        clientId,
+        projectId,
+        calculationMethodology,
+        mode: 'm2',
+        entryId: entry._id,
+        date: entry.date,
+        time: entry.time,
+        netReductionInFormula: entry.netReductionInFormula,
+        netReduction: entry.netReduction,
+        cumulativeNetReduction: entry.cumulativeNetReduction,
+        highNetReduction: entry.highNetReduction,
+        lowNetReduction: entry.lowNetReduction
+      });
 
-      if (ctx.mode === 'm1') {
-        const value = Number(req.body.value);
-        if (!isFinite(value)) return res.status(400).json({ success:false, message:'value must be numeric' });
-
-        const entry = await NetReductionEntry.create({
-          clientId, projectId, calculationMethodology,
-          inputType: 'IOT',
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: 'IOT',
-            iotDeviceId: deviceId
-          },
-          date: when.date, time: when.time, timestamp: when.timestamp,
-          inputValue: value,
-          emissionReductionRate: ctx.rate
-        });
-        try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
-
-        emitNR('net-reduction:iot-saved', {
-          clientId, projectId, calculationMethodology, mode: 'm1',
-          entryId: entry._id, date: entry.date, time: entry.time,
-          netReduction: entry.netReduction,
-          cumulativeNetReduction: entry.cumulativeNetReduction,
-          highNetReduction: entry.highNetReduction,
-          lowNetReduction: entry.lowNetReduction
-        });
-
-        // After successful NetReductionEntry save and emitNR(...)
-if (global.broadcastNetReductionCompletionUpdate) {
-  global.broadcastNetReductionCompletionUpdate(clientId);
-}
-
-
-        return res.status(201).json({ success: true, message: 'Net reduction saved (IOT, m1)', data: entry });
+      if (global.broadcastNetReductionCompletionUpdate) {
+        global.broadcastNetReductionCompletionUpdate(clientId);
       }
 
-      // ---- M2 path ----
-      const incoming = req.body.variables || {};
-      try {
-const { netInFormula, LE, finalNet } =
-  evaluateM2WithPolicy(ctx.doc, ctx.formula, incoming, when.timestamp);
-        const entry = await NetReductionEntry.create({
-          clientId, projectId, calculationMethodology,
-          formulaId: ctx.formula._id,
-          variables: incoming,
-          netReductionInFormula: netInFormula,
-          netReduction: finalNet,
-          inputType: 'IOT',
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: 'IOT',
-            iotDeviceId: deviceId
-          },
-          inputValue: 0,
-          emissionReductionRate: 0,
-          date: when.date, time: when.time, timestamp: when.timestamp
-        });
-          try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
-            emitNR('net-reduction:iot-saved', {
-              clientId, projectId, calculationMethodology, mode: 'm2',
-              entryId: entry._id, date: entry.date, time: entry.time,
-              netReductionInFormula: entry.netReductionInFormula,
-              netReduction: entry.netReduction,
-              cumulativeNetReduction: entry.cumulativeNetReduction,
-              highNetReduction: entry.highNetReduction,
-              lowNetReduction: entry.lowNetReduction
-            });
-
-            // After successful NetReductionEntry save and emitNR(...)
-if (global.broadcastNetReductionCompletionUpdate) {
-  global.broadcastNetReductionCompletionUpdate(clientId);
-}
-
-              
-              return res.status(201).json({
-          success: true,
-          message: 'Net reduction saved (IOT, m2)',
-          data: {
-            clientId, projectId,
-            date: entry.date, time: entry.time,
-            variables: entry.variables,
-            netReductionInFormula: entry.netReductionInFormula,
-            LE,                         // <-- add this
-            netReduction: entry.netReduction,
-            cumulativeNetReduction: entry.cumulativeNetReduction,
-            highNetReduction: entry.highNetReduction,
-            lowNetReduction: entry.lowNetReduction
-          }
-        });
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
-      }
-    } catch (err) {
-      return res.status(500).json({ success:false, message:'Failed to save net reduction (IOT)', error: err.message });
+      return res.status(201).json({
+        success: true,
+        message: 'Net reduction saved (API, m2)',
+        data: entry
+      });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
     }
-  };
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save net reduction (API)',
+      error: err.message
+    });
+  }
+};
+
+
+
+// ==============================================
+// 2) IOT NET REDUCTION – AUTH REMOVED HERE ✅
+// ==============================================
+
+/**
+ * BEFORE:
+ *   - used canWriteReductionData(req.user, clientId)
+ *   - used req.user._id / req.user.id as uploadedBy
+ *
+ * NOW:
+ *   - No permission check
+ *   - uploadedBy omitted
+ */
+exports.saveIotNetReduction = async (req, res) => {
+  try {
+    const { clientId, projectId, calculationMethodology } = req.params;
+
+    // 🚫 REMOVED: auth + permission check for external IoT ingestion
+    // const can = await canWriteReductionData(req.user, clientId);
+    // if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
+
+    let ctx;
+    try {
+      ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'iot');
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
+
+    const when = parseDateTimeOrNowIST(req.body.date, req.body.time);
+    const deviceId = req.body.deviceId || '';
+
+    if (ctx.mode === 'm1') {
+      const value = Number(req.body.value);
+      if (!isFinite(value)) {
+        return res.status(400).json({ success: false, message: 'value must be numeric' });
+      }
+
+      const net = value * ctx.rate;
+
+      const entry = await NetReductionEntry.create({
+        clientId,
+        projectId,
+        calculationMethodology,
+        inputType: 'IOT',
+        sourceDetails: {
+          // uploadedBy: undefined,
+          dataSource: 'IOT',
+          iotDeviceId: deviceId
+        },
+        date: when.date,
+        time: when.time,
+        timestamp: when.timestamp,
+        inputValue: value,
+        emissionReductionRate: ctx.rate,
+        netReduction: net
+      });
+
+      try {
+        await recomputeClientNetReductionSummary(clientId);
+      } catch (e) {
+        console.warn('summary recompute failed:', e.message);
+      }
+
+      emitNR('net-reduction:iot-saved', {
+        clientId,
+        projectId,
+        calculationMethodology,
+        mode: 'm1',
+        entryId: entry._id,
+        date: entry.date,
+        time: entry.time,
+        netReduction: entry.netReduction,
+        cumulativeNetReduction: entry.cumulativeNetReduction,
+        highNetReduction: entry.highNetReduction,
+        lowNetReduction: entry.lowNetReduction
+      });
+
+      if (global.broadcastNetReductionCompletionUpdate) {
+        global.broadcastNetReductionCompletionUpdate(clientId);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: 'Net reduction saved (IoT, m1)',
+        data: entry
+      });
+    }
+
+    // M2 IoT path
+    const incoming = req.body.variables || {};
+    try {
+      const { netInFormula, LE, finalNet } = evaluateM2WithPolicy(
+        ctx.doc,
+        ctx.formula,
+        incoming,
+        when.timestamp
+      );
+
+      const entry = await NetReductionEntry.create({
+        clientId,
+        projectId,
+        calculationMethodology,
+        formulaId: ctx.formula._id,
+        variables: incoming,
+        netReductionInFormula: netInFormula,
+        netReduction: finalNet,
+        inputType: 'IOT',
+        sourceDetails: {
+          // uploadedBy: undefined,
+          dataSource: 'IOT',
+          iotDeviceId: deviceId
+        },
+        inputValue: 0,
+        emissionReductionRate: 0,
+        date: when.date,
+        time: when.time,
+        timestamp: when.timestamp
+      });
+
+      try {
+        await recomputeClientNetReductionSummary(clientId);
+      } catch (e) {
+        console.warn('summary recompute failed:', e.message);
+      }
+
+      emitNR('net-reduction:iot-saved', {
+        clientId,
+        projectId,
+        calculationMethodology,
+        mode: 'm2',
+        entryId: entry._id,
+        date: entry.date,
+        time: entry.time,
+        netReductionInFormula: entry.netReductionInFormula,
+        netReduction: entry.netReduction,
+        cumulativeNetReduction: entry.cumulativeNetReduction,
+        highNetReduction: entry.highNetReduction,
+        lowNetReduction: entry.lowNetReduction
+      });
+
+      if (global.broadcastNetReductionCompletionUpdate) {
+        global.broadcastNetReductionCompletionUpdate(clientId);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: 'Net reduction saved (IoT, m2)',
+        data: entry
+      });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save net reduction (IOT)',
+      error: err.message
+    });
+  }
+};
 
 
 
@@ -1477,5 +1573,280 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success:false, message: 'Failed to delete manual net reduction entry', error: err.message });
+  }
+};
+
+
+// ===============================================
+// 4) NEW: SWITCH INPUT TYPE for REDUCTION PROJECT
+// ===============================================
+
+/**
+ * Mirrors DataCollectionController.switchInputType, but for Reduction.reductionDataEntry.
+ *
+ * Route you can use:
+ *   PATCH /api/net-reduction/:clientId/:projectId/input-type
+ * Body:
+ *   {
+ *     "inputType": "manual" | "API" | "IOT",
+ *     "connectionDetails": {
+ *       "apiEndpoint": "...", // when API
+ *       "deviceId": "..."     // when IOT
+ *     }
+ *   }
+ *
+ * Logic:
+ *  - Only client_admin of SAME client can change this (same as DataCollection switch).
+ *  - Updates Reduction.reductionDataEntry.inputType, originalInputType,
+ *    apiEndpoint, iotDeviceId.
+ *  - NO effect on NetReductionEntry, just config for how future data should come in.
+ */
+exports.switchNetReductionInputType = async (req, res) => {
+  try {
+    const { clientId, projectId } = req.params;
+    const { inputType: newInputType, connectionDetails } = req.body;
+
+    // ✅ Only client_admin of the SAME client
+    if (
+      !req.user ||
+      req.user.userType !== 'client_admin' ||
+      req.user.clientId !== clientId
+    ) {
+      return res.status(403).json({
+        message: 'Permission denied. Only Client Admin can switch reduction input types.'
+      });
+    }
+
+    // ✅ Validate input type
+    if (!newInputType || !['manual', 'API', 'IOT'].includes(newInputType)) {
+      return res.status(400).json({ message: 'Invalid input type' });
+    }
+
+    // Load reduction project
+    const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    if (!reduction) {
+      return res.status(404).json({ message: 'Reduction project not found' });
+    }
+
+    const r = reduction.reductionDataEntry || {};
+    const oldType = r.inputType || 'manual';
+
+    // 1) Update types
+    r.originalInputType = newInputType;
+    r.inputType = newInputType;
+
+    // 2) Reset connection fields
+    r.apiEndpoint = '';
+    r.iotDeviceId = '';
+
+    // 3) Apply new connection details
+    if (newInputType === 'API' && connectionDetails?.apiEndpoint) {
+      r.apiEndpoint = connectionDetails.apiEndpoint;
+    } else if (newInputType === 'IOT' && connectionDetails?.deviceId) {
+      r.iotDeviceId = connectionDetails.deviceId;
+    }
+
+    reduction.reductionDataEntry = r;
+    reduction.markModified('reductionDataEntry');
+    await reduction.save();
+
+    return res.status(200).json({
+      message: `Reduction input type switched from ${oldType} to ${newInputType} successfully`,
+      clientId,
+      projectId,
+      previousType: oldType,
+      newType: newInputType,
+      connectionDetails: {
+        apiEndpoint: r.apiEndpoint,
+        deviceId: r.iotDeviceId
+      }
+    });
+  } catch (error) {
+    console.error('switchNetReductionInputType error:', error);
+    return res.status(500).json({
+      message: 'Failed to switch reduction input type',
+      error: error.message
+    });
+  }
+};
+
+// ===============================================
+// 5) NEW: DISCONNECT / RECONNECT SOURCE for NET REDUCTION
+// ===============================================
+
+/**
+ * These mirror DataCollectionController's disconnectSource / reconnectSource
+ * but work on Reduction.reductionDataEntry (API endpoint / IoT device).
+ *
+ * Disconnect:
+ *   - For API: conceptually "gate off" the API endpoint (we just clear endpoint in config)
+ *   - For IOT: same for deviceId
+ *   - For MANUAL: nothing to disconnect
+ *
+ * Reconnect:
+ *   - For API/IOT: re-assert that the config is active; here we simply require that
+ *     r.apiEndpoint / r.iotDeviceId is already set; if not, you can optionally
+ *     accept a body to set them, but I’ll keep it simple like DataCollection.
+ */
+
+// Helper: who can connect/disconnect for reduction?
+// We reuse similar logic to checkOperationPermission's connectOps:
+//   - super_admin
+//   - consultant_admin who created client
+//   - consultant assigned to client
+//   - (OPTIONALLY) client_admin of same client (I include this for convenience)
+async function canManageReductionExternalSource(user, clientId) {
+  if (!user) return { allowed: false, reason: 'Invalid user context' };
+
+  const userId = user._id || user.id;
+
+  if (user.userType === 'super_admin') {
+    return { allowed: true, reason: 'Super admin access' };
+  }
+
+  const client = await Client.findOne(
+    { clientId },
+    { 'leadInfo.createdBy': 1, 'leadInfo.assignedConsultantId': 1 }
+  ).lean();
+
+  if (!client) {
+    return { allowed: false, reason: 'Client not found' };
+  }
+
+  const isCreatorConsultantAdmin =
+    user.userType === 'consultant_admin' &&
+    client.leadInfo?.createdBy &&
+    client.leadInfo.createdBy.toString() === userId.toString();
+
+  const isAssignedConsultant =
+    user.userType === 'consultant' &&
+    client.leadInfo?.assignedConsultantId &&
+    client.leadInfo.assignedConsultantId.toString() === userId.toString();
+
+  if (isCreatorConsultantAdmin || isAssignedConsultant) {
+    return { allowed: true, reason: 'Consultant-level control' };
+  }
+
+  // OPTIONAL: let client_admin also manage connect/disconnect for their own client
+  if (user.userType === 'client_admin' && user.clientId === clientId) {
+    return { allowed: true, reason: 'Client admin of same client' };
+  }
+
+  return {
+    allowed: false,
+    reason:
+      'Only Super Admin, the Consultant Admin who created the client, the assigned Consultant, ' +
+      'or the Client Admin of this client can connect/disconnect reduction sources.'
+  };
+}
+
+// ---------- DISCONNECT ----------
+exports.disconnectNetReductionSource = async (req, res) => {
+  try {
+    const { clientId, projectId } = req.params;
+
+    const perm = await canManageReductionExternalSource(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ message: 'Permission denied', reason: perm.reason });
+    }
+
+    const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    if (!reduction) {
+      return res.status(404).json({ message: 'Reduction project not found' });
+    }
+
+    const r = reduction.reductionDataEntry || {};
+    const inputType = (r.inputType || 'manual').toUpperCase();
+
+    if (inputType === 'API') {
+      // concept: gate OFF API
+      r.apiEndpoint = '';
+    } else if (inputType === 'IOT') {
+      // gate OFF IOT device
+      r.iotDeviceId = '';
+    } else {
+      return res.status(400).json({ message: 'Nothing to disconnect for MANUAL input type' });
+    }
+
+    reduction.reductionDataEntry = r;
+    reduction.markModified('reductionDataEntry');
+    await reduction.save();
+
+    return res.status(200).json({
+      message: 'Net reduction source disconnected successfully',
+      clientId,
+      projectId,
+      inputType: r.inputType,
+      reductionDataEntry: r
+    });
+  } catch (error) {
+    console.error('disconnectNetReductionSource error:', error);
+    return res.status(500).json({
+      message: 'Failed to disconnect net reduction source',
+      error: error.message
+    });
+  }
+};
+
+// ---------- RECONNECT ----------
+exports.reconnectNetReductionSource = async (req, res) => {
+  try {
+    const { clientId, projectId } = req.params;
+
+    const perm = await canManageReductionExternalSource(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ message: 'Permission denied', reason: perm.reason });
+    }
+
+    const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    if (!reduction) {
+      return res.status(404).json({ message: 'Reduction project not found' });
+    }
+
+    const r = reduction.reductionDataEntry || {};
+    const inputType = (r.inputType || 'manual').toUpperCase();
+
+    if (inputType === 'API') {
+      // To reconnect API, we require an endpoint either already present
+      // or passed in body (optional convenience)
+      const apiEndpoint =
+        req.body?.apiEndpoint || r.apiEndpoint;
+      if (!apiEndpoint) {
+        return res.status(400).json({
+          message: 'Cannot reconnect API: apiEndpoint missing'
+        });
+      }
+      r.apiEndpoint = apiEndpoint;
+    } else if (inputType === 'IOT') {
+      const deviceId = req.body?.deviceId || r.iotDeviceId;
+      if (!deviceId) {
+        return res.status(400).json({
+          message: 'Cannot reconnect IOT: deviceId missing'
+        });
+      }
+      r.iotDeviceId = deviceId;
+    } else {
+      return res.status(200).json({
+        message: 'Nothing to reconnect for MANUAL input type; left unchanged'
+      });
+    }
+
+    reduction.reductionDataEntry = r;
+    reduction.markModified('reductionDataEntry');
+    await reduction.save();
+
+    return res.status(200).json({
+      message: 'Net reduction source reconnected successfully',
+      clientId,
+      projectId,
+      inputType: r.inputType,
+      reductionDataEntry: r
+    });
+  } catch (error) {
+    console.error('reconnectNetReductionSource error:', error);
+    return res.status(500).json({
+      message: 'Failed to reconnect net reduction source',
+      error: error.message
+    });
   }
 };
