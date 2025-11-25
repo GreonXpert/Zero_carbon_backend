@@ -4,6 +4,7 @@ const SummaryNetReduction = require('../../models/Reduction/SummaryNetReduction'
 const NetReductionEntry   = require('../../models/Reduction/NetReductionEntry');
 const Reduction           = require('../../models/Reduction/Reduction');
 const Client              = require('../../models/Client');
+const EmissionSummary    = require('././models/CalculationEmission/EmissionSummary');
 
 // --- Socket wiring for real-time net-reduction summary updates ---
 let io;
@@ -59,6 +60,26 @@ async function getAllowedClientIds(user, specificClientId) {
 
   throw new Error('Forbidden');
 }
+
+/**
+ * Small helper: round to 6 decimals, like netReductionController.
+ */
+
+function round6(n) {
+  return Math.round((Number(n) || 0) * 1e6) / 1e6;
+}
+
+/**
+ * Helper: accumulate totals in a Map keyed by string
+ */
+function bumpGroup(map, key, delta) {
+  const k = key || 'Unknown';
+  const prev = map.get(k) || { totalNetReduction: 0, entriesCount: 0 };
+  prev.totalNetReduction = round6(prev.totalNetReduction + (Number(delta) || 0));
+  prev.entriesCount += 1;
+  map.set(k, prev);
+}
+
 
 /**
  * Core recompute for ONE clientId.
@@ -261,10 +282,162 @@ return;
   );
 }
 
-/** Public service for other controllers to call after writes */
-exports.recomputeClientNetReductionSummary = async (clientId) => {
-  await recomputeForClient(clientId);
-};
+/**
+ * Recompute the *reduction* side of CalculationSummary
+ * for a client, using NetReductionEntry + Reduction metadata.
+ *
+ * This writes into EmissionSummary.reductionSummary
+ * for period.type === 'all-time' (creating the doc if needed).
+ */
+async function recomputeClientNetReductionSummary(clientId) {
+  if (!clientId) return null;
+
+  // 1) Load all net reduction entries for this client
+  const entries = await NetReductionEntry.find({ clientId }).lean();
+  if (!entries || !entries.length) {
+    // If no reduction data, clear the reductionSummary field
+    await EmissionSummary.updateMany(
+      { clientId, 'period.type': 'all-time' },
+      {
+        $unset: {
+          reductionSummary: '',
+          'metadata.hasReductionSummary': '',
+          'metadata.lastReductionSummaryCalculatedAt': ''
+        }
+      }
+    );
+    return null;
+  }
+
+  // 2) Load project metadata (category, scope, location, projectActivity, etc.)
+  const projectIds = [...new Set(entries.map(e => e.projectId).filter(Boolean))];
+  const projects   = await Reduction
+    .find({ clientId, projectId: { $in: projectIds }, isDeleted: { $ne: true } })
+    .select('projectId projectName projectActivity category scope location calculationMethodology')
+    .lean();
+
+  const projectMeta = new Map();
+  for (const p of projects) {
+    projectMeta.set(p.projectId, p);
+  }
+
+  // 3) Aggregation containers
+  let totalNetReduction = 0;
+  const entriesCount    = entries.length;
+
+  const byProject         = new Map(); // key=projectId -> big row
+  const byCategory        = new Map();
+  const byScope           = new Map();
+  const byLocation        = new Map();
+  const byProjectActivity = new Map();
+  const byMethodology     = new Map();
+
+  // 4) Walk through each NetReductionEntry and aggregate
+  for (const e of entries) {
+    const net = Number(e.netReduction || 0);
+    totalNetReduction = round6(totalNetReduction + net);
+
+    const projectId = e.projectId || 'unknown-project';
+    const meta      = projectMeta.get(projectId) || {};
+
+    const projectName     = meta.projectName     || projectId;
+    const projectActivity = meta.projectActivity || null;
+    const category        = meta.category        || null;
+    const scope           = meta.scope           || null;
+
+    let locationLabel = null;
+    if (meta.location) {
+      const { place, address, latitude, longitude } = meta.location;
+      if (place) {
+        locationLabel = place;
+      } else if (address) {
+        locationLabel = address;
+      } else if (latitude != null && longitude != null) {
+        locationLabel = `${latitude},${longitude}`;
+      }
+    }
+
+    const methodology = e.calculationMethodology || meta.calculationMethodology || 'unknown';
+
+    // ---- byProject ----
+    const pRow = byProject.get(projectId) || {
+      projectId,
+      projectName,
+      projectActivity,
+      category,
+      scope,
+      location:   locationLabel,
+      methodology,
+      totalNetReduction: 0,
+      entriesCount:      0
+    };
+
+    // Keep metadata consistent (if later entries have better meta)
+    if (!pRow.projectActivity && projectActivity) pRow.projectActivity = projectActivity;
+    if (!pRow.category && category)               pRow.category        = category;
+    if (!pRow.scope && scope)                     pRow.scope           = scope;
+    if (!pRow.location && locationLabel)          pRow.location        = locationLabel;
+    if (!pRow.methodology && methodology)         pRow.methodology     = methodology;
+
+    pRow.totalNetReduction = round6(pRow.totalNetReduction + net);
+    pRow.entriesCount     += 1;
+    byProject.set(projectId, pRow);
+
+    // ---- other groupings ----
+    bumpGroup(byCategory,        category,        net);
+    bumpGroup(byScope,           scope,           net);
+    bumpGroup(byLocation,        locationLabel,   net);
+    bumpGroup(byProjectActivity, projectActivity, net);
+    bumpGroup(byMethodology,     methodology,     net);
+  }
+
+  // 5) Convert Maps -> plain structures for Mongo/JSON
+  const mapToPlainObject = (map) => {
+    const obj = {};
+    for (const [k, v] of map.entries()) {
+      obj[k] = v;
+    }
+    return obj;
+  };
+
+  const reductionSummary = {
+    totalNetReduction: round6(totalNetReduction),
+    entriesCount,
+
+    // List of projects
+    byProject: Array.from(byProject.values()),
+
+    // Grouped objects
+    byCategory:        mapToPlainObject(byCategory),
+    byScope:           mapToPlainObject(byScope),
+    byLocation:        mapToPlainObject(byLocation),
+    byProjectActivity: mapToPlainObject(byProjectActivity),
+    byMethodology:     mapToPlainObject(byMethodology)
+  };
+
+  // 6) Upsert into EmissionSummary for "all-time" period
+  const now = new Date();
+  const query = { clientId, 'period.type': 'all-time' };
+  const update = {
+    $set: {
+      reductionSummary,
+      'metadata.hasReductionSummary': true,
+      'metadata.lastReductionSummaryCalculatedAt': now
+    },
+    $setOnInsert: {
+      clientId,
+      period: { type: 'all-time' }
+    }
+  };
+
+  await EmissionSummary.findOneAndUpdate(query, update, {
+    upsert: true,
+    new: true,
+    setDefaultsOnInsert: true
+  });
+
+  return reductionSummary;
+}
 
 /** GET summary for a client (recompute=false by default) */
 exports.getClientSummary = async (req, res) => {
