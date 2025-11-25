@@ -421,35 +421,44 @@ exports.saveManualNetReduction = async (req, res) => {
     if (ctx.mode === 'm1') {
       // ---- M1: each row must have numeric value
       for (let i = 0; i < rows.length; i++) {
-        const r = rows[i] || {};
-        const v = Number(r.value);
-        if (!isFinite(v)) {
-          errors.push({ row: i + 1, error: 'value must be numeric' });
-          continue;
-        }
-        const when = parseDateTimeOrNowIST(r.date, r.time);
-        docsToInsert.push({
-          clientId,
-          projectId,
-          calculationMethodology,
-          inputType: 'manual',
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: 'manual'
-          },
-          date: when.date,
-          time: when.time,
-          timestamp: when.timestamp,
-          // M1 payload
-          inputValue: v,
-          emissionReductionRate: ctx.rate, // snapshot
-          // placeholders for m2 fields
-          formulaId: null,
-          variables: {},
-          netReductionInFormula: 0
-          // netReduction for M1 is computed in model pre-save from rate*value
-        });
-      }
+    const r = rows[i] || {};
+    const v = Number(r.value);
+    if (!isFinite(v)) {
+      errors.push({ row: i + 1, error: 'value must be numeric' });
+      continue;
+    }
+
+    const when = parseDateTimeOrNowIST(r.date, r.time);
+
+    // 🔑 Compute net reduction here because insertMany does NOT trigger pre('save')
+    const net = round6(v * ctx.rate);
+
+    docsToInsert.push({
+      clientId,
+      projectId,
+      calculationMethodology,
+      inputType: 'manual',
+      sourceDetails: {
+        uploadedBy: req.user._id || req.user.id,
+        dataSource: 'manual'
+      },
+      date: when.date,
+      time: when.time,
+      timestamp: when.timestamp,
+
+      // M1 payload
+      inputValue: v,
+      emissionReductionRate: ctx.rate, // snapshot
+      netReduction: net,
+
+      // placeholders for m2 fields
+      formulaId: null,
+      variables: {},
+      netReductionInFormula: 0
+      // cumulative/high/low will be filled by recomputeSeries(...)
+    });
+  }
+
 
       if (!docsToInsert.length) {
         return res.status(400).json({ success:false, message:'No valid rows to insert', errors });
