@@ -2928,103 +2928,171 @@ const updateProposalStatus = async (req, res) => {
 
 
 
-// Get Clients based on user permissions
-// Updated getClients function with real-time support
+// ===============================================
+// FINAL FULL VERSION OF getClients WITH FILTERS
+// ===============================================
 const getClients = async (req, res) => {
   try {
+    const {
+      stage,
+      status,
+      sandbox,
+      isActive,
+      validationStatus,
+      subscriptionStatus,
+      flowchartStatus,
+      processFlowchartStatus,
+      reductionStatus,
+      hasAssignedConsultant,
+      search,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      page = 1,
+      limit = 10
+    } = req.query;
+
     let query = { isDeleted: false };
-    const { stage, status, search, page = 1, limit = 10 } = req.query;
-    
-    // Build query based on user type
+
+    // -----------------------------------------------
+    // 1. USER PERMISSIONS
+    // -----------------------------------------------
     switch (req.user.userType) {
       case "super_admin":
-        // Can see all clients
         break;
-        
-      case "consultant_admin":
-        // Can see clients they or their consultants manage
-        const consultants = await User.find({ 
-          consultantAdminId: req.user.id 
+
+      case "consultant_admin": {
+        const consultants = await User.find({
+          consultantAdminId: req.user.id
         }).select("_id");
-        
+
         const consultantIds = consultants.map(c => c._id);
         consultantIds.push(req.user.id);
-        
+
         query.$or = [
           { "leadInfo.consultantAdminId": req.user.id },
           { "leadInfo.assignedConsultantId": { $in: consultantIds } },
           { "workflowTracking.assignedConsultantId": { $in: consultantIds } }
         ];
         break;
-        
+      }
+
       case "consultant":
-        // Can see assigned clients
         query.$or = [
           { "leadInfo.assignedConsultantId": req.user.id },
           { "workflowTracking.assignedConsultantId": req.user.id }
         ];
         break;
-        
+
       case "client_admin":
       case "auditor":
       case "viewer":
-        // Can see own client data
         query.clientId = req.user.clientId;
         break;
-        
+
       default:
-        return res.status(403).json({ 
-          message: "You don't have permission to view clients" 
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized"
         });
     }
-    
-    // Apply filters
+
+    // -----------------------------------------------
+    // 2. APPLY FILTERS
+    // -----------------------------------------------
+
     if (stage) query.stage = stage;
     if (status) query.status = status;
+
+    if (sandbox === "true") query.sandbox = true;
+    if (sandbox === "false") query.sandbox = false;
+
+    if (isActive === "true") query["accountDetails.isActive"] = true;
+    if (isActive === "false") query["accountDetails.isActive"] = false;
+
+    if (validationStatus)
+      query["submissionData.validationStatus"] = validationStatus;
+
+    if (subscriptionStatus)
+      query["accountDetails.subscriptionStatus"] = subscriptionStatus;
+
+    if (flowchartStatus)
+      query["workflowTracking.flowchartStatus"] = flowchartStatus;
+
+    if (processFlowchartStatus)
+      query["workflowTracking.processFlowchartStatus"] = processFlowchartStatus;
+
+    if (reductionStatus)
+      query["workflowTracking.reduction.status"] = reductionStatus;
+
+    if (hasAssignedConsultant === "true")
+      query["leadInfo.hasAssignedConsultant"] = true;
+
+    if (hasAssignedConsultant === "false")
+      query["leadInfo.hasAssignedConsultant"] = false;
+
+    // -----------------------------------------------
+    // 3. SEARCH FILTER
+    // -----------------------------------------------
     if (search) {
+      const regex = new RegExp(search, "i");
+
       query.$and = [
         ...(query.$and || []),
         {
           $or: [
-            { clientId: { $regex: search, $options: 'i' } },
-            { "leadInfo.companyName": { $regex: search, $options: 'i' } },
-            { "leadInfo.email": { $regex: search, $options: 'i' } }
+            { clientId: regex },
+            { "leadInfo.companyName": regex },
+            { "leadInfo.contactPersonName": regex },
+            { "leadInfo.email": regex },
+            { "leadInfo.mobileNumber": regex },
+            { "leadInfo.salesPersonName": regex },
+            { "leadInfo.referenceName": regex },
+            { "leadInfo.eventName": regex }
           ]
         }
       ];
     }
-    
-    // Calculate pagination
+
+    // -----------------------------------------------
+    // 4. SORTING
+    // -----------------------------------------------
+    const sortOptions = {};
+    sortOptions[sortBy] = sortOrder === "asc" ? 1 : -1;
+
+    // -----------------------------------------------
+    // 5. PAGINATION
+    // -----------------------------------------------
     const skip = (page - 1) * limit;
+
     const total = await Client.countDocuments(query);
-    
+
     const clients = await Client.find(query)
       .populate("leadInfo.consultantAdminId", "userName email")
       .populate("leadInfo.assignedConsultantId", "userName email")
       .populate("workflowTracking.assignedConsultantId", "userName email")
-      .sort({ createdAt: -1 })
+      .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit));
-    
-    // Format response data
+
+    // -----------------------------------------------
+    // 6. FORMAT RESPONSE
+    // -----------------------------------------------
     const responseData = {
       clients: clients.map(client => ({
         _id: client._id,
         clientId: client.clientId,
         stage: client.stage,
         status: client.status,
+        sandbox: client.sandbox,
         leadInfo: {
           companyName: client.leadInfo.companyName,
           contactPersonName: client.leadInfo.contactPersonName,
           email: client.leadInfo.email,
           mobileNumber: client.leadInfo.mobileNumber,
-          leadSource: client.leadInfo.leadSource,
-            salesPersonName:        client.leadInfo.salesPersonName,
-            salesPersonEmployeeId:  client.leadInfo.salesPersonEmployeeId,
-            referenceName:          client.leadInfo.referenceName,
-            referenceContactNumber: client.leadInfo.referenceContactNumber,
-            eventName:              client.leadInfo.eventName,
-            eventPlace:             client.leadInfo.eventPlace,
+          hasAssignedConsultant: client.leadInfo.hasAssignedConsultant,
+          salesPersonName: client.leadInfo.salesPersonName,
+          referenceName: client.leadInfo.referenceName,
+          eventName: client.leadInfo.eventName,
           consultantAdmin: client.leadInfo.consultantAdminId ? {
             id: client.leadInfo.consultantAdminId._id,
             name: client.leadInfo.consultantAdminId.userName,
@@ -3036,23 +3104,15 @@ const getClients = async (req, res) => {
             email: client.leadInfo.assignedConsultantId.email
           } : null
         },
-        workflowTracking: client.stage === 'active' ? {
-          flowchartStatus: client.workflowTracking?.flowchartStatus,
-          processFlowchartStatus: client.workflowTracking?.processFlowchartStatus,
-          assignedConsultant: client.workflowTracking?.assignedConsultantId ? {
-            id: client.workflowTracking.assignedConsultantId._id,
-            name: client.workflowTracking.assignedConsultantId.userName,
-            email: client.workflowTracking.assignedConsultantId.email
-          } : null
-        } : undefined,
-        accountDetails: client.stage === 'active' ? {
-          subscriptionStatus: client.accountDetails?.subscriptionStatus,
-          subscriptionEndDate: client.accountDetails?.subscriptionEndDate,
-          activeUsers: client.accountDetails?.activeUsers
-        } : undefined,
+        workflowTracking: client.workflowTracking,
+        accountDetails: client.accountDetails,
+        submissionData: {
+          validationStatus: client.submissionData?.validationStatus
+        },
         createdAt: client.createdAt,
         updatedAt: client.updatedAt
       })),
+
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -3062,31 +3122,34 @@ const getClients = async (req, res) => {
         hasPrevPage: page > 1
       }
     };
-    
-    // Emit real-time update to the requesting user
+
+    // -----------------------------------------------
+    // 7. REAL-TIME UPDATES (Optional)
+    // -----------------------------------------------
     if (global.io) {
-      global.io.to(`user_${req.user.id}`).emit('clients_data', {
-        type: 'clients_list',
+      global.io.to(`user_${req.user.id}`).emit("clients_data", {
+        type: "clients_list",
         data: responseData,
         timestamp: new Date().toISOString()
       });
     }
-    
-    res.status(200).json({
+
+    return res.status(200).json({
       success: true,
       message: "Clients fetched successfully",
       ...responseData
     });
-    
+
   } catch (error) {
-    console.error("Get clients error:", error);
-    res.status(500).json({ 
+    console.error("Get Clients Error:", error);
+    return res.status(500).json({
       success: false,
-      message: "Failed to fetch clients", 
-      error: error.message 
+      message: "Failed to fetch clients",
+      error: error.message
     });
   }
 };
+
 
 
 

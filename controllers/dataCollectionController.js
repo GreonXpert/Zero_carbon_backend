@@ -3021,8 +3021,6 @@ const flowchart = activeChart.chart;
   }
 };
 
-// Disconnect Source (params-only; DO NOT delete endpoint/deviceId)
-
 const disconnectSource = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -3032,39 +3030,57 @@ const disconnectSource = async (req, res) => {
       req.user, clientId, nodeId, scopeIdentifier, 'disconnect'
     );
     if (!permissionCheck.allowed) {
-      return res.status(403).json({ message: 'Permission denied', reason: permissionCheck.reason });
+      return res.status(403).json({
+        message: 'Permission denied',
+        reason: permissionCheck.reason
+      });
     }
 
-    // 🔎 Active flowchart
+    // 🔎 Get Active Flowchart (but NOT usable directly!)
     const activeChart = await getActiveFlowchart(clientId);
     if (!activeChart || !activeChart.chart) {
       return res.status(404).json({ message: 'No active flowchart found' });
     }
-    const flowchart = activeChart.chart;
 
-    // 🧭 Locate node/scope
+    // ✅ Fetch REAL mongoose document (IMPORTANT FIX)
+    const flowchart = await Flowchart.findById(activeChart.chart._id);
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // 🧭 Locate node
     const nodeIdx = flowchart.nodes.findIndex(n => n.id === nodeId);
-    if (nodeIdx === -1) return res.status(404).json({ message: 'Node not found' });
+    if (nodeIdx === -1) {
+      return res.status(404).json({ message: 'Node not found' });
+    }
 
+    // 🧭 Locate scope
     const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails
       .findIndex(s => s.scopeIdentifier === scopeIdentifier);
-    if (scopeIdx === -1) return res.status(404).json({ message: 'Scope not found' });
+    if (scopeIdx === -1) {
+      return res.status(404).json({ message: 'Scope not found' });
+    }
 
     const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
 
-    // ❗Only flip flags; keep identifiers intact.
-    if ((scope.inputType || '').toUpperCase() === 'API') {
-      scope.apiStatus = false;           // DO NOT clear scope.apiEndpoint
-    } else if ((scope.inputType || '').toUpperCase() === 'IOT') {
-      scope.iotStatus = false;           // DO NOT clear scope.iotDeviceId
+    // ❗Only flip flags; keep identifiers intact
+    const inputType = (scope.inputType || '').toUpperCase();
+
+    if (inputType === 'API') {
+      scope.apiStatus = false;
+    } else if (inputType === 'IOT') {
+      scope.iotStatus = false;
     } else {
       return res.status(400).json({ message: 'Cannot disconnect manual input type' });
     }
 
+    // Write back modified scope
     flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
+
+    // 🔥 Save updated flowchart
     await flowchart.save();
 
-    // Mirror gate OFF in collection config, preserving endpoint/deviceId if known
+    // Mirror gate OFF in DataCollectionConfig
     await DataCollectionConfig.findOneAndUpdate(
       { clientId, nodeId, scopeIdentifier },
       {
@@ -3074,14 +3090,14 @@ const disconnectSource = async (req, res) => {
           'connectionDetails.disconnectedBy': req.user?._id
         },
         $setOnInsert: {
-          // If we create it now, seed from scope (or empty string)
           'connectionDetails.apiEndpoint': scope.apiEndpoint || '',
           'connectionDetails.deviceId': scope.iotDeviceId || ''
         }
       },
       { upsert: true }
     );
-        // 🔁 Mirror disconnect to Client.workflowTracking.dataInputPoints
+
+    // 🔁 Mirror disconnect to Client.workflowTracking.dataInputPoints
     await reflectDisconnectInClient({
       clientId,
       nodeId,
@@ -3089,10 +3105,18 @@ const disconnectSource = async (req, res) => {
       inputType: scope.inputType,
       userId: req.user?._id
     });
-    return res.status(200).json({ message: 'Source disconnected successfully', scopeIdentifier });
+
+    return res.status(200).json({
+      message: 'Source disconnected successfully',
+      scopeIdentifier
+    });
+
   } catch (error) {
     console.error('Disconnect source error:', error);
-    return res.status(500).json({ message: 'Failed to disconnect source', error: error.message });
+    return res.status(500).json({
+      message: 'Failed to disconnect source',
+      error: error.message
+    });
   }
 };
 
@@ -3102,7 +3126,7 @@ const reconnectSource = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
 
-    // 🔒 Permission
+    // 🔒 Permission check
     const permissionCheck = await checkOperationPermission(
       req.user, clientId, nodeId, scopeIdentifier, 'reconnect'
     );
@@ -3110,34 +3134,47 @@ const reconnectSource = async (req, res) => {
       return res.status(403).json({ message: 'Permission denied', reason: permissionCheck.reason });
     }
 
-    // 🔎 Active flowchart
+    // 🔎 Get active flowchart (but this is NOT a mongoose doc)
     const activeChart = await getActiveFlowchart(clientId);
     if (!activeChart || !activeChart.chart) {
       return res.status(404).json({ message: 'No active flowchart found' });
     }
-    const flowchart = activeChart.chart;
 
-    // 🧭 Locate node/scope
+    // ✅ FIX: Fetch the REAL mongoose document
+    const flowchart = await Flowchart.findById(activeChart.chart._id);
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+
+    // 🧭 Locate node
     const nodeIdx = flowchart.nodes.findIndex(n => n.id === nodeId);
-    if (nodeIdx === -1) return res.status(404).json({ message: 'Node not found' });
+    if (nodeIdx === -1) {
+      return res.status(404).json({ message: 'Node not found' });
+    }
 
+    // 🧭 Locate scope
     const scopeIdx = flowchart.nodes[nodeIdx].details.scopeDetails
       .findIndex(s => s.scopeIdentifier === scopeIdentifier);
-    if (scopeIdx === -1) return res.status(404).json({ message: 'Scope not found' });
+    if (scopeIdx === -1) {
+      return res.status(404).json({ message: 'Scope not found' });
+    }
 
     const scope = flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx];
     const inputType = (scope.inputType || '').toUpperCase();
 
-    // Pull any prior config to preserve endpoint/deviceId if needed
+    // 🔎 Pull any prior config (preserve endpoint/deviceId)
     const existingCfg = await DataCollectionConfig.findOne(
       { clientId, nodeId, scopeIdentifier },
       { connectionDetails: 1, inputType: 1 }
     ).lean();
 
+    // ============================================================
+    // 🔄 API RECONNECT
+    // ============================================================
     if (inputType === 'API') {
-      // ✅ flip false -> true (no body required)
       scope.apiStatus = true;
 
+      // Save flowchart scope update
       flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
       await flowchart.save();
 
@@ -3149,14 +3186,14 @@ const reconnectSource = async (req, res) => {
             'connectionDetails.isActive': true,
             'connectionDetails.reconnectedAt': new Date(),
             'connectionDetails.reconnectedBy': req.user?._id,
-            // Preserve endpoint: prefer config, else scope, else ''
             'connectionDetails.apiEndpoint':
               (existingCfg?.connectionDetails?.apiEndpoint ?? scope.apiEndpoint ?? '')
           }
         },
         { upsert: true }
       );
-           await reflectReconnectInClient({
+
+      await reflectReconnectInClient({
         clientId,
         nodeId,
         scopeIdentifier,
@@ -3164,10 +3201,12 @@ const reconnectSource = async (req, res) => {
         userId: req.user?._id,
         endpoint: scope.apiEndpoint || existingCfg?.connectionDetails?.apiEndpoint
       });
+    }
 
-
-    } else if (inputType === 'IOT') {
-      // ✅ flip false -> true (no body required)
+    // ============================================================
+    // 🔄 IOT RECONNECT
+    // ============================================================
+    else if (inputType === 'IOT') {
       scope.iotStatus = true;
 
       flowchart.nodes[nodeIdx].details.scopeDetails[scopeIdx] = scope;
@@ -3181,13 +3220,13 @@ const reconnectSource = async (req, res) => {
             'connectionDetails.isActive': true,
             'connectionDetails.reconnectedAt': new Date(),
             'connectionDetails.reconnectedBy': req.user?._id,
-            // Preserve deviceId: prefer config, else scope, else ''
             'connectionDetails.deviceId':
               (existingCfg?.connectionDetails?.deviceId ?? scope.iotDeviceId ?? '')
           }
         },
         { upsert: true }
       );
+
       await reflectReconnectInClient({
         clientId,
         nodeId,
@@ -3196,19 +3235,32 @@ const reconnectSource = async (req, res) => {
         userId: req.user?._id,
         deviceId: scope.iotDeviceId || existingCfg?.connectionDetails?.deviceId
       });
-    } else {
+    }
+
+    // ============================================================
+    // 🚫 MANUAL TYPE DOESN’T REQUIRE RECONNECT
+    // ============================================================
+    else {
       return res.status(200).json({
         message: 'Nothing to reconnect for MANUAL input type; left unchanged',
         scopeIdentifier
       });
     }
 
-    return res.status(200).json({ message: 'Source reconnected successfully', scopeIdentifier });
+    return res.status(200).json({
+      message: 'Source reconnected successfully',
+      scopeIdentifier
+    });
+
   } catch (error) {
     console.error('Reconnect source error:', error);
-    return res.status(500).json({ message: 'Failed to reconnect source', error: error.message });
+    return res.status(500).json({
+      message: 'Failed to reconnect source',
+      error: error.message
+    });
   }
 };
+
 
 
 

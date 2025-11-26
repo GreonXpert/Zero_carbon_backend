@@ -7,6 +7,21 @@ const Client = require('../../models/Client');
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 
 
+function normalizeSignedUncertainty(u) {
+  if (u == null || isNaN(Number(u))) return 0;
+
+  let val = Number(u);
+
+  // Convert percentages like 10, -10 to 0.10, -0.10
+  if (Math.abs(val) > 1) {
+    val = val / 100;
+  }
+
+  return val; // keep the sign (+ or -)
+}
+
+
+
 // ADD: helper to read latest S1+S2 CO2e for the current node from Calculation Summary
 async function getNodeS1S2FromLatestSummary(clientId, nodeId) {
   try {
@@ -2149,10 +2164,30 @@ const cumA = (cumS1 + cumS2) * cumShr;
  * Calculate combined uncertainty
  */
 function calculateUncertainty(baseValue, UAD, UEF) {
-  // Combined Uncertainty = √(UAD² + UEF²)
-  const combinedUncertaintyPercent = Math.sqrt(Math.pow(UAD, 2) + Math.pow(UEF, 2));
-  return baseValue * (combinedUncertaintyPercent / 100);
+  // Convert UAD to signed decimal
+  let uad = Number(UAD);
+  if (Math.abs(uad) > 1) uad = uad / 100;   // convert 10 → 0.10, -10 → -0.10
+
+  // Convert UEF to signed decimal
+  let uef = Number(UEF);
+  if (Math.abs(uef) > 1) uef = uef / 100;
+
+  // Combined uncertainty (always positive magnitude)
+  const combinedMagnitude = Math.sqrt(Math.pow(uad, 2) + Math.pow(uef, 2));  
+
+  // Determine FINAL SIGN:
+  // If total raw uncertainty is negative → subtract
+  // If positive → add
+  const rawSum = uad + uef;
+  const sign = rawSum < 0 ? -1 : 1;
+
+  // Apply sign to magnitude
+  const combinedSigned = combinedMagnitude * sign;
+
+  // Final emission with uncertainty
+  return baseValue * (1 + combinedSigned);
 }
+
 
 /**
  * Batch calculation for multiple data entries

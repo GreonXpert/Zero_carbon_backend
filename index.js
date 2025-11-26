@@ -114,7 +114,6 @@ app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
 app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
 app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
 app.use('/api/m2-formula', m2FormulaR); // 🆕 M2 Formula routes
-app.use('/api/net-reduction-summary', netReductionSummaryR); // 🆕 Net Reduction Summary routes
 app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 
 // Notification and data collection routes
@@ -135,7 +134,6 @@ const io = socketIo(server, {
 dataCollectionController.setSocketIO(io);
 calculationSummaryController.setSocketIO(io);
 netReductionController.setSocketIO(io);
-netReductionSummaryController.setSocketIO(io);
 sbtiController.setSocketIO(io);
 dataCompletionController.setSocketIO(io);
 
