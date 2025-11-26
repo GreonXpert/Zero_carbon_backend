@@ -157,201 +157,347 @@ function ensureMapEntry(map, key, defaultValue = {}) {
 /**
  * Calculate comprehensive emission summary for a client
  * All values are converted to tonnes
+ * OUTPUT NOW MATCHES THE NEW MODEL STRUCTURE:
+ *
+ * {
+ *   clientId,
+ *   period: { ... },
+ *   emissionSummary: {
+ *       period,
+ *       totalEmissions,
+ *       byScope,
+ *       byCategory,
+ *       byActivity,
+ *       byNode,
+ *       byDepartment,
+ *       byLocation,
+ *       byInputType,
+ *       byEmissionFactor,
+ *       trends,
+ *       metadata
+ *   },
+ *   metadata: { ... }   // root-level document metadata unchanged
+ * }
  */
 const calculateEmissionSummary = async (clientId, periodType, year, month, week, day, userId = null) => {
   try {
     console.log(`📊 Calculating ${periodType} emission summary for client: ${clientId}`);
-    
+
     const { from, to } = buildDateRange(periodType, year, month, week, day);
-    
+
     const query = {
       clientId,
       processingStatus: 'processed',
       timestamp: { $gte: from, $lte: to }
     };
-    
+
     const dataEntries = await DataEntry.find(query).lean();
-    
+
+    // ============================================================
+    // CASE 1: NO DATA FOUND
+    // ============================================================
     if (dataEntries.length === 0) {
-      console.log(`No processed data entries found for client ${clientId} in the specified period.`);
+      console.log(`No processed data entries found for ${clientId} in this period.`);
+
       return {
         clientId,
         period: { type: periodType, year, month, week, day, from, to },
-        totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-        byScope: {
+
+        emissionSummary: {
+          period: { type: periodType, year, month, week, day, from, to },
+
+          totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+
+          byScope: {
             'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
             'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
             'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+          },
+
+          byCategory: new Map(),
+          byActivity: new Map(),
+          byNode: new Map(),
+          byDepartment: new Map(),
+          byLocation: new Map(),
+
+          byInputType: {
+            manual: { CO2e: 0, dataPointCount: 0 },
+            API: { CO2e: 0, dataPointCount: 0 },
+            IOT: { CO2e: 0, dataPointCount: 0 }
+          },
+
+          byEmissionFactor: new Map(),
+
+          trends: {},
+
+          metadata: {
+            totalDataPoints: 0,
+            dataEntriesIncluded: [],
+            lastCalculated: new Date(),
+            calculatedBy: userId,
+            isComplete: true,
+            hasErrors: false,
+            errors: [],
+            version: 1,
+            calculationDuration: 0
+          }
         },
-        byCategory: new Map(), byActivity: new Map(), byNode: new Map(),
-        byDepartment: new Map(), byLocation: new Map(), byInputType: {},
-        byEmissionFactor: new Map(),
-        metadata: { totalDataPoints: 0, dataEntriesIncluded: [], lastCalculated: new Date(), isComplete: true, hasErrors: false, errors: [] }
+
+        metadata: {
+          lastCalculated: new Date(),
+          isComplete: true,
+          hasErrors: false,
+          errors: []
+        }
       };
     }
-    
-    console.log(`Found ${dataEntries.length} data entries to process`);
-    
+
+    // ============================================================
+    // CASE 2: FLOWCHART + NODES PREPARATION
+    // ============================================================
+    console.log(`Found ${dataEntries.length} data entries.`);
+
     const activeChart = await getActiveFlowchart(clientId);
-if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
-}
-const flowchart = activeChart.chart;
-    if (!flowchart) {
-      console.error(`No active flowchart found for client ${clientId}`);
+    if (!activeChart || !activeChart.chart) {
+      console.error(`No active flowchart found for ${clientId}`);
       return null;
     }
-    
+
+    const flowchart = activeChart.chart;
+
     const nodeMap = new Map();
     flowchart.nodes.forEach(node => {
       nodeMap.set(node.id, {
         id: node.id,
         label: node.label,
-        department: node.details?.department || 'Unknown',
-        location: node.details?.location || 'Unknown',
+        department: node.details?.department || "Unknown",
+        location: node.details?.location || "Unknown",
         scopeDetails: node.details?.scopeDetails || []
       });
     });
-    
-    const summary = {
-      clientId,
-      period: { type: periodType, year, month, week, day, date: periodType === 'daily' ? from : null, from, to },
+
+    // ============================================================
+    // NEW SUMMARY OBJECT (matches new model)
+    // ============================================================
+    const emissionSummary = {
+      period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
+
       totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+
       byScope: {
-        'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
-        'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
-        'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+        "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
       },
-      byCategory: new Map(), byActivity: new Map(), byNode: new Map(),
-      byDepartment: new Map(), byLocation: new Map(),
+
+      byCategory: new Map(),
+      byActivity: new Map(),
+      byNode: new Map(),
+      byDepartment: new Map(),
+      byLocation: new Map(),
+
       byInputType: {
         manual: { CO2e: 0, dataPointCount: 0 },
         API: { CO2e: 0, dataPointCount: 0 },
         IOT: { CO2e: 0, dataPointCount: 0 }
       },
+
       byEmissionFactor: new Map(),
+
+      trends: {},
+
       metadata: {
         totalDataPoints: dataEntries.length,
         dataEntriesIncluded: dataEntries.map(e => e._id),
-        lastCalculated: new Date(),
         calculatedBy: userId,
-        version: 1, isComplete: true, hasErrors: false, errors: []
+        lastCalculated: new Date(),
+        errors: [],
+        hasErrors: false,
+        isComplete: true,
+        version: 1,
+        calculationDuration: 0
       }
     };
 
+    // ============================================================
+    // PROCESS EACH DATA ENTRY
+    // ============================================================
     for (const entry of dataEntries) {
       try {
         const emissionValues = extractEmissionValues(entry.calculatedEmissions);
-        
-        if (emissionValues.CO2e === 0) {
-          console.log(`Skipping entry ${entry._id} with zero emissions`);
-          continue;
-        }
+        if (emissionValues.CO2e === 0) continue;
 
         const nodeContext = nodeMap.get(entry.nodeId);
         if (!nodeContext) {
-          summary.metadata.errors.push(`Node ${entry.nodeId} not found in flowchart`);
+          emissionSummary.metadata.errors.push(`Node ${entry.nodeId} not found`);
           continue;
         }
 
         const scopeDetail = nodeContext.scopeDetails.find(s => s.scopeIdentifier === entry.scopeIdentifier);
-        const categoryName = scopeDetail?.categoryName || entry.categoryName || 'Unknown Category';
-        const activity = scopeDetail?.activity || entry.activity || 'Unknown Activity';
+        const categoryName = scopeDetail?.categoryName || entry.categoryName || "Unknown Category";
+        const activity = scopeDetail?.activity || entry.activity || "Unknown Activity";
 
-        addEmissionValues(summary.totalEmissions, emissionValues);
-        if (summary.byScope[entry.scopeType]) {
-          addEmissionValues(summary.byScope[entry.scopeType], emissionValues);
+        // === TOTALS ===
+        addEmissionValues(emissionSummary.totalEmissions, emissionValues);
+
+        // === BY SCOPE ===
+        if (emissionSummary.byScope[entry.scopeType]) {
+          addEmissionValues(emissionSummary.byScope[entry.scopeType], emissionValues);
         }
 
-        const categoryEntry = ensureMapEntry(summary.byCategory, categoryName, { scopeType: entry.scopeType, activities: new Map() });
-        addEmissionValues(categoryEntry, emissionValues);
-        
-        const activityInCategory = ensureMapEntry(categoryEntry.activities, activity);
-        addEmissionValues(activityInCategory, emissionValues);
+        // === BY CATEGORY ===
+        const cat = ensureMapEntry(
+          emissionSummary.byCategory,
+          categoryName,
+          { scopeType: entry.scopeType, activities: new Map() }
+        );
+        addEmissionValues(cat, emissionValues);
 
-        const activityEntry = ensureMapEntry(summary.byActivity, activity, { scopeType: entry.scopeType, categoryName });
-        addEmissionValues(activityEntry, emissionValues);
+        // CATEGORY → ACTIVITY
+        const a1 = ensureMapEntry(cat.activities, activity);
+        addEmissionValues(a1, emissionValues);
 
-        const nodeEntry = ensureMapEntry(summary.byNode, entry.nodeId, {
-          nodeLabel: nodeContext.label, department: nodeContext.department, location: nodeContext.location,
-          byScope: {
-            'Scope 1': { CO2e: 0, dataPointCount: 0 },
-            'Scope 2': { CO2e: 0, dataPointCount: 0 },
-            'Scope 3': { CO2e: 0, dataPointCount: 0 }
+        // === BY ACTIVITY ===
+        const a2 = ensureMapEntry(
+          emissionSummary.byActivity,
+          activity,
+          { scopeType: entry.scopeType, categoryName }
+        );
+        addEmissionValues(a2, emissionValues);
+
+        // === BY NODE ===
+        const node = ensureMapEntry(
+          emissionSummary.byNode,
+          entry.nodeId,
+          {
+            nodeLabel: nodeContext.label,
+            department: nodeContext.department,
+            location: nodeContext.location,
+            byScope: {
+              "Scope 1": { CO2e: 0, dataPointCount: 0 },
+              "Scope 2": { CO2e: 0, dataPointCount: 0 },
+              "Scope 3": { CO2e: 0, dataPointCount: 0 }
+            }
           }
-        });
-        addEmissionValues(nodeEntry, emissionValues);
-        addEmissionValues(nodeEntry.byScope[entry.scopeType], emissionValues);
+        );
+        addEmissionValues(node, emissionValues);
+        addEmissionValues(node.byScope[entry.scopeType], emissionValues);
 
-        const deptEntry = ensureMapEntry(summary.byDepartment, nodeContext.department);
-        addEmissionValues(deptEntry, emissionValues);
+        // === BY DEPARTMENT ===
+        const dept = ensureMapEntry(emissionSummary.byDepartment, nodeContext.department);
+        addEmissionValues(dept, emissionValues);
 
-        const locEntry = ensureMapEntry(summary.byLocation, nodeContext.location);
-        addEmissionValues(locEntry, emissionValues);
+        // === BY LOCATION ===
+        const loc = ensureMapEntry(emissionSummary.byLocation, nodeContext.location);
+        addEmissionValues(loc, emissionValues);
 
-        if (summary.byInputType[entry.inputType]) {
-          summary.byInputType[entry.inputType].CO2e += emissionValues.CO2e;
-          summary.byInputType[entry.inputType].dataPointCount += 1;
+        // === BY INPUT TYPE ===
+        if (emissionSummary.byInputType[entry.inputType]) {
+          emissionSummary.byInputType[entry.inputType].CO2e += emissionValues.CO2e;
+          emissionSummary.byInputType[entry.inputType].dataPointCount += 1;
         }
 
-        const efEntry = ensureMapEntry(summary.byEmissionFactor, entry.emissionFactor || 'Unknown', {
-          scopeTypes: { 'Scope 1': 0, 'Scope 2': 0, 'Scope 3': 0 }
-        });
-        addEmissionValues(efEntry, emissionValues);
-        efEntry.scopeTypes[entry.scopeType] += 1;
+        // === BY EMISSION FACTOR ===
+        const eff = ensureMapEntry(
+          emissionSummary.byEmissionFactor,
+          entry.emissionFactor || "Unknown",
+          {
+            scopeTypes: { "Scope 1": 0, "Scope 2": 0, "Scope 3": 0 }
+          }
+        );
+        addEmissionValues(eff, emissionValues);
+        eff.scopeTypes[entry.scopeType] += 1;
 
-      } catch (entryError) {
-        console.error(`Error processing entry ${entry._id}:`, entryError);
-        summary.metadata.errors.push(`Error processing entry ${entry._id}: ${entryError.message}`);
-        summary.metadata.hasErrors = true;
+      } catch (err) {
+        emissionSummary.metadata.errors.push(`Entry ${entry._id} error: ${err.message}`);
+        emissionSummary.metadata.hasErrors = true;
       }
     }
 
-    const uniqueNodesByDept = new Map();
-    const uniqueNodesByLoc = new Map();
-    for (const [nodeId, nodeData] of summary.byNode) {
-      if (!uniqueNodesByDept.has(nodeData.department)) uniqueNodesByDept.set(nodeData.department, new Set());
-      uniqueNodesByDept.get(nodeData.department).add(nodeId);
-      if (!uniqueNodesByLoc.has(nodeData.location)) uniqueNodesByLoc.set(nodeData.location, new Set());
-      uniqueNodesByLoc.get(nodeData.location).add(nodeId);
-    }
-    for (const [dept, nodeSet] of uniqueNodesByDept) {
-      if (summary.byDepartment.has(dept)) summary.byDepartment.get(dept).nodeCount = nodeSet.size;
-    }
-    for (const [loc, nodeSet] of uniqueNodesByLoc) {
-      if (summary.byLocation.has(loc)) summary.byLocation.get(loc).nodeCount = nodeSet.size;
+    // ============================================================
+    // NODE COUNTS FOR DEPARTMENT + LOCATION
+    // ============================================================
+    const uniqueDept = new Map();
+    const uniqueLoc = new Map();
+
+    for (const [nodeId, n] of emissionSummary.byNode) {
+      if (!uniqueDept.has(n.department)) uniqueDept.set(n.department, new Set());
+      uniqueDept.get(n.department).add(nodeId);
+
+      if (!uniqueLoc.has(n.location)) uniqueLoc.set(n.location, new Set());
+      uniqueLoc.get(n.location).add(nodeId);
     }
 
-    if (periodType !== 'all-time') {
+    for (const [d, set] of uniqueDept) {
+      if (emissionSummary.byDepartment.has(d)) {
+        emissionSummary.byDepartment.get(d).nodeCount = set.size;
+      }
+    }
+
+    for (const [l, set] of uniqueLoc) {
+      if (emissionSummary.byLocation.has(l)) {
+        emissionSummary.byLocation.get(l).nodeCount = set.size;
+      }
+    }
+
+    // ============================================================
+    // TRENDS (ONLY FOR NON ALL-TIME PERIODS)
+    // ============================================================
+    if (periodType !== "all-time") {
       try {
-        const previousPeriod = getPreviousPeriod(periodType, year, month, week, day);
+        const prev = getPreviousPeriod(periodType, year, month, week, day);
+
         const previousSummary = await EmissionSummary.findOne({
-          clientId, 'period.type': periodType, 'period.year': previousPeriod.year,
-          'period.month': previousPeriod.month, 'period.week': previousPeriod.week, 'period.day': previousPeriod.day
+          clientId,
+          "period.type": periodType,
+          "period.year": prev.year,
+          "period.month": prev.month,
+          "period.week": prev.week,
+          "period.day": prev.day
         }).lean();
-        if (previousSummary) summary.trends = calculateTrends(summary, previousSummary);
-      } catch (trendError) {
-        console.error('Error calculating trends:', trendError);
-        summary.metadata.errors.push(`Error calculating trends: ${trendError.message}`);
+
+        if (previousSummary?.emissionSummary) {
+          emissionSummary.trends = calculateTrends(
+            emissionSummary,
+            previousSummary.emissionSummary
+          );
+        }
+      } catch (trendErr) {
+        emissionSummary.metadata.errors.push(`Trend calc error: ${trendErr.message}`);
       }
     }
 
-    summary.metadata.calculationDuration = Date.now() - summary.metadata.lastCalculated.getTime();
+    emissionSummary.metadata.calculationDuration =
+      Date.now() - emissionSummary.metadata.lastCalculated.getTime();
 
-    console.log(`📊 Summary totals (tonnes):`, {
-      totalCO2e: summary.totalEmissions.CO2e,
-      scope1: summary.byScope['Scope 1'].CO2e,
-      scope2: summary.byScope['Scope 2'].CO2e,
-      scope3: summary.byScope['Scope 3'].CO2e
+    console.log("📊 NEW emissionSummary totals:", {
+      totalCO2e: emissionSummary.totalEmissions.CO2e,
+      s1: emissionSummary.byScope["Scope 1"].CO2e,
+      s2: emissionSummary.byScope["Scope 2"].CO2e,
+      s3: emissionSummary.byScope["Scope 3"].CO2e
     });
 
-    return summary;
+    // ============================================================
+    // RETURN FULL DOCUMENT STRUCTURE
+    // ============================================================
+    return {
+      clientId,
+      period: emissionSummary.period,
+      emissionSummary,
+      metadata: {
+        lastCalculated: new Date(),
+        isComplete: true,
+        hasErrors: emissionSummary.metadata.hasErrors,
+        errors: emissionSummary.metadata.errors
+      }
+    };
 
   } catch (error) {
-    console.error('Error calculating emission summary:', error);
+    console.error("❌ Error calculating emission summary:", error);
     throw error;
   }
 };
+
 
 /**
  * Build date range based on period type
@@ -662,130 +808,288 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
 
 
 /**
- * [FIXED] Save or update emission summary
- * Uses findOneAndUpdate with upsert to avoid duplicate key errors and data loss.
+ * Persist an emission summary in STRUCTURE A:
+ *
+ * {
+ *   clientId,
+ *   period,
+ *   emissionSummary: { ...full emission structure... },
+ *   reductionSummary: { ... }   // if already exists or passed in
+ *   metadata: { ...root metadata... }
+ * }
  */
-const saveEmissionSummary = async (summaryData) => {
-  if (!summaryData) {
-    console.log('ℹ️ No summary data to save.');
-    return null;
+async function saveEmissionSummary(summaryData) {
+  if (!summaryData) throw new Error("saveEmissionSummary: summaryData is required");
+
+  const { clientId, period } = summaryData;
+  if (!clientId || !period || !period.type) {
+    throw new Error("saveEmissionSummary: missing clientId or period.type");
   }
 
-  console.log('📊 Starting saveEmissionSummary with data:', JSON.stringify({
-    clientId: summaryData.clientId, period: summaryData.period
-  }, null, 2));
+  // ------------------------------------------------------------------
+  // 1) Build the query (clientId + period key fields)
+  // ------------------------------------------------------------------
+  const query = {
+    clientId,
+    "period.type": period.type
+  };
 
-  try {
-    const query = {
-      clientId: summaryData.clientId,
-      'period.type': summaryData.period.type
-    };
-    if (summaryData.period.year) query['period.year'] = summaryData.period.year;
-    if (summaryData.period.month) query['period.month'] = summaryData.period.month;
-    if (summaryData.period.week) query['period.week'] = summaryData.period.week;
-    if (summaryData.period.day) query['period.day'] = summaryData.period.day;
+  if (period.year != null) query["period.year"] = period.year;
+  if (period.month != null) query["period.month"] = period.month;
+  if (period.week != null) query["period.week"] = period.week;
+  if (period.day != null) query["period.day"] = period.day;
 
-    console.log('🔍 Query for finding summary:', JSON.stringify(query, null, 2));
+  // Load existing doc (to keep reductionSummary + metadata versioning)
+  const existing = await EmissionSummary.findOne(query).lean();
 
-    const existingSummary = await EmissionSummary.findOne(query).lean();
-    console.log('🔍 Existing summary found:', !!existingSummary);
+  const es = summaryData;
 
-    // Prepare the complete update object
-    const updateData = {
-      totalEmissions: summaryData.totalEmissions,
-      byScope: summaryData.byScope,
-      byCategory: summaryData.byCategory,
-      byActivity: summaryData.byActivity,
-      byNode: summaryData.byNode,
-      byDepartment: summaryData.byDepartment,
-      byLocation: summaryData.byLocation,
-      byInputType: summaryData.byInputType,
-      byEmissionFactor: summaryData.byEmissionFactor,
-      trends: summaryData.trends,
-      metadata: {
-        ...summaryData.metadata,
-        version: (existingSummary?.metadata?.version || 0) + 1,
-        lastCalculated: new Date()
+  // ------------------------------------------------------------------
+  // 2) Build emissionSummary (nested object) from summaryData
+  // ------------------------------------------------------------------
+  const defaultScopeBlock = () => ({
+    CO2e: 0,
+    CO2: 0,
+    CH4: 0,
+    N2O: 0,
+    uncertainty: 0,
+    dataPointCount: 0
+  });
+
+  const emissionSummaryToSave = {
+    period: es.period,
+    totalEmissions: es.totalEmissions || {
+      CO2e: 0,
+      CO2: 0,
+      CH4: 0,
+      N2O: 0,
+      uncertainty: 0
+    },
+    byScope: es.byScope || {
+      "Scope 1": defaultScopeBlock(),
+      "Scope 2": defaultScopeBlock(),
+      "Scope 3": defaultScopeBlock()
+    },
+    byCategory: es.byCategory || {},
+    byActivity: es.byActivity || {},
+    byNode: es.byNode || {},
+    byDepartment: es.byDepartment || {},
+    byLocation: es.byLocation || {},
+    byInputType: es.byInputType || {
+      manual: { CO2e: 0, dataPointCount: 0 },
+      API: { CO2e: 0, dataPointCount: 0 },
+      IOT: { CO2e: 0, dataPointCount: 0 }
+    },
+    byEmissionFactor: es.byEmissionFactor || {},
+    trends: es.trends || {
+      totalEmissionsChange: {
+        value: 0,
+        percentage: 0,
+        direction: "same"
+      },
+      scopeChanges: {
+        "Scope 1": { value: 0, percentage: 0, direction: "same" },
+        "Scope 2": { value: 0, percentage: 0, direction: "same" },
+        "Scope 3": { value: 0, percentage: 0, direction: "same" }
       }
-    };
+    },
+    metadata: {
+      ...(es.metadata || {}),
+      // Make sure we always have these fields
+      totalDataPoints:
+        es.metadata?.totalDataPoints ??
+        (Array.isArray(es.metadata?.dataEntriesIncluded)
+          ? es.metadata.dataEntriesIncluded.length
+          : 0),
+      dataEntriesIncluded:
+        es.metadata?.dataEntriesIncluded || es.dataEntriesIncluded || [],
+      lastCalculated: es.metadata?.lastCalculated || new Date(),
+      calculationDuration: es.metadata?.calculationDuration ?? 0,
+      calculatedBy: es.metadata?.calculatedBy ?? null,
+      isComplete: es.metadata?.isComplete ?? true,
+      hasErrors: es.metadata?.hasErrors ?? false,
+      errors: es.metadata?.errors || [],
+      // bump nested emissionSummary.metadata.version
+      version: (existing?.emissionSummary?.metadata?.version || 0) + 1
+    }
+  };
 
-    const options = {
+  // ------------------------------------------------------------------
+  // 3) Build ROOT metadata
+  //     - mirrors emissionSummary.metadata
+  //     - keeps reductionSummary version flags
+  // ------------------------------------------------------------------
+  const rootMetadata = {
+    ...(existing?.metadata || {}),
+    lastCalculated: emissionSummaryToSave.metadata.lastCalculated,
+    totalDataPoints: emissionSummaryToSave.metadata.totalDataPoints,
+    dataEntriesIncluded: emissionSummaryToSave.metadata.dataEntriesIncluded,
+    calculationDuration: emissionSummaryToSave.metadata.calculationDuration,
+    isComplete: emissionSummaryToSave.metadata.isComplete,
+    hasErrors: emissionSummaryToSave.metadata.hasErrors,
+    errors: emissionSummaryToSave.metadata.errors || [],
+    // bump ROOT metadata.version
+    version: (existing?.metadata?.version || 0) + 1,
+    // flags related to reduction summary (do NOT flip them off here)
+    hasReductionSummary:
+      existing?.metadata?.hasReductionSummary ??
+      !!existing?.reductionSummary,
+    lastReductionSummaryCalculatedAt:
+      existing?.metadata?.lastReductionSummaryCalculatedAt || null
+  };
+
+  // ------------------------------------------------------------------
+  // 4) Build update object:
+  //     - root: clientId, period, emissionSummary, metadata
+  //     - keep existing reductionSummary unless overwriting explicitly
+  // ------------------------------------------------------------------
+  const update = {
+    clientId,
+    period: es.period,
+    emissionSummary: emissionSummaryToSave,
+    metadata: rootMetadata
+  };
+
+  // Very important: DO NOT wipe out reductionSummary when we are
+  // just recalculating emissions.
+  if (existing?.reductionSummary) {
+    update.reductionSummary = existing.reductionSummary;
+  }
+
+  // If in the future you ever call saveEmissionSummary() with a
+  // pre-computed reductionSummary, you can merge it like this:
+  if (es.reductionSummary) {
+    update.reductionSummary = es.reductionSummary;
+    update.metadata.hasReductionSummary = true;
+    update.metadata.lastReductionSummaryCalculatedAt =
+      es.reductionSummaryLastCalculated || new Date();
+  }
+
+  // ------------------------------------------------------------------
+  // 5) Upsert document
+  // ------------------------------------------------------------------
+  const saved = await EmissionSummary.findOneAndUpdate(
+    query,
+    update,
+    {
       upsert: true,
       new: true,
-      runValidators: true,
       setDefaultsOnInsert: true
-    };
+    }
+  );
 
-    // Use findOneAndUpdate with $set to update fields without replacing the whole document
-    const savedSummary = await EmissionSummary.findOneAndUpdate(
-      query,
-      { 
-        $set: updateData,
-        $setOnInsert: {
-            clientId: summaryData.clientId,
-            period: summaryData.period
-        }
-      },
-      options
-    );
+  return saved.toObject();
+}
 
-    console.log('✅ Summary saved successfully:', savedSummary._id);
-
-    emitSummaryUpdate(existingSummary ? 'summary-updated' : 'summary-created', {
-      clientId: summaryData.clientId,
-      totalEmissions: savedSummary.totalEmissions,
-      byScope: savedSummary.byScope,
-      byCategory: savedSummary.byCategory,
-      byNode: savedSummary.byNode,
-      metadata: savedSummary.metadata
-      
-    });
-    // NEW: keep SBTi emission progress in sync (only does work for YEARLY summaries)
-    await syncSbtiProgressFromSummary(savedSummary);
-
-    return savedSummary;
-  } catch (error) {
-    console.error('❌ Error saving emission summary:', error);
-    console.error('Error stack:', error.stack);
-    throw error;
-  }
-};
 
 
 /**
  * Automatically update summaries when new data is processed
+ * (Option-B: full duplication → updates emissionSummary subtree)
  */
 const updateSummariesOnDataChange = async (dataEntry) => {
   try {
     console.log(`📊 Updating summaries for new data entry: ${dataEntry._id}`);
+
     const { clientId } = dataEntry;
     const entryDate = moment.utc(dataEntry.timestamp);
-    
-    await recalculateAndSaveSummary(clientId, 'daily', entryDate.year(), entryDate.month() + 1, null, entryDate.date());
-    await recalculateAndSaveSummary(clientId, 'monthly', entryDate.year(), entryDate.month() + 1);
+
+    // DAILY
+    await recalculateAndSaveSummary(
+      clientId,
+      'daily',
+      entryDate.year(),
+      entryDate.month() + 1,
+      null,
+      entryDate.date()
+    );
+
+    // MONTHLY
+    await recalculateAndSaveSummary(
+      clientId,
+      'monthly',
+      entryDate.year(),
+      entryDate.month() + 1
+    );
+
+    // YEARLY
     await recalculateAndSaveSummary(clientId, 'yearly', entryDate.year());
+
+    // ALL-TIME
     await recalculateAndSaveSummary(clientId, 'all-time');
-    
+
     console.log(`✅ Successfully updated summaries for client: ${clientId}`);
+
   } catch (error) {
     console.error('❌ Error updating summaries on data change:', error);
   }
 };
 
+function buildPeriodDateRange(periodType, year, month, week, day) {
+  const start = moment.utc();
+
+  if (periodType === "daily") {
+    start.year(year).month(month - 1).date(day).startOf("day");
+    return { from: start.toDate(), to: start.endOf("day").toDate() };
+  }
+
+  if (periodType === "monthly") {
+    start.year(year).month(month - 1).startOf("month");
+    return { from: start.toDate(), to: start.endOf("month").toDate() };
+  }
+
+  if (periodType === "yearly") {
+    start.year(year).startOf("year");
+    return { from: start.toDate(), to: start.endOf("year").toDate() };
+  }
+
+  return { from: new Date(0), to: new Date() }; // all-time fallback
+}
+
 /**
- * Recalculate and save a specific summary
+ * Recalculate and persist summary for a client + period.
+ * - Uses calculateEmissionSummary(...) to compute emissions.
+ * - Persists using saveEmissionSummary(...) in Structure A.
  */
-const recalculateAndSaveSummary = async (clientId, periodType, year, month, week, day, userId = null) => {
+const recalculateAndSaveSummary = async (
+  clientId,
+  periodType,
+  year,
+  month,
+  week,
+  day,
+  userId = null
+) => {
   try {
-    const summaryData = await calculateEmissionSummary(clientId, periodType, year, month, week, day, userId);
-    if (!summaryData) return null;
-    if ((summaryData.metadata?.totalDataPoints ?? 0) === 0) return null; // ← do not save "zero" snapshot
-    return await saveEmissionSummary(summaryData);
+    const summaryData = await calculateEmissionSummary(
+      clientId,
+      periodType,
+      year,
+      month,
+      week,
+      day,
+      userId
+    );
+
+    // If nothing to save, return null
+    if (!summaryData) {
+      return null;
+    }
+
+    // We now always save, even if totalDataPoints is 0
+    // (so that empty months/years still have a summary doc)
+    const saved = await saveEmissionSummary(summaryData);
+    return saved;
   } catch (err) {
-    console.error(`Error recalculating ${periodType} summary for client ${clientId}:`, err);
+    console.error(
+      `❌ Error recalculating ${periodType} summary for client ${clientId}:`,
+      err
+    );
     throw err;
   }
 };
+
+
 
 
 // ========== API Controllers ==========
@@ -794,14 +1098,18 @@ const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
     const {
-      periodType = 'monthly',
-      year, month, week, day,
-      recalculate = 'false',
-      preferLatest = 'true',
+      periodType = "monthly",
+      year,
+      month,
+      week,
+      day,
+      recalculate = "false",
+      preferLatest = "true",
+      type = "both" // "emission" | "reduction" | "both"
     } = req.query;
 
-    if (!['daily','weekly','monthly','yearly','all-time'].includes(periodType)) {
-      return res.status(400).json({ success:false, message:'Invalid period type.' });
+    if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
+      return res.status(400).json({ success: false, message: "Invalid period type." });
     }
 
     const y = year ? parseInt(year) : moment.utc().year();
@@ -809,134 +1117,326 @@ const getEmissionSummary = async (req, res) => {
     const w = week ? parseInt(week) : moment.utc().isoWeek();
     const d = day ? parseInt(day) : moment.utc().date();
 
+    const noParts = !year && !month && !week && !day;
+
+    const baseQuery = { clientId, "period.type": periodType };
+
     let summary;
 
-    // If no explicit period parts, return the latest available snapshot for this type
-    const noSpecificParts = !year && !month && !week && !day;
-
-    if (recalculate === 'true') {
-      summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
+    // ----------------------------------------------------
+    // 1) Load or recalculate summary
+    // ----------------------------------------------------
+    if (recalculate === "true") {
+      summary = await recalculateAndSaveSummary(
+        clientId,
+        periodType,
+        y,
+        m,
+        w,
+        d,
+        req.user?._id
+      );
     } else {
-      const baseQuery = { clientId, 'period.type': periodType };
-
-      if (noSpecificParts) {
-        // latest
-        summary = await EmissionSummary
-          .findOne(baseQuery)
-          .sort({ 'period.to': -1, 'period.year': -1, 'period.month': -1, 'period.week': -1, 'period.day': -1, updatedAt: -1 })
+      if (noParts) {
+        summary = await EmissionSummary.findOne(baseQuery)
+          .sort({ "period.to": -1, updatedAt: -1 })
           .lean();
       } else {
-        // exact period
         const exactQuery = { ...baseQuery };
-        if (year) exactQuery['period.year'] = y;
-        if (month) exactQuery['period.month'] = m;
-        if (week) exactQuery['period.week'] = w;
-        if (day) exactQuery['period.day'] = d;
+        if (year) exactQuery["period.year"] = y;
+        if (month) exactQuery["period.month"] = m;
+        if (week) exactQuery["period.week"] = w;
+        if (day) exactQuery["period.day"] = d;
 
         summary = await EmissionSummary.findOne(exactQuery).lean();
 
-        // If not found or stale -> recompute
-        const isStale = summary && (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000; // 1h
-        if (!summary || isStale) {
-          const recomputed = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
-          // If recompute produced nothing AND preferLatest is on, fall back to latest available
-          if (recomputed && (recomputed.metadata?.totalDataPoints ?? 0) > 0) {
-            summary = recomputed;
-          } else if (preferLatest === 'true') {
-            const endOfRequested = buildDateRange(periodType, y, m, w, d).to; // use your existing helper
-            summary = await EmissionSummary
-              .findOne({ ...baseQuery, 'period.to': { $lte: endOfRequested } })
-              .sort({ 'period.to': -1, 'period.year': -1, 'period.month': -1, 'period.week': -1, 'period.day': -1, updatedAt: -1 })
-              .lean();
+        const stale =
+          summary &&
+          summary.metadata &&
+          (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
 
-            if (summary) {
-              // annotate that this is a fallback for transparency (front-end can show a small note)
-              summary.metadata = {
-                ...summary.metadata,
-                fallbackFor: { type: periodType, year: y, month: m, week: w, day: d }
-              };
-            }
+        if (!summary || stale) {
+          const recomputed = await recalculateAndSaveSummary(
+            clientId,
+            periodType,
+            y,
+            m,
+            w,
+            d,
+            req.user?._id
+          );
+
+          if (recomputed) {
+            summary = recomputed;
+          } else if (preferLatest === "true") {
+            summary = await EmissionSummary.findOne(baseQuery)
+              .sort({ "period.to": -1, updatedAt: -1 })
+              .lean();
           }
         }
       }
     }
 
     if (!summary) {
-      return res.status(404).json({ success: false, message: 'No data found for the specified period' });
+      return res.status(404).json({
+        success: false,
+        message: "No data found for the specified period."
+      });
     }
 
-    // Convert Map fields to plain objects before sending
-    const responseData = { ...summary };
-    for (const key of ['byCategory','byActivity','byNode','byDepartment','byLocation','byEmissionFactor']) {
-      if (responseData[key] instanceof Map) {
-        responseData[key] = Object.fromEntries(responseData[key]);
+    // ----------------------------------------------------
+    // 2) Normalise Maps → plain objects for emissionSummary
+    // ----------------------------------------------------
+    const convertMap = (value) => {
+      if (value instanceof Map) return Object.fromEntries(value);
+      if (Array.isArray(value)) return value.map(convertMap);
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const out = {};
+        for (const k of Object.keys(value)) {
+          out[k] = convertMap(value[k]);
+        }
+        return out;
       }
-    }
-     // NEW: attach SBTi target progress (if any SBTi target exists for this client)
-    const sbtiProgress = await buildSbtiProgressForSummary(clientId, summary);
-    if (sbtiProgress) {
-      responseData.sbtiProgress = sbtiProgress;
+      return value;
+    };
+
+    const emissionSummary = convertMap(summary.emissionSummary || {});
+    const reductionSummary = summary.reductionSummary || {
+      totalNetReduction: 0,
+      entriesCount: 0,
+      byProject: [],
+      byCategory: {},
+      byScope: {},
+      byLocation: {},
+      byProjectActivity: {},
+      byMethodology: {}
+    };
+
+    const baseResponse = {
+      clientId: summary.clientId,
+      period: summary.period,
+      emissionSummary,
+      reductionSummary,
+      metadata: summary.metadata || {}
+    };
+
+    // ----------------------------------------------------
+    // 3) type-based responses
+    // ----------------------------------------------------
+    if (type === "emission") {
+      return res.status(200).json({
+        success: true,
+        type: "emission",
+        data: {
+          clientId: baseResponse.clientId,
+          period: baseResponse.period,
+          emissionSummary: baseResponse.emissionSummary,
+          metadata: baseResponse.metadata
+        }
+      });
     }
 
-    return res.status(200).json({ success: true, data: responseData });
+    if (type === "reduction") {
+      return res.status(200).json({
+        success: true,
+        type: "reduction",
+        data: {
+          clientId: baseResponse.clientId,
+          period: baseResponse.period,
+          reductionSummary: baseResponse.reductionSummary,
+          metadata: baseResponse.metadata
+        }
+      });
+    }
+
+    // both
+    return res.status(200).json({
+      success: true,
+      type: "both",
+      data: baseResponse
+    });
   } catch (error) {
-    console.error('Error getting emission summary:', error);
-    return res.status(500).json({ success: false, message: 'Failed to get emission summary', error: error.message });
+    console.error("❌ Error getting emission summary:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to get emission summary",
+      error: error.message
+    });
   }
 };
+
+
+
 
 const getMultipleSummaries = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { periodType = 'monthly', startYear, startMonth, endYear, endMonth, limit = 12 } = req.query;
-    const query = { clientId, 'period.type': periodType };
+    const {
+      periodType = "monthly",
+      startYear,
+      startMonth,
+      endYear,
+      endMonth,
+      limit = 12,
+      type = "both"
+    } = req.query;
 
-    if (startYear && endYear) {
-      query.$and = [
-        { 'period.year': { $gte: parseInt(startYear) } },
-        { 'period.year': { $lte: parseInt(endYear) } }
-      ];
-      if (startMonth) query.$and.push({ 'period.month': { $gte: parseInt(startMonth) } });
-      if (endMonth) query.$and.push({ 'period.month': { $lte: parseInt(endMonth) } });
+    // Validate
+    if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
+      return res.status(400).json({ success: false, message: "Invalid period type" });
     }
 
+    // ---------------------------------------------
+    // 1) BUILD QUERY
+    // ---------------------------------------------
+    const query = { clientId, "period.type": periodType };
+
+    if (startYear && endYear) {
+      query["period.year"] = {
+        $gte: parseInt(startYear),
+        $lte: parseInt(endYear)
+      };
+    }
+
+    if (startMonth) {
+      query["period.month"] = {
+        ...(query["period.month"] || {}),
+        $gte: parseInt(startMonth)
+      };
+    }
+
+    if (endMonth) {
+      query["period.month"] = {
+        ...(query["period.month"] || {}),
+        $lte: parseInt(endMonth)
+      };
+    }
+
+    // ---------------------------------------------
+    // 2) FETCH DOCUMENTS
+    // ---------------------------------------------
     const summaries = await EmissionSummary.find(query)
-      .sort({ 'period.year': -1, 'period.month': -1, 'period.week': -1, 'period.day': -1 })
+      .sort({ "period.year": -1, "period.month": -1 })
       .limit(parseInt(limit))
       .lean();
 
-    const formattedSummaries = summaries.map(summary => {
-        const formatted = { ...summary };
-        for (const key of ['byCategory', 'byActivity', 'byNode', 'byDepartment', 'byLocation', 'byEmissionFactor']) {
-            if (formatted[key] instanceof Map) {
-                formatted[key] = Object.fromEntries(formatted[key]);
-            }
+    // ---------------------------------------------
+    // 3) deepConvert helper (same as getEmissionSummary)
+    // ---------------------------------------------
+    const deepConvert = (value) => {
+      if (value instanceof Map) {
+        return Object.fromEntries(
+          [...value.entries()].map(([k, v]) => [k, deepConvert(v)])
+        );
+      }
+      if (Array.isArray(value)) {
+        return value.map(deepConvert);
+      }
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const out = {};
+        for (const k of Object.keys(value)) {
+          out[k] = deepConvert(value[k]);
         }
-        return formatted;
+        return out;
+      }
+      return value;
+    };
+
+    // ---------------------------------------------
+    // 4) FORMAT EACH SUMMARY
+    // ---------------------------------------------
+    const formatted = summaries.map((doc) => {
+      const emissionSummary  = deepConvert(doc.emissionSummary || {});
+      const reductionSummary = deepConvert(doc.reductionSummary || {});
+
+      const metadata = doc.metadata || {};
+
+      // EMISSION ONLY
+      if (type === "emission") {
+        return {
+          clientId: doc.clientId,
+          period: doc.period,
+          emissionSummary,
+          metadata
+        };
+      }
+
+      // REDUCTION ONLY
+      if (type === "reduction") {
+        return {
+          clientId: doc.clientId,
+          period: doc.period,
+          reductionSummary,
+          netReductions: doc.netReductions || { totalNetReduction: reductionSummary.totalNetReduction },
+          metadata
+        };
+      }
+
+      // BOTH
+      return {
+        clientId: doc.clientId,
+        period: doc.period,
+        emissionSummary,
+        reductionSummary,
+        netReductions: doc.netReductions || { totalNetReduction: reductionSummary.totalNetReduction },
+        metadata
+      };
     });
 
-    res.status(200).json({ success: true, data: formattedSummaries, count: formattedSummaries.length });
+    // ---------------------------------------------
+    // 5) RETURN RESPONSE
+    // ---------------------------------------------
+    return res.status(200).json({
+      success: true,
+      type,
+      count: formatted.length,
+      data: formatted
+    });
+
   } catch (error) {
-    console.error('Error getting multiple summaries:', error);
-    res.status(500).json({ success: false, message: 'Failed to get multiple summaries', error: error.message });
+    console.error("❌ Error getting multiple summaries:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to get multiple summaries",
+      error: error.message
+    });
   }
 };
 
 
 
 
+
+
+
+// Make sure you have this import somewhere above in the file:
+// const EmissionSummary = require("../../models/CalculationEmission/EmissionSummary");
+
+/**
+ * Filtered Summary (Advanced + Legacy)
+ * Supports:
+ *  - emissionSummary (emissions)
+ *  - reductionSummary (net reduction)
+ *
+ * Use query ?summaryKind=emission|reduction (or summaryType=...)
+ * Default = "emission"
+ */
 const getFilteredSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
+
+    // -----------------------------
+    // Extract query params
+    // -----------------------------
     const {
-      // period selection (same as before)
+      // Period selectors
       periodType,
       year,
       month,
       day,
       week,
 
-      // OLD single filters (kept for backward compatibility)
+      // LEGACY single filters
       scope,
       category,
       nodeId,
@@ -944,7 +1444,7 @@ const getFilteredSummary = async (req, res) => {
       activity,
       location,
 
-      // NEW multi-filters
+      // ADVANCED multi-filters
       scopes,
       locations,
       nodeIds,
@@ -954,76 +1454,141 @@ const getFilteredSummary = async (req, res) => {
       emissionFactors,
       sources,
 
-      // NEW sorting / extra controls
+      // Sorting / limits
       sortBy: sortByRaw,
       sortDirection: sortDirectionRaw,
       sortOrder: sortOrderRaw,
       limit: limitRaw,
       minCO2e: minCO2eRaw,
       maxCO2e: maxCO2eRaw,
+
+      // NEW: which summary to use
+      summaryKind: summaryKindRaw,
+      summaryType: summaryTypeRaw // alias
     } = req.query;
 
-    // ---------- helpers ----------
+    // -----------------------------
+    // Utilities
+    // -----------------------------
     const normalizeArray = (val) => {
       if (!val) return [];
       if (Array.isArray(val)) {
         return val
-          .flatMap(v => v.split(','))
-          .map(v => v.trim())
+          .flatMap((v) => v.split(","))
+          .map((v) => v.trim())
           .filter(Boolean);
       }
-      if (typeof val === 'string') {
+      if (typeof val === "string") {
         return val
-          .split(',')
-          .map(v => v.trim())
+          .split(",")
+          .map((v) => v.trim())
           .filter(Boolean);
       }
       return [];
     };
 
     const safeNum = (v) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
 
-    const toEntries = (maybeMap) => {
-      if (!maybeMap) return [];
-      if (maybeMap instanceof Map) return Array.from(maybeMap.entries());
-      if (typeof maybeMap === 'object') return Object.entries(maybeMap);
-      return [];
+    const convertMap = (value) => {
+      if (value instanceof Map) return Object.fromEntries(value);
+      if (Array.isArray(value)) return value.map(convertMap);
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const o = {};
+        for (const k of Object.keys(value)) o[k] = convertMap(value[k]);
+        return o;
+      }
+      return value;
     };
 
-    // ---------- Step 1: fetch base summary (same logic as before) ----------
+    // Decide which summary we are working with
+    const summaryKind =
+      (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase(); // "emission" | "reduction"
+
+    // -----------------------------
+    // Step 1: FETCH SUMMARY DOCUMENT
+    // -----------------------------
     let query = { clientId };
-    let fullSummary = null;
+    let fullSummary;
 
     if (periodType) {
-      query['period.type'] = periodType;
-      if (year) query['period.year'] = parseInt(year);
-      if (month) query['period.month'] = parseInt(month);
-      if (day) query['period.day'] = parseInt(day);
-      if (week) query['period.week'] = parseInt(week);
+      query["period.type"] = periodType;
+      if (year) query["period.year"] = parseInt(year);
+      if (month) query["period.month"] = parseInt(month);
+      if (day) query["period.day"] = parseInt(day);
+      if (week) query["period.week"] = parseInt(week);
 
       fullSummary = await EmissionSummary.findOne(query).lean();
     } else {
-      // latest by period.to
+      // latest summary for this client (any period)
       fullSummary = await EmissionSummary.findOne({ clientId })
-        .sort({ 'period.to': -1 })
+        .sort({ "period.to": -1 })
         .lean();
     }
 
     if (!fullSummary) {
       return res.status(404).json({
         success: false,
-        message: 'No summary data found for the specified client and period.'
+        message: "No summary data found."
       });
     }
 
-    // ---------- Step 2: determine if we use ADVANCED multi-filter mode ----------
+    // =============================
+    // Step 2: NORMALIZE EMISSION SIDE
+    // =============================
+    const es = fullSummary.emissionSummary || {};
+
+    const E = {
+      totalEmissions:
+        es.totalEmissions || fullSummary.totalEmissions || {
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          uncertainty: 0
+        },
+      byScope:
+        es.byScope || fullSummary.byScope || {
+          "Scope 1": {},
+          "Scope 2": {},
+          "Scope 3": {}
+        },
+      byCategory: convertMap(es.byCategory || fullSummary.byCategory || {}),
+      byActivity: convertMap(es.byActivity || fullSummary.byActivity || {}),
+      byNode: convertMap(es.byNode || fullSummary.byNode || {}),
+      byDepartment: convertMap(
+        es.byDepartment || fullSummary.byDepartment || {}
+      ),
+      byLocation: convertMap(es.byLocation || fullSummary.byLocation || {}),
+      byInputType: es.byInputType || fullSummary.byInputType || {},
+      byEmissionFactor: convertMap(
+        es.byEmissionFactor || fullSummary.byEmissionFactor || {}
+      )
+    };
+
+    // =============================
+    // Step 3: NORMALIZE REDUCTION SIDE
+    // =============================
+    const rs = fullSummary.reductionSummary || {};
+
+    const R = {
+      totalNetReduction: safeNum(rs.totalNetReduction),
+      entriesCount: rs.entriesCount || 0,
+      byProject: Array.isArray(rs.byProject) ? rs.byProject : [],
+      byCategory: convertMap(rs.byCategory || {}),
+      byScope: convertMap(rs.byScope || {}),
+      byLocation: convertMap(rs.byLocation || {}),
+      byProjectActivity: convertMap(rs.byProjectActivity || {}),
+      byMethodology: convertMap(rs.byMethodology || {})
+    };
+
+    // -----------------------------
+    // Step 4: ADVANCED vs LEGACY?
+    // -----------------------------
 
     const multiScopes = normalizeArray(scopes);
-    // 🔹 CHANGED: allow single `location` to be treated as advanced
     const multiLocations = normalizeArray(locations || location);
     const multiNodeIds = normalizeArray(nodeIds);
     const multiDepartments = normalizeArray(departments);
@@ -1031,7 +1596,7 @@ const getFilteredSummary = async (req, res) => {
     const multiCategories = normalizeArray(categories);
     const multiEmissionFactors = normalizeArray(emissionFactors || sources);
 
-    const hasAdvancedFilters =
+    const hasAdvanced =
       multiScopes.length ||
       multiLocations.length ||
       multiNodeIds.length ||
@@ -1046,535 +1611,585 @@ const getFilteredSummary = async (req, res) => {
       minCO2eRaw ||
       maxCO2eRaw;
 
-    // ---------- Step 3: ADVANCED MODE (multi scopes, locations, nodes, sorting) ----------
-    if (hasAdvancedFilters) {
-      // Which scopes we consider. If none provided, take all 3.
-      const scopeUniverse = ['Scope 1', 'Scope 2', 'Scope 3'];
-      const selectedScopes = multiScopes.length ? multiScopes : scopeUniverse;
+    // Common sorting / limit / thresholds
+    const sortBy = (sortByRaw || "node").toLowerCase();
+    const direction = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
+    const sortDirection =
+      direction === "asc" || direction === "low" ? "asc" : "desc";
+    const limit = limitRaw ? parseInt(limitRaw) : null;
+    const minCO2e =
+      minCO2eRaw !== undefined && minCO2eRaw !== null
+        ? Number(minCO2eRaw)
+        : null;
+    const maxCO2e =
+      maxCO2eRaw !== undefined && maxCO2eRaw !== null
+        ? Number(maxCO2eRaw)
+        : null;
 
-      // sorting config
-      const sortBy = (sortByRaw || 'node').toLowerCase(); // 'node' | 'location' | 'department' | 'scope'
-      const dirRaw = (sortDirectionRaw || sortOrderRaw || 'desc').toLowerCase();
-      const sortDirection = (dirRaw === 'asc' || dirRaw === 'low') ? 'asc' : 'desc';
+    // ===============================================================
+    // ===============    ADVANCED FILTERING MODE    =================
+    // ===============================================================
+    if (hasAdvanced) {
+      // =====================================================
+      // ADVANCED FOR EMISSIONS
+      // =====================================================
+      if (summaryKind === "emission") {
+        const scopeUniverse = ["Scope 1", "Scope 2", "Scope 3"];
+        const selectedScopes = multiScopes.length ? multiScopes : scopeUniverse;
 
-      const limit = limitRaw ? parseInt(limitRaw) : null;
-      const minCO2e = minCO2eRaw != null ? Number(minCO2eRaw) : null;
-      const maxCO2e = maxCO2eRaw != null ? Number(maxCO2eRaw) : null;
+        // Build node list from emission byNode
+        const nodeEntries = Object.entries(E.byNode || {});
+        let nodes = nodeEntries.map(([id, node]) => {
+          const scopeTotals = {
+            "Scope 1": safeNum(node.byScope?.["Scope 1"]?.CO2e),
+            "Scope 2": safeNum(node.byScope?.["Scope 2"]?.CO2e),
+            "Scope 3": safeNum(node.byScope?.["Scope 3"]?.CO2e)
+          };
 
-      // ---- 3.1 Build node array with selected-scope CO2e ----
-      const nodeEntries = toEntries(fullSummary.byNode);
-      let nodes = nodeEntries.map(([id, nodeData]) => {
-        const byScope = nodeData.byScope || {};
+          const selectedTotal = selectedScopes.reduce(
+            (sum, sc) => sum + (scopeTotals[sc] || 0),
+            0
+          );
 
-        const scopeTotals = {
-          'Scope 1': safeNum(byScope['Scope 1']?.CO2e),
-          'Scope 2': safeNum(byScope['Scope 2']?.CO2e),
-          'Scope 3': safeNum(byScope['Scope 3']?.CO2e),
-        };
+          return {
+            nodeId: id,
+            nodeLabel: node.nodeLabel,
+            department: node.department,
+            location: node.location,
+            byScope: scopeTotals,
+            CO2e: safeNum(node.CO2e),
+            selectedScopeCO2e: selectedTotal,
+            CO2: safeNum(node.CO2),
+            CH4: safeNum(node.CH4),
+            N2O: safeNum(node.N2O),
+            uncertainty: safeNum(node.uncertainty)
+          };
+        });
 
-        const selectedScopeCO2e = selectedScopes.reduce(
-          (sum, s) => sum + (scopeTotals[s] || 0),
-          0
-        );
+        // Node-based filters
+        if (multiNodeIds.length) {
+          const idSet = new Set(multiNodeIds);
+          nodes = nodes.filter((n) => idSet.has(n.nodeId));
+        }
 
-        return {
-          nodeId: id,
-          nodeLabel: nodeData.nodeLabel,
-          department: nodeData.department,
-          location: nodeData.location,
-          byScope: scopeTotals,
-          totalCO2e: safeNum(nodeData.CO2e),       // total all scopes
-          selectedScopeCO2e,                       // only selected scopes
-          CO2: safeNum(nodeData.CO2),
-          CH4: safeNum(nodeData.CH4),
-          N2O: safeNum(nodeData.N2O),
-          uncertainty: safeNum(nodeData.uncertainty),
-        };
-      });
+        if (multiLocations.length) {
+          const locSet = new Set(multiLocations.map((s) => s.toLowerCase()));
+          nodes = nodes.filter((n) =>
+            locSet.has((n.location || "").toLowerCase())
+          );
+        }
 
-      // ---- 3.2 Apply node-level filters (multi locations, nodeIds, departments) ----
-      if (multiNodeIds.length) {
-        const idSet = new Set(multiNodeIds);
-        nodes = nodes.filter(n => idSet.has(n.nodeId));
-      }
+        if (multiDepartments.length) {
+          const deptSet = new Set(multiDepartments.map((s) => s.toLowerCase()));
+          nodes = nodes.filter((n) =>
+            deptSet.has((n.department || "").toLowerCase())
+          );
+        }
 
-      if (multiLocations.length) {
-        const locSet = new Set(multiLocations.map(s => s.toLowerCase()));
-        nodes = nodes.filter(n => locSet.has((n.location || '').toLowerCase()));
-      }
+        if (minCO2e != null)
+          nodes = nodes.filter((n) => n.selectedScopeCO2e >= minCO2e);
+        if (maxCO2e != null)
+          nodes = nodes.filter((n) => n.selectedScopeCO2e <= maxCO2e);
 
-      if (multiDepartments.length) {
-        const deptSet = new Set(multiDepartments.map(s => s.toLowerCase()));
-        nodes = nodes.filter(n => deptSet.has((n.department || '').toLowerCase()));
-      }
-
-      if (minCO2e != null) {
-        nodes = nodes.filter(n => n.selectedScopeCO2e >= minCO2e);
-      }
-
-      if (maxCO2e != null) {
-        nodes = nodes.filter(n => n.selectedScopeCO2e <= maxCO2e);
-      }
-
-      // If after filters nothing remains, return empty but consistent shape
-      if (!nodes.length) {
-        return res.status(200).json({
-          success: true,
-          filterType: 'advanced',
-          filtersApplied: {
-            scopes: selectedScopes,
-            locations: multiLocations,
-            nodeIds: multiNodeIds,
-            departments: multiDepartments,
-            activities: multiActivities,
-            categories: multiCategories,
-            emissionFactors: multiEmissionFactors
-          },
-          data: {
-            period: fullSummary.period,
-            totalEmissions: fullSummary.totalEmissions,
-            totalFilteredEmissions: {
-              CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0
-            },
-            byScope: {},
-            byLocation: [],
-            byDepartment: [],
-            nodes: [],
-            primary: [],
-            // 🔹 NEW: empty dropdowns for UI
-            dropdowns: {
-              locations: [],
-              departments: [],
-              scopes: [],
-              categories: [],
+        if (!nodes.length) {
+          return res.status(200).json({
+            success: true,
+            summaryKind: "emission",
+            filterType: "advanced",
+            data: {
+              period: fullSummary.period,
+              totalEmissions: E.totalEmissions,
+              totalFilteredEmissions: {
+                CO2e: 0,
+                CO2: 0,
+                CH4: 0,
+                N2O: 0,
+                uncertainty: 0
+              },
               nodes: []
             }
+          });
+        }
+
+        // Build aggregates
+        const totalFiltered = {
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          uncertainty: 0
+        };
+        const byLocationAgg = {};
+        const byDepartmentAgg = {};
+        const byScopeFiltered = {};
+
+        selectedScopes.forEach((sc) => {
+          byScopeFiltered[sc] = { CO2e: 0, dataPointCount: 0 };
+        });
+
+        for (const n of nodes) {
+          totalFiltered.CO2e += n.selectedScopeCO2e;
+
+          for (const sc of selectedScopes) {
+            const val = n.byScope[sc];
+            if (!val) continue;
+            byScopeFiltered[sc].CO2e += val;
+            if (val > 0) byScopeFiltered[sc].dataPointCount++;
+          }
+
+          const locKey = n.location || "Unknown";
+          if (!byLocationAgg[locKey])
+            byLocationAgg[locKey] = { CO2e: 0, nodeCount: 0 };
+          byLocationAgg[locKey].CO2e += n.selectedScopeCO2e;
+          byLocationAgg[locKey].nodeCount++;
+
+          const deptKey = n.department || "Unknown";
+          if (!byDepartmentAgg[deptKey])
+            byDepartmentAgg[deptKey] = { CO2e: 0, nodeCount: 0 };
+          byDepartmentAgg[deptKey].CO2e += n.selectedScopeCO2e;
+          byDepartmentAgg[deptKey].nodeCount++;
+        }
+
+        // Sorting
+        const sortFn = (a, b) => {
+          const va = safeNum(a.selectedScopeCO2e);
+          const vb = safeNum(b.selectedScopeCO2e);
+          return sortDirection === "asc" ? va - vb : vb - va;
+        };
+        nodes.sort(sortFn);
+
+        let primary = nodes;
+        if (limit) primary = primary.slice(0, limit);
+
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "advanced",
+          data: {
+            period: fullSummary.period,
+            totalEmissions: E.totalEmissions,
+            totalFilteredEmissions: totalFiltered,
+            byScope: byScopeFiltered,
+            byLocation: byLocationAgg,
+            byDepartment: byDepartmentAgg,
+            nodes,
+            primary
           }
         });
       }
 
-      // ---- 3.3 Aggregate filtered totals (by scope, location, department) ----
-      const emptyTotals = () => ({
-        CO2e: 0,
-        CO2: 0,
-        CH4: 0,
-        N2O: 0,
-        uncertainty: 0,
-        dataPointCount: 0
-      });
+      // =====================================================
+      // ADVANCED FOR REDUCTIONS
+      // =====================================================
+      if (summaryKind === "reduction") {
+        // Work at project level
+        let projects = (R.byProject || []).map((p) => ({
+          projectId: p.projectId,
+          projectName: p.projectName,
+          scope: p.scope,
+          category: p.category,
+          location: p.location,
+          methodology: p.methodology,
+          projectActivity: p.projectActivity,
+          totalNetReduction: safeNum(p.totalNetReduction),
+          entriesCount: p.entriesCount || 0
+        }));
 
-      const totalFilteredEmissions = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
-      const byScopeFiltered = {};
-      const byLocationFiltered = new Map();
-      const byDepartmentFiltered = new Map();
-
-      selectedScopes.forEach(s => { byScopeFiltered[s] = emptyTotals(); });
-
-      for (const n of nodes) {
-        // sum totals only from selected scopes
-        totalFilteredEmissions.CO2e += n.selectedScopeCO2e;
-        totalFilteredEmissions.CO2 += safeNum(n.CO2);
-        totalFilteredEmissions.CH4 += safeNum(n.CH4);
-        totalFilteredEmissions.N2O += safeNum(n.N2O);
-        totalFilteredEmissions.uncertainty += safeNum(n.uncertainty);
-
-        // by-scope
-        for (const s of selectedScopes) {
-          const val = n.byScope[s] || 0;
-          byScopeFiltered[s].CO2e += val;
-          byScopeFiltered[s].dataPointCount += val > 0 ? 1 : 0;
+        // Apply filters using same query params
+        if (multiScopes.length) {
+          const sSet = new Set(multiScopes.map((s) => s.toLowerCase()));
+          projects = projects.filter((p) =>
+            sSet.has((p.scope || "").toLowerCase())
+          );
         }
 
-        // by-location
-        const locKey = n.location || 'Unknown';
-        if (!byLocationFiltered.has(locKey)) {
-          byLocationFiltered.set(locKey, emptyTotals());
+        if (multiLocations.length) {
+          const locSet = new Set(multiLocations.map((s) => s.toLowerCase()));
+          projects = projects.filter((p) =>
+            locSet.has((p.location || "").toLowerCase())
+          );
         }
-        const locAgg = byLocationFiltered.get(locKey);
-        locAgg.CO2e += n.selectedScopeCO2e;
-        locAgg.dataPointCount += 1;
 
-        // by-department
-        const deptKey = n.department || 'Unknown';
-        if (!byDepartmentFiltered.has(deptKey)) {
-          byDepartmentFiltered.set(deptKey, emptyTotals());
+        if (multiCategories.length) {
+          const catSet = new Set(multiCategories.map((s) => s.toLowerCase()));
+          projects = projects.filter((p) =>
+            catSet.has((p.category || "").toLowerCase())
+          );
         }
-        const deptAgg = byDepartmentFiltered.get(deptKey);
-        deptAgg.CO2e += n.selectedScopeCO2e;
-        deptAgg.dataPointCount += 1;
+
+        if (multiActivities.length) {
+          const actSet = new Set(multiActivities.map((s) => s.toLowerCase()));
+          projects = projects.filter((p) =>
+            actSet.has((p.projectActivity || "").toLowerCase())
+          );
+        }
+
+        // NOTE: emissionFactors/sources don't directly map on reductions,
+        // so we ignore them for now.
+
+        if (minCO2e != null)
+          projects = projects.filter((p) => p.totalNetReduction >= minCO2e);
+        if (maxCO2e != null)
+          projects = projects.filter((p) => p.totalNetReduction <= maxCO2e);
+
+        if (!projects.length) {
+          return res.status(200).json({
+            success: true,
+            summaryKind: "reduction",
+            filterType: "advanced",
+            data: {
+              period: fullSummary.period,
+              totalNetReduction: R.totalNetReduction,
+              totalFilteredNetReduction: 0,
+              projects: []
+            }
+          });
+        }
+
+        // Aggregates
+        let totalFilteredNet = 0;
+        const byScopeFiltered = {};
+        const byLocationAgg = {};
+        const byCategoryAgg = {};
+        const byProjectActivityAgg = {};
+
+        for (const p of projects) {
+          const val = p.totalNetReduction;
+          totalFilteredNet += val;
+
+          const sKey = p.scope || "Unknown";
+          if (!byScopeFiltered[sKey])
+            byScopeFiltered[sKey] = {
+              totalNetReduction: 0,
+              projectCount: 0
+            };
+          byScopeFiltered[sKey].totalNetReduction += val;
+          byScopeFiltered[sKey].projectCount++;
+
+          const locKey = p.location || "Unknown";
+          if (!byLocationAgg[locKey])
+            byLocationAgg[locKey] = {
+              totalNetReduction: 0,
+              projectCount: 0
+            };
+          byLocationAgg[locKey].totalNetReduction += val;
+          byLocationAgg[locKey].projectCount++;
+
+          const catKey = p.category || "Unknown";
+          if (!byCategoryAgg[catKey])
+            byCategoryAgg[catKey] = {
+              totalNetReduction: 0,
+              projectCount: 0
+            };
+          byCategoryAgg[catKey].totalNetReduction += val;
+          byCategoryAgg[catKey].projectCount++;
+
+          const actKey = p.projectActivity || "Unknown";
+          if (!byProjectActivityAgg[actKey])
+            byProjectActivityAgg[actKey] = {
+              totalNetReduction: 0,
+              projectCount: 0
+            };
+          byProjectActivityAgg[actKey].totalNetReduction += val;
+          byProjectActivityAgg[actKey].projectCount++;
+        }
+
+        // Sorting: default by totalNetReduction
+        const sortFn = (a, b) => {
+          const va = safeNum(a.totalNetReduction);
+          const vb = safeNum(b.totalNetReduction);
+          return sortDirection === "asc" ? va - vb : vb - va;
+        };
+        projects.sort(sortFn);
+
+        let primary = projects;
+        if (limit) primary = primary.slice(0, limit);
+
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "advanced",
+          data: {
+            period: fullSummary.period,
+            totalNetReduction: R.totalNetReduction,
+            totalFilteredNetReduction: totalFilteredNet,
+            byScope: byScopeFiltered,
+            byLocation: byLocationAgg,
+            byCategory: byCategoryAgg,
+            byProjectActivity: byProjectActivityAgg,
+            projects,
+            primary
+          }
+        });
       }
+    }
 
-      // ---- 3.4 Build arrays for sorting ----
-      const locationsArr = Array.from(byLocationFiltered.entries()).map(([name, data]) => ({
-        location: name,
-        ...data
-      }));
+    // ===============================================================
+    // ===============          LEGACY MODE          ==================
+    // ===============================================================
 
-      const departmentsArr = Array.from(byDepartmentFiltered.entries()).map(([name, data]) => ({
-        department: name,
-        ...data
-      }));
+    // ------------------------
+    // LEGACY EMISSION FILTERS
+    // ------------------------
+    if (summaryKind === "emission") {
+      if (scope) {
+        if (!E.byScope[scope]) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Scope not found." });
+        }
 
-      const scopesArr = Object.entries(byScopeFiltered).map(([scopeName, data]) => ({
-        scopeType: scopeName,
-        ...data
-      }));
-
-      // 🔹 NEW: categories array (NOT location-specific; filtered by scope/category if given)
-      const categoriesArr = [];
-      for (const [catName, catData] of toEntries(fullSummary.byCategory)) {
-        if (multiScopes.length && !selectedScopes.includes(catData.scopeType)) continue;
-        if (multiCategories.length && !multiCategories.includes(catName)) continue;
-
-        categoriesArr.push({
-          categoryName: catName,
-          scopeType: catData.scopeType,
-          CO2e: safeNum(catData.CO2e),
-          CO2: safeNum(catData.CO2),
-          CH4: safeNum(catData.CH4),
-          N2O: safeNum(catData.N2O),
-          uncertainty: safeNum(catData.uncertainty),
-          dataPointCount: safeNum(catData.dataPointCount)
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "scope",
+          data: {
+            scopeType: scope,
+            period: fullSummary.period,
+            emissions: E.byScope[scope],
+            categories: Object.fromEntries(
+              Object.entries(E.byCategory).filter(
+                ([, v]) => v.scopeType === scope
+              )
+            )
+          }
         });
       }
 
-      // choose primary array for sorting (node / location / department / scope)
-      let primaryArr;
-      switch (sortBy) {
-        case 'location':
-          primaryArr = locationsArr;
-          break;
-        case 'department':
-          primaryArr = departmentsArr;
-          break;
-        case 'scope':
-        case 'scopes':
-          primaryArr = scopesArr;
-          break;
-        case 'node':
-        default:
-          primaryArr = nodes;
-          break;
+      if (category) {
+        const cat = E.byCategory[category];
+        if (!cat) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Category not found." });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "category",
+          data: {
+            categoryName: category,
+            period: fullSummary.period,
+            emissions: cat
+          }
+        });
       }
 
-      const sortFn = (a, b) => {
-        const va = safeNum(a.CO2e ?? a.selectedScopeCO2e ?? a.totalCO2e);
-        const vb = safeNum(b.CO2e ?? b.selectedScopeCO2e ?? b.totalCO2e);
-        return sortDirection === 'asc' ? va - vb : vb - va;
-      };
-
-      primaryArr.sort(sortFn);
-
-      if (limit && limit > 0) {
-        primaryArr = primaryArr.slice(0, limit);
+      if (nodeId) {
+        const nd = E.byNode[nodeId];
+        if (!nd) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Node not found." });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "node",
+          data: {
+            nodeId,
+            ...nd,
+            period: fullSummary.period
+          }
+        });
       }
 
-      // 🔹 NEW: dropdown lists for cascading filters on FRONTEND
-      const dropdownLocations = Array.from(
-        new Set(nodes.map(n => n.location || 'Unknown'))
-      ).sort();
+      if (department) {
+        const dep = E.byDepartment[department];
+        if (!dep) {
+          return res.status(404).json({
+            success: false,
+            message: "Department not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "department",
+          data: {
+            departmentName: department,
+            emissions: dep,
+            period: fullSummary.period
+          }
+        });
+      }
 
-      const dropdownDepartments = Array.from(
-        new Set(nodes.map(n => n.department || 'Unknown'))
-      ).sort();
+      if (activity) {
+        const act = E.byActivity[activity];
+        if (!act) {
+          return res.status(404).json({
+            success: false,
+            message: "Activity not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "activity",
+          data: {
+            activityName: activity,
+            emissions: act,
+            period: fullSummary.period
+          }
+        });
+      }
 
-      const dropdownScopes = scopesArr
-        .filter(s => s.CO2e > 0 || s.dataPointCount > 0)
-        .map(s => s.scopeType);
+      if (location) {
+        const loc = E.byLocation[location];
+        if (!loc) {
+          return res.status(404).json({
+            success: false,
+            message: "Location not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "emission",
+          filterType: "location",
+          data: {
+            locationName: location,
+            emissions: loc,
+            period: fullSummary.period
+          }
+        });
+      }
 
-      const dropdownCategories = categoriesArr
-        .map(c => c.categoryName)
-        .sort();
-
-      const dropdownNodes = nodes.map(n => ({
-        nodeId: n.nodeId,
-        nodeLabel: n.nodeLabel,
-        location: n.location,
-        department: n.department,
-        CO2e: n.selectedScopeCO2e
-      }));
-
+      // No specific emission filters: return full doc
       return res.status(200).json({
         success: true,
-        filterType: 'advanced',
-        filtersApplied: {
-          scopes: selectedScopes,
-          locations: multiLocations,
-          nodeIds: multiNodeIds,
-          departments: multiDepartments,
-          activities: multiActivities,
-          categories: multiCategories,
-          emissionFactors: multiEmissionFactors
-        },
-        sort: {
-          sortBy,
-          sortDirection,
-          limit: limit || null
-        },
-        data: {
-          period: fullSummary.period,
-          totalEmissions: fullSummary.totalEmissions,
-          totalFilteredEmissions,
-          byScope: byScopeFiltered,
-          byLocation: locationsArr,
-          byDepartment: departmentsArr,
-          nodes,          // full filtered node list
-          primary: primaryArr,  // main sorted list (nodes / locations / departments / scopes)
-          categories: categoriesArr,
-          dropdowns: {
-            locations: dropdownLocations,
-            departments: dropdownDepartments,
-            scopes: dropdownScopes,
-            categories: dropdownCategories,
-            nodes: dropdownNodes
-          }
-        }
+        summaryKind: "emission",
+        filterType: "full",
+        data: fullSummary
       });
     }
 
-    // ---------- Step 4: LEGACY MODE (SINGLE FILTERS – your existing behaviour) ----------
-
-    let filteredData = {};
-    let filterType = 'none';
-
-    if (scope) {
-      filterType = 'scope';
-      if (!['Scope 1', 'Scope 2', 'Scope 3'].includes(scope)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid scope type. Use "Scope 1", "Scope 2", or "Scope 3".'
-        });
-      }
-      if (!fullSummary.byScope || !fullSummary.byScope[scope]) {
-        return res.status(404).json({
-          success: false,
-          message: `Scope '${scope}' has no data in this summary period.`
-        });
-      }
-
-      filteredData = {
-        scopeType: scope,
-        period: fullSummary.period,
-        emissions: fullSummary.byScope[scope] || {},
-        categories: {},
-        activities: {},
-        nodes: {}
-      };
-
-      const categoryEntries = fullSummary.byCategory instanceof Map
-        ? fullSummary.byCategory.entries()
-        : Object.entries(fullSummary.byCategory || {});
-      for (const [catName, catData] of categoryEntries) {
-        if (catData.scopeType === scope) filteredData.categories[catName] = catData;
-      }
-
-      const activityEntries = fullSummary.byActivity instanceof Map
-        ? fullSummary.byActivity.entries()
-        : Object.entries(fullSummary.byActivity || {});
-      for (const [actName, actData] of activityEntries) {
-        if (actData.scopeType === scope) filteredData.activities[actName] = actData;
-      }
-
-      const nodeEntries = fullSummary.byNode instanceof Map
-        ? fullSummary.byNode.entries()
-        : Object.entries(fullSummary.byNode || {});
-      for (const [nId, nodeData] of nodeEntries) {
-        if (nodeData.byScope?.[scope]?.CO2e > 0) {
-          filteredData.nodes[nId] = { ...nodeData, scopeEmissions: nodeData.byScope[scope] };
+    // ------------------------
+    // LEGACY REDUCTION FILTERS
+    // ------------------------
+    if (summaryKind === "reduction") {
+      if (scope) {
+        const sc = R.byScope[scope];
+        if (!sc) {
+          return res.status(404).json({
+            success: false,
+            message: "Reduction scope not found."
+          });
         }
-      }
-
-    } else if (category) {
-      filterType = 'category';
-      const categoryData =
-        fullSummary.byCategory?.get?.(category) ||
-        fullSummary.byCategory?.[category];
-
-      if (!categoryData) {
-        return res.status(404).json({
-          success: false,
-          message: `Category '${category}' not found in this summary period.`
-        });
-      }
-      filteredData = {
-        categoryName: category,
-        period: fullSummary.period,
-        emissions: categoryData,
-        activities: categoryData.activities || {},
-        scopeType: categoryData.scopeType,
-        percentage:
-          fullSummary.totalEmissions.CO2e > 0
-            ? ((categoryData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
-            : 0
-      };
-
-    } else if (nodeId) {
-      filterType = 'node';
-      const nodeData =
-        fullSummary.byNode?.get?.(nodeId) ||
-        fullSummary.byNode?.[nodeId];
-
-      if (!nodeData) {
-        return res.status(404).json({
-          success: false,
-          message: `Node ID '${nodeId}' not found in this summary period.`
-        });
-      }
-      filteredData = {
-        nodeId,
-        nodeLabel: nodeData.nodeLabel,
-        department: nodeData.department,
-        location: nodeData.location,
-        period: fullSummary.period,
-        totalEmissions: {
-          CO2e: nodeData.CO2e,
-          CO2: nodeData.CO2,
-          CH4: nodeData.CH4,
-          N2O: nodeData.N2O,
-          uncertainty: nodeData.uncertainty
-        },
-        byScope: nodeData.byScope,
-        percentage:
-          fullSummary.totalEmissions.CO2e > 0
-            ? ((nodeData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
-            : 0
-      };
-
-    } else if (department) {
-      filterType = 'department';
-      const departmentData =
-        fullSummary.byDepartment?.get?.(department) ||
-        fullSummary.byDepartment?.[department];
-
-      if (!departmentData) {
-        return res.status(404).json({
-          success: false,
-          message: `Department '${department}' not found in this summary period.`
-        });
-      }
-      const departmentNodes = {};
-      const nodeEntries = fullSummary.byNode instanceof Map
-        ? fullSummary.byNode.entries()
-        : Object.entries(fullSummary.byNode || {});
-      for (const [id, nodeData] of nodeEntries) {
-        if (nodeData.department === department) departmentNodes[id] = nodeData;
-      }
-      filteredData = {
-        departmentName: department,
-        period: fullSummary.period,
-        emissions: departmentData,
-        nodes: departmentNodes,
-        nodeCount: departmentData.nodeCount,
-        percentage:
-          fullSummary.totalEmissions.CO2e > 0
-            ? ((departmentData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
-            : 0
-      };
-
-    } else if (activity) {
-      filterType = 'activity';
-      const activityData =
-        fullSummary.byActivity?.get?.(activity) ||
-        fullSummary.byActivity?.[activity];
-
-      if (!activityData) {
-        return res.status(404).json({
-          success: false,
-          message: `Activity '${activity}' not found in this summary period.`
-        });
-      }
-      filteredData = {
-        activityName: activity,
-        period: fullSummary.period,
-        emissions: activityData,
-        scopeType: activityData.scopeType,
-        categoryName: activityData.categoryName,
-        percentage:
-          fullSummary.totalEmissions.CO2e > 0
-            ? ((activityData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
-            : 0
-      };
-
-    } else if (location) {
-      filterType = 'location';
-      const locationData =
-        fullSummary.byLocation?.get?.(location) ||
-        fullSummary.byLocation?.[location];
-
-      if (!locationData) {
-        return res.status(404).json({
-          success: false,
-          message: `Location '${location}' not found in this summary period.`
-        });
-      }
-
-      const locationNodes = {};
-      const nodeEntries = fullSummary.byNode instanceof Map
-        ? fullSummary.byNode.entries()
-        : Object.entries(fullSummary.byNode || {});
-
-      // 🔹 NEW: aggregate byScope & byDepartment ONLY for this location (legacy mode)
-      const scopeTotals = {
-        'Scope 1': { CO2e: 0, dataPointCount: 0 },
-        'Scope 2': { CO2e: 0, dataPointCount: 0 },
-        'Scope 3': { CO2e: 0, dataPointCount: 0 }
-      };
-      const departmentAgg = {};
-
-      for (const [id, nodeData] of nodeEntries) {
-        if (nodeData.location === location) {
-          locationNodes[id] = nodeData;
-
-          // scopes
-          if (nodeData.byScope) {
-            for (const s of ['Scope 1', 'Scope 2', 'Scope 3']) {
-              const sData = nodeData.byScope[s];
-              if (!sData) continue;
-              scopeTotals[s].CO2e += safeNum(sData.CO2e);
-              if (safeNum(sData.CO2e) > 0) scopeTotals[s].dataPointCount += 1;
-            }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "scope",
+          data: {
+            scopeType: scope,
+            period: fullSummary.period,
+            reductions: sc
           }
+        });
+      }
 
-          // departments
-          const deptName = nodeData.department || 'Unknown';
-          if (!departmentAgg[deptName]) {
-            departmentAgg[deptName] = { CO2e: 0, nodeCount: 0 };
-          }
-          departmentAgg[deptName].CO2e += safeNum(nodeData.CO2e);
-          departmentAgg[deptName].nodeCount += 1;
+      if (category) {
+        const cat = R.byCategory[category];
+        if (!cat) {
+          return res.status(404).json({
+            success: false,
+            message: "Reduction category not found."
+          });
         }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "category",
+          data: {
+            categoryName: category,
+            period: fullSummary.period,
+            reductions: cat
+          }
+        });
       }
 
-      filteredData = {
-        locationName: location,
-        period: fullSummary.period,
-        emissions: locationData,
-        nodes: locationNodes,
-        nodeCount: locationData.nodeCount,
-        byScope: scopeTotals,
-        byDepartment: departmentAgg,
-        percentage:
-          fullSummary.totalEmissions.CO2e > 0
-            ? ((locationData.CO2e / fullSummary.totalEmissions.CO2e) * 100).toFixed(2)
-            : 0
-      };
+      if (activity) {
+        const act = R.byProjectActivity[activity];
+        if (!act) {
+          return res.status(404).json({
+            success: false,
+            message: "Reduction activity not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "activity",
+          data: {
+            activityName: activity,
+            reductions: act,
+            period: fullSummary.period
+          }
+        });
+      }
 
-    } else {
-      filterType = 'full';
-      filteredData = fullSummary;
+      if (location) {
+        const loc = R.byLocation[location];
+        if (!loc) {
+          return res.status(404).json({
+            success: false,
+            message: "Reduction location not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "location",
+          data: {
+            locationName: location,
+            reductions: loc,
+            period: fullSummary.period
+          }
+        });
+      }
+
+      // Project-level quick lookup if nodeId is used as projectId here
+      if (nodeId) {
+        const proj = (R.byProject || []).find(
+          (p) => p.projectId === nodeId || p.projectName === nodeId
+        );
+        if (!proj) {
+          return res.status(404).json({
+            success: false,
+            message: "Reduction project not found."
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          summaryKind: "reduction",
+          filterType: "project",
+          data: {
+            period: fullSummary.period,
+            project: proj
+          }
+        });
+      }
+
+      // No specific reduction filters: return full doc
+      return res.status(200).json({
+        success: true,
+        summaryKind: "reduction",
+        filterType: "full",
+        data: fullSummary
+      });
     }
 
+    // Fallback (should not hit)
     return res.status(200).json({
       success: true,
-      filterType,
-      data: filteredData
+      summaryKind,
+      filterType: "full",
+      data: fullSummary
     });
-
   } catch (error) {
-    console.error('Error in getFilteredSummary:', error);
+    console.error("❌ Error in getFilteredSummary:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to get filtered summary',
+      message: "Failed to get filtered summary",
       error: error.message
     });
   }
@@ -1582,538 +2197,855 @@ const getFilteredSummary = async (req, res) => {
 
 
 
-// ---- Scope 1 + Scope 2 latest-total helper ---------------------------------
+
+// ============================================================================
+// ========================  EMISSION SUMMARY HELPERS  ========================
+// ============================================================================
+// Highly standardized, robust utilities to extract Scope 1, Scope 2,
+// category totals, node totals, etc. from the NEW EmissionSummary model.
+//
+// This fully supports:
+//  - nested paths inside emissionSummary
+//  - Map, Object, Array formats
+//  - safe numeric extraction (CO2e, CO2, CH4, N2O)
+//  - flexible scope keys ("Scope 1", "scope1", "SCOPE1")
+// ============================================================================
+
+
+// ============================= BASIC NORMALIZERS =============================
+
 /**
- * Robust number caster (handles null/undefined/NaN/strings)
+ * Normalize keys consistently.
+ * Examples:
+ *   "Scope 1" → "scope1"
+ *   "Scope    2" → "scope2"
+ *   "SCOPE 1" → "scope1"
+ */
+const normalizeKey = (key) => {
+  if (!key) return "";
+  return key.toString().trim().toLowerCase().replace(/\s+/g, "");
+};
+
+/**
+ * Robust numeric caster.
+ * Ensures:
+ *   toNum(undefined) → 0
+ *   toNum("10") → 10
+ *   toNum("abc") → 0
  */
 const toNum = (v) => {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
 
 /**
- * Extract Scope 1 & Scope 2 CO2e from a "byScope" container which could be:
- *  - a Map<string, {...}>
- *  - a plain object with keys like "Scope 1", "Scope 2"
- *  - an Array<{ scopeType: 'Scope 1'|'Scope 2', CO2e: number, ... }>
+ * Extract CO2e cleanly from:
+ *   - { CO2e: 10 }
+ *   - { CO2: 10, CH4: ..., N2O: ... }
+ *   - 10 (direct numeric)
+ */
+const extractCO2e = (item) => {
+  if (!item) return 0;
+  if (typeof item === "number") return item;
+  if (typeof item.CO2e === "number") return toNum(item.CO2e);
+  return 0;
+};
+
+
+// ========================== GENERALIZED EXTRACTOR ============================
+
+/**
+ * Universal extractor for any grouped object or Map.
+ * categoryObj = {
+ *   Cement: { CO2e: 100 },
+ *   Steel: { CO2e: 50 }
+ * }
+ *
+ * OR Map<string, {...}>
+ *
+ * Returns:
+ *   { total: 150, breakdown: { Cement: 100, Steel: 50 } }
+ */
+const extractFromMapOrObj = (input) => {
+  const breakdown = {};
+  let total = 0;
+
+  if (!input) return { total, breakdown };
+
+  // CASE 1: Map
+  if (typeof input.get === "function" && typeof input.keys === "function") {
+    for (const key of input.keys()) {
+      const val = input.get(key);
+      const co2e = extractCO2e(val);
+      breakdown[key] = co2e;
+      total += co2e;
+    }
+    return { total, breakdown };
+  }
+
+  // CASE 2: Plain Object
+  if (typeof input === "object") {
+    for (const [k, v] of Object.entries(input)) {
+      const co2e = extractCO2e(v);
+      breakdown[k] = co2e;
+      total += co2e;
+    }
+  }
+
+  return { total, breakdown };
+};
+
+
+// ========================== SCOPE 1 + SCOPE 2 EXTRACTOR ======================
+
+/**
+ * Extracts Scope 1 and Scope 2 totals from:
+ *   - Array form: [{ scopeType: "Scope 1", CO2e: ... }]
+ *   - Map form: Map("Scope 1" => {CO2e})
+ *   - Object form: { "Scope 1": {CO2e}, "Scope 2": {CO2e} }
  */
 const extractS1S2FromByScope = (byScope) => {
-  let s1 = 0, s2 = 0;
+  let s1 = 0;
+  let s2 = 0;
 
   if (!byScope) return { s1, s2 };
 
-  // 1) Array form
+  // ---------------- Array Format ----------------
   if (Array.isArray(byScope)) {
     for (const item of byScope) {
-      const label = (item?.scopeType || item?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
-      if (label === 'scope1') s1 += toNum(item?.CO2e);
-      if (label === 'scope2') s2 += toNum(item?.CO2e);
+      const key = normalizeKey(item?.scopeType || item.scope);
+      if (key === "scope1") s1 += extractCO2e(item);
+      if (key === "scope2") s2 += extractCO2e(item);
     }
     return { s1, s2 };
   }
 
-  // 2) Map form
-  if (typeof byScope?.keys === 'function' && typeof byScope?.get === 'function') {
-    for (const k of byScope.keys()) {
-      const key = k.toString().toLowerCase().replace(/\s+/g, '');
-      const v = byScope.get(k);
-      if (key === 'scope1') s1 += toNum(v?.CO2e ?? v);
-      if (key === 'scope2') s2 += toNum(v?.CO2e ?? v);
-      // also allow value objects that themselves carry scopeType
-      const vt = (v?.scopeType || v?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
-      if (vt === 'scope1') s1 += toNum(v?.CO2e);
-      if (vt === 'scope2') s2 += toNum(v?.CO2e);
+  // ---------------- Map Format ------------------
+  if (typeof byScope.get === "function" && typeof byScope.keys === "function") {
+    for (const keyRaw of byScope.keys()) {
+      const val = byScope.get(keyRaw);
+      const norm = normalizeKey(keyRaw);
+      if (norm === "scope1") s1 += extractCO2e(val);
+      if (norm === "scope2") s2 += extractCO2e(val);
+
+      const vKey = normalizeKey(val?.scopeType || val?.scope);
+      if (vKey === "scope1") s1 += extractCO2e(val);
+      if (vKey === "scope2") s2 += extractCO2e(val);
     }
     return { s1, s2 };
   }
 
-  // 3) Plain object form
-  if (typeof byScope === 'object') {
+  // --------------- Object Format ----------------
+  if (typeof byScope === "object") {
     for (const [k, v] of Object.entries(byScope)) {
-      const key = k.toString().toLowerCase().replace(/\s+/g, '');
-      if (key === 'scope1') s1 += toNum(v?.CO2e ?? v);
-      if (key === 'scope2') s2 += toNum(v?.CO2e ?? v);
-      // also check embedded scopeType
-      const vt = (v?.scopeType || v?.scope || '').toString().toLowerCase().replace(/\s+/g, '');
-      if (vt === 'scope1') s1 += toNum(v?.CO2e);
-      if (vt === 'scope2') s2 += toNum(v?.CO2e);
+      const norm = normalizeKey(k);
+      if (norm === "scope1") s1 += extractCO2e(v);
+      if (norm === "scope2") s2 += extractCO2e(v);
+
+      const vKey = normalizeKey(v?.scopeType || v?.scope);
+      if (vKey === "scope1") s1 += extractCO2e(v);
+      if (vKey === "scope2") s2 += extractCO2e(v);
     }
   }
 
   return { s1, s2 };
 };
 
+
+// =========================== NODE TOTALS EXTRACTOR ===========================
+
 /**
- * GET /api/summaries/:clientId/scope12-total
- * Always fetches the latest EmissionSummary for a client and returns:
- *  - latestPeriod (period object)
- *  - scope1CO2e
- *  - scope2CO2e
- *  - scope12TotalCO2e (= scope1 + scope2)
- *  - sourceSummaryId
+ * Extract totals for all nodes:
+ * byNode = {
+ *   "node123": { CO2e: 100, byScope: {...} },
+ *   "node456": { CO2e: 200, byScope: {...} }
+ * }
  */
+const extractNodeTotals = (byNode) => {
+  const nodes = {};
+  let total = 0;
+
+  if (!byNode) return { total, nodes };
+
+  for (const [nodeId, node] of Object.entries(byNode)) {
+    const co2e = extractCO2e(node);
+    nodes[nodeId] = co2e;
+    total += co2e;
+  }
+
+  return { total, nodes };
+};
+
+
+// ========================= CATEGORY / ACTIVITY / DEPARTMENT ==================
+
+const extractCategoryTotals = (obj) => extractFromMapOrObj(obj);
+const extractActivityTotals = (obj) => extractFromMapOrObj(obj);
+const extractDepartmentTotals = (obj) => extractFromMapOrObj(obj);
+const extractLocationTotals = (obj) => extractFromMapOrObj(obj);
+const extractInputTypeTotals = (obj) => extractFromMapOrObj(obj);
+const extractEmissionFactorTotals = (obj) => extractFromMapOrObj(obj);
+
+
 const getLatestScope12Total = async (req, res) => {
   try {
     const { clientId } = req.params;
+    const summaryKind = (req.query.summaryKind || "emission").toLowerCase(); // "emission" | "reduction"
 
     if (!clientId) {
       return res.status(400).json({
         success: false,
-        message: 'clientId is required',
+        message: "clientId is required",
         timestamp: new Date().toISOString()
       });
     }
 
-    // Find the latest summary — prefer the period.to date, then updatedAt/createdAt
-    const latest = await EmissionSummary
-      .findOne({ clientId })
-      .sort({ 'period.to': -1, updatedAt: -1, createdAt: -1 })
+    // =====================================================
+    // 1) Fetch the LATEST summary document for this client
+    // =====================================================
+    const latest = await EmissionSummary.findOne({ clientId })
+      .sort({ "period.to": -1, updatedAt: -1 })
       .lean();
 
     if (!latest) {
       return res.status(404).json({
         success: false,
-        message: 'No emission summary found for this client',
+        message: "No summary available for this client",
+        summaryKind,
         timestamp: new Date().toISOString()
       });
     }
 
-    // Primary: sum from high-level byScope
-    let { s1, s2 } = extractS1S2FromByScope(latest.byScope);
+    // =====================================================
+    // 2) Handle EMISSION SUMMARY mode
+    // =====================================================
+    if (summaryKind === "emission") {
+      const byScopeMain =
+        latest.byScope || latest.emissionSummary?.byScope || null;
 
-    // Optional fallback: if byScope missing/zero, try aggregating from byNode.* if your schema has it
-    if ((s1 + s2) === 0 && latest.byNode) {
-      const nodeValues = Array.isArray(latest.byNode)
-        ? latest.byNode
-        : typeof latest.byNode === 'object'
-          ? Object.values(latest.byNode)
-          : [];
+      let { s1, s2 } = extractS1S2FromByScope(byScopeMain);
 
-      for (const nv of nodeValues) {
-        // common shapes handled:
-        // 1) nv.byScope in any of the forms (Map/object/array)
-        if (nv?.byScope) {
-          const part = extractS1S2FromByScope(nv.byScope);
-          s1 += toNum(part.s1);
-          s2 += toNum(part.s2);
+      // ------------------------------------------
+      // Fallback #1: compute from each node
+      // ------------------------------------------
+      if ((s1 + s2) === 0) {
+        const byNodeMain =
+          latest.byNode || latest.emissionSummary?.byNode || {};
+
+        const nodeList = Array.isArray(byNodeMain)
+          ? byNodeMain
+          : typeof byNodeMain === "object"
+            ? Object.values(byNodeMain)
+            : [];
+
+        for (const node of nodeList) {
+          if (node?.byScope) {
+            const part = extractS1S2FromByScope(node.byScope);
+            s1 += part.s1;
+            s2 += part.s2;
+          }
+
+          // Rare backward-compatible direct fields:
+          if (node?.scope1)
+            s1 += toNum(node.scope1?.CO2e ?? node.scope1);
+          if (node?.scope2)
+            s2 += toNum(node.scope2?.CO2e ?? node.scope2);
         }
-        // 2) direct keys (rare but safe)
-        if (nv?.scope1) s1 += toNum(nv.scope1?.CO2e ?? nv.scope1);
-        if (nv?.scope2) s2 += toNum(nv.scope2?.CO2e ?? nv.scope2);
       }
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "emission",
+        message: "Latest Scope 1 & Scope 2 totals (emissions)",
+        data: {
+          clientId,
+          latestPeriod: latest.period || latest.emissionSummary?.period || null,
+          scope1CO2e: s1,
+          scope2CO2e: s2,
+          scope12TotalCO2e: s1 + s2,
+          sourceSummaryId: latest._id
+        },
+        timestamp: new Date().toISOString()
+      });
     }
 
-    const payload = {
-      success: true,
-      message: 'Latest Scope 1 + Scope 2 total fetched successfully',
-      data: {
-        clientId,
-        latestPeriod: latest.period || null,
-        scope1CO2e: s1,
-        scope2CO2e: s2,
-        scope12TotalCO2e: s1 + s2,
-        sourceSummaryId: latest._id || null
-      },
-      timestamp: new Date().toISOString()
-    };
+    // =====================================================
+    // 3) Handle REDUCTION SUMMARY mode
+    //     (NEW — supports reductions byScope)
+    // =====================================================
+    if (summaryKind === "reduction") {
+      const byScopeRed =
+        latest.reductionSummary?.byScope || null;
 
-    return res.status(200).json(payload);
-  } catch (err) {
-    console.error('getLatestScope12Total error:', err);
+      let { s1, s2 } = extractS1S2FromByScope(byScopeRed);
+
+      // If summary has project-level breakdown only:
+      if ((s1 + s2) === 0) {
+        const byProject = latest.reductionSummary?.byProject || [];
+
+        for (const p of byProject) {
+          if (p.scope) {
+            const k = p.scope.toString().toLowerCase().replace(/\s+/g, "");
+            if (k === "scope1") s1 += toNum(p.totalNetReduction);
+            if (k === "scope2") s2 += toNum(p.totalNetReduction);
+          }
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "reduction",
+        message: "Latest Scope 1 & Scope 2 totals (reductions)",
+        data: {
+          clientId,
+          latestPeriod: latest.period || null,
+          scope1NetReduction: s1,
+          scope2NetReduction: s2,
+          scope12NetReductionTotal: s1 + s2,
+          sourceSummaryId: latest._id
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // =====================================================
+    // Unknown summaryKind
+    // =====================================================
+    return res.status(400).json({
+      success: false,
+      message: `Invalid summaryKind: ${summaryKind}. Must be 'emission' or 'reduction'.`,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error("getLatestScope12Total error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch Scope 1 + Scope 2 total',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      message: "Failed to fetch Scope 1 & Scope 2 totals",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
       timestamp: new Date().toISOString()
     });
   }
 };
 
 
-// Get top & low emitters by category, scope and emission source (emission factor)
+
+/**
+ * GET /api/summaries/:clientId/top-low-stats
+ *
+ * Supports:
+ *    ➤ Emission Summary   (?summaryKind=emission)
+ *    ➤ Reduction Summary  (?summaryKind=reduction)
+ *
+ * Default = emission
+ */
 const getTopLowEmissionStats = async (req, res) => {
   try {
     const { clientId } = req.params;
+    const summaryKind = (req.query.summaryKind || "emission").toLowerCase();
+
     const {
-      periodType,  // daily | weekly | monthly | yearly | all-time (optional)
-      year,
-      month,
-      day,
-      week,
-      limit: limitRaw, // how many top / bottom items to return, default 5
+      periodType,
+      year, month, day, week,
+      limit: limitRaw
     } = req.query;
 
     if (!clientId) {
       return res.status(400).json({
         success: false,
-        message: 'clientId is required',
+        message: "clientId is required",
       });
     }
 
-    // ---------- small helpers ----------
+    // Helpers
+    const limit = limitRaw ? Math.max(1, parseInt(limitRaw)) : 5;
+
     const safeNum = (v) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
 
-    const toEntries = (maybeMap) => {
-      if (!maybeMap) return [];
-      if (maybeMap instanceof Map) return Array.from(maybeMap.entries());
-      if (typeof maybeMap === 'object') return Object.entries(maybeMap);
+    const toEntries = (value) => {
+      if (!value) return [];
+      if (value instanceof Map) return [...value.entries()];
+      if (typeof value === "object") return Object.entries(value);
       return [];
     };
 
-    const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10)) : 5;
+    const normalize = (rootValue, groupedValue) => {
+      if (rootValue) return rootValue;
+      if (groupedValue) return groupedValue;
+      return {};
+    };
 
-    // ---------- Step 1: fetch base summary (same logic style as getFilteredSummary) ----------
+    // -------------------------------------------------------
+    // Step 1: Fetch correct summary document
+    // -------------------------------------------------------
     let query = { clientId };
     let fullSummary = null;
 
     if (periodType) {
-      query['period.type'] = periodType;
-      if (year) query['period.year'] = parseInt(year, 10);
-      if (month) query['period.month'] = parseInt(month, 10);
-      if (day) query['period.day'] = parseInt(day, 10);
-      if (week) query['period.week'] = parseInt(week, 10);
+      query["period.type"] = periodType;
+      if (year) query["period.year"] = Number(year);
+      if (month) query["period.month"] = Number(month);
+      if (day) query["period.day"] = Number(day);
+      if (week) query["period.week"] = Number(week);
 
       fullSummary = await EmissionSummary.findOne(query).lean();
     } else {
-      // if periodType not specified, just take the latest summary
       fullSummary = await EmissionSummary.findOne({ clientId })
-        .sort({ 'period.to': -1 })
+        .sort({ "period.to": -1 })
         .lean();
     }
 
     if (!fullSummary) {
       return res.status(404).json({
         success: false,
-        message: 'No summary data found for the specified client and period.',
+        message: "No summary found",
       });
     }
 
-    // This includes type, year, month, etc. so you know *which period* these top/low stats belong to
-    const period = fullSummary.period;
-    const totalCO2e = safeNum(fullSummary.totalEmissions?.CO2e);
+    const period =
+      fullSummary.period ||
+      fullSummary.emissionSummary?.period ||
+      fullSummary.reductionSummary?.period ||
+      null;
 
-    // ---------- Step 2: categories (top / low) ----------
-    const categoryEntries = toEntries(fullSummary.byCategory);
-    const categoryList = categoryEntries.map(([name, data]) => {
-      const co2e = safeNum(data?.CO2e);
-      return {
+    // ======================================================
+    // MODE 1: EMISSION SUMMARY
+    // ======================================================
+    if (summaryKind === "emission") {
+      // Extract emission paths
+      const totalEmissions =
+        fullSummary.totalEmissions ||
+        fullSummary.emissionSummary?.totalEmissions ||
+        { CO2e: 0 };
+
+      const totalCO2e = safeNum(totalEmissions.CO2e);
+
+      const byCategory = normalize(fullSummary.byCategory, fullSummary.emissionSummary?.byCategory);
+      const byScope = normalize(fullSummary.byScope, fullSummary.emissionSummary?.byScope);
+      const byActivity = normalize(fullSummary.byActivity, fullSummary.emissionSummary?.byActivity);
+      const byDepartment = normalize(fullSummary.byDepartment, fullSummary.emissionSummary?.byDepartment);
+      const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.emissionSummary?.byEmissionFactor);
+
+      // ----------------------------------------------------
+      // Categories
+      // ----------------------------------------------------
+      const categoryEntries = toEntries(byCategory);
+      const categoryList = categoryEntries.map(([name, val]) => {
+        const co2e = safeNum(val?.CO2e);
+        return {
+          categoryName: name,
+          scopeType: val?.scopeType || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Scope-level Stats
+      // ----------------------------------------------------
+      const scopeOrder = ["Scope 1", "Scope 2", "Scope 3"];
+      const scopeList = [];
+
+      for (const s of scopeOrder) {
+        const val = byScope[s];
+        if (!val) continue;
+
+        const co2e = safeNum(val.CO2e);
+        scopeList.push({
+          scopeType: s,
+          CO2e: co2e,
+          breakdown: val,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        });
+      }
+
+      const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
+      const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
+
+      // ----------------------------------------------------
+      // Activities
+      // ----------------------------------------------------
+      const activityEntriesList = toEntries(byActivity);
+      const activityList = activityEntriesList.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          activityName: name,
+          scopeType: data?.scopeType || null,
+          categoryName: data?.categoryName || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...activityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Departments
+      // ----------------------------------------------------
+      const deptEntries = toEntries(byDepartment);
+      const deptList = deptEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          departmentName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomDepartments = [...deptList]
+        .filter(d => d.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Emission Sources (EF-based)
+      // ----------------------------------------------------
+      const srcEntries = toEntries(byEmissionFactor);
+      const srcList = srcEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          sourceName: name,
+          CO2e: co2e,
+          dataPointCount: safeNum(data?.dataPointCount),
+          scopeTypes: Array.isArray(data?.scopeTypes) ? data.scopeTypes : [],
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomSources = [...srcList]
+        .filter(s => s.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "emission",
+        data: {
+          clientId,
+          period,
+          totalEmissions,
+
+          categories: {
+            top: topCategories,
+            bottom: bottomCategories,
+          },
+
+          scopes: {
+            highest: highestScope,
+            lowest: lowestScope,
+            all: scopeList,
+          },
+
+          activities: {
+            top: topActivities,
+            bottom: bottomActivities,
+          },
+
+          departments: {
+            top: topDepartments,
+            bottom: bottomDepartments,
+          },
+
+          emissionSources: {
+            top: topSources,
+            bottom: bottomSources,
+          },
+        },
+      });
+    }
+
+    // ======================================================
+    // MODE 2: REDUCTION SUMMARY
+    // ======================================================
+    if (summaryKind === "reduction") {
+      const RS = fullSummary.reductionSummary || {};
+
+      const totalNetReduction = safeNum(RS.totalNetReduction);
+      const total = totalNetReduction > 0 ? totalNetReduction : 1; // avoid /0
+
+      // ----------------------------------------------------
+      //  Categories
+      // ----------------------------------------------------
+      const { breakdown: catBreak } = extractFromMapOrObj(RS.byCategory);
+      const categoryList = Object.entries(catBreak).map(([name, co2e]) => ({
         categoryName: name,
-        scopeType: data?.scopeType || null,
-        CO2e: co2e,
-        percentage:
-          totalCO2e > 0
-            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
-            : 0,
-      };
-    });
+        CO2e: safeNum(co2e),
+        percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
+      }));
 
-    const sortedCategoriesDesc = [...categoryList].sort((a, b) => b.CO2e - a.CO2e);
+      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
 
-    const topCategories = sortedCategoriesDesc.slice(0, limit);
-    const bottomCategories = [...categoryList]
-      .filter(c => c.CO2e > 0)
-      .sort((a, b) => a.CO2e - b.CO2e)
-      .slice(0, limit);
+      // ----------------------------------------------------
+      // Scopes
+      // ----------------------------------------------------
+      const { breakdown: scopeBreak } = extractFromMapOrObj(RS.byScope);
+      const scopeList = Object.entries(scopeBreak).map(([name, co2e]) => ({
+        scopeType: name,
+        CO2e: safeNum(co2e),
+        percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
+      }));
 
-    const highestCategory = topCategories[0] || null;
-    const lowestCategory = bottomCategories[0] || null;
+      const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
+      const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
 
-    // ---------- Step 3: scopes (Scope 1 / 2 / 3, high & low) ----------
-    const scopeTypes = ['Scope 1', 'Scope 2', 'Scope 3'];
-    const scopeList = [];
+      // ----------------------------------------------------
+      // Locations
+      // ----------------------------------------------------
+      const { breakdown: locBreak } = extractFromMapOrObj(RS.byLocation);
+      const locationList = Object.entries(locBreak).map(([name, co2e]) => ({
+        locationName: name,
+        CO2e: safeNum(co2e),
+        percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
+      }));
 
-    for (const scopeType of scopeTypes) {
-      const sData = fullSummary.byScope?.[scopeType];
-      if (!sData) continue;
+      const topLocations = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocations = [...locationList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
 
-      const co2e = safeNum(sData.CO2e);
-      scopeList.push({
-        scopeType,
-        CO2e: co2e,
-        breakdown: sData, // keep full object (CO2, CH4, etc.)
-        percentage:
-          totalCO2e > 0
-            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
-            : 0,
+      // ----------------------------------------------------
+      // Project Activity Breakdown
+      // ----------------------------------------------------
+      const { breakdown: actBreak } = extractFromMapOrObj(RS.byProjectActivity);
+      const projectActivityList = Object.entries(actBreak).map(([name, co2e]) => ({
+        projectActivity: name,
+        CO2e: safeNum(co2e),
+        percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
+      }));
+
+      const topActivities = [...projectActivityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...projectActivityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Projects
+      // ----------------------------------------------------
+      const byProject = Array.isArray(RS.byProject) ? RS.byProject : [];
+
+      const projectList = byProject.map(p => ({
+        projectId: p.projectId,
+        projectName: p.projectName,
+        scope: p.scope,
+        category: p.category,
+        location: p.location,
+        projectActivity: p.projectActivity,
+        CO2e: safeNum(p.totalNetReduction),
+        entriesCount: p.entriesCount || 0,
+        percentage: Number(((safeNum(p.totalNetReduction) / total) * 100).toFixed(2)),
+      }));
+
+      const topProjects = [...projectList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomProjects = [...projectList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "reduction",
+        data: {
+          clientId,
+          period,
+          totalNetReduction,
+
+          categories: {
+            top: topCategories,
+            bottom: bottomCategories,
+          },
+
+          scopes: {
+            highest: highestScope,
+            lowest: lowestScope,
+            all: scopeList,
+          },
+
+          locations: {
+            top: topLocations,
+            bottom: bottomLocations,
+          },
+
+          projectActivities: {
+            top: topActivities,
+            bottom: bottomActivities,
+          },
+
+          projects: {
+            top: topProjects,
+            bottom: bottomProjects,
+          },
+        },
       });
     }
 
-    const sortedScopesDesc = [...scopeList].sort((a, b) => b.CO2e - a.CO2e);
-    const sortedScopesAsc = [...scopeList].sort((a, b) => a.CO2e - b.CO2e);
-
-    const highestScope = sortedScopesDesc[0] || null;
-    const lowestScope = sortedScopesAsc.find(s => s.CO2e > 0) || null;
-
-    // ---------- Step 4: activities (top / low) ----------
-    // Uses byActivity: key = activityName, value = { scopeType, categoryName, CO2e, ... }
-    const activityEntries = toEntries(fullSummary.byActivity);
-    const activityList = activityEntries.map(([name, data]) => {
-      const co2e = safeNum(data?.CO2e);
-      return {
-        activityName: name,
-        scopeType: data?.scopeType || null,
-        categoryName: data?.categoryName || null,
-        CO2e: co2e,
-        percentage:
-          totalCO2e > 0
-            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
-            : 0,
-      };
+    // If summaryKind is invalid:
+    return res.status(400).json({
+      success: false,
+      message: `Invalid summaryKind '${summaryKind}'. Use 'emission' or 'reduction'`,
     });
 
-    const sortedActivitiesDesc = [...activityList].sort((a, b) => b.CO2e - a.CO2e);
-    const topActivities = sortedActivitiesDesc.slice(0, limit);
-    const bottomActivities = [...activityList]
-      .filter(a => a.CO2e > 0)
-      .sort((a, b) => a.CO2e - b.CO2e)
-      .slice(0, limit);
-
-    const highestActivity = topActivities[0] || null;
-    const lowestActivity = bottomActivities[0] || null;
-
-    // ---------- Step 5: departments (top / low) ----------
-    // Uses byDepartment: key = departmentName, value = { CO2e, CO2, CH4, N2O, uncertainty, dataPointCount, nodeCount }
-    const departmentEntries = toEntries(fullSummary.byDepartment);
-    const departmentList = departmentEntries.map(([name, data]) => {
-      const co2e = safeNum(data?.CO2e);
-      return {
-        departmentName: name,
-        CO2e: co2e,
-        nodeCount: safeNum(data?.nodeCount),
-        percentage:
-          totalCO2e > 0
-            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
-            : 0,
-      };
-    });
-
-    const sortedDepartmentsDesc = [...departmentList].sort((a, b) => b.CO2e - a.CO2e);
-    const topDepartments = sortedDepartmentsDesc.slice(0, limit);
-    const bottomDepartments = [...departmentList]
-      .filter(d => d.CO2e > 0)
-      .sort((a, b) => a.CO2e - b.CO2e)
-      .slice(0, limit);
-
-    const highestDepartment = topDepartments[0] || null;
-    const lowestDepartment = bottomDepartments[0] || null;
-
-    // ---------- Step 6: emission sources (byEmissionFactor) ----------
-    // This is your "emission source" breakdown in the model
-    const sourceEntries = toEntries(fullSummary.byEmissionFactor);
-    const sourceList = sourceEntries.map(([name, data]) => {
-      const co2e = safeNum(data?.CO2e);
-      const dataPointCount = safeNum(data?.dataPointCount);
-      const scopeTypesFromSource = Array.isArray(data?.scopeTypes)
-        ? data.scopeTypes
-        : data?.scopeTypes && typeof data.scopeTypes === 'object'
-          ? Object.keys(data.scopeTypes)
-          : [];
-
-      return {
-        sourceName: name,
-        CO2e: co2e,
-        dataPointCount,
-        scopeTypes: scopeTypesFromSource,
-        percentage:
-          totalCO2e > 0
-            ? Number(((co2e / totalCO2e) * 100).toFixed(2))
-            : 0,
-      };
-    });
-
-    const sortedSourcesDesc = [...sourceList].sort((a, b) => b.CO2e - a.CO2e);
-    const topSources = sortedSourcesDesc.slice(0, limit);
-    const bottomSources = [...sourceList]
-      .filter(s => s.CO2e > 0)
-      .sort((a, b) => a.CO2e - b.CO2e)
-      .slice(0, limit);
-
-    const highestSource = topSources[0] || null;
-    const lowestSource = bottomSources[0] || null;
-
-    // ---------- Step 7: respond ----------
-    return res.status(200).json({
-      success: true,
-      data: {
-        clientId,
-
-        // 👇 This tells you exactly which period: type, year, month, etc.
-        period,
-
-        totalEmissions: fullSummary.totalEmissions || null,
-
-        categories: {
-          highest: highestCategory,
-          lowest: lowestCategory,
-          top: topCategories,
-          bottom: bottomCategories,
-          count: categoryList.length,
-        },
-
-        scopes: {
-          highest: highestScope,
-          lowest: lowestScope,
-          all: scopeList,
-        },
-
-        activities: {
-          highest: highestActivity,
-          lowest: lowestActivity,
-          top: topActivities,
-          bottom: bottomActivities,
-          count: activityList.length,
-        },
-
-        departments: {
-          highest: highestDepartment,
-          lowest: lowestDepartment,
-          top: topDepartments,
-          bottom: bottomDepartments,
-          count: departmentList.length,
-        },
-
-        emissionSources: {
-          highest: highestSource,
-          lowest: lowestSource,
-          top: topSources,
-          bottom: bottomSources,
-          count: sourceList.length,
-        },
-      },
-    });
   } catch (error) {
-    console.error('Error in getTopLowEmissionStats:', error);
+    console.error("Error in getTopLowEmissionStats:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to get top/low emission stats',
+      message: "Failed to get top/low stats",
       error: error.message,
     });
   }
 };
 
+
 /**
- * Get highest / lowest emitting scopeIdentifier (and dates) using raw DataEntry documents,
- * and provide hierarchical breakdown (within each scopeIdentifier) by:
- *   - nodes (which nodes contribute most for that scopeIdentifier)
- *   - locations
- *   - departments
- *
- * All scopeIdentifiers are sorted from highest → lowest total CO2e.
- *
- * GET /api/summaries/:clientId/scope-identifiers/extremes
- *
- * Query params (all optional):
- *   - periodType = daily | weekly | monthly | yearly | all-time (default: monthly)
- *   - year, month, week, day (same pattern as getEmissionSummary)
+ * Get highest / lowest emitting scopeIdentifier (and dates),
+ * including node/location/department breakdown.
+ * Fully updated to align with NEW Option-B EmissionSummary model.
  */
 const getScopeIdentifierEmissionExtremes = async (req, res) => {
   try {
     const { clientId } = req.params;
-    let { periodType = 'monthly', year, month, week, day } = req.query;
+    let { periodType = "monthly", year, month, week, day } = req.query;
 
     if (!clientId) {
       return res.status(400).json({
         success: false,
-        message: 'clientId is required',
+        message: "clientId is required"
       });
     }
 
-    const allowedTypes = ['daily', 'weekly', 'monthly', 'yearly', 'all-time'];
+    const allowedTypes = ["daily", "weekly", "monthly", "yearly", "all-time"];
     if (!allowedTypes.includes(periodType)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid periodType. Use one of: ${allowedTypes.join(', ')}`,
+        message: `Invalid periodType. Allowed: ${allowedTypes.join(", ")}`
       });
     }
 
-    // Same defaulting style as getEmissionSummary
+    // ----------------------------------------------
+    // Resolve period (same as calculateEmissionSummary)
+    // ----------------------------------------------
     const now = moment.utc();
-    const y = year ? parseInt(year, 10) : now.year();
-    const m = month ? parseInt(month, 10) : now.month() + 1;
-    const w = week ? parseInt(week, 10) : now.isoWeek();
-    const d = day ? parseInt(day, 10) : now.date();
+    const y = year ? Number(year) : now.year();
+    const m = month ? Number(month) : now.month() + 1;
+    const w = week ? Number(week) : now.isoWeek();
+    const d = day ? Number(day) : now.date();
 
     const { from, to } = buildDateRange(periodType, y, m, w, d);
 
-    // Only processed entries, like calculateEmissionSummary
+    // ----------------------------------------------
+    // Fetch all processed data entries for period
+    // ----------------------------------------------
     const dataEntries = await DataEntry.find({
       clientId,
-      processingStatus: 'processed',
-      timestamp: { $gte: from, $lte: to },
+      processingStatus: "processed",
+      timestamp: { $gte: from, $lte: to }
     }).lean();
 
     if (!dataEntries.length) {
       return res.status(404).json({
         success: false,
-        message: 'No processed data entries found for this client in the requested period',
+        message: "No processed entries for this period"
       });
     }
 
-    // Try to get node metadata (department, location, label) from active flowchart.
-    // If no flowchart is found, we still return stats, but department/location will be "Unknown".
+    // ----------------------------------------------
+    // Get active flowchart for node metadata
+    // If not found, fallback to EmissionSummary.byNode
+    // ----------------------------------------------
     let nodeMetaMap = new Map();
+
     try {
       const activeChart = await getActiveFlowchart(clientId);
       const flowchart = activeChart?.chart;
-      if (flowchart && Array.isArray(flowchart.nodes)) {
-        flowchart.nodes.forEach(node => {
-          nodeMetaMap.set(node.id, {
-            nodeId: node.id,
-            label: node.label || 'Unnamed node',
-            department: node.details?.department || 'Unknown',
-            location: node.details?.location || 'Unknown',
+
+      if (flowchart?.nodes?.length) {
+        flowchart.nodes.forEach(n => {
+          nodeMetaMap.set(n.id, {
+            nodeId: n.id,
+            label: n.label || "Unnamed node",
+            department: n.details?.department || "Unknown",
+            location: n.details?.location || "Unknown"
           });
         });
       }
-    } catch (e) {
-      console.warn(
-        'getScopeIdentifierEmissionExtremes: failed to load active flowchart, using Unknown for department/location',
-        e?.message
-      );
-      nodeMetaMap = new Map();
+    } catch (errFlow) {
+      console.warn("⚠ No active flowchart found:", errFlow?.message);
     }
 
-    // Helper: format a "DD:MM:YYYY" string from entry
-    const getDateStringFromEntry = (entry) => {
-      if (entry.date && typeof entry.date === 'string') {
-        // already in "DD:MM:YYYY" format from DataEntry model
-        return entry.date;
-      }
-      if (entry.timestamp) {
-        const dt = moment.utc(entry.timestamp);
-        const dayStr = String(dt.date()).padStart(2, '0');
-        const monthStr = String(dt.month() + 1).padStart(2, '0');
-        const yearStr = String(dt.year());
-        return `${dayStr}:${monthStr}:${yearStr}`;
-      }
-      return null;
-    };
+    // ----------------------------------------------
+    // If flowchart metadata missing → use EmissionSummary metadata
+    // ----------------------------------------------
+    if (nodeMetaMap.size === 0) {
+      const latestSummary = await EmissionSummary.findOne({ clientId })
+        .sort({ "period.to": -1 })
+        .lean();
 
+      if (latestSummary) {
+        const byNode =
+          latestSummary.byNode ||
+          latestSummary.emissionSummary?.byNode ||
+          {};
+
+        for (const [nodeId, nd] of Object.entries(byNode)) {
+          nodeMetaMap.set(nodeId, {
+            nodeId,
+            label: nd.nodeLabel || "Unnamed node",
+            department: nd.department || "Unknown",
+            location: nd.location || "Unknown"
+          });
+        }
+      }
+    }
+
+    // ----------------------------------------------
+    // Helpers
+    // ----------------------------------------------
     const safeNum = (v) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
 
-    // Build stats per scopeIdentifier
+    const getDateStringFromEntry = (entry) => {
+      if (entry.date) return entry.date;
+      const dt = moment.utc(entry.timestamp);
+      return `${dt.date().toString().padStart(2, "0")}:${(dt.month()+1)
+        .toString()
+        .padStart(2, "0")}:${dt.year()}`;
+    };
+
+    // ----------------------------------------------
+    // Build stats grouped by scopeIdentifier
+    // ----------------------------------------------
     const scopeStatsMap = new Map();
 
     for (const entry of dataEntries) {
-      const scopeIdentifier = entry.scopeIdentifier || 'Unknown';
-      const emissionValues = extractEmissionValues(entry.calculatedEmissions);
-      const co2e = safeNum(emissionValues?.CO2e);
-      const dateStr = getDateStringFromEntry(entry);
-      const nodeId = entry.nodeId || 'Unknown';
+      const scopeIdentifier = entry.scopeIdentifier || "Unknown";
+      const meta = nodeMetaMap.get(entry.nodeId) || {};
 
-      const nodeMeta = nodeMetaMap.get(nodeId) || {};
-      const nodeLabel = nodeMeta.label || null;
-      const department = nodeMeta.department || 'Unknown';
-      const location = nodeMeta.location || 'Unknown';
+      const emissions = extractEmissionValues(entry.calculatedEmissions);
+      const co2e = safeNum(emissions.CO2e);
+      const dateStr = getDateStringFromEntry(entry);
 
       if (!scopeStatsMap.has(scopeIdentifier)) {
         scopeStatsMap.set(scopeIdentifier, {
@@ -2122,202 +3054,164 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
           entriesCount: 0,
           maxEntry: null,
           minEntry: null,
-          dailyTotals: new Map(),      // date -> total CO2e for that date
-          nodes: new Map(),            // nodeId -> { nodeId, nodeLabel, department, location, totalCO2e, entriesCount }
-          locations: new Map(),        // location -> { location, totalCO2e, entriesCount }
-          departments: new Map(),      // department -> { department, totalCO2e, entriesCount }
+          dailyTotals: new Map(),
+          nodes: new Map(),
+          locations: new Map(),
+          departments: new Map()
         });
       }
 
       const stat = scopeStatsMap.get(scopeIdentifier);
 
+      // Accumulate totals
       stat.totalCO2e += co2e;
       stat.entriesCount += 1;
 
-      // Track per-entry max/min (for “on which date” at entry level)
       const entryInfo = {
         entryId: entry._id,
-        nodeId,
+        nodeId: entry.nodeId,
         scopeType: entry.scopeType,
         CO2e: co2e,
         date: dateStr,
-        time: entry.time || null,
+        time: entry.time,
         timestamp: entry.timestamp,
-        inputType: entry.inputType,
+        inputType: entry.inputType
       };
 
-      // Max single entry for this scopeIdentifier
+      // Max entry
       if (!stat.maxEntry || co2e > stat.maxEntry.CO2e) {
         stat.maxEntry = entryInfo;
       }
 
-      // Min single entry for this scopeIdentifier (ignore zero emissions)
+      // Min entry (positive only)
       if (co2e > 0) {
         if (!stat.minEntry || co2e < stat.minEntry.CO2e) {
           stat.minEntry = entryInfo;
         }
       }
 
-      // Track daily totals for this scopeIdentifier
-      if (dateStr) {
-        const prev = stat.dailyTotals.get(dateStr) || 0;
-        stat.dailyTotals.set(dateStr, prev + co2e);
-      }
+      // Daily totals
+      stat.dailyTotals.set(dateStr, (stat.dailyTotals.get(dateStr) || 0) + co2e);
 
-      // ---------- node aggregation within this scopeIdentifier ----------
-      if (!stat.nodes.has(nodeId)) {
-        stat.nodes.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department,
-          location,
+      // Node-level aggregation
+      if (!stat.nodes.has(entry.nodeId)) {
+        stat.nodes.set(entry.nodeId, {
+          nodeId: entry.nodeId,
+          nodeLabel: meta.label,
+          department: meta.department,
+          location: meta.location,
           totalCO2e: 0,
-          entriesCount: 0,
+          entriesCount: 0
         });
       }
-      const nodeStat = stat.nodes.get(nodeId);
-      nodeStat.totalCO2e += co2e;
-      nodeStat.entriesCount += 1;
+      const ns = stat.nodes.get(entry.nodeId);
+      ns.totalCO2e += co2e;
+      ns.entriesCount += 1;
 
-      // ---------- location aggregation within this scopeIdentifier ----------
-      const locKey = location || 'Unknown';
+      // Location-level
+      const locKey = meta.location || "Unknown";
       if (!stat.locations.has(locKey)) {
-        stat.locations.set(locKey, {
-          location: locKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-        });
+        stat.locations.set(locKey, { location: locKey, totalCO2e: 0, entriesCount: 0 });
       }
-      const locStat = stat.locations.get(locKey);
-      locStat.totalCO2e += co2e;
-      locStat.entriesCount += 1;
+      const ls = stat.locations.get(locKey);
+      ls.totalCO2e += co2e;
+      ls.entriesCount += 1;
 
-      // ---------- department aggregation within this scopeIdentifier ----------
-      const deptKey = department || 'Unknown';
+      // Department-level
+      const deptKey = meta.department || "Unknown";
       if (!stat.departments.has(deptKey)) {
-        stat.departments.set(deptKey, {
-          department: deptKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-        });
+        stat.departments.set(deptKey, { department: deptKey, totalCO2e: 0, entriesCount: 0 });
       }
-      const deptStat = stat.departments.get(deptKey);
-      deptStat.totalCO2e += co2e;
-      deptStat.entriesCount += 1;
+      const ds = stat.departments.get(deptKey);
+      ds.totalCO2e += co2e;
+      ds.entriesCount += 1;
     }
 
-    // Convert map → plain arrays and compute max/min day per scopeIdentifier
-    let allStats = Array.from(scopeStatsMap.values()).map((stat) => {
-      const dailyTotalsArray = Array.from(stat.dailyTotals.entries()).map(([date, value]) => ({
-        date,
-        CO2e: value,
+    // ----------------------------------------------
+    // Convert internal maps → arrays + compute extremes
+    // ----------------------------------------------
+    let allStats = Array.from(scopeStatsMap.values()).map(stat => {
+
+      const dailyTotalsArray = Array.from(stat.dailyTotals.entries()).map(([date, CO2e]) => ({
+        date, CO2e
       }));
 
-      let maxDay = null;
-      let minDay = null;
+      const maxDay = dailyTotalsArray.length
+        ? dailyTotalsArray.reduce((a, b) => (b.CO2e > a.CO2e ? b : a), dailyTotalsArray[0])
+        : null;
 
-      if (dailyTotalsArray.length) {
-        maxDay = dailyTotalsArray.reduce(
-          (max, cur) => (cur.CO2e > max.CO2e ? cur : max),
-          dailyTotalsArray[0]
-        );
-
-        const positiveDays = dailyTotalsArray.filter((d) => d.CO2e > 0);
-        if (positiveDays.length) {
-          minDay = positiveDays.reduce(
-            (min, cur) => (cur.CO2e < min.CO2e ? cur : min),
-            positiveDays[0]
-          );
-        }
-      }
-
-      // Convert inner maps (nodes / locations / departments) to sorted arrays high → low
-      const nodesArray = Array.from(stat.nodes.values()).sort(
-        (a, b) => b.totalCO2e - a.totalCO2e
-      );
-
-      const locationsArray = Array.from(stat.locations.values()).sort(
-        (a, b) => b.totalCO2e - a.totalCO2e
-      );
-
-      const departmentsArray = Array.from(stat.departments.values()).sort(
-        (a, b) => b.totalCO2e - a.totalCO2e
-      );
+      const positiveDays = dailyTotalsArray.filter(d => d.CO2e > 0);
+      const minDay = positiveDays.length
+        ? positiveDays.reduce((a, b) => (b.CO2e < a.CO2e ? b : a), positiveDays[0])
+        : null;
 
       return {
         scopeIdentifier: stat.scopeIdentifier,
         totalCO2e: stat.totalCO2e,
         entriesCount: stat.entriesCount,
-        maxEntry: stat.maxEntry,        // single entry with highest emission
-        minEntry: stat.minEntry,        // single entry with lowest (non-zero) emission
-        dailyTotals: dailyTotalsArray,  // all days for this scopeIdentifier
-        maxDay,                         // day with highest total CO2e for this scopeIdentifier
-        minDay,                         // day with lowest positive total CO2e
-        nodes: nodesArray,              // node-wise hierarchy, high → low
-        locations: locationsArray,      // location-wise within this scopeIdentifier
-        departments: departmentsArray,  // department-wise within this scopeIdentifier
+        maxEntry: stat.maxEntry,
+        minEntry: stat.minEntry,
+        dailyTotals: dailyTotalsArray,
+        maxDay,
+        minDay,
+        nodes: Array.from(stat.nodes.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
+        locations: Array.from(stat.locations.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
+        departments: Array.from(stat.departments.values()).sort((a, b) => b.totalCO2e - a.totalCO2e)
       };
     });
 
     if (!allStats.length) {
       return res.status(404).json({
         success: false,
-        message: 'No scopeIdentifier statistics could be computed',
+        message: "No results could be computed"
       });
     }
 
-    // Sort all scopeIdentifiers high → low for a hierarchical view
+    // Sort by total descending
     allStats.sort((a, b) => b.totalCO2e - a.totalCO2e);
 
-    // Overall highest & lowest scopeIdentifier by TOTAL emissions
-    const highestByTotal = allStats[0] || null;
-    const lowestByTotal =
-      allStats
-        .slice()
-        .reverse()
-        .find((s) => s.totalCO2e > 0) || null;
+    const highestByTotal = allStats[0];
+    const lowestByTotal = [...allStats].reverse().find(s => s.totalCO2e > 0) || null;
 
-    // Build period object (similar style to getEmissionSummary)
+    // ----------------------------------------------
+    // Build unified period object (matches new model)
+    // ----------------------------------------------
     const period = {
       type: periodType,
       from,
       to,
+      year: y
     };
-    if (periodType !== 'all-time') {
-      period.year = y;
-    }
-    if (periodType === 'monthly' || periodType === 'daily') {
-      period.month = m;
-    }
-    if (periodType === 'weekly') {
-      period.week = w;
-    }
-    if (periodType === 'daily') {
-      period.day = d;
-    }
+    if (["monthly", "daily"].includes(periodType)) period.month = m;
+    if (periodType === "weekly") period.week = w;
+    if (periodType === "daily") period.day = d;
 
+    // ----------------------------------------------
+    // Final response
+    // ----------------------------------------------
     return res.status(200).json({
       success: true,
       data: {
         clientId,
         period,
         scopeIdentifiers: {
-          highestByTotal, // includes maxDay + maxEntry (with date)
-          lowestByTotal,  // includes minDay + minEntry (with date)
-          // full list of scopeIdentifiers, high → low, with nodes/locations/departments inside each
-          all: allStats,
-        },
-      },
+          highestByTotal,
+          lowestByTotal,
+          all: allStats
+        }
+      }
     });
+
   } catch (error) {
-    console.error('Error in getScopeIdentifierEmissionExtremes:', error);
+    console.error("Error in getScopeIdentifierEmissionExtremes:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to compute scopeIdentifier emission stats',
-      error: error.message,
+      message: "Failed to compute scopeIdentifier emission stats",
+      error: error.message
     });
   }
 };
+
 
 
 
@@ -2344,36 +3238,36 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
  *   - periodType = daily | weekly | monthly | yearly | all-time (default: monthly)
  *   - year, month, week, day (same pattern as getEmissionSummary)
  */
+/**
+ * GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ */
 const getScopeIdentifierHierarchy = async (req, res) => {
   try {
     const { clientId } = req.params;
     let { periodType = 'monthly', year, month, week, day } = req.query;
 
     if (!clientId) {
-      return res.status(400).json({
-        success: false,
-        message: 'clientId is required',
-      });
+      return res.status(400).json({ success: false, message: 'clientId is required' });
     }
 
-    const allowedTypes = ['daily', 'weekly', 'monthly', 'yearly', 'all-time'];
-    if (!allowedTypes.includes(periodType)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid periodType. Use one of: ${allowedTypes.join(', ')}`,
-      });
+    // 1. Use the Model's static method for consistent Date Ranges
+    // (This aligns with the logic inside EmissionSummary.js)
+    let dateRange;
+    try {
+        dateRange = EmissionSummary.getDateRangeForPeriod(
+            periodType, 
+            year ? parseInt(year) : undefined, 
+            month ? parseInt(month) : undefined, 
+            week ? parseInt(week) : undefined, 
+            day ? parseInt(day) : undefined
+        );
+    } catch (err) {
+        return res.status(400).json({ success: false, message: err.message });
     }
+    
+    const { from, to } = dateRange;
 
-    // --------- Resolve period parts (fall back to "now" if not provided) ---------
-    const now = moment.utc();
-    const y = year ? parseInt(year, 10) : now.year();
-    const m = month ? parseInt(month, 10) : now.month() + 1;
-    const w = week ? parseInt(week, 10) : now.isoWeek();
-    const d = day ? parseInt(day, 10) : now.date();
-
-    const { from, to } = buildDateRange(periodType, y, m, w, d);
-
-    // --------- Load processed entries for the client & period ---------
+    // 2. Load Processed Entries
     const dataEntries = await DataEntry.find({
       clientId,
       processingStatus: 'processed',
@@ -2381,15 +3275,25 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     }).lean();
 
     if (!dataEntries.length) {
-      return res.status(404).json({
-        success: false,
-        message: 'No processed data entries found for this client in the requested period',
+      return res.status(200).json({
+        success: true,
+        data: {
+          clientId,
+          period: { type: periodType, from, to, year, month, week, day },
+          totals: { totalEntries: 0, totalCO2e: 0 },
+          scopeIdentifierHierarchy: { list: [] },
+          nodeHierarchy: { list: [] },
+          locationHierarchy: { list: [] },
+          departmentHierarchy: { list: [] },
+          scopeTypeHierarchy: { list: [] }
+        },
+        message: 'No data entries found for this period'
       });
     }
 
-    // --------- Load active flowchart to get node metadata (department, location, label) ---------
+    // 3. Load Node Metadata (Flowchart)
     const flowchartDoc = await Flowchart.findOne({ clientId, isActive: true }).lean();
-    const nodeMetaMap = new Map(); // nodeId -> { nodeId, label, department, location }
+    const nodeMetaMap = new Map();
 
     if (flowchartDoc && flowchartDoc.chart && Array.isArray(flowchartDoc.chart.nodes)) {
       flowchartDoc.chart.nodes.forEach((node) => {
@@ -2402,479 +3306,276 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       });
     }
 
-    // --------- Small helpers ---------
+    // Helper to normalize numbers
     const safeNum = (v) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
 
-    const getDateStringFromEntry = (entry) => {
-      if (entry.date && typeof entry.date === 'string') {
-        // already in "DD:MM:YYYY" format from DataEntry model
-        return entry.date;
-      }
-      if (entry.timestamp) {
-        const dt = moment.utc(entry.timestamp);
-        const dayStr = String(dt.date()).padStart(2, '0');
-        const monthStr = String(dt.month() + 1).padStart(2, '0');
-        const yearStr = String(dt.year());
-        return `${dayStr}:${monthStr}:${yearStr}`;
-      }
-      return null;
-    };
-
-    // ───────────────────────────────────────────────
-    // MAPS for hierarchy
-    // ───────────────────────────────────────────────
-
-    // scopeIdentifier → node → entries
+    // 4. Aggregation Maps
     const scopeIdentifierMap = new Map();
-
-    // Global node totals (across all scopeIdentifiers)
     const globalNodeMap = new Map();
-
-    // location → node → entries
     const locationMap = new Map();
-
-    // department → node → entries
     const departmentMap = new Map();
-
-    // scopeType ("Scope 1/2/3") → scopeIdentifier → node → entries
     const scopeTypeMap = new Map();
 
     let totalCO2e = 0;
 
-    // ───────────────────────────────────────────────
-    // MAIN LOOP – one pass over DataEntry
-    // ───────────────────────────────────────────────
+    // 5. Main Processing Loop
     for (const entry of dataEntries) {
+      // Extract Metadata
       const scopeIdentifier = entry.scopeIdentifier || 'Unknown';
       const nodeId = entry.nodeId || 'Unknown';
       const scopeType = entry.scopeType || 'Unknown';
-
+      
       const nodeMeta = nodeMetaMap.get(nodeId) || {};
-      const nodeLabel = nodeMeta.label || null;
+      const nodeLabel = nodeMeta.label || nodeId;
       const department = nodeMeta.department || 'Unknown';
       const location = nodeMeta.location || 'Unknown';
 
-      const emissionValues = extractEmissionValues(entry.calculatedEmissions);
-      const co2e = safeNum(emissionValues?.CO2e);
-      const dateStr = getDateStringFromEntry(entry);
-
+      // Extract Emission Value
+      // Assumes calculatedEmissions structure from your DataEntry model
+      const co2e = safeNum(entry.calculatedEmissions?.CO2e);
       totalCO2e += co2e;
 
       const entryInfo = {
         entryId: entry._id,
-        nodeId,
-        nodeLabel,
-        department,
-        location,
-        scopeType,
-        scopeIdentifier,
+        nodeId, nodeLabel, department, location,
+        scopeType, scopeIdentifier,
         CO2e: co2e,
-        date: dateStr,
-        time: entry.time || null,
-        timestamp: entry.timestamp,
-        inputType: entry.inputType,
-        dataValues: entry.dataValues || null,
+        date: entry.date, // Assuming string "DD:MM:YYYY" or similar
+        timestamp: entry.timestamp
       };
 
-      // ---------- 1) scopeIdentifier → node → entries ----------
-      if (!scopeIdentifierMap.has(scopeIdentifier)) {
-        scopeIdentifierMap.set(scopeIdentifier, {
-          scopeIdentifier,
-          totalCO2e: 0,
-          entriesCount: 0,
-          nodes: new Map(), // nodeId -> nodeStat
-          entries: [],      // all entries under this scopeIdentifier
-        });
-      }
-      const scopeStat = scopeIdentifierMap.get(scopeIdentifier);
-      scopeStat.totalCO2e += co2e;
-      scopeStat.entriesCount += 1;
-      scopeStat.entries.push(entryInfo);
+      // --- Helper to update a Generic Hierarchy Map ---
+      const updateHierarchy = (map, key, keyLabel, parentMeta) => {
+        if (!map.has(key)) {
+            map.set(key, {
+                [keyLabel]: key,
+                totalCO2e: 0,
+                entriesCount: 0,
+                nodes: new Map(),
+                entries: []
+            });
+        }
+        const item = map.get(key);
+        item.totalCO2e += co2e;
+        item.entriesCount += 1;
+        item.entries.push(entryInfo);
 
-      if (!scopeStat.nodes.has(nodeId)) {
-        scopeStat.nodes.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department,
-          location,
-          totalCO2e: 0,
-          entriesCount: 0,
-          entries: [],
-        });
-      }
-      const scopeNodeStat = scopeStat.nodes.get(nodeId);
-      scopeNodeStat.totalCO2e += co2e;
-      scopeNodeStat.entriesCount += 1;
-      scopeNodeStat.entries.push(entryInfo);
+        // Sub-group by Node within this hierarchy
+        if (!item.nodes.has(nodeId)) {
+            item.nodes.set(nodeId, {
+                nodeId, nodeLabel, department, location,
+                totalCO2e: 0, entriesCount: 0, entries: []
+            });
+        }
+        const nodeItem = item.nodes.get(nodeId);
+        nodeItem.totalCO2e += co2e;
+        nodeItem.entriesCount += 1;
+        nodeItem.entries.push(entryInfo);
+      };
 
-      // ---------- 2) Global node totals (node wise) ----------
+      // Apply updates
+      updateHierarchy(scopeIdentifierMap, scopeIdentifier, 'scopeIdentifier');
+      updateHierarchy(locationMap, location, 'location');
+      updateHierarchy(departmentMap, department, 'department');
+      // ScopeType is special (nested ScopeIdentifiers), but for simple hierarchy matching others:
+      updateHierarchy(scopeTypeMap, scopeType, 'scopeType');
+
+      // Global Node Map (Flat)
       if (!globalNodeMap.has(nodeId)) {
-        globalNodeMap.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department,
-          location,
-          totalCO2e: 0,
-          entriesCount: 0,
-          entries: [],
-        });
+          globalNodeMap.set(nodeId, {
+              nodeId, nodeLabel, department, location,
+              totalCO2e: 0, entriesCount: 0, entries: []
+          });
       }
-      const globalNodeStat = globalNodeMap.get(nodeId);
-      globalNodeStat.totalCO2e += co2e;
-      globalNodeStat.entriesCount += 1;
-      globalNodeStat.entries.push(entryInfo);
-
-      // ---------- 3) location → node → entries ----------
-      const locationKey = location || 'Unknown';
-      if (!locationMap.has(locationKey)) {
-        locationMap.set(locationKey, {
-          location: locationKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-          nodes: new Map(),
-          entries: [],
-        });
-      }
-      const locStat = locationMap.get(locationKey);
-      locStat.totalCO2e += co2e;
-      locStat.entriesCount += 1;
-      locStat.entries.push(entryInfo);
-
-      if (!locStat.nodes.has(nodeId)) {
-        locStat.nodes.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department,
-          location: locationKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-          entries: [],
-        });
-      }
-      const locNodeStat = locStat.nodes.get(nodeId);
-      locNodeStat.totalCO2e += co2e;
-      locNodeStat.entriesCount += 1;
-      locNodeStat.entries.push(entryInfo);
-
-      // ---------- 4) department → node → entries ----------
-      const departmentKey = department || 'Unknown';
-      if (!departmentMap.has(departmentKey)) {
-        departmentMap.set(departmentKey, {
-          department: departmentKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-          nodes: new Map(),
-          entries: [],
-        });
-      }
-      const deptStat = departmentMap.get(departmentKey);
-      deptStat.totalCO2e += co2e;
-      deptStat.entriesCount += 1;
-      deptStat.entries.push(entryInfo);
-
-      if (!deptStat.nodes.has(nodeId)) {
-        deptStat.nodes.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department: departmentKey,
-          location,
-          totalCO2e: 0,
-          entriesCount: 0,
-          entries: [],
-        });
-      }
-      const deptNodeStat = deptStat.nodes.get(nodeId);
-      deptNodeStat.totalCO2e += co2e;
-      deptNodeStat.entriesCount += 1;
-      deptNodeStat.entries.push(entryInfo);
-
-      // ---------- 5) scopeType ("Scope 1/2/3") → scopeIdentifier → node → entries ----------
-      const scopeTypeKey = scopeType || 'Unknown';
-      if (!scopeTypeMap.has(scopeTypeKey)) {
-        scopeTypeMap.set(scopeTypeKey, {
-          scopeType: scopeTypeKey,
-          totalCO2e: 0,
-          entriesCount: 0,
-          scopeIdentifiers: new Map(), // scopeIdentifier -> { ... }
-          entries: [],
-        });
-      }
-      const scopeTypeStat = scopeTypeMap.get(scopeTypeKey);
-      scopeTypeStat.totalCO2e += co2e;
-      scopeTypeStat.entriesCount += 1;
-      scopeTypeStat.entries.push(entryInfo);
-
-      if (!scopeTypeStat.scopeIdentifiers.has(scopeIdentifier)) {
-        scopeTypeStat.scopeIdentifiers.set(scopeIdentifier, {
-          scopeIdentifier,
-          totalCO2e: 0,
-          entriesCount: 0,
-          nodes: new Map(), // nodeId -> nodeStat
-          entries: [],
-        });
-      }
-      const stScopeStat = scopeTypeStat.scopeIdentifiers.get(scopeIdentifier);
-      stScopeStat.totalCO2e += co2e;
-      stScopeStat.entriesCount += 1;
-      stScopeStat.entries.push(entryInfo);
-
-      if (!stScopeStat.nodes.has(nodeId)) {
-        stScopeStat.nodes.set(nodeId, {
-          nodeId,
-          nodeLabel,
-          department,
-          location,
-          totalCO2e: 0,
-          entriesCount: 0,
-          entries: [],
-        });
-      }
-      const stNodeStat = stScopeStat.nodes.get(nodeId);
-      stNodeStat.totalCO2e += co2e;
-      stNodeStat.entriesCount += 1;
-      stNodeStat.entries.push(entryInfo);
+      const gNode = globalNodeMap.get(nodeId);
+      gNode.totalCO2e += co2e;
+      gNode.entriesCount += 1;
+      gNode.entries.push(entryInfo);
     }
 
-    if (!scopeIdentifierMap.size) {
-      return res.status(404).json({
-        success: false,
-        message: 'No scopeIdentifier statistics could be computed',
-      });
-    }
-
-    // ───────────────────────────────────────────────
-    // Convert maps → plain arrays and sort high → low
-    // ───────────────────────────────────────────────
-
-    // --- scopeIdentifier hierarchy ---
-    let scopeList = Array.from(scopeIdentifierMap.values()).map((scopeStat) => {
-      const nodesArray = Array.from(scopeStat.nodes.values()).map((nodeStat) => {
-        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e); // entries high → low
-        return nodeStat;
-      });
-
-      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e); // nodes high → low
-      scopeStat.entries.sort((a, b) => b.CO2e - a.CO2e);     // all entries high → low
-
-      return {
-        scopeIdentifier: scopeStat.scopeIdentifier,
-        totalCO2e: scopeStat.totalCO2e,
-        entriesCount: scopeStat.entriesCount,
-        nodes: nodesArray,
-        entries: scopeStat.entries,
-      };
-    });
-
-    scopeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
-
-    const highestScopeIdentifier = scopeList[0] || null;
-    const lowestScopeIdentifier =
-      scopeList
-        .slice()
-        .reverse()
-        .find((s) => s.totalCO2e > 0) || null;
-
-    // --- global node ranking (node wise) ---
-    let nodeList = Array.from(globalNodeMap.values()).map((nodeStat) => {
-      nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-      return nodeStat;
-    });
-    nodeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
-
-    const highestNode = nodeList[0] || null;
-    const lowestNode =
-      nodeList
-        .slice()
-        .reverse()
-        .find((n) => n.totalCO2e > 0) || null;
-
-    // --- location hierarchy ---
-    let locationList = Array.from(locationMap.values()).map((locStat) => {
-      const nodesArray = Array.from(locStat.nodes.values()).map((nodeStat) => {
-        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-        return nodeStat;
-      });
-
-      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
-      locStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-
-      return {
-        location: locStat.location,
-        totalCO2e: locStat.totalCO2e,
-        entriesCount: locStat.entriesCount,
-        nodes: nodesArray,
-        entries: locStat.entries,
-      };
-    });
-
-    locationList.sort((a, b) => b.totalCO2e - a.totalCO2e);
-
-    const highestLocation = locationList[0] || null;
-    const lowestLocation =
-      locationList
-        .slice()
-        .reverse()
-        .find((l) => l.totalCO2e > 0) || null;
-
-    // --- department hierarchy ---
-    let departmentList = Array.from(departmentMap.values()).map((deptStat) => {
-      const nodesArray = Array.from(deptStat.nodes.values()).map((nodeStat) => {
-        nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-        return nodeStat;
-      });
-
-      nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
-      deptStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-
-      return {
-        department: deptStat.department,
-        totalCO2e: deptStat.totalCO2e,
-        entriesCount: deptStat.entriesCount,
-        nodes: nodesArray,
-        entries: deptStat.entries,
-      };
-    });
-
-    departmentList.sort((a, b) => b.totalCO2e - a.totalCO2e);
-
-    const highestDepartment = departmentList[0] || null;
-    const lowestDepartment =
-      departmentList
-        .slice()
-        .reverse()
-        .find((dpt) => dpt.totalCO2e > 0) || null;
-
-    // --- scopeType hierarchy ("Scope 1/2/3") ---
-    let scopeTypeList = Array.from(scopeTypeMap.values()).map((scopeTypeStat) => {
-      const scopesArray = Array.from(scopeTypeStat.scopeIdentifiers.values()).map((stScopeStat) => {
-        const nodesArray = Array.from(stScopeStat.nodes.values()).map((nodeStat) => {
-          nodeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-          return nodeStat;
+    // 6. Formatting & Sorting Helper
+    const processMapToList = (map, keyName) => {
+        const list = Array.from(map.values()).map(item => {
+            // Sort entries High -> Low
+            item.entries.sort((a,b) => b.CO2e - a.CO2e);
+            
+            // Convert Nodes Map to Array & Sort
+            if(item.nodes) {
+                const nodesArr = Array.from(item.nodes.values());
+                nodesArr.forEach(n => n.entries.sort((a,b) => b.CO2e - a.CO2e));
+                nodesArr.sort((a,b) => b.totalCO2e - a.totalCO2e);
+                item.nodes = nodesArr;
+            }
+            return item;
         });
+        // Sort Main List High -> Low
+        list.sort((a,b) => b.totalCO2e - a.totalCO2e);
+        
+        const highest = list.length > 0 ? list[0] : null;
+        // Find lowest that is greater than 0, or just the last one
+        const lowest = list.length > 0 ? 
+            (list.slice().reverse().find(x => x.totalCO2e > 0) || list[list.length-1]) 
+            : null;
 
-        nodesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
-        stScopeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-
-        return {
-          scopeIdentifier: stScopeStat.scopeIdentifier,
-          totalCO2e: stScopeStat.totalCO2e,
-          entriesCount: stScopeStat.entriesCount,
-          nodes: nodesArray,
-          entries: stScopeStat.entries,
-        };
-      });
-
-      scopesArray.sort((a, b) => b.totalCO2e - a.totalCO2e);
-      scopeTypeStat.entries.sort((a, b) => b.CO2e - a.CO2e);
-
-      return {
-        scopeType: scopeTypeStat.scopeType,
-        totalCO2e: scopeTypeStat.totalCO2e,
-        entriesCount: scopeTypeStat.entriesCount,
-        scopeIdentifiers: scopesArray,
-        entries: scopeTypeStat.entries,
-      };
-    });
-
-    scopeTypeList.sort((a, b) => b.totalCO2e - a.totalCO2e);
-
-    const highestScopeType = scopeTypeList[0] || null;
-    const lowestScopeType =
-      scopeTypeList
-        .slice()
-        .reverse()
-        .find((st) => st.totalCO2e > 0) || null;
-
-    // ───────────────────────────────────────────────
-    // Build period object (similar to other controllers)
-    // ───────────────────────────────────────────────
-    const period = {
-      type: periodType,
-      from,
-      to,
+        return { highest, lowest, list };
     };
-    if (periodType !== 'all-time') {
-      period.year = y;
-    }
-    if (periodType === 'monthly' || periodType === 'daily') {
-      period.month = m;
-    }
-    if (periodType === 'weekly') {
-      period.week = w;
-    }
-    if (periodType === 'daily') {
-      period.day = d;
-    }
 
-    const totalEntries = dataEntries.length;
-
+    // 7. Final Response Construction
     return res.status(200).json({
       success: true,
       data: {
         clientId,
-        period,
+        period: { type: periodType, from, to, year, month, week, day },
         totals: {
-          totalEntries,
+          totalEntries: dataEntries.length,
           totalCO2e,
         },
-
-        // ⬇️ ScopeIdentifier → Node → Entries (what you already had)
-        scopeIdentifierHierarchy: {
-          highestScopeIdentifier,
-          lowestScopeIdentifier,
-          list: scopeList, // full hierarchy high → low
-        },
-
-        // ⬇️ Global node ranking (node wise – also kept as "nodeTotals" for backwards compatibility)
-        nodeTotals: {
-          highestNode,
-          lowestNode,
-          list: nodeList,
-        },
-        nodeHierarchy: {
-          highestNode,
-          lowestNode,
-          list: nodeList,
-        },
-
-        // ⬇️ Location wise hierarchy
-        locationHierarchy: {
-          highestLocation,
-          lowestLocation,
-          list: locationList,
-        },
-
-        // ⬇️ Department wise hierarchy
-        departmentHierarchy: {
-          highestDepartment,
-          lowestDepartment,
-          list: departmentList,
-        },
-
-        // ⬇️ Scope wise hierarchy (Scope 1 / 2 / 3)
-        scopeTypeHierarchy: {
-          highestScopeType,
-          lowestScopeType,
-          list: scopeTypeList,
-        },
+        scopeIdentifierHierarchy: processMapToList(scopeIdentifierMap, 'scopeIdentifier'),
+        nodeHierarchy: processMapToList(globalNodeMap, 'nodeId'),
+        locationHierarchy: processMapToList(locationMap, 'location'),
+        departmentHierarchy: processMapToList(departmentMap, 'department'),
+        scopeTypeHierarchy: processMapToList(scopeTypeMap, 'scopeType')
       },
     });
+
   } catch (error) {
     console.error('Error in getScopeIdentifierHierarchy:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to compute scopeIdentifier hierarchy',
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, message: 'Failed to compute hierarchy', error: error.message });
   }
 };
 
 
+/**
+ * GET /api/summaries/:clientId/reduction/hierarchy
+ * * Fetches the pre-calculated reduction summary from the EmissionSummary document
+ * and formats it into hierarchies for Project, Category, Scope, and Location.
+ */
+const getReductionSummaryHierarchy = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { periodType = 'monthly', year, month, week, day } = req.query;
 
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'clientId is required' });
+    }
+
+    // 1. Build Query for EmissionSummary
+    const query = {
+      clientId,
+      'period.type': periodType
+    };
+
+    // Add specific period fields based on type
+    if (periodType !== 'all-time') {
+      if (year) query['period.year'] = parseInt(year);
+      if (periodType === 'monthly' && month) query['period.month'] = parseInt(month);
+      if (periodType === 'weekly' && week) query['period.week'] = parseInt(week);
+      if (periodType === 'daily' && day) query['period.day'] = parseInt(day);
+    }
+
+    // 2. Fetch the Summary Document
+    const summaryDoc = await EmissionSummary.findOne(query).lean();
+
+    if (!summaryDoc || !summaryDoc.reductionSummary) {
+      return res.status(404).json({
+        success: false,
+        message: 'No reduction summary found for this client and period',
+        data: null
+      });
+    }
+
+    const rs = summaryDoc.reductionSummary;
+
+    // 3. Helper to process Maps/Arrays into Hierarchy (Highest/Lowest/List)
+    // Supports both Maps (from schema) and Arrays (byProject is an array)
+    const processReductionData = (sourceData, labelKey = 'label') => {
+      let list = [];
+
+      if (Array.isArray(sourceData)) {
+        // If it's the project array
+        list = sourceData.map(item => ({
+          ...item,
+          // specific mapping for projects if keys differ, otherwise spread
+          label: item[labelKey] || item.name || 'Unknown' 
+        }));
+      } else if (sourceData && typeof sourceData === 'object') {
+        // If it's a Map/Object (byCategory, byScope, etc.)
+        // Handling Mongoose Map which comes out as Object in .lean() or Map
+        const entries = sourceData instanceof Map ? sourceData.entries() : Object.entries(sourceData);
+        
+        for (const [key, val] of entries) {
+           list.push({
+             label: key,
+             ...val // contains totalNetReduction, entriesCount
+           });
+        }
+      }
+
+      // Sort High -> Low based on totalNetReduction
+      list.sort((a, b) => (b.totalNetReduction || 0) - (a.totalNetReduction || 0));
+
+      const highest = list.length > 0 ? list[0] : null;
+      // Find lowest non-zero, or just last
+      const lowest = list.length > 0 ? 
+        (list.slice().reverse().find(x => x.totalNetReduction > 0) || list[list.length-1]) 
+        : null;
+
+      return { highest, lowest, list };
+    };
+
+    // 4. Build Hierarchies
+    
+    // Project Hierarchy (Source is Array in schema)
+    const projectHierarchy = processReductionData(rs.byProject, 'projectName');
+
+    // Category Hierarchy (Source is Map in schema)
+    const categoryHierarchy = processReductionData(rs.byCategory);
+
+    // Scope Hierarchy (Source is Map in schema)
+    const scopeHierarchy = processReductionData(rs.byScope);
+
+    // Location Hierarchy (Source is Map in schema)
+    const locationHierarchy = processReductionData(rs.byLocation);
+
+    // Methodology Hierarchy (Source is Map in schema)
+    const methodologyHierarchy = processReductionData(rs.byMethodology);
+
+
+    // 5. Response
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        period: summaryDoc.period,
+        totals: {
+            totalNetReduction: rs.totalNetReduction || 0,
+            entriesCount: rs.entriesCount || 0
+        },
+        projectHierarchy,
+        categoryHierarchy,
+        scopeHierarchy,
+        locationHierarchy,
+        methodologyHierarchy
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in getReductionSummaryHierarchy:', error);
+    return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to retrieve reduction hierarchy', 
+        error: error.message 
+    });
+  }
+};
+
+module.exports = {
+    getScopeIdentifierHierarchy,
+    getReductionSummaryHierarchy
+};
 
 module.exports = {
   setSocketIO,
@@ -2889,6 +3590,7 @@ module.exports = {
   getTopLowEmissionStats,
   getScopeIdentifierEmissionExtremes,
   getScopeIdentifierHierarchy, 
+  getReductionSummaryHierarchy,
     
 
 };

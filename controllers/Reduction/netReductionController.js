@@ -953,157 +953,218 @@ exports.saveIotNetReduction = async (req, res) => {
 
 
 
-  /** CSV: M1 expects columns: value,date?,time?
-   *      M2 expects columns named by formula variables (e.g., N,U,SFS,...) and optional date,time
-   *      or a 'variables' JSON column. CSV is normalized to manual channel.
-   *  multipart/form-data with field name: file
-   */
-  exports.uploadCsvNetReduction = async (req, res) => {
+ /**
+ * CSV Upload for Net Reduction
+ *  - M1: expects columns: value, date?, time?
+ *  - M2: expects columns matching formula variables (e.g., U,N,SFS,...) OR a JSON column: variables
+ * CSV always saves as MANUAL input type.
+ */
+exports.uploadCsvNetReduction = async (req, res) => {
+  try {
+    const { clientId, projectId, calculationMethodology } = req.params;
+
+    // Permission check
+    const can = await canWriteReductionData(req.user, clientId);
+    if (!can.ok) {
+      return res.status(403).json({ success: false, message: can.reason });
+    }
+
+    // Ensure manual channel is allowed
+    let ctx;
     try {
-      const { clientId, projectId, calculationMethodology } = req.params;
-      const can = await canWriteReductionData(req.user, clientId);
-      if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
+      ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, "manual");
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
 
-      let ctx;
-      try {
-        ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'manual'); // CSV→manual
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
+    // File requirement
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No CSV file uploaded" });
+    }
+
+    // Convert CSV → JSON rows
+    const rows = await csvtojson().fromFile(req.file.path);
+    if (!rows?.length) {
+      return res.status(400).json({ success: false, message: "CSV empty" });
+    }
+
+    const fs = require("fs");
+    const saved = [];
+    const errors = [];
+    let lastLE = null; // <-- FIXED: track last LE for response
+
+    // ======================================================
+    // ======================= M1 PATH =======================
+    // ======================================================
+    if (ctx.mode === "m1") {
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+
+        const value = Number(r.value);
+        if (!isFinite(value)) {
+          errors.push({ row: i + 1, error: "value must be numeric" });
+          continue;
+        }
+
+        const when = parseDateTimeOrNowIST(r.date, r.time);
+
+        const entry = await NetReductionEntry.create({
+          clientId,
+          projectId,
+          calculationMethodology,
+          inputType: "CSV",
+          sourceDetails: {
+            uploadedBy: req.user._id || req.user.id,
+            dataSource: "CSV",
+            fileName: req.file.originalname,
+          },
+          date: when.date,
+          time: when.time,
+          timestamp: when.timestamp,
+          inputValue: value,
+          emissionReductionRate: ctx.rate,
+        });
+
+        saved.push(entry);
       }
+    }
 
-      if (!req.file) return res.status(400).json({ success:false, message:'No CSV file uploaded' });
+    // ======================================================
+    // ======================= M2 PATH =======================
+    // ======================================================
+    else {
+      const expr = new Parser().parse(ctx.formula.expression);
+      const neededVars = expr.variables(); // variable list from formula
 
-      const rows = await csvtojson().fromFile(req.file.path);
-      if (!rows?.length) return res.status(400).json({ success:false, message:'CSV empty' });
-
-      const fs = require('fs');
-      const saved = [];
-      const errors = [];
-
-      if (ctx.mode === 'm1') {
-        for (let i=0; i<rows.length; i++) {
+      for (let i = 0; i < rows.length; i++) {
+        try {
           const r = rows[i];
-          const value = Number(r.value);
-          if (!isFinite(value)) {
-            errors.push({ row: i+1, error: 'value must be numeric' });
-            continue;
+
+          // Build incoming variable map
+          let incoming = {};
+
+          // If the CSV has a "variables" JSON column
+          if (r.variables) {
+            try {
+              incoming = JSON.parse(r.variables);
+            } catch {
+              // ignore bad JSON
+            }
           }
+
+          // Map matching variable columns
+          neededVars.forEach((vn) => {
+            if (r[vn] != null && r[vn] !== "") {
+              incoming[vn] = Number(r[vn]);
+            }
+          });
+
+          // Evaluate formula
           const when = parseDateTimeOrNowIST(r.date, r.time);
+
+          const { netInFormula, LE, finalNet } = evaluateM2WithPolicy(
+            ctx.doc,
+            ctx.formula,
+            incoming,
+            when.timestamp
+          );
+
+          lastLE = LE; // <-- FIXED: use this later in response
+
+          // Save entry
           const entry = await NetReductionEntry.create({
-            clientId, projectId, calculationMethodology,
-            inputType: 'CSV',
+            clientId,
+            projectId,
+            calculationMethodology,
+            formulaId: ctx.formula._id,
+            variables: incoming,
+            netReductionInFormula: netInFormula,
+            netReduction: finalNet,
+            inputType: "CSV",
             sourceDetails: {
               uploadedBy: req.user._id || req.user.id,
-              dataSource: 'CSV',
-              fileName: req.file.originalname
+              dataSource: "CSV",
+              fileName: req.file.originalname,
             },
-            date: when.date, time: when.time, timestamp: when.timestamp,
-            inputValue: value,
-            emissionReductionRate: ctx.rate
+            inputValue: 0,
+            emissionReductionRate: 0,
+            date: when.date,
+            time: when.time,
+            timestamp: when.timestamp,
           });
+
           saved.push(entry);
-        }
-      } else {
-        // ---- M2 CSV path ----
-        // Build the list of variable names used by the formula
-        const expr = new Parser().parse(ctx.formula.expression);
-        const needed = expr.variables(); // array of symbol names
-
-        for (let i=0; i<rows.length; i++) {
-          try {
-            const r = rows[i];
-
-            // 1) Build incoming variables for this row
-            let incoming = {};
-            if (r.variables) {
-              try { incoming = JSON.parse(r.variables); } catch { /* ignore */ }
-            }
-            // map columns that match variable names
-            needed.forEach(vn => {
-              if (r[vn] != null && r[vn] !== '') {
-                incoming[vn] = Number(r[vn]);
-              }
-            });
-
-            // 2) Evaluate formula
-            const when = parseDateTimeOrNowIST(r.date, r.time);
-const { netInFormula, LE, finalNet } =
-  evaluateM2WithPolicy(ctx.doc, ctx.formula, incoming, when.timestamp);
-
-
-
-
-            // 4) Save entry
-            const entry = await NetReductionEntry.create({
-              clientId, projectId, calculationMethodology,
-              formulaId: ctx.formula._id,
-              variables: incoming,
-              netReductionInFormula: netInFormula,
-              netReduction: finalNet,
-              inputType: 'CSV',
-              sourceDetails: {
-                uploadedBy: req.user._id || req.user.id,
-                dataSource: 'CSV',
-                fileName: req.file.originalname
-              },
-              inputValue: 0,
-              emissionReductionRate: 0,
-              date: when.date, time: when.time, timestamp: when.timestamp
-            });
-
-            saved.push(entry);
-          } catch (rowErr) {
-            errors.push({ row: i+1, error: rowErr.message });
-          }
+        } catch (e) {
+          errors.push({ row: i + 1, error: e.message });
         }
       }
-
-      try { fs.unlinkSync(req.file.path); } catch(e){}
-      try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
-      
-      emitNR('net-reduction:csv-processed', {
-        clientId, projectId, calculationMethodology,
-        saved: saved.length,
-        errors,
-        lastSaved: saved[saved.length-1] ? {
-          entryId: saved[saved.length-1]._id,
-          date: saved[saved.length-1].date,
-          time: saved[saved.length-1].time,
-          netReductionInFormula: saved[saved.length-1].netReductionInFormula ?? null,
-          netReduction: saved[saved.length-1].netReduction,
-          cumulativeNetReduction: saved[saved.length-1].cumulativeNetReduction,
-          highNetReduction: saved[saved.length-1].highNetReduction,
-          lowNetReduction: saved[saved.length-1].lowNetReduction
-        } : null
-      });
-
-      // After successful NetReductionEntry save and emitNR(...)
-if (global.broadcastNetReductionCompletionUpdate) {
-  global.broadcastNetReductionCompletionUpdate(clientId);
-}
-
-
-      return res.status(201).json({
-    success: true,
-    message: 'CSV processed',
-    saved: saved.length,
-    errors,
-    lastSaved: saved[saved.length-1] ? {
-      date: saved[saved.length-1].date,
-      time: saved[saved.length-1].time,
-      netReductionInFormula: saved[saved.length-1].netReductionInFormula, // optional but useful
-      LE,                                                                 // <-- add this
-      netReduction: saved[saved.length-1].netReduction,
-      cumulativeNetReduction: saved[saved.length-1].cumulativeNetReduction,
-      highNetReduction: saved[saved.length-1].highNetReduction,
-      lowNetReduction: saved[saved.length-1].lowNetReduction
-    } : null
-  });
-
-    } catch (err) {
-      return res.status(500).json({ success:false, message:'Failed to upload CSV net reduction', error: err.message });
     }
-  };
+
+    // Cleanup temp file
+    try {
+      fs.unlinkSync(req.file.path);
+    } catch {}
+
+    // Recompute summary
+    try {
+      await recomputeClientNetReductionSummary(clientId);
+    } catch (e) {
+      console.warn("summary recompute failed:", e.message);
+    }
+
+    // Emit event
+    emitNR("net-reduction:csv-processed", {
+      clientId,
+      projectId,
+      calculationMethodology,
+      saved: saved.length,
+      errors,
+      lastSaved: saved[saved.length - 1]
+        ? {
+            entryId: saved[saved.length - 1]._id,
+            date: saved[saved.length - 1].date,
+            time: saved[saved.length - 1].time,
+            netReductionInFormula: saved[saved.length - 1].netReductionInFormula ?? null,
+            netReduction: saved[saved.length - 1].netReduction,
+            cumulativeNetReduction: saved[saved.length - 1].cumulativeNetReduction,
+            highNetReduction: saved[saved.length - 1].highNetReduction,
+            lowNetReduction: saved[saved.length - 1].lowNetReduction,
+          }
+        : null,
+    });
+
+    if (global.broadcastNetReductionCompletionUpdate) {
+      global.broadcastNetReductionCompletionUpdate(clientId);
+    }
+
+    // Final API Response
+    return res.status(201).json({
+      success: true,
+      message: "CSV processed",
+      saved: saved.length,
+      errors,
+      lastSaved: saved[saved.length - 1]
+        ? {
+            date: saved[saved.length - 1].date,
+            time: saved[saved.length - 1].time,
+            netReductionInFormula: saved[saved.length - 1].netReductionInFormula ?? null,
+            LE: lastLE, // <-- FIXED: previously caused crash
+            netReduction: saved[saved.length - 1].netReduction,
+            cumulativeNetReduction: saved[saved.length - 1].cumulativeNetReduction,
+            highNetReduction: saved[saved.length - 1].highNetReduction,
+            lowNetReduction: saved[saved.length - 1].lowNetReduction,
+          }
+        : null,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to upload CSV net reduction",
+      error: err.message,
+    });
+  }
+};
+
 
   /** Methodology-2: body { inputType, variables: {A:..,B:..}, date?, time?, apiEndpoint?, deviceId?, fileName? } */
   exports.saveM2NetReduction = async (req,res)=>{

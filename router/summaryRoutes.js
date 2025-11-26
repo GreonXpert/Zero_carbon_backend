@@ -9,6 +9,8 @@ const {
   getTopLowEmissionStats,
   getScopeIdentifierEmissionExtremes,
   getScopeIdentifierHierarchy, 
+    getReductionSummaryHierarchy,
+  
   
 } = require('../controllers/Calculation/CalculationSummary');
 const { auth } = require('../middleware/auth');
@@ -112,6 +114,12 @@ router.get(
   getScopeIdentifierHierarchy
 );
 
+
+router.get(
+  '/:clientId/reduction/hierarchy',
+  checkSummaryPermission,
+  getReductionSummaryHierarchy
+);
 
 
 module.exports = router;
