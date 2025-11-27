@@ -121,12 +121,24 @@ const M2Schema = new mongoose.Schema({
 
 const ReductionEntrySchema = new mongoose.Schema({
   // normalized type stored in the document
-  inputType: { type: String, enum: ['manual','API','IOT'], default: 'manual' },
+  inputType: { type: String, enum: ['manual', 'API', 'IOT'], default: 'manual' },
+
   // what the user originally sent; CSV is allowed here but we normalize to manual
-  originalInputType: { type: String, enum: ['manual','API','IOT','CSV'], default: 'manual' },
-  apiEndpoint: { type: String, default: '' },  // required when inputType === 'API'
-  iotDeviceId: { type: String, default: '' }   // required when inputType === 'IOT'
+  originalInputType: {
+    type: String,
+    enum: ['manual', 'API', 'IOT', 'CSV'],
+    default: 'manual'
+  },
+
+  // Connection info (never deleted by disconnect)
+  apiEndpoint: { type: String, default: '' },   // used when inputType === 'API'
+  iotDeviceId: { type: String, default: '' },   // used when inputType === 'IOT'
+
+  // NEW: connection status flags (true = connected, false = disconnected)
+  apiStatus: { type: Boolean, default: true },  // relevant for API
+  iotStatus: { type: Boolean, default: true }   // relevant for IOT
 }, { _id: false });
+
 
 /**
  * Main Reduction schema
@@ -343,36 +355,55 @@ reductionSchema.pre('validate', async function(next) {
       this.projectId = `${this.clientId}-${this.reductionId}`;
     }
 
-    // Normalize reductionDataEntry (✅ run this BEFORE next())
-  if (this.reductionDataEntry) {
+if (this.reductionDataEntry) {
   const r = this.reductionDataEntry;
   const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
+
+  // Make sure status flags exist (for old documents)
+  if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
+  if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
 
   if (rawType === 'csv') {
     r.originalInputType = 'CSV';
     r.inputType = 'manual';
     r.apiEndpoint = '';
     r.iotDeviceId = '';
+    // manual path – both statuses not really used
+    r.apiStatus = false;
+    r.iotStatus = false;
   } else if (rawType === 'api') {
     r.originalInputType = 'API';
     r.inputType = 'API';
     r.iotDeviceId = '';
+    // By default, an existing API config is considered active
+    if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
+    r.iotStatus = false;
   } else if (rawType === 'iot') {
     r.originalInputType = 'IOT';
     r.inputType = 'IOT';
     r.apiEndpoint = '';
+    if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
+    r.apiStatus = false;
   } else {
     r.originalInputType = 'manual';
     r.inputType = 'manual';
     r.apiEndpoint = '';
     r.iotDeviceId = '';
+    r.apiStatus = false;
+    r.iotStatus = false;
   }
 
   // after projectId is set (above), auto-compose endpoint when API/IOT
-  if (['API','IOT'].includes(r.inputType) && this.clientId && this.projectId) {
+  if (['API', 'IOT'].includes(r.inputType) && this.clientId && this.projectId) {
     const ioKind = r.inputType; // 'API' or 'IOT'
     const meth = this.calculationMethodology || 'methodology1';
-    r.apiEndpoint = buildAutoEndpoint(process.env.SERVER_BASE_URL, this.clientId, this.projectId, meth, ioKind);
+    r.apiEndpoint = buildAutoEndpoint(
+      process.env.SERVER_BASE_URL,
+      this.clientId,
+      this.projectId,
+      meth,
+      ioKind
+    );
   }
 }
 

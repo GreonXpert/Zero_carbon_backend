@@ -351,178 +351,188 @@ const saveProcessFlowchart = async (req, res) => {
   }
 };
 
-// Get process flowchart by clientId
-// Get process flowchart by clientId
+
+// -------------------------------------------------------
+// Normalizer - same behaviour as flowchartController
+// -------------------------------------------------------
+function extractAssessmentLevels(client) {
+  if (!client) return [];
+
+  const raw =
+    client?.submissionData?.assessmentLevel?.length
+      ? client.submissionData.assessmentLevel
+      : client?.assessmentLevel?.length
+        ? client.assessmentLevel
+        : client?.projectProfile?.assessmentLevel
+          ? client.projectProfile.assessmentLevel
+          : client?.organizationalOverview?.assessmentLevel
+            ? client.organizationalOverview.assessmentLevel
+            : [];
+
+  const arr = Array.isArray(raw) ? raw : [raw];
+
+  return arr
+    .map(v => String(v || '').trim().toLowerCase())
+    .flatMap(v => {
+      if (v === 'both') return ['organization', 'process'];
+      if (v === 'organisation') return ['organization'];
+      return [v];
+    })
+    .filter(Boolean);
+}
+
+function includesProcess(levels) {
+  return levels.includes('process');
+}
+
+// -------------------------------------------------------
+// FINAL FIXED getProcessFlowchart
+// -------------------------------------------------------
 const getProcessFlowchart = async (req, res) => {
   try {
     const { clientId } = req.params;
-
     if (!clientId) {
-      return res.status(400).json({ message: 'clientId is required' });
+      return res.status(400).json({ message: "clientId is required" });
     }
 
-    // ---------- 1) Permission gate ----------
-    // We allow read for limited roles (same client), full access for admins/consultants/client_admin
-    const userType = req.user.userType;
-    const userClientId = req.user.clientId || req.user.client_id;
-    const userId = (req.user.id || req.user._id || '').toString();
+    // ---------------- PERMISSIONS -----------------------
+    const user = req.user;
+    const userType = user.userType;
+    const userClientId = user.clientId || user.client_id;
+    const userId = String(user._id || user.id || "");
 
     let allowed = false;
     let fullAccess = false;
 
-    if (userType === 'super_admin') {
-      allowed = true; fullAccess = true;
-    } else if (['consultant_admin', 'consultant'].includes(userType)) {
-      // If your canManageProcessFlowchart returns boolean "can manage", treat that as fullAccess
-      const canManage = await canManageProcessFlowchart(req.user, clientId);
-      allowed = !!canManage;
-      fullAccess = !!canManage;
-    } else if (userType === 'client_admin') {
-      allowed = (userClientId && userClientId.toString() === clientId.toString());
+    if (userType === "super_admin") {
+      allowed = true;
+      fullAccess = true;
+    } else if (["consultant_admin", "consultant"].includes(userType)) {
+      const can = await canManageProcessFlowchart(user, clientId);
+      allowed = !!can.allowed;
+      fullAccess = !!can.allowed;
+    } else if (userType === "client_admin") {
+      allowed = userClientId === clientId;
       fullAccess = allowed;
-    } else if (['client_employee_head', 'employee', 'auditor', 'viewer'].includes(userType)) {
-      // Read-only if they belong to the same client; further filtering happens below
-      allowed = (userClientId && userClientId.toString() === clientId.toString());
+    } else if (["client_employee_head", "employee", "auditor", "viewer"].includes(userType)) {
+      allowed = userClientId === clientId;
       fullAccess = false;
     }
 
     if (!allowed) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to view this process flowchart' 
+      return res.status(403).json({ message: "Not allowed for this flowchart" });
+    }
+
+    // ---------------- LOAD FLOWCHART --------------------
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
+    })
+      .populate("createdBy", "userName email")
+      .populate("lastModifiedBy", "userName email");
+
+    if (!processFlowchart) {
+      return res.status(404).json({ message: "Process flowchart not found" });
+    }
+
+    // ---------------- LOAD CLIENT + ASSESSMENT LEVEL ----
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ message: "Client not found" });
+    }
+
+    const effectiveLevels = extractAssessmentLevels(client);
+
+    console.log("DEBUG EFFECTIVE ASSESSMENT LEVELS =", effectiveLevels);
+
+    if (!includesProcess(effectiveLevels)) {
+      return res.status(403).json({
+        message: "Process flowchart is not available for this client",
+        reason: 'assessmentLevel does not include "process"',
+        assessmentLevel: effectiveLevels,
       });
     }
 
-    // ---------- 2) Load flowchart ----------
-    const processFlowchart = await ProcessFlowchart.findOne({ 
-      clientId, 
-      isDeleted: false 
-    })
-    .populate('createdBy', 'userName email')
-    .populate('lastModifiedBy', 'userName email');
+    // ---------------- FILTER NODES -----------------------
+    const nodes = Array.isArray(processFlowchart.nodes)
+      ? processFlowchart.nodes
+      : [];
 
-    if (!processFlowchart) {
-      return res.status(404).json({ message: 'Process flowchart not found' });
-    }
+    let filteredNodes = nodes;
 
-    // ---------- 3) Assessment-level availability (array-based) ----------
-const client = await Client.findOne(
-  { clientId },
-  { 'submissionData.assessmentLevel': 1, _id: 0 }
-).lean();
+    // Safe node (strip sensitive fields)
+    const safeNode = (node) => {
+      const base = node.toObject ? node.toObject() : node;
+      const scopes = (base.details?.scopeDetails || []).filter(s => !s.isDeleted);
 
-if (!client) {
-  return res.status(404).json({ message: 'Client not found' });
-}
-
-const normLevels = getNormalizedLevels(client);
-const hasProcessAccess = canAccessProcess(client);
-
-if (!hasProcessAccess) {
-  return res.status(403).json({
-    message: 'Process flowchart is not available for this client',
-    reason: 'assessmentLevel does not include "process"',
-    assessmentLevel: normLevels,   // what the API is actually seeing (normalized)
-    required: 'process'
-  });
-}
-    // ---------- 4) Build filtered nodes for limited roles ----------
-    const originalNodes = Array.isArray(processFlowchart.nodes) ? processFlowchart.nodes : [];
-    let filteredNodes = originalNodes;
-
-    // Helper: return a safe copy of a node (remove/limit sensitive fields for read-only roles)
-    const toSafeNode = (node) => {
-      const base = typeof node.toObject === 'function' ? node.toObject() : node;
-      const details = base?.details || {};
-
-      // Scope detail guard + whitelisting
-      const rawScopes = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
-const safeScopes = rawScopes
-  .filter(s => !s.isDeleted) // ← add this
-  .map(s => ({
-    scopeIdentifier: s?.scopeIdentifier,
-    scopeType: s?.scopeType,
-    inputType: s?.inputType ?? s?.dataCollectionType
-  }));
-
-      // Return a shallow copy with limited details
       return {
         ...base,
         details: {
-          ...details,
-          scopeDetails: safeScopes,
-          // optionally hide other sensitive internals if they exist on process nodes:
+          ...base.details,
+          scopeDetails: scopes.map(s => ({
+            scopeIdentifier: s.scopeIdentifier,
+            scopeType: s.scopeType,
+            inputType: s.inputType || s.dataCollectionType,
+          })),
           emissionFactors: undefined,
           gwp: undefined,
           calculations: undefined,
-          formulas: undefined
+          formulas: undefined,
         }
       };
     };
 
-    // Employee Head: see ONLY nodes assigned to them (primary),
-   if (userType === 'client_employee_head' && !fullAccess) {
-  const assigned = originalNodes.filter(n =>
-    n?.details?.employeeHeadId &&
-    n.details.employeeHeadId.toString?.() === userId
-  );
+    if (!fullAccess) {
+      if (userType === "client_employee_head") {
+        const assigned = nodes.filter(
+          n => String(n.details?.employeeHeadId || '') === userId
+        );
 
-  const departmentLocationFallback = originalNodes.filter(n =>
-    (n?.details?.department && n.details.department === req.user.department) ||
-    (n?.details?.location && n.details.location === req.user.location)
-  );
+        const fallback = nodes.filter(
+          n =>
+            n.details?.department === user.department ||
+            n.details?.location === user.location
+        );
 
-  // BEFORE:
-  // filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback).map(toSafeNode);
-
-  // AFTER (full details for heads on their nodes):
-  filteredNodes = (assigned.length > 0 ? assigned : departmentLocationFallback);
-}
-
- // Employee / Auditor / Viewer
-if (['employee', 'auditor', 'viewer'].includes(userType) && !fullAccess) {
-  if (userType === 'employee') {
-    // Employees: return FULL details but only for the scopes assigned to them
-    const userIdStr = String(userId);
-    filteredNodes = originalNodes.reduce((acc, node) => {
-      const base = typeof node.toObject === 'function' ? node.toObject() : node;
-      const rawScopes = Array.isArray(base?.details?.scopeDetails) ? base.details.scopeDetails : [];
-
-      // Keep only scopes that include this employee
-      const assignedScopes = rawScopes.filter(s => {
-        const assigned = Array.isArray(s?.assignedEmployees) ? s.assignedEmployees : [];
-        return assigned.map(x => String(x)).includes(userIdStr);
-      });
-
-      if (assignedScopes.length > 0) {
-        acc.push({
-          ...base,
-          details: {
-            ...base.details,
-            scopeDetails: assignedScopes // full objects for assigned scopes
-          }
-        });
+        filteredNodes = assigned.length ? assigned : fallback;
       }
-      return acc;
-    }, []);
-  } else {
-    // Auditors/Viewers: keep using safe/limited node view
-    filteredNodes = originalNodes.map(toSafeNode);
-  }
-}
 
+      if (userType === "employee") {
+        filteredNodes = nodes.reduce((acc, node) => {
+          const base = node.toObject ? node.toObject() : node;
+          const scopes = base.details?.scopeDetails || [];
 
-    // Admin/Consultant/Client Admin with fullAccess: no node filtering
-    // (keep originalNodes)
+          const assignedScopes = scopes.filter(s =>
+            (s.assignedEmployees || []).map(x => String(x)).includes(userId)
+          );
 
-    // ---------- 5) Filter edges to visible nodes ----------
-    // Be tolerant: some nodes may use id or _id
-    const getNodeId = (n) => (n?.id ?? n?._id?.toString?.() ?? n?.data?.id);
-    const visibleIds = new Set(filteredNodes.map(getNodeId).filter(Boolean));
+          if (assignedScopes.length > 0) {
+            acc.push({
+              ...base,
+              details: { ...base.details, scopeDetails: assignedScopes }
+            });
+          }
 
-    const filteredEdges = (Array.isArray(processFlowchart.edges) ? processFlowchart.edges : [])
-      .filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
+          return acc;
+        }, []);
+      }
 
-    // ---------- 6) Response ----------
+      if (["auditor", "viewer"].includes(userType)) {
+        filteredNodes = nodes.map(safeNode);
+      }
+    }
+
+    // ---------------- FILTER EDGES -----------------------
+    const getNodeId = (n) =>
+      n.id || (n._id && n._id.toString()) || n.data?.id;
+
+    const visible = new Set(filteredNodes.map(getNodeId).filter(Boolean));
+
+    const filteredEdges = (processFlowchart.edges || []).filter(
+      e => visible.has(e.source) && visible.has(e.target)
+    );
+
+    // ---------------- RETURN -----------------------------
     return res.status(200).json({
       flowchart: {
         clientId: processFlowchart.clientId,
@@ -535,14 +545,12 @@ if (['employee', 'auditor', 'viewer'].includes(userType) && !fullAccess) {
       }
     });
 
-  } catch (error) {
-    console.error('Get process flowchart error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to fetch process flowchart', 
-      error: error.message 
-    });
+  } catch (err) {
+    console.error("PROCESS FLOWCHART ERROR:", err);
+    return res.status(500).json({ message: "Failed to fetch process flowchart", error: err.message });
   }
 };
+
 
 
 // Get all process flowcharts (based on user hierarchy)
