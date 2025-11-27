@@ -1986,10 +1986,9 @@ const verifyResetToken = async (req, res) => {
       
       // Get user to use their password hash as part of secret
       const user = await User.findById(preDecoded.userId);
-      if (!user || !user.isActive) {
-        throw new Error("User not found or inactive");
-      }
-      
+      if (!user || (!user.isActive && !user.sandbox)) {
+            return next(new Error('Invalid or inactive user'));
+        }
       // Now verify with the correct secret
       decoded = jwt.verify(token, process.env.JWT_SECRET + user.password);
       
