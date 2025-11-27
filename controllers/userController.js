@@ -61,58 +61,67 @@ const initializeSuperAdmin = async () => {
 };
 
 // Universal Login for all user types
-// Universal Login for all user types
+
+
 const login = async (req, res) => {
   try {
     const { login: loginIdentifier, password } = req.body;
-    
+
     if (!loginIdentifier || !password) {
-      return res.status(400).json({ 
-        message: "Please provide login credentials" 
+      return res.status(400).json({
+        message: "Please provide login credentials"
       });
     }
-    
-    // ✅ Find user by email or userName, allowing either:
-    //    - isActive === true  (normal live users)
-    //    - sandbox === true   (test/onboarding users)
+
+    // ==========================================================
+    // 1. FIND USER (email or userName) + allow sandbox or active
+    // ==========================================================
     const user = await User.findOne({
       $and: [
         { $or: [{ email: loginIdentifier }, { userName: loginIdentifier }] },
         { $or: [{ isActive: true }, { sandbox: true }] }
       ]
-    }).populate('createdBy', 'userName email');
-    
+    }).populate("createdBy", "userName email");
+
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    
+
+    // ==========================================================
+    // 2. PASSWORD VALIDATION
+    // ==========================================================
     const isMatch = bcrypt.compareSync(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
-    
-    // ✅ Check client status ONLY for non-sandbox users
+
+    // ==========================================================
+    // 3. CHECK CLIENT ACTIVE STATUS (ONLY FOR NON-SANDBOX USERS)
+    // ==========================================================
     if (user.clientId && !user.sandbox) {
-      const client = await Client.findOne({ 
+      const client = await Client.findOne({
         clientId: user.clientId,
-        "accountDetails.isActive": true 
+        "accountDetails.isActive": true
       });
-      
+
       if (!client) {
-        return res.status(403).json({ 
-          message: "Your organization's subscription is not active" 
+        return res.status(403).json({
+          message: "Your organization's subscription is not active"
         });
       }
     }
-    // 🔸 If user.sandbox === true, we SKIP client check completely.
-    
-    // Update first login status
+
+    // ==========================================================
+    // 4. First login flag update
+    // ==========================================================
     if (user.isFirstLogin) {
       user.isFirstLogin = false;
       await user.save();
     }
-    
-    // ✅ Include sandbox info in token payload
+
+    // ==========================================================
+    // 5. TOKEN PAYLOAD (UPDATED: includes assessmentLevel)
+    // ==========================================================
     const tokenPayload = {
       id: user._id,
       email: user.email,
@@ -120,15 +129,17 @@ const login = async (req, res) => {
       userType: user.userType,
       clientId: user.clientId,
       permissions: user.permissions,
-      sandbox: user.sandbox === true
+      sandbox: user.sandbox === true,
+      assessmentLevel: user.assessmentLevel || []   // <<-- ADDED HERE
     };
-    
-    // Generate JWT token
+
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
       expiresIn: "24h"
     });
-    
-    // ✅ Also return sandbox flag in response user data
+
+    // ==========================================================
+    // 6. RESPONSE USER DATA (UPDATED: includes assessmentLevel)
+    // ==========================================================
     const userData = {
       id: user._id,
       email: user.email,
@@ -141,20 +152,24 @@ const login = async (req, res) => {
       permissions: user.permissions,
       isFirstLogin: user.isFirstLogin,
       profileImage: user.profileImage || null,
-      sandbox: user.sandbox === true
+      sandbox: user.sandbox === true,
+      assessmentLevel: user.assessmentLevel || []   // <<-- ADDED HERE
     };
-    
+
+    // ==========================================================
+    // 7. SUCCESS RESPONSE
+    // ==========================================================
     res.status(200).json({
       user: userData,
       token,
       message: "Login successful"
     });
-    
+
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({ 
-      message: "Login failed", 
-      error: error.message 
+    res.status(500).json({
+      message: "Login failed",
+      error: error.message
     });
   }
 };
