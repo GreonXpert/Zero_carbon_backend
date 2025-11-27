@@ -1806,27 +1806,36 @@ exports.disconnectNetReductionSource = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
+    // 1) Permission check
     const perm = await canManageReductionExternalSource(req.user, clientId);
     if (!perm.allowed) {
       return res.status(403).json({ message: 'Permission denied', reason: perm.reason });
     }
 
+    // 2) Load reduction project
     const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
     if (!reduction) {
       return res.status(404).json({ message: 'Reduction project not found' });
     }
 
+    // 3) Work on reductionDataEntry
     const r = reduction.reductionDataEntry || {};
     const inputType = (r.inputType || 'manual').toUpperCase();
 
     if (inputType === 'API') {
-      // concept: gate OFF API
-      r.apiEndpoint = '';
+      // ❌ DO NOT clear endpoint
+      // r.apiEndpoint stays as the configured URL
+      // ✅ Only mark the API as disconnected
+      r.apiStatus = false;
     } else if (inputType === 'IOT') {
-      // gate OFF IOT device
-      r.iotDeviceId = '';
+      // ❌ DO NOT clear device ID
+      // r.iotDeviceId stays as the configured device reference
+      // ✅ Only mark the IOT as disconnected
+      r.iotStatus = false;
     } else {
-      return res.status(400).json({ message: 'Nothing to disconnect for MANUAL input type' });
+      return res
+        .status(400)
+        .json({ message: 'Nothing to disconnect for MANUAL input type' });
     }
 
     reduction.reductionDataEntry = r;
@@ -1849,6 +1858,7 @@ exports.disconnectNetReductionSource = async (req, res) => {
   }
 };
 
+
 // ---------- RECONNECT ----------
 exports.reconnectNetReductionSource = async (req, res) => {
   try {
@@ -1868,16 +1878,15 @@ exports.reconnectNetReductionSource = async (req, res) => {
     const inputType = (r.inputType || 'manual').toUpperCase();
 
     if (inputType === 'API') {
-      // To reconnect API, we require an endpoint either already present
-      // or passed in body (optional convenience)
-      const apiEndpoint =
-        req.body?.apiEndpoint || r.apiEndpoint;
+      // Keep endpoint, but allow updating it if body contains new value
+      const apiEndpoint = req.body?.apiEndpoint || r.apiEndpoint;
       if (!apiEndpoint) {
         return res.status(400).json({
           message: 'Cannot reconnect API: apiEndpoint missing'
         });
       }
       r.apiEndpoint = apiEndpoint;
+      r.apiStatus = true;   // ✅ mark as connected
     } else if (inputType === 'IOT') {
       const deviceId = req.body?.deviceId || r.iotDeviceId;
       if (!deviceId) {
@@ -1886,6 +1895,7 @@ exports.reconnectNetReductionSource = async (req, res) => {
         });
       }
       r.iotDeviceId = deviceId;
+      r.iotStatus = true;   // ✅ mark as connected
     } else {
       return res.status(200).json({
         message: 'Nothing to reconnect for MANUAL input type; left unchanged'
