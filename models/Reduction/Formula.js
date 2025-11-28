@@ -32,6 +32,11 @@ const ReductionFormulaSchema = new mongoose.Schema({
   // Optional versioning
   version:     { type: Number, default: 1 },
 
+
+clientIds: [
+  { type: String, required: true }   // Greon001, Sandbox_Greon195 etc.
+],
+
   // Who can see/edit (you can also enforce via routes)
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   createdAt:   { type: Date, default: Date.now },

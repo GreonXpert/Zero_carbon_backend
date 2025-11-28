@@ -3,9 +3,18 @@ const { Parser } = require('expr-eval');
 const ReductionFormula = require('../../models/Reduction/Formula');
 const Reduction = require('../../models/Reduction/Reduction');
 const Client = require('../../models/Client');
+const DeleteRequest = require('../../models/Reduction/DeleteRequest');
+
+const {
+  notifyFormulaDeleteRequested,
+  notifyFormulaDeleteApproved,
+  notifyFormulaDeleteRejected
+} = require('../../utils/notifications/formulaNotifications');
+
 
 // basic role gate (routes also apply this)
 const ALLOWED_ROLES = new Set(['super_admin','consultant_admin','consultant']);
+
 
 function ensureRole(req){
   if (!req.user) return 'Unauthenticated';
@@ -19,16 +28,41 @@ exports.createFormula = async (req,res)=>{
     const err = ensureRole(req);
     if (err) return res.status(403).json({ success:false, message: err });
 
-    const { name, description,link, expression, variables, version } = req.body;
-    if (!name || !expression) return res.status(400).json({ success:false, message:'name & expression required' });
+  const { name, description, link, expression, variables, version, clientIds } = req.body;
 
-    // quick parse check
-    Parser.parse(expression);
+if (!name || !expression)
+  return res.status(400).json({ success:false, message:'name & expression required' });
 
-    const doc = await ReductionFormula.create({
-      name, description: description||'',link, expression, variables: variables||[], version: version||1,
-      createdBy: req.user._id || req.user.id
+// NEW: Validate clientIds array of STRINGS
+if (!Array.isArray(clientIds) || clientIds.length === 0) {
+  return res.status(400).json({
+    success:false,
+    message: "clientIds must be a non-empty array of strings"
+  });
+}
+
+// Ensure all are strings and not empty
+for (const id of clientIds) {
+  if (typeof id !== "string" || id.trim() === "") {
+    return res.status(400).json({
+      success:false,
+      message:`Invalid clientId (must be string): ${id}`
     });
+  }
+}
+
+Parser.parse(expression);
+
+const doc = await ReductionFormula.create({
+  name,
+  description: description || "",
+  link,
+  expression,
+  variables: variables || [],
+  version: version || 1,
+  clientIds,                                // STORE HERE
+  createdBy: req.user._id || req.user.id
+});
 
     res.status(201).json({ success:true, data: doc });
   } catch(e){
@@ -48,18 +82,84 @@ exports.listFormulas = async (req,res)=>{
   }
 };
 
-exports.getFormula = async (req,res)=>{
+exports.getFormula = async (req, res) => {
   try {
     const err = ensureRole(req);
-    if (err) return res.status(403).json({ success:false, message: err });
+    if (err) return res.status(403).json({ success: false, message: err });
 
-    const doc = await ReductionFormula.findById(req.params.formulaId);
-    if (!doc || doc.isDeleted) return res.status(404).json({ success:false, message:'Not found' });
-    res.status(200).json({ success:true, data: doc });
-  } catch(e){
-    res.status(500).json({ success:false, message:'Failed to fetch', error: e.message });
+    const user = req.user; 
+    const formulaId = req.params.formulaId;
+
+    const doc = await ReductionFormula.findById(formulaId);
+    if (!doc || doc.isDeleted) {
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
+
+    // ========= ACCESS CONTROL =========
+    const userType = user.userType;
+    const myClientId = user.clientId;             // for client users
+    const managedClients = user.assignedClients;  // for consultants/admins
+
+    // SUPER ADMIN → full access
+    if (userType === 'super_admin') {
+      return res.status(200).json({ success: true, data: doc });
+    }
+
+    // CONSULTANT ADMIN → can access formulas of all their clients
+    if (userType === 'consultant_admin') {
+      if (Array.isArray(managedClients) &&
+          managedClients.some(cid => doc.clientIds.includes(cid))) {
+        return res.status(200).json({ success: true, data: doc });
+      }
+      return res.status(403).json({
+        success: false,
+        message: 'Not allowed. Formula not for your clients.'
+      });
+    }
+
+    // CONSULTANT → only formulas for clients assigned to consultant
+    if (userType === 'consultant') {
+      if (Array.isArray(managedClients) &&
+          managedClients.some(cid => doc.clientIds.includes(cid))) {
+        return res.status(200).json({ success: true, data: doc });
+      }
+      return res.status(403).json({
+        success: false,
+        message: 'Not allowed. Formula not for your assigned clients.'
+      });
+    }
+
+    // CLIENT ROLES → only formulas belonging to their own clientId
+    const clientRoles = [
+      'client_admin',
+      'client_employee_head',
+      'employee',
+      'viewer',
+      'auditor'
+    ];
+
+    if (clientRoles.includes(userType)) {
+      if (doc.clientIds.includes(myClientId)) {
+        return res.status(200).json({ success: true, data: doc });
+      }
+      return res.status(403).json({
+        success: false,
+        message: 'Not allowed. Formula does not belong to your client.'
+      });
+    }
+
+    // Default deny
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch formula',
+      error: e.message
+    });
   }
 };
+
 
 exports.updateFormula = async (req,res)=>{
   try {
@@ -69,18 +169,55 @@ exports.updateFormula = async (req,res)=>{
     const doc = await ReductionFormula.findById(req.params.formulaId);
     if (!doc || doc.isDeleted) return res.status(404).json({ success:false, message:'Not found' });
 
-    const { name, description, link, expression, variables, version } = req.body;
+  const {
+  name,
+  description,
+  link,
+  expression,
+  variables,
+  version,
+  clientIds,        // full replace
+  addClientIds,     // add
+  removeClientIds   // remove
+} = req.body;
 
-    if (expression) Parser.parse(expression); // validate expression
+if (expression) Parser.parse(expression);
 
-    if (name != null)        doc.name = name;
-    if (description != null) doc.description = description;
-    if (expression != null)  doc.expression = expression;
-    if (link != null)        doc.link = link;
-    if (Array.isArray(variables)) doc.variables = variables;
-    if (version != null)     doc.version = version;
+if (name != null)        doc.name = name;
+if (description != null) doc.description = description;
+if (expression != null)  doc.expression = expression;
+if (link != null)        doc.link = link;
+if (Array.isArray(variables)) doc.variables = variables;
+if (version != null)     doc.version = version;
 
-    await doc.save();
+// --- FULL REPLACE ---
+if (Array.isArray(clientIds)) {
+  for (const id of clientIds) {
+    if (typeof id !== "string" || id.trim() === "") {
+      return res.status(400).json({ success:false, message:`Invalid clientId: ${id}` });
+    }
+  }
+  doc.clientIds = clientIds;
+}
+
+// --- ADD ---
+if (Array.isArray(addClientIds)) {
+  for (const id of addClientIds) {
+    if (typeof id !== "string" || id.trim() === "") {
+      return res.status(400).json({ success:false, message:`Invalid clientId: ${id}` });
+    }
+    if (!doc.clientIds.includes(id)) doc.clientIds.push(id);
+  }
+}
+
+// --- REMOVE ---
+if (Array.isArray(removeClientIds)) {
+  doc.clientIds = doc.clientIds.filter(id => !removeClientIds.includes(id));
+}
+
+await doc.save();
+
+
     res.status(200).json({ success:true, data: doc });
   } catch(e){
     res.status(500).json({ success:false, message:'Failed to update', error: e.message });
@@ -89,53 +226,294 @@ exports.updateFormula = async (req,res)=>{
 
 exports.deleteFormula = async (req, res) => {
   try {
-    const err = ensureRole(req); // super_admin | consultant_admin | consultant
-    if (err) return res.status(403).json({ success: false, message: err });
-
+    const user = req.user;
     const { formulaId } = req.params;
-    const modeParam =
-      (req.params.mode || req.params.deleteType || req.query.mode || '').toString().toLowerCase();
-    const isHard = modeParam === 'hard';
 
-    // Soft delete (default): /api/m2/formulas/:formulaId
-    if (!isHard) {
-      const doc = await ReductionFormula.findById(formulaId);
-      if (!doc) {
-        return res.status(404).json({ success: false, message: 'Not found' });
+    const isSuper = user.userType === "super_admin";
+    const isAdmin = user.userType === "consultant_admin";
+    const isConsultant = user.userType === "consultant";
+
+    // ==================================================
+    // CASE 1: CONSULTANT → CREATE DELETE REQUEST
+    // ==================================================
+    if (isConsultant) {
+      const existing = await DeleteRequest.findOne({
+        formulaId,
+        requestedBy: user.id,
+        status: "pending"
+      });
+
+      if (existing) {
+        return res.status(200).json({
+          success: true,
+          message: "Delete request already submitted and pending approval."
+        });
       }
-      if (doc.isDeleted) {
-        // already soft-deleted; idempotent success
-        return res.status(200).json({ success: true, message: 'Already deleted (soft)' });
-      }
-      doc.isDeleted = true;
-      await doc.save();
-      return res.status(200).json({ success: true, message: 'Deleted (soft)' });
-    }
 
-    // Hard delete: /api/m2/formulas/:formulaId/hard
-    // Safety check: block hard delete if attached to any active Reduction (m2.formulaRef.formulaId)
-    const attached = await Reduction.exists({
-      isDeleted: false,
-      'm2.formulaRef.formulaId': formulaId
-    });
+      const reqDoc = await DeleteRequest.create({
+        formulaId,
+        requestedBy: user.id,
+        reason: req.body.reason || ""
+      });
 
-    if (attached) {
-      return res.status(409).json({
-        success: false,
-        message:
-          'Cannot hard delete: formula is attached to one or more reductions. Detach first or soft delete instead.'
+      // Notify consultant_admin + super_admin
+      const formula = await ReductionFormula.findById(formulaId).lean();
+      const approvers = await User.find({
+        userType: { $in: ["super_admin", "consultant_admin"] },
+        isActive: true
+      }).select("_id");
+
+      await notifyFormulaDeleteRequested({
+        actor: user,
+        formula,
+        approverIds: approvers.map(u => u._id)
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Delete request submitted to Consultant Admin / Super Admin."
       });
     }
 
-    const result = await ReductionFormula.deleteOne({ _id: formulaId });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Not found' });
+    // ==================================================
+    // CASE 2: CONSULTANT_ADMIN / SUPER_ADMIN → DELETE NOW
+    // ==================================================
+    if (isAdmin || isSuper) {
+      const modeParam =
+        (req.params.mode || req.params.deleteType || req.query.mode || "")
+          .toString()
+          .toLowerCase();
+      const isHard = modeParam === "hard";
+
+      // Get formula early so it can be used in notification
+      const formula = await ReductionFormula.findById(formulaId);
+      if (!formula) {
+        return res.status(404).json({ success: false, message: "Formula not found" });
+      }
+
+      // ---------------- SOFT DELETE ----------------
+      if (!isHard) {
+        formula.isDeleted = true;
+        await formula.save();
+
+        // ---- auto-approve pending requests ----
+        const requests = await DeleteRequest.find({
+          formulaId,
+          status: "pending"
+        });
+
+        await DeleteRequest.updateMany(
+          { formulaId, status: "pending" },
+          { status: "approved", approvedBy: user.id, approvedAt: new Date() }
+        );
+
+        // ---- send notification to each consultant requester ----
+        for (const request of requests) {
+          await notifyFormulaDeleteApproved({
+            actor: user,
+            formula,
+            request
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Formula deleted (soft) by admin."
+        });
+      }
+
+      // ---------------- HARD DELETE ----------------
+      const attached = await Reduction.exists({
+        isDeleted: false,
+        "m2.formulaRef.formulaId": formulaId
+      });
+
+      if (attached) {
+        return res.status(409).json({
+          success: false,
+          message: "Cannot hard delete: formula attached to reduction projects."
+        });
+      }
+
+      await ReductionFormula.deleteOne({ _id: formulaId });
+
+      const requests = await DeleteRequest.find({
+        formulaId,
+        status: "pending"
+      });
+
+      await DeleteRequest.updateMany(
+        { formulaId, status: "pending" },
+        { status: "approved", approvedBy: user.id, approvedAt: new Date() }
+      );
+
+      // ---- notify each consultant who requested ----
+      for (const request of requests) {
+        await notifyFormulaDeleteApproved({
+          actor: user,
+          formula,
+          request
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Formula deleted permanently (hard) by admin."
+      });
     }
-    return res.status(200).json({ success: true, message: 'Deleted (hard)' });
+
+    // ==================================================
+    // CASE 3: CLIENTS OR OTHERS → DENY
+    // ==================================================
+    return res.status(403).json({
+      success: false,
+      message: "You are not allowed to delete or request deletion for formulas."
+    });
+
   } catch (e) {
-    return res
-      .status(500)
-      .json({ success: false, message: 'Failed to delete', error: e.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete formula",
+      error: e.message
+    });
+  }
+};
+
+exports.approveDeleteRequest = async (req, res) => {
+  try {
+    const user = req.user;
+
+    // Only super_admin or consultant_admin can approve
+    if (!['super_admin', 'consultant_admin'].includes(user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Consultant Admin / Super Admin can approve"
+      });
+    }
+
+    const { requestId } = req.params;
+
+    // Find delete request
+    const request = await DeleteRequest.findById(requestId);
+    if (!request || request.status !== "pending") {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found or already processed"
+      });
+    }
+
+    // Find formula to delete
+    const formula = await ReductionFormula.findById(request.formulaId);
+    if (!formula) {
+      return res.status(404).json({
+        success: false,
+        message: "Formula does not exist"
+      });
+    }
+
+    // SOFT DELETE the formula
+    formula.isDeleted = true;
+    await formula.save();
+
+    // Approve request
+    request.status = "approved";
+    request.approvedBy = user.id;
+    request.approvedAt = new Date();
+    await request.save();
+
+    // ===================================================
+    // 🔔 SEND NOTIFICATION TO THE CONSULTANT WHO REQUESTED
+    // ===================================================
+    await notifyFormulaDeleteApproved({
+      actor: user,      // admin/super admin approving
+      formula,          // formula being deleted
+      request           // includes requestedBy (consultant)
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Delete request approved & formula deleted."
+    });
+
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to approve request",
+      error: e.message
+    });
+  }
+};
+
+
+exports.rejectDeleteRequest = async (req, res) => {
+  try {
+    const user = req.user;
+
+    // Only consultant_admin or super_admin can reject
+    if (!['super_admin', 'consultant_admin'].includes(user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Consultant Admin or Super Admin can reject delete requests."
+      });
+    }
+
+    const { requestId } = req.params;
+
+    // Find delete request
+    const request = await DeleteRequest.findById(requestId)
+      .populate("requestedBy", "userName email");
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Delete request not found."
+      });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: "This request is already processed."
+      });
+    }
+
+    // NEED THE FORMULA for the notification
+    const formula = await ReductionFormula.findById(request.formulaId).lean();
+    if (!formula) {
+      return res.status(404).json({
+        success: false,
+        message: "Formula does not exist anymore"
+      });
+    }
+
+    // ================
+    // REJECT REQUEST
+    // ================
+    request.status = "rejected";
+    request.approvedBy = user.id;
+    request.approvedAt = new Date();
+    await request.save();
+
+    // ==============================================
+    // 🔔 SEND NOTIFICATION TO REQUESTING CONSULTANT
+    // ==============================================
+    await notifyFormulaDeleteRejected({
+      actor: user,      // admin/super admin who rejected
+      formula,          // formula info
+      request           // contains requestedBy user
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Delete request rejected successfully."
+    });
+
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reject delete request",
+      error: e.message
+    });
   }
 };
 

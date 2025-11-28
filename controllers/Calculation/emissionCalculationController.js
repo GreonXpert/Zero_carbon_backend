@@ -5,7 +5,7 @@ const Flowchart = require('../../models/Flowchart');
 const ProcessFlowchart = require('../../models/ProcessFlowchart');
 const Client = require('../../models/Client'); 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
-const calculateUncertainty = require('../../utils/calculation/calculateUncertainty');
+const {calculateUncertainty} = require('../../utils/Calculation/CalculateUncertainity');
 
 
 function normalizeSignedUncertainty(u) {

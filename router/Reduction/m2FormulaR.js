@@ -20,5 +20,6 @@ router.post('/attach/:clientId/:projectId',
  checkRole(...works), 
   ctrl.attachFormulaToReduction
 );
-
+router.post('/delete-requests/:requestId/approve', checkRole('super_admin','consultant_admin'), ctrl.approveDeleteRequest);
+router.post('/delete-requests/:requestId/reject', checkRole('super_admin','consultant_admin'), ctrl.rejectDeleteRequest);
 module.exports = router;
