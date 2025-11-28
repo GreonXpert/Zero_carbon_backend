@@ -4,6 +4,7 @@ const ReductionFormula = require('../../models/Reduction/Formula');
 const Reduction = require('../../models/Reduction/Reduction');
 const Client = require('../../models/Client');
 const DeleteRequest = require('../../models/Reduction/DeleteRequest');
+const User = require('../../models/User');   
 
 const {
   notifyFormulaDeleteRequested,
@@ -70,95 +71,199 @@ const doc = await ReductionFormula.create({
   }
 };
 
-exports.listFormulas = async (req,res)=>{
+exports.listFormulas = async (req, res) => {
   try {
-    const err = ensureRole(req);
-    if (err) return res.status(403).json({ success:false, message: err });
+    const user = req.user;
 
-    const list = await ReductionFormula.find({ isDeleted:false }).sort({ updatedAt: -1 });
-    res.status(200).json({ success:true, data: list });
-  } catch(e){
-    res.status(500).json({ success:false, message:'Failed to list', error: e.message });
-  }
-};
-
-exports.getFormula = async (req, res) => {
-  try {
-    const err = ensureRole(req);
-    if (err) return res.status(403).json({ success: false, message: err });
-
-    const user = req.user; 
-    const formulaId = req.params.formulaId;
-
-    const doc = await ReductionFormula.findById(formulaId);
-    if (!doc || doc.isDeleted) {
-      return res.status(404).json({ success: false, message: 'Not found' });
+    // =============================================
+    // SUPER ADMIN → all formulas
+    // =============================================
+    if (user.userType === "super_admin") {
+      const formulas = await ReductionFormula.find({ isDeleted: false });
+      return res.status(200).json({ success: true, data: formulas });
     }
 
-    // ========= ACCESS CONTROL =========
-    const userType = user.userType;
-    const myClientId = user.clientId;             // for client users
-    const managedClients = user.assignedClients;  // for consultants/admins
+    // =============================================
+    // CONSULTANT_ADMIN → only team formulas
+    // =============================================
+    if (user.userType === "consultant_admin") {
+      const team = await User.find({
+        $or: [
+          { _id: user.id },
+          { consultantAdminId: user.id, userType: "consultant" }
+        ]
+      }).select("_id");
 
-    // SUPER ADMIN → full access
-    if (userType === 'super_admin') {
-      return res.status(200).json({ success: true, data: doc });
-    }
+      const teamIds = team.map(t => String(t._id));
 
-    // CONSULTANT ADMIN → can access formulas of all their clients
-    if (userType === 'consultant_admin') {
-      if (Array.isArray(managedClients) &&
-          managedClients.some(cid => doc.clientIds.includes(cid))) {
-        return res.status(200).json({ success: true, data: doc });
-      }
-      return res.status(403).json({
-        success: false,
-        message: 'Not allowed. Formula not for your clients.'
+      const formulas = await ReductionFormula.find({
+        isDeleted: false,
+        createdBy: { $in: teamIds }
       });
+
+      return res.status(200).json({ success: true, data: formulas });
     }
 
-    // CONSULTANT → only formulas for clients assigned to consultant
-    if (userType === 'consultant') {
-      if (Array.isArray(managedClients) &&
-          managedClients.some(cid => doc.clientIds.includes(cid))) {
-        return res.status(200).json({ success: true, data: doc });
-      }
-      return res.status(403).json({
-        success: false,
-        message: 'Not allowed. Formula not for your assigned clients.'
+    // =============================================
+    // CONSULTANT → formulas for their assigned clients
+    // =============================================
+    if (user.userType === "consultant") {
+      const assignedClients = user.assignedClients || [];
+
+      const formulas = await ReductionFormula.find({
+        isDeleted: false,
+        clientIds: { $in: assignedClients }
       });
+
+      return res.status(200).json({ success: true, data: formulas });
     }
 
-    // CLIENT ROLES → only formulas belonging to their own clientId
-    const clientRoles = [
-      'client_admin',
-      'client_employee_head',
-      'employee',
-      'viewer',
-      'auditor'
-    ];
+    // =============================================
+    // CLIENT_ADMIN → formulas belonging to their client
+    // =============================================
+    if (user.userType === "client_admin") {
+      const clientId = user.clientId;
 
-    if (clientRoles.includes(userType)) {
-      if (doc.clientIds.includes(myClientId)) {
-        return res.status(200).json({ success: true, data: doc });
-      }
-      return res.status(403).json({
-        success: false,
-        message: 'Not allowed. Formula does not belong to your client.'
+      const formulas = await ReductionFormula.find({
+        isDeleted: false,
+        clientIds: clientId
       });
+
+      return res.status(200).json({ success: true, data: formulas });
     }
 
-    // Default deny
-    return res.status(403).json({ success: false, message: 'Forbidden' });
+    // =============================================
+    // AUDITOR → Can view formulas belonging to the client they audit
+    // =============================================
+    if (user.userType === "auditor") {
+      const clientId = user.clientId;
+
+      const formulas = await ReductionFormula.find({
+        isDeleted: false,
+        clientIds: clientId
+      });
+
+      return res.status(200).json({ success: true, data: formulas });
+    }
+
+    return res.status(403).json({
+      success: false,
+      message: "Unauthorized role"
+    });
 
   } catch (e) {
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch formula',
+      message: "Failed to list formulas",
       error: e.message
     });
   }
 };
+
+
+exports.getFormula = async (req, res) => {
+  try {
+    const user = req.user;
+    const { formulaId } = req.params;
+
+    const formula = await ReductionFormula.findById(formulaId).lean();
+    if (!formula || formula.isDeleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Formula not found"
+      });
+    }
+
+    // =============================================
+    // SUPER ADMIN → full access
+    // =============================================
+    if (user.userType === "super_admin") {
+      return res.status(200).json({ success: true, data: formula });
+    }
+
+    // =============================================
+    // CONSULTANT_ADMIN → only team formulas
+    // =============================================
+    if (user.userType === "consultant_admin") {
+      const team = await User.find({
+        $or: [
+          { _id: user.id },
+          { consultantAdminId: user.id, userType: "consultant" }
+        ]
+      }).select("_id");
+
+      const teamIds = team.map(u => String(u._id));
+
+      if (!teamIds.includes(String(formula.createdBy))) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only view formulas created by your consultant team."
+        });
+      }
+
+      return res.status(200).json({ success: true, data: formula });
+    }
+
+    // =============================================
+    // CONSULTANT → formulas of their assigned clients
+    // =============================================
+    if (user.userType === "consultant") {
+      const assignedClients = user.assignedClients || [];
+      const match = formula.clientIds.some(cid => assignedClients.includes(cid));
+
+      if (!match) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not allowed to view this formula."
+        });
+      }
+
+      return res.status(200).json({ success: true, data: formula });
+    }
+
+    // =============================================
+    // CLIENT_ADMIN → see formulas belonging to their client
+    // =============================================
+    if (user.userType === "client_admin") {
+      const clientId = user.clientId;
+      if (!formula.clientIds.includes(clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: "This formula does not belong to your client."
+        });
+      }
+      return res.status(200).json({ success: true, data: formula });
+    }
+
+    // =============================================
+    // AUDITOR → allowed same view as client_admin
+    // =============================================
+    if (user.userType === "auditor") {
+      const clientId = user.clientId; // auditor is assigned to one client
+      if (!formula.clientIds.includes(clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Auditor: You can only view formulas of the client you audit."
+        });
+      }
+      return res.status(200).json({ success: true, data: formula });
+    }
+
+    return res.status(403).json({
+      success: false,
+      message: "Forbidden"
+    });
+
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch formula",
+      error: e.message
+    });
+  }
+};
+
+
 
 
 exports.updateFormula = async (req,res)=>{
@@ -516,6 +621,165 @@ exports.rejectDeleteRequest = async (req, res) => {
     });
   }
 };
+
+exports.getDeleteRequestedIds = async (req, res) => {
+  try {
+    const user = req.user;
+
+    // SUPER ADMIN → all requests
+    if (user.userType === "super_admin") {
+      const data = await DeleteRequest.find().populate("requestedBy", "userName");
+      return res.status(200).json({ success: true, data });
+    }
+
+    // CONSULTANT ADMIN → only requests from their team
+    if (user.userType === "consultant_admin") {
+      const team = await User.find({
+        $or: [
+          { _id: user.id },
+          { consultantAdminId: user.id, userType: "consultant" }
+        ]
+      }).select("_id");
+
+      const teamIds = team.map(u => String(u._id));
+
+      const data = await DeleteRequest.find({
+        requestedBy: { $in: teamIds }
+      }).populate("requestedBy", "userName");
+
+      return res.status(200).json({ success: true, data });
+    }
+
+    // CONSULTANT → only their own requests
+    if (user.userType === "consultant") {
+      const data = await DeleteRequest.find({
+        requestedBy: user.id
+      });
+
+      return res.status(200).json({ success: true, data });
+    }
+
+    return res.status(403).json({ success: false, message: "Forbidden" });
+
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+
+exports.getDeleteRequestedById = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const user = req.user;
+
+    const request = await DeleteRequest.findById(requestId)
+      .populate("requestedBy", "userName email")
+      .lean();
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: "Not found" });
+    }
+
+    // SUPER ADMIN → full access
+    if (user.userType === "super_admin") {
+      return res.status(200).json({ success: true, data: request });
+    }
+
+    // CONSULTANT ADMIN → only own team
+    if (user.userType === "consultant_admin") {
+      const team = await User.find({
+        $or: [
+          { _id: user.id },
+          { consultantAdminId: user.id, userType: "consultant" }
+        ]
+      }).select("_id");
+
+      const teamIds = team.map(u => String(u._id));
+
+      if (!teamIds.includes(String(request.requestedBy._id))) {
+        return res.status(403).json({ success: false, message: "Not your team request" });
+      }
+
+      return res.status(200).json({ success: true, data: request });
+    }
+
+    // CONSULTANT → only their own requests
+    if (user.userType === "consultant") {
+      if (String(request.requestedBy._id) !== String(user.id)) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
+      return res.status(200).json({ success: true, data: request });
+    }
+
+    return res.status(403).json({ success: false, message: "Forbidden" });
+
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+
+
+exports.filterDeleteRequested = async (req, res) => {
+  try {
+    const user = req.user;
+    const {
+      status,
+      formulaId,
+      requestedBy,
+      clientId,
+      fromDate,
+      toDate
+    } = req.query;
+
+    let query = {};
+
+    // consultant_admin → restricted to team
+    if (user.userType === "consultant_admin") {
+      const team = await User.find({
+        $or: [
+          { _id: user.id },
+          { consultantAdminId: user.id, userType: "consultant" }
+        ]
+      }).select("_id");
+
+      const teamIds = team.map(u => String(u._id));
+      query.requestedBy = { $in: teamIds };
+    }
+
+    // consultant → only their requests
+    else if (user.userType === "consultant") {
+      query.requestedBy = user.id;
+    }
+
+    if (status) query.status = status;
+    if (formulaId) query.formulaId = formulaId;
+    if (requestedBy) query.requestedBy = requestedBy;
+
+    if (fromDate || toDate) {
+      query.createdAt = {};
+      if (fromDate) query.createdAt.$gte = new Date(fromDate);
+      if (toDate) query.createdAt.$lte = new Date(toDate);
+    }
+
+    if (clientId) {
+      const formulas = await ReductionFormula.find({
+        clientIds: clientId
+      }).select("_id");
+      query.formulaId = { $in: formulas.map(f => f._id.toString()) };
+    }
+
+    const result = await DeleteRequest.find(query)
+      .populate("requestedBy", "userName email");
+
+    return res.status(200).json({ success: true, data: result });
+
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+
 
 /** Map a formula to a Reduction (m2.formulaRef) */
 exports.attachFormulaToReduction = async (req,res)=>{

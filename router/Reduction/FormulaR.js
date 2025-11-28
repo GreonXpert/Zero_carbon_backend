@@ -1,6 +1,6 @@
 // routes/Reduction/m2FormulaR.js
 const router = require('express').Router();
-const ctrl = require('../../controllers/Reduction/m2FormulaController');
+const ctrl = require('../../controllers/Reduction/FormulaController');
 const { auth, checkRole } = require('../../middleware/auth');
 
 
@@ -8,6 +8,11 @@ const { auth, checkRole } = require('../../middleware/auth');
 router.use(auth);
 
 const works = ['consultant', 'consultant_admin', 'super_admin'];
+
+
+router.get('/delete-requests', checkRole(...works), ctrl.getDeleteRequestedIds);
+router.get('/delete-requests/:requestId', checkRole(...works), ctrl.getDeleteRequestedById);
+router.get('/delete-requests/filter/query', checkRole(...works), ctrl.filterDeleteRequested);
 
 // CRUD for formulas
 router.post('/', checkRole(...works), ctrl.createFormula);
@@ -22,4 +27,5 @@ router.post('/attach/:clientId/:projectId',
 );
 router.post('/delete-requests/:requestId/approve', checkRole('super_admin','consultant_admin'), ctrl.approveDeleteRequest);
 router.post('/delete-requests/:requestId/reject', checkRole('super_admin','consultant_admin'), ctrl.rejectDeleteRequest);
+
 module.exports = router;
