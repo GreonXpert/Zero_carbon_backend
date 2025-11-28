@@ -65,75 +65,64 @@ function convertKgToTonnes(valueInKg) {
   return valueInKg / 1000;
 }
 
-/**
- * [FIXED] Helper function to safely extract emission values from calculated emissions
- * and convert them to tonnes
- */
 function extractEmissionValues(calculatedEmissions) {
-  const defaultValues = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
+  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
-  // FIX: The incoming object is the emissions object. The check for a nested '.emissions' property was incorrect.
-  if (!calculatedEmissions) {
-    return defaultValues;
+  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
+    return totals;
   }
 
-  const emissions = calculatedEmissions; // Use the object directly
-  let totalValues = { ...defaultValues };
+  const addBucket = (bucketObj) => {
+    if (!bucketObj || typeof bucketObj !== "object") return;
 
-  const extractAndConvert = (value) => {
-    const num = parseFloat(value) || 0;
-    return num;
+    for (const bucketKey of Object.keys(bucketObj)) {
+      const item = bucketObj[bucketKey];
+      if (!item || typeof item !== "object") continue;
+
+      const co2e =
+        Number(item.CO2e ??
+              item.emission ??
+              item.CO2eWithUncertainty ??
+              item.emissionWithUncertainty) || 0;
+
+      totals.CO2e += co2e;
+      totals.CO2 += Number(item.CO2) || 0;
+      totals.CH4 += Number(item.CH4) || 0;
+      totals.N2O += Number(item.N2O) || 0;
+    }
   };
 
-  // Extract from cumulative values (preferred for summary)
-  if (emissions.cumulative && typeof emissions.cumulative === 'object') {
-    // Mongoose Map with .lean() becomes an object, so Object.entries is correct
-    for (const [key, value] of Object.entries(emissions.cumulative)) {
-      if (value && typeof value === 'object') {
-        totalValues.CO2e += extractAndConvert(value.CO2e || value.emission || 0);
-        totalValues.CO2 += extractAndConvert(value.CO2 || 0);
-        totalValues.CH4 += extractAndConvert(value.CH4 || 0);
-        totalValues.N2O += extractAndConvert(value.N2O || 0);
-        totalValues.uncertainty += extractAndConvert(value.combinedUncertainty || 0);
-      }
-    }
-  }
-  
-  // If no cumulative, fall back to incoming values
-  if (totalValues.CO2e === 0 && emissions.incoming && typeof emissions.incoming === 'object') {
-    for (const [key, value] of Object.entries(emissions.incoming)) {
-      if (value && typeof value === 'object') {
-        totalValues.CO2e += extractAndConvert(value.CO2e || value.emission || 0);
-        totalValues.CO2 += extractAndConvert(value.CO2 || 0);
-        totalValues.CH4 += extractAndConvert(value.CH4 || 0);
-        totalValues.N2O += extractAndConvert(value.N2O || 0);
-        totalValues.uncertainty += extractAndConvert(value.combinedUncertainty || 0);
-      }
-    }
-  }
+  addBucket(calculatedEmissions.incoming);
+  addBucket(calculatedEmissions.cumulative);
 
-  // Round to reasonable precision (6 decimal places)
-  totalValues.CO2e = Math.round(totalValues.CO2e * 1000000) / 1000000;
-  totalValues.CO2 = Math.round(totalValues.CO2 * 1000000) / 1000000;
-  totalValues.CH4 = Math.round(totalValues.CH4 * 1000000) / 1000000;
-  totalValues.N2O = Math.round(totalValues.N2O * 1000000) / 1000000;
-  totalValues.uncertainty = Math.round(totalValues.uncertainty * 1000000) / 1000000;
-
-  return totalValues;
+  return totals;
 }
+
 
 
 /**
  * Helper function to add emission values to a target object
  * Values should already be in tonnes
  */
-function addEmissionValues(target, values, dataPointCount = 1) {
-  target.CO2e = (target.CO2e || 0) + (values.CO2e || 0);
-  target.CO2 = (target.CO2 || 0) + (values.CO2 || 0);
-  target.CH4 = (target.CH4 || 0) + (values.CH4 || 0);
-  target.N2O = (target.N2O || 0) + (values.N2O || 0);
-  target.uncertainty = (target.uncertainty || 0) + (values.uncertainty || 0);
-  target.dataPointCount = (target.dataPointCount || 0) + dataPointCount;
+function addEmissionValues(target, source) {
+  target.CO2e += source.CO2e;
+  target.CO2 += source.CO2;
+  target.CH4 += source.CH4;
+  target.N2O += source.N2O;
+}
+
+function ensureMapEntry(map, key, defaultValue = {}) {
+  if (!map.has(key)) {
+    map.set(key, {
+      CO2e: 0,
+      CO2: 0,
+      CH4: 0,
+      N2O: 0,
+      dataPointCount: 0,
+      ...defaultValue
+    });
+  }
+  return map.get(key);
 }
 
 /**
