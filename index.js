@@ -27,7 +27,7 @@ const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverst
 const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
 const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Corrected path
 const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
-const m2FormulaR = require('./router/Reduction/m2FormulaR'); // 🆕 Corrected path
+const FormulaR = require('./router/Reduction/FormulaR'); // 🆕 Corrected path
 const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR'); // 🆕 Corrected path
 const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes'); // 🆕 Corrected path
 
@@ -113,7 +113,7 @@ app.use('/api/emission-factor', ipccConverstionCalculation);
 app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
 app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
 app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
-app.use('/api/m2-formula', m2FormulaR); // 🆕 M2 Formula routes
+app.use('/api/formulas', FormulaR); // 🆕 M2 Formula routes
 app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 
 // Notification and data collection routes
