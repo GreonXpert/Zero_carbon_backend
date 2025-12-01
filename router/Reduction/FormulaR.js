@@ -8,7 +8,7 @@ const { auth, checkRole } = require('../../middleware/auth');
 router.use(auth);
 
 const works = ['consultant', 'consultant_admin', 'super_admin'];
-
+const gets = ['consultant', 'consultant_admin', 'super_admin', 'client_admin', 'auditor'];
 
 router.get('/delete-requests', checkRole(...works), ctrl.getDeleteRequestedIds);
 router.get('/delete-requests/:requestId', checkRole(...works), ctrl.getDeleteRequestedById);
@@ -16,8 +16,8 @@ router.get('/delete-requests/filter/query', checkRole(...works), ctrl.filterDele
 
 // CRUD for formulas
 router.post('/', checkRole(...works), ctrl.createFormula);
-router.get('/', checkRole(...works),  ctrl.listFormulas);
-router.get('/:formulaId',checkRole(...works),  ctrl.getFormula);
+router.get('/', checkRole(...gets),  ctrl.listFormulas);
+router.get('/:formulaId',checkRole(...gets),  ctrl.getFormula);
 router.put('/:formulaId', checkRole(...works), ctrl.updateFormula);
 router.delete('/:formulaId/:mode?',checkRole(...works), ctrl.deleteFormula);
 // map formula to a reduction project (m2)
