@@ -168,6 +168,46 @@ const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
   return out;
 }
 
+/** ------------------------- */
+/** METHODOLOGY 3 HELPERS     */
+/** ------------------------- */
+
+/** Normalize a variable */
+function normalizeM3Variable(v) {
+  return {
+    name: String(v.name || '').trim(),
+    type: v.type === 'constant' ? 'constant' : 'manual',
+    value: v.type === 'constant' ? Number(v.value ?? null) : null
+  };
+}
+
+/** Normalize B/P/L Item */
+function normalizeM3Item(item) {
+  return {
+    id: String(item.id || '').trim(),                 // B1 / P1 / L1
+    label: String(item.label || '').trim(),
+    formulaId: item.formulaId,
+    formulaExpression: item.formulaExpression || '',
+    variables: Array.isArray(item.variables)
+      ? item.variables.map(normalizeM3Variable)
+      : []
+  };
+}
+
+/** Validate payload for M3 */
+function validateM3Input(body) {
+  if (!body.projectActivity)
+    throw new Error('projectActivity is required');
+
+  if (!['Reduction','Removal'].includes(body.projectActivity))
+    throw new Error('projectActivity must be Reduction or Removal');
+
+  if (body.projectActivity === 'Removal') {
+    if (body.m3?.buffer === undefined || body.m3?.buffer === null)
+      throw new Error('Buffer is required for Removal projects');
+  }
+}
+
 
 function cleanString(x) { return (typeof x === 'string') ? x.trim() : x; }
 
@@ -261,6 +301,9 @@ if (req.body.processFlow) {
     if (!projectName) return res.status(400).json({ success:false, message:'projectName is required' });
     if (!projectActivity) return res.status(400).json({ success:false, message:'projectActivity is required' });
     if (!commissioningDate || !endDate) return res.status(400).json({ success:false, message:'commissioningDate & endDate required' });
+    if (calculationMethodology === 'methodology3') {
+  validateM3Input(req.body);
+}
     if (!calculationMethodology) return res.status(400).json({ success:false, message:'calculationMethodology is required' });
     if (!category) return res.status(400).json({ success:false, message:'category is required' });
 
@@ -314,6 +357,29 @@ if (req.body.processFlow) {
       if (existing.calculationMethodology === 'methodology2' && req.body.m2) {
         existing.m2 = normalizeM2FromBody(req.body.m2);
       }
+
+      /** -------------------------
+ *  Methodology 3 UPDATE PATH
+ * ------------------------- */
+if (existing.calculationMethodology === 'methodology3' && req.body.m3) {
+  validateM3Input(req.body); // Throws error if invalid
+
+  const m3 = req.body.m3;
+
+  existing.m3 = {
+    projectActivity: req.body.projectActivity, // M3 duplicates activity
+    buffer: Number(m3.buffer ?? 0),
+    baselineEmissions: Array.isArray(m3.baselineEmissions)
+      ? m3.baselineEmissions.map(normalizeM3Item)
+      : [],
+    projectEmissions: Array.isArray(m3.projectEmissions)
+      ? m3.projectEmissions.map(normalizeM3Item)
+      : [],
+    leakageEmissions: Array.isArray(m3.leakageEmissions)
+      ? m3.leakageEmissions.map(normalizeM3Item)
+      : []
+  };
+}
 
       // ✅ Now this is safe; variable exists
       if (reductionEntryPayload) {
@@ -388,7 +454,27 @@ if (processFlowPayload) {
       ...(calculationMethodology === 'methodology2'
         ? { m2: normalizeM2FromBody(m2 || {}) }
         : {}),
-      ...(processFlowPayload ? { processFlow: processFlowPayload } : {}) // ✅ correct source
+            /** -------------------------
+       *  Methodology 3 CREATE PATH
+       * ------------------------- */
+      ...(calculationMethodology === 'methodology3'
+        ? {
+            m3: {
+              projectActivity,
+              buffer: Number(req.body.m3?.buffer ?? 0),
+              baselineEmissions: Array.isArray(req.body.m3?.baselineEmissions)
+                ? req.body.m3.baselineEmissions.map(normalizeM3Item)
+                : [],
+              projectEmissions: Array.isArray(req.body.m3?.projectEmissions)
+                ? req.body.m3.projectEmissions.map(normalizeM3Item)
+                : [],
+              leakageEmissions: Array.isArray(req.body.m3?.leakageEmissions)
+                ? req.body.m3.leakageEmissions.map(normalizeM3Item)
+                : []
+            }
+          }
+        : {}),
+            ...(processFlowPayload ? { processFlow: processFlowPayload } : {}) // ✅ correct source
 
     });
 

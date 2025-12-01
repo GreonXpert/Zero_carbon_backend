@@ -6,8 +6,11 @@ const NetReductionEntrySchema = new mongoose.Schema({
   // Keys
   clientId:        { type: String, required: true, index: true },
   projectId:       { type: String, required: true, index: true },
-  calculationMethodology: { type: String, enum: ['methodology1','methodology2'], required: true },
-
+calculationMethodology: { 
+  type: String, 
+  enum: ['methodology1', 'methodology2', 'methodology3'], 
+  required: true 
+},
   // Input provenance
   inputType:       { type: String, enum: ['manual','API','IOT','CSV'], required: true, index: true },
   sourceDetails: {
@@ -24,8 +27,21 @@ const NetReductionEntrySchema = new mongoose.Schema({
   timestamp:       { type: Date, required: true, index: true },
 
   // Payload & math (shared)
-  inputValue:              { type: Number, required: true },  // for M1; M2 controllers can leave this 0
-  emissionReductionRate:   { type: Number, required: true },  // for M1; M2 controllers can leave this 0
+inputValue: {
+  type: Number,
+  required: function() {
+    return this.calculationMethodology === "methodology1";
+  },
+  default: 0
+},
+
+emissionReductionRate: {
+  type: Number,
+  required: function() {
+    return this.calculationMethodology === "methodology1";
+  },
+  default: 0
+},  // for M1; M2 controllers can leave this 0
   netReduction:            { type: Number, default: 0 },      // final net reduction
   cumulativeNetReduction:  { type: Number, default: 0 },      // running cumulative per project
   highNetReduction:        { type: Number, default: 0 },      // highest single netReduction so far
@@ -59,7 +75,43 @@ NetReductionEntrySchema.pre('validate', function(next){
 NetReductionEntrySchema.add({
   formulaId:            { type: mongoose.Schema.Types.ObjectId, ref: 'ReductionFormula' },
   variables:            { type: mongoose.Schema.Types.Mixed, default: {} }, // realtime payload used for evaluation
-  netReductionInFormula:{ type: Number, default: 0 }                         // result before subtracting LE
+  netReductionInFormula:{ type: Number, default: 0 },                         // result before subtracting LE
+
+   // ✅ For Methodology 3 – store totals & breakdown
+  m3: {
+    // Totals (without and with buffer / “uncertainty”)
+    BE_total:               { type: Number, default: 0 },  // Sum of all Bi
+    PE_total:               { type: Number, default: 0 },  // Sum of all Pi
+    LE_total:               { type: Number, default: 0 },  // Sum of all Li
+
+    netWithoutUncertainty:  { type: Number, default: 0 },  // BE_total - PE_total - LE_total
+    netWithUncertainty:     { type: Number, default: 0 },  // (BE_total - PE_total - LE_total) after buffer%
+    bufferPercent:          { type: Number, default: 0 },  // snapshot from Reduction.m3.buffer
+
+    // Per-item breakdown so you see B1/B2/P1/... with their IDs and labels
+    breakdown: {
+      baseline: [{
+        id:        { type: String },
+        label:     { type: String },
+        value:     { type: Number, default: 0 },  // evaluated result for Bi
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} } // bag used (A, EF, etc.)
+      }],
+      project: [{
+        id:        { type: String },
+        label:     { type: String },
+        value:     { type: Number, default: 0 },
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} }
+      }],
+      leakage: [{
+        id:        { type: String },
+        label:     { type: String },
+        value:     { type: Number, default: 0 },
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} }
+      }]
+    }
+  }
+   
+
 });
 
 NetReductionEntrySchema.pre('save', async function(next) {
@@ -67,10 +119,15 @@ NetReductionEntrySchema.pre('save', async function(next) {
     // M1 → compute from inputValue * rate (unchanged behavior)
     // M2 → controller provides netReduction; don't overwrite here
     if (this.calculationMethodology === 'methodology1') {
-      this.netReduction = round6((this.inputValue || 0) * (this.emissionReductionRate || 0));
-    } else if (this.calculationMethodology === 'methodology2') {
-      this.netReduction = round6(Number(this.netReduction || 0));
-    }
+  // M1 → compute from inputValue * rate (unchanged behavior)
+  this.netReduction = round6((this.inputValue || 0) * (this.emissionReductionRate || 0));
+} else if (
+  this.calculationMethodology === 'methodology2' || 
+  this.calculationMethodology === 'methodology3'
+) {
+  // M2 & M3 → controller computes netReduction; we only normalize/round here
+  this.netReduction = round6(Number(this.netReduction || 0));
+}
 
     // Find the latest earlier entry for same project/methodology
     const prev = await this.constructor.findOne({

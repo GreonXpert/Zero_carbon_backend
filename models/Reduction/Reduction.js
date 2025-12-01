@@ -119,6 +119,122 @@ const M2Schema = new mongoose.Schema({
   }
 }, { _id: false });
 
+
+/**
+ * Variable for a B/P/L item in Methodology 3
+ * - name: symbol used in the formula (must match ReductionFormula.variables.name)
+ * - type: 'constant' (value saved now) or 'manual' (value provided later in NetReductionEntry)
+ * - value: only required when type === 'constant'
+ */
+const M3VariableSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,           // variable name is mandatory
+    trim: true
+  },
+  type: {
+    type: String,
+    enum: ['constant', 'manual'],
+    required: true
+  },
+  value: {
+    type: Number,
+    default: null             // only used when type === 'constant'
+  }
+}, { _id: false });
+
+/**
+ * Single Baseline/Project/Leakage item (B1, B2, P1, L1, etc.)
+ */
+const M3ItemSchema = new mongoose.Schema({
+  // e.g. "B1", "P3", "L2"
+  id: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  // Human friendly label shown in UI
+  label: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  /**
+   * The formula used to compute this item's emission.
+   *
+   * We store:
+   *   - formulaId: reference to ReductionFormula document
+   *   - formulaExpression: optional snapshot of expression string
+   *
+   * NOTE: We will later use formulaId + variables inside NetReductionEntry
+   * to actually evaluate the math.
+   */
+  formulaId: {
+    type: Schema.Types.ObjectId,
+    ref: 'ReductionFormula',
+    required: true
+  },
+
+  // Optional: store expression snapshot for easier debugging / UI
+  formulaExpression: {
+    type: String,
+    default: ''
+  },
+
+  // Per-variable configuration for this item
+  variables: {
+    type: [M3VariableSchema],
+    default: []
+  }
+}, { _id: false });
+
+/**
+ * Main Methodology 3 sub-schema
+ */
+const Methodology3Schema = new mongoose.Schema({
+  /**
+   * Project Activity
+   *  - "Reduction"  → buffer can be 0
+   *  - "Removal"    → buffer MUST be provided by controller validation
+   */
+  projectActivity: {
+    type: String,
+    enum: ['Reduction', 'Removal'],
+    required: true
+  },
+
+  /**
+   * Buffer percentage (e.g. 10 = 10%)
+   * Controller will enforce: if projectActivity === 'Removal'
+   * then this must be > 0 (or at least provided).
+   */
+  buffer: {
+    type: Number,
+    default: 0
+  },
+
+  // Arrays of B, P, L items
+  baselineEmissions: {
+    type: [M3ItemSchema],
+    default: []
+  },
+
+  projectEmissions: {
+    type: [M3ItemSchema],
+    default: []
+  },
+
+  leakageEmissions: {
+    type: [M3ItemSchema],
+    default: []
+  }
+}, {
+  _id: false,
+  timestamps: false
+});
+
 const ReductionEntrySchema = new mongoose.Schema({
   // normalized type stored in the document
   inputType: { type: String, enum: ['manual', 'API', 'IOT'], default: 'manual' },
@@ -201,8 +317,14 @@ const reductionSchema = new mongoose.Schema({
   },
   baselineJustification: { type: String, default: '' },
 
-  // Calculation Methodology
-  calculationMethodology: { type: String, enum: ['methodology1','methodology2'], required: true },
+      // Calculation Methodology
+  calculationMethodology: { 
+    type: String, 
+    enum: ['methodology1', 'methodology2', 'methodology3'], 
+    required: true 
+  },
+
+
 
   // Methodology 1 data
   m1: {
@@ -223,6 +345,9 @@ const reductionSchema = new mongoose.Schema({
 
   // Methodology 2 data
   m2: { type: M2Schema, default: undefined }, // only when methodology2
+
+   // Methodology 3 configuration (B/P/L + buffer + formula/variables)
+  m3: { type: Methodology3Schema, default: undefined }, // only when methodology3
 
   // === processFlow (ENTIRELY OPTIONAL) ===
     processFlow: {
