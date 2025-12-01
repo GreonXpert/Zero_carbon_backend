@@ -107,16 +107,44 @@ exports.listFormulas = async (req, res) => {
     // =============================================
     // CONSULTANT → formulas for their assigned clients
     // =============================================
+// =============================================
+    // CONSULTANT → formulas for their assigned clients
+    // =============================================
     if (user.userType === "consultant") {
-      const assignedClients = user.assignedClients || [];
+      
+      // ✅ FIX START: Fetch the full user document to get assignedClients and consultantAdminId
+      // The 'auth' middleware only provides a partial user object.
+      const fullUser = await User.findById(user.id || user._id);
+      
+      if (!fullUser) {
+         return res.status(404).json({ success: false, message: "User details not found" });
+      }
+
+      const assignedClients = fullUser.assignedClients || [];
+
+      const consultantTeam = await User.find({
+        $or: [
+          { _id: fullUser._id },
+          { consultantAdminId: fullUser.consultantAdminId, userType: "consultant" }
+        ]
+      }).select("_id");
+      // ✅ FIX END
+
+      const teamIds = consultantTeam.map(t => String(t._id));
 
       const formulas = await ReductionFormula.find({
         isDeleted: false,
-        clientIds: { $in: assignedClients }
+        $or: [
+          { clientIds: { $in: assignedClients }},
+          { createdBy: { $in: teamIds }}
+        ]
       });
 
       return res.status(200).json({ success: true, data: formulas });
     }
+
+
+   
 
     // =============================================
     // CLIENT_ADMIN → formulas belonging to their client
@@ -207,19 +235,42 @@ exports.getFormula = async (req, res) => {
     // =============================================
     // CONSULTANT → formulas of their assigned clients
     // =============================================
+   // =============================================
+    // CONSULTANT → formulas for their assigned clients
+    // =============================================
     if (user.userType === "consultant") {
-      const assignedClients = user.assignedClients || [];
-      const match = formula.clientIds.some(cid => assignedClients.includes(cid));
-
-      if (!match) {
-        return res.status(403).json({
-          success: false,
-          message: "You are not allowed to view this formula."
-        });
+      
+      // ✅ FIX START: Fetch the full user document to get assignedClients and consultantAdminId
+      // The 'auth' middleware only provides a partial user object.
+      const fullUser = await User.findById(user.id || user._id);
+      
+      if (!fullUser) {
+         return res.status(404).json({ success: false, message: "User details not found" });
       }
 
-      return res.status(200).json({ success: true, data: formula });
+      const assignedClients = fullUser.assignedClients || [];
+
+      const consultantTeam = await User.find({
+        $or: [
+          { _id: fullUser._id },
+          { consultantAdminId: fullUser.consultantAdminId, userType: "consultant" }
+        ]
+      }).select("_id");
+      // ✅ FIX END
+
+      const teamIds = consultantTeam.map(t => String(t._id));
+
+      const formulas = await ReductionFormula.find({
+        isDeleted: false,
+        $or: [
+          { clientIds: { $in: assignedClients }},
+          { createdBy: { $in: teamIds }}
+        ]
+      });
+
+      return res.status(200).json({ success: true, data: formulas });
     }
+
 
     // =============================================
     // CLIENT_ADMIN → see formulas belonging to their client
