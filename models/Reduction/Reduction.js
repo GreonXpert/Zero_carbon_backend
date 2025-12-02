@@ -188,7 +188,7 @@ const M3ItemSchema = new mongoose.Schema({
   variables: {
     type: [M3VariableSchema],
     default: []
-  }
+  },
     ssrType: { type: String, enum: ['Sink','Source','Reservoir'], required: true },
   remark: { type: String, default: '' },
   Reference: { type: String, default: '' }
