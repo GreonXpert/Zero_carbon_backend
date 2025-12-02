@@ -140,7 +140,10 @@ const M3VariableSchema = new mongoose.Schema({
   value: {
     type: Number,
     default: null             // only used when type === 'constant'
-  }
+  },
+  ssrType: { type: String, enum: ['Sink','Source','Reservoir'], required: true },
+  remark: { type: String, default: '' },
+  Reference: { type: String, default: '' }
 }, { _id: false });
 
 /**
