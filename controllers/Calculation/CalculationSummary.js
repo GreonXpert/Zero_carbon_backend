@@ -800,25 +800,46 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
   }
 }
 
-function mapToObj(map) {
-  if (!map) return {};
-  if (map instanceof Map) {
+function mapToObj(value) {
+  // Null or undefined
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  // Convert Maps → Objects
+  if (value instanceof Map) {
     return Object.fromEntries(
-      [...map.entries()].map(([k, v]) => {
-        if (v instanceof Map) return [k, mapToObj(v)];
-        if (typeof v === "object") {
-          const obj = {};
-          for (const key in v) {
-            obj[key] = v[key] instanceof Map ? mapToObj(v[key]) : v[key];
-          }
-          return [k, obj];
-        }
-        return [k, v];
-      })
+      [...value.entries()].map(([k, v]) => [k, mapToObj(v)])
     );
   }
-  return map; // already plain object
+
+  // If plain object → process children
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const obj = {};
+
+    for (const key in value) {
+      const v = value[key];
+
+      // Numeric fields must be cast safely
+      if (["CO2e", "CO2", "CH4", "N2O", "uncertainty", "dataPointCount"].includes(key)) {
+        obj[key] =
+          typeof v === "number" && !Number.isNaN(v)
+            ? v
+            : 0; // <-- FIXED: always return 0, never {}
+        continue;
+      }
+
+      // Recurse
+      obj[key] = mapToObj(v);
+    }
+
+    return obj;
+  }
+
+  // Return primitives as-is
+  return value;
 }
+
 
 
 
@@ -884,11 +905,7 @@ async function saveEmissionSummary(summaryData) {
       N2O: 0,
       uncertainty: 0
     },
-    byScope: es.byScope || {
-      "Scope 1": defaultScopeBlock(),
-      "Scope 2": defaultScopeBlock(),
-      "Scope 3": defaultScopeBlock()
-    },
+    byScope: mapToObj(es.byScope),
   byCategory: mapToObj(es.byCategory),
 byActivity: mapToObj(es.byActivity),
 byNode: mapToObj(es.byNode),
