@@ -11,13 +11,16 @@ const {getActiveFlowchart}= require ('../../utils/DataCollection/dataCollection'
  * Integration function to be called from saveAPIData, saveIoTData, saveManualData
  * This function prepares the data and triggers emission calculation
  */
+/**
+ * Integration function to be called from saveAPIData, saveIoTData, saveManualData
+ * This function prepares the data and triggers emission calculation
+ */
 const triggerEmissionCalculation = async (dataEntry) => {
   try {
     // Extract required fields
     const { clientId, nodeId, scopeIdentifier, _id: dataEntryId } = dataEntry;
 
-      console.log(`🔄 Starting emission calculation for DataEntry: ${dataEntryId}`);
-
+    console.log(`🔄 Starting emission calculation for DataEntry: ${dataEntryId}`);
 
     // Create request object for emission calculation
     const calculationRequest = {
@@ -55,11 +58,16 @@ const triggerEmissionCalculation = async (dataEntry) => {
       if (calculationResult.data.emissions) {
         dataEntry.calculatedEmissions = calculationResult.data.emissions;
         dataEntry.emissionCalculationStatus = 'completed';
+        
+        // 🔴 FIX: Explicitly set processed status so it doesn't get overwritten to 'pending'
+        dataEntry.processingStatus = 'processed'; 
+        
         dataEntry.emissionCalculatedAt = new Date();
         await dataEntry.save();
+
         // 🆕 Trigger summary updates after successful calculation
         console.log(`📊 Triggering summary updates for client: ${clientId}`);
-      try {
+        try {
           await updateSummariesOnDataChange(dataEntry);
           console.log(`📊 ✅ Summary updates completed for client: ${clientId}`);
         } catch (summaryError) {
@@ -93,9 +101,7 @@ const triggerEmissionCalculation = async (dataEntry) => {
     
     return { success: false, error: error.message };
   }
-
 };
-
 /**
  * Batch process emissions for historical data
  * Useful for recalculating emissions after flowchart updates
