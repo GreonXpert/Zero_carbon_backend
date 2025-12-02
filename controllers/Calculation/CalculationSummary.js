@@ -75,8 +75,12 @@ function extractEmissionValues(calculatedEmissions) {
   const addBucket = (bucketObj) => {
     if (!bucketObj || typeof bucketObj !== "object") return;
 
-    for (const bucketKey of Object.keys(bucketObj)) {
-      const item = bucketObj[bucketKey];
+    // Handle Map (if it comes from mongoose as a Map) or Object
+    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
+
+    for (const bucketKey of keys) {
+      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
+      
       if (!item || typeof item !== "object") continue;
 
       const co2e =
@@ -92,8 +96,11 @@ function extractEmissionValues(calculatedEmissions) {
     }
   };
 
+  // 🔴 FIX: Only add INCOMING emissions. 
+  // Do NOT add cumulative, or you will double-count historical data.
   addBucket(calculatedEmissions.incoming);
-  addBucket(calculatedEmissions.cumulative);
+  
+  // REMOVED: addBucket(calculatedEmissions.cumulative); 
 
   return totals;
 }
