@@ -807,11 +807,11 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
  * Persist an emission summary in STRUCTURE A:
  *
  * {
- *   clientId,
- *   period,
- *   emissionSummary: { ...full emission structure... },
- *   reductionSummary: { ... }   // if already exists or passed in
- *   metadata: { ...root metadata... }
+ * clientId,
+ * period,
+ * emissionSummary: { ...full emission structure... },
+ * reductionSummary: { ... }   // if already exists or passed in
+ * metadata: { ...root metadata... }
  * }
  */
 async function saveEmissionSummary(summaryData) {
@@ -838,7 +838,10 @@ async function saveEmissionSummary(summaryData) {
   // Load existing doc (to keep reductionSummary + metadata versioning)
   const existing = await EmissionSummary.findOne(query).lean();
 
-  const es = summaryData;
+  // 🔴 FIX: The calculated data is inside 'summaryData.emissionSummary'
+  // If we are calling this from calculateEmissionSummary, the data is nested.
+  // We use fallback to summaryData in case it was passed flat.
+  const es = summaryData.emissionSummary || summaryData;
 
   // ------------------------------------------------------------------
   // 2) Build emissionSummary (nested object) from summaryData
@@ -853,7 +856,7 @@ async function saveEmissionSummary(summaryData) {
   });
 
   const emissionSummaryToSave = {
-    period: es.period,
+    period: summaryData.period, // Use root period for consistency
     totalEmissions: es.totalEmissions || {
       CO2e: 0,
       CO2: 0,
@@ -941,7 +944,7 @@ async function saveEmissionSummary(summaryData) {
   // ------------------------------------------------------------------
   const update = {
     clientId,
-    period: es.period,
+    period: summaryData.period,
     emissionSummary: emissionSummaryToSave,
     metadata: rootMetadata
   };
@@ -954,11 +957,11 @@ async function saveEmissionSummary(summaryData) {
 
   // If in the future you ever call saveEmissionSummary() with a
   // pre-computed reductionSummary, you can merge it like this:
-  if (es.reductionSummary) {
-    update.reductionSummary = es.reductionSummary;
+  if (summaryData.reductionSummary) {
+    update.reductionSummary = summaryData.reductionSummary;
     update.metadata.hasReductionSummary = true;
     update.metadata.lastReductionSummaryCalculatedAt =
-      es.reductionSummaryLastCalculated || new Date();
+      summaryData.reductionSummaryLastCalculated || new Date();
   }
 
   // ------------------------------------------------------------------
@@ -973,6 +976,12 @@ async function saveEmissionSummary(summaryData) {
       setDefaultsOnInsert: true
     }
   );
+
+  // 🔴 Sync SBTi (Added back to ensure targets update)
+  // Only for yearly summaries
+  if (saved.period.type === 'yearly') {
+    await syncSbtiProgressFromSummary(saved);
+  }
 
   return saved.toObject();
 }
