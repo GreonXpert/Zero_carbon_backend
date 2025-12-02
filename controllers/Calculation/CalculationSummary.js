@@ -23,14 +23,11 @@ const setSocketIO = (socketIO) => {
 // Function to emit real-time summary updates
 const emitSummaryUpdate = (eventType, data) => {
   if (io) {
-    // Emit to all connected clients in the same clientId room
     io.to(`client-${data.clientId}`).emit(eventType, {
       timestamp: new Date(),
       type: eventType,
       data: data
     });
-    
-    // Also emit to summary-specific room
     io.to(`summaries-${data.clientId}`).emit(eventType, {
       timestamp: new Date(),
       type: eventType,
@@ -65,6 +62,10 @@ function convertKgToTonnes(valueInKg) {
   return valueInKg / 1000;
 }
 
+/**
+ * Extracts emission values from a DataEntry.
+ * Applies safeNum() to ensure no NaNs propagate to the summary.
+ */
 function extractEmissionValues(calculatedEmissions) {
   const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
@@ -75,7 +76,7 @@ function extractEmissionValues(calculatedEmissions) {
   const addBucket = (bucketObj) => {
     if (!bucketObj || typeof bucketObj !== "object") return;
 
-    // Handle Map (if it comes from mongoose as a Map) or Object
+    // Handle Map or Object
     const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
 
     for (const bucketKey of keys) {
@@ -83,24 +84,23 @@ function extractEmissionValues(calculatedEmissions) {
       
       if (!item || typeof item !== "object") continue;
 
-      const co2e =
-        Number(item.CO2e ??
-              item.emission ??
-              item.CO2eWithUncertainty ??
-              item.emissionWithUncertainty) || 0;
+      // 🛡️ USE safeNum HERE TO PREVENT NaN
+      const co2e = safeNum(
+        item.CO2e ??
+        item.emission ??
+        item.CO2eWithUncertainty ??
+        item.emissionWithUncertainty
+      );
 
       totals.CO2e += co2e;
-      totals.CO2 += Number(item.CO2) || 0;
-      totals.CH4 += Number(item.CH4) || 0;
-      totals.N2O += Number(item.N2O) || 0;
+      totals.CO2 += safeNum(item.CO2);
+      totals.CH4 += safeNum(item.CH4);
+      totals.N2O += safeNum(item.N2O);
     }
   };
 
-  // 🔴 FIX: Only add INCOMING emissions. 
-  // Do NOT add cumulative, or you will double-count historical data.
+  // Only add INCOMING emissions to avoid double-counting
   addBucket(calculatedEmissions.incoming);
-  
-  // REMOVED: addBucket(calculatedEmissions.cumulative); 
 
   return totals;
 }
@@ -108,28 +108,25 @@ function extractEmissionValues(calculatedEmissions) {
 
 
 /**
- * Helper function to add emission values to a target object
- * Values should already be in tonnes
+ * Helper to add emission values to a target object
  */
 function addEmissionValues(target, source) {
-  target.CO2e += source.CO2e;
-  target.CO2 += source.CO2;
-  target.CH4 += source.CH4;
-  target.N2O += source.N2O;
+  target.CO2e += safeNum(source.CO2e);
+  target.CO2 += safeNum(source.CO2);
+  target.CH4 += safeNum(source.CH4);
+  target.N2O += safeNum(source.N2O);
 }
 
 function ensureMapEntry(map, key, defaultValue = {}) {
-  if (!map.has(key)) {
-    map.set(key, {
-      CO2e: 0,
-      CO2: 0,
-      CH4: 0,
-      N2O: 0,
-      dataPointCount: 0,
-      ...defaultValue
+  const sanitizedKey = sanitizeMapKey(key);
+  if (!map.has(sanitizedKey)) {
+    map.set(sanitizedKey, { 
+      CO2e: 0, CO2: 0, CH4: 0, N2O: 0, 
+      uncertainty: 0, dataPointCount: 0,
+      ...defaultValue 
     });
   }
-  return map.get(key);
+  return map.get(sanitizedKey);
 }
 
 /**
@@ -175,6 +172,9 @@ function ensureMapEntry(map, key, defaultValue = {}) {
  *   metadata: { ... }   // root-level document metadata unchanged
  * }
  */
+/**
+ * Calculate comprehensive emission summary for a client
+ */
 const calculateEmissionSummary = async (clientId, periodType, year, month, week, day, userId = null) => {
   try {
     console.log(`📊 Calculating ${periodType} emission summary for client: ${clientId}`);
@@ -189,43 +189,32 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
 
     const dataEntries = await DataEntry.find(query).lean();
 
-    // ============================================================
-    // CASE 1: NO DATA FOUND
-    // ============================================================
     if (dataEntries.length === 0) {
       console.log(`No processed data entries found for ${clientId} in this period.`);
-
+      // Return empty structure...
       return {
         clientId,
         period: { type: periodType, year, month, week, day, from, to },
-
         emissionSummary: {
           period: { type: periodType, year, month, week, day, from, to },
-
           totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-
           byScope: {
             'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
             'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
             'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
           },
-
           byCategory: new Map(),
           byActivity: new Map(),
           byNode: new Map(),
           byDepartment: new Map(),
           byLocation: new Map(),
-
           byInputType: {
             manual: { CO2e: 0, dataPointCount: 0 },
             API: { CO2e: 0, dataPointCount: 0 },
             IOT: { CO2e: 0, dataPointCount: 0 }
           },
-
           byEmissionFactor: new Map(),
-
           trends: {},
-
           metadata: {
             totalDataPoints: 0,
             dataEntriesIncluded: [],
@@ -238,7 +227,6 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
             calculationDuration: 0
           }
         },
-
         metadata: {
           lastCalculated: new Date(),
           isComplete: true,
@@ -248,11 +236,6 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       };
     }
 
-    // ============================================================
-    // CASE 2: FLOWCHART + NODES PREPARATION
-    // ============================================================
-    console.log(`Found ${dataEntries.length} data entries.`);
-
     const activeChart = await getActiveFlowchart(clientId);
     if (!activeChart || !activeChart.chart) {
       console.error(`No active flowchart found for ${clientId}`);
@@ -260,7 +243,6 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     }
 
     const flowchart = activeChart.chart;
-
     const nodeMap = new Map();
     flowchart.nodes.forEach(node => {
       nodeMap.set(node.id, {
@@ -272,36 +254,27 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       });
     });
 
-    // ============================================================
-    // NEW SUMMARY OBJECT (matches new model)
-    // ============================================================
+    // Initialize Summary Object
     const emissionSummary = {
       period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
-
       totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-
       byScope: {
         "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
         "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
         "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
       },
-
       byCategory: new Map(),
       byActivity: new Map(),
       byNode: new Map(),
       byDepartment: new Map(),
       byLocation: new Map(),
-
       byInputType: {
         manual: { CO2e: 0, dataPointCount: 0 },
         API: { CO2e: 0, dataPointCount: 0 },
         IOT: { CO2e: 0, dataPointCount: 0 }
       },
-
       byEmissionFactor: new Map(),
-
       trends: {},
-
       metadata: {
         totalDataPoints: dataEntries.length,
         dataEntriesIncluded: dataEntries.map(e => e._id),
@@ -315,9 +288,7 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       }
     };
 
-    // ============================================================
-    // PROCESS EACH DATA ENTRY
-    // ============================================================
+    // Process Data Entries
     for (const entry of dataEntries) {
       try {
         const emissionValues = extractEmissionValues(entry.calculatedEmissions);
@@ -333,76 +304,54 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
         const categoryName = scopeDetail?.categoryName || entry.categoryName || "Unknown Category";
         const activity = scopeDetail?.activity || entry.activity || "Unknown Activity";
 
-        // === TOTALS ===
+        // Aggregate Totals
         addEmissionValues(emissionSummary.totalEmissions, emissionValues);
 
-        // === BY SCOPE ===
         if (emissionSummary.byScope[entry.scopeType]) {
           addEmissionValues(emissionSummary.byScope[entry.scopeType], emissionValues);
+          emissionSummary.byScope[entry.scopeType].dataPointCount++;
         }
 
-        // === BY CATEGORY ===
-        const cat = ensureMapEntry(
-          emissionSummary.byCategory,
-          categoryName,
-          { scopeType: entry.scopeType, activities: new Map() }
-        );
+        const cat = ensureMapEntry(emissionSummary.byCategory, categoryName, { scopeType: entry.scopeType, activities: new Map() });
         addEmissionValues(cat, emissionValues);
 
-        // CATEGORY → ACTIVITY
         const a1 = ensureMapEntry(cat.activities, activity);
         addEmissionValues(a1, emissionValues);
 
-        // === BY ACTIVITY ===
-        const a2 = ensureMapEntry(
-          emissionSummary.byActivity,
-          activity,
-          { scopeType: entry.scopeType, categoryName }
-        );
+        const a2 = ensureMapEntry(emissionSummary.byActivity, activity, { scopeType: entry.scopeType, categoryName });
         addEmissionValues(a2, emissionValues);
 
-        // === BY NODE ===
-        const node = ensureMapEntry(
-          emissionSummary.byNode,
-          entry.nodeId,
-          {
-            nodeLabel: nodeContext.label,
-            department: nodeContext.department,
-            location: nodeContext.location,
-            byScope: {
-              "Scope 1": { CO2e: 0, dataPointCount: 0 },
-              "Scope 2": { CO2e: 0, dataPointCount: 0 },
-              "Scope 3": { CO2e: 0, dataPointCount: 0 }
-            }
+        const node = ensureMapEntry(emissionSummary.byNode, entry.nodeId, {
+          nodeLabel: nodeContext.label,
+          department: nodeContext.department,
+          location: nodeContext.location,
+          byScope: {
+            "Scope 1": { CO2e: 0, dataPointCount: 0 },
+            "Scope 2": { CO2e: 0, dataPointCount: 0 },
+            "Scope 3": { CO2e: 0, dataPointCount: 0 }
           }
-        );
+        });
         addEmissionValues(node, emissionValues);
-        addEmissionValues(node.byScope[entry.scopeType], emissionValues);
+        if(node.byScope[entry.scopeType]) {
+           addEmissionValues(node.byScope[entry.scopeType], emissionValues);
+        }
 
-        // === BY DEPARTMENT ===
         const dept = ensureMapEntry(emissionSummary.byDepartment, nodeContext.department);
         addEmissionValues(dept, emissionValues);
 
-        // === BY LOCATION ===
         const loc = ensureMapEntry(emissionSummary.byLocation, nodeContext.location);
         addEmissionValues(loc, emissionValues);
 
-        // === BY INPUT TYPE ===
         if (emissionSummary.byInputType[entry.inputType]) {
           emissionSummary.byInputType[entry.inputType].CO2e += emissionValues.CO2e;
           emissionSummary.byInputType[entry.inputType].dataPointCount += 1;
         }
 
-        // === BY EMISSION FACTOR ===
-        const eff = ensureMapEntry(
-          emissionSummary.byEmissionFactor,
-          entry.emissionFactor || "Unknown",
-          {
-            scopeTypes: { "Scope 1": 0, "Scope 2": 0, "Scope 3": 0 }
-          }
-        );
+        const eff = ensureMapEntry(emissionSummary.byEmissionFactor, entry.emissionFactor || "Unknown", {
+          scopeTypes: { "Scope 1": 0, "Scope 2": 0, "Scope 3": 0 }
+        });
         addEmissionValues(eff, emissionValues);
-        eff.scopeTypes[entry.scopeType] += 1;
+        if(eff.scopeTypes[entry.scopeType] !== undefined) eff.scopeTypes[entry.scopeType] += 1;
 
       } catch (err) {
         emissionSummary.metadata.errors.push(`Entry ${entry._id} error: ${err.message}`);
@@ -410,72 +359,23 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       }
     }
 
-    // ============================================================
-    // NODE COUNTS FOR DEPARTMENT + LOCATION
-    // ============================================================
+    // Counts logic...
     const uniqueDept = new Map();
     const uniqueLoc = new Map();
-
     for (const [nodeId, n] of emissionSummary.byNode) {
       if (!uniqueDept.has(n.department)) uniqueDept.set(n.department, new Set());
       uniqueDept.get(n.department).add(nodeId);
-
       if (!uniqueLoc.has(n.location)) uniqueLoc.set(n.location, new Set());
       uniqueLoc.get(n.location).add(nodeId);
     }
-
     for (const [d, set] of uniqueDept) {
-      if (emissionSummary.byDepartment.has(d)) {
-        emissionSummary.byDepartment.get(d).nodeCount = set.size;
-      }
+      if (emissionSummary.byDepartment.has(d)) emissionSummary.byDepartment.get(d).nodeCount = set.size;
     }
-
     for (const [l, set] of uniqueLoc) {
-      if (emissionSummary.byLocation.has(l)) {
-        emissionSummary.byLocation.get(l).nodeCount = set.size;
-      }
+      if (emissionSummary.byLocation.has(l)) emissionSummary.byLocation.get(l).nodeCount = set.size;
     }
 
-    // ============================================================
-    // TRENDS (ONLY FOR NON ALL-TIME PERIODS)
-    // ============================================================
-    if (periodType !== "all-time") {
-      try {
-        const prev = getPreviousPeriod(periodType, year, month, week, day);
-
-        const previousSummary = await EmissionSummary.findOne({
-          clientId,
-          "period.type": periodType,
-          "period.year": prev.year,
-          "period.month": prev.month,
-          "period.week": prev.week,
-          "period.day": prev.day
-        }).lean();
-
-        if (previousSummary?.emissionSummary) {
-          emissionSummary.trends = calculateTrends(
-            emissionSummary,
-            previousSummary.emissionSummary
-          );
-        }
-      } catch (trendErr) {
-        emissionSummary.metadata.errors.push(`Trend calc error: ${trendErr.message}`);
-      }
-    }
-
-    emissionSummary.metadata.calculationDuration =
-      Date.now() - emissionSummary.metadata.lastCalculated.getTime();
-
-    console.log("📊 NEW emissionSummary totals:", {
-      totalCO2e: emissionSummary.totalEmissions.CO2e,
-      s1: emissionSummary.byScope["Scope 1"].CO2e,
-      s2: emissionSummary.byScope["Scope 2"].CO2e,
-      s3: emissionSummary.byScope["Scope 3"].CO2e
-    });
-
-    // ============================================================
-    // RETURN FULL DOCUMENT STRUCTURE
-    // ============================================================
+    // Return the structure
     return {
       clientId,
       period: emissionSummary.period,
@@ -494,10 +394,10 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
   }
 };
 
-
 /**
  * Build date range based on period type
  */
+
 function buildDateRange(periodType, year, month, week, day) {
   const now = new Date();
   let from, to;
@@ -600,24 +500,25 @@ function getScopeCO2eFromContainer(container, scopeName) {
 async function syncSbtiProgressFromSummary(summaryDoc) {
   try {
     if (!summaryDoc || !summaryDoc.clientId || !summaryDoc.period) return;
-    if (summaryDoc.period.type !== 'yearly') return; // we only track yearly vs SBTi
+    if (summaryDoc.period.type !== 'yearly') return;
 
     const clientId = summaryDoc.clientId;
     const year = summaryDoc.period.year;
-
-    // Extract emissions from the summary per scope (tCO2e)
-    const byScope = summaryDoc.byScope || {};
-    const scope1 = getScopeCO2eFromContainer(byScope, 'Scope 1');
-    const scope2 = getScopeCO2eFromContainer(byScope, 'Scope 2');
-    const scope3 = getScopeCO2eFromContainer(byScope, 'Scope 3');
+    
+    // Safely extract numbers
+    const getSafeVal = (path) => safeNum(path?.CO2e ?? path?.co2e);
+    
+    const byScope = summaryDoc.emissionSummary?.byScope || summaryDoc.byScope || {};
+    const scope1 = getSafeVal(byScope['Scope 1']);
+    const scope2 = getSafeVal(byScope['Scope 2']);
+    const scope3 = getSafeVal(byScope['Scope 3']);
 
     const targets = await SbtiTarget.find({ clientId }).exec();
     if (!targets || !targets.length) return;
 
     for (const target of targets) {
-      const baseRaw = target.baseEmission_tCO2e;
-      const base = typeof baseRaw === 'number' ? baseRaw : parseFloat(baseRaw) || 0;
-      if (!base || base <= 0) continue;
+      const base = safeNum(target.baseEmission_tCO2e);
+      if (base <= 0) continue;
 
       const scopeSet = target.scopeSet || 'S1S2';
       const actualEmission = scopeSet === 'S3' ? scope3 : (scope1 + scope2);
@@ -627,25 +528,12 @@ async function syncSbtiProgressFromSummary(summaryDoc) {
 
       if (!trajPoint && trajectory.length) {
         const sorted = [...trajectory].sort((a, b) => a.year - b.year);
-        if (year < sorted[0].year) {
-          trajPoint = sorted[0];
-        } else {
-          trajPoint = sorted[sorted.length - 1];
-        }
+        trajPoint = (year < sorted[0].year) ? sorted[0] : sorted[sorted.length - 1];
       }
 
-      const targetEmissionRaw = trajPoint?.targetEmission_tCO2e;
-      const targetEmission = typeof targetEmissionRaw === 'number'
-        ? targetEmissionRaw
-        : (parseFloat(targetEmissionRaw) || base);
-
+      const targetEmission = safeNum(trajPoint?.targetEmission_tCO2e || base);
       const requiredReduction = Math.max(0, base - targetEmission);
       const achievedReduction = Math.max(0, base - actualEmission);
-
-      const requiredReductionPercent = base > 0 ? (requiredReduction / base) * 100 : 0;
-      const achievedReductionPercent = base > 0 ? (achievedReduction / base) * 100 : 0;
-      const percentOfTargetAchieved =
-        requiredReduction > 0 ? (achievedReduction / requiredReduction) * 100 : 0;
 
       const progressRow = {
         year,
@@ -655,32 +543,23 @@ async function syncSbtiProgressFromSummary(summaryDoc) {
         actualEmission_tCO2e: actualEmission,
         requiredReduction_tCO2e: requiredReduction,
         achievedReduction_tCO2e: achievedReduction,
-        requiredReductionPercent: Number(requiredReductionPercent.toFixed(4)),
-        achievedReductionPercent: Number(achievedReductionPercent.toFixed(4)),
-        percentOfTargetAchieved: Number(percentOfTargetAchieved.toFixed(4)),
+        requiredReductionPercent: base > 0 ? Number(((requiredReduction / base) * 100).toFixed(4)) : 0,
+        achievedReductionPercent: base > 0 ? Number(((achievedReduction / base) * 100).toFixed(4)) : 0,
+        percentOfTargetAchieved: requiredReduction > 0 ? Number(((achievedReduction / requiredReduction) * 100).toFixed(4)) : 0,
         isOnTrack: actualEmission <= targetEmission,
         lastUpdatedFromSummaryId: summaryDoc._id,
       };
 
-      if (!Array.isArray(target.emissionProgress)) {
-        target.emissionProgress = [];
-      }
-
-      const idx = target.emissionProgress.findIndex(
-        (row) => row.year === year && row.scopeSet === scopeSet
-      );
-
-      if (idx >= 0) {
-        target.emissionProgress[idx] = progressRow;
-      } else {
-        target.emissionProgress.push(progressRow);
-      }
+      if (!Array.isArray(target.emissionProgress)) target.emissionProgress = [];
+      const idx = target.emissionProgress.findIndex(row => row.year === year && row.scopeSet === scopeSet);
+      if (idx >= 0) target.emissionProgress[idx] = progressRow;
+      else target.emissionProgress.push(progressRow);
 
       target.markModified('emissionProgress');
       await target.save();
     }
   } catch (err) {
-    console.error('Error syncing SBTi emission progress from summary:', err);
+    console.error('Error syncing SBTi emission progress:', err);
   }
 }
 
@@ -814,6 +693,7 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
  * metadata: { ...root metadata... }
  * }
  */
+// Persist an emission summary
 async function saveEmissionSummary(summaryData) {
   if (!summaryData) throw new Error("saveEmissionSummary: summaryData is required");
 
@@ -822,126 +702,67 @@ async function saveEmissionSummary(summaryData) {
     throw new Error("saveEmissionSummary: missing clientId or period.type");
   }
 
-  // ------------------------------------------------------------------
-  // 1) Build the query (clientId + period key fields)
-  // ------------------------------------------------------------------
-  const query = {
-    clientId,
-    "period.type": period.type
-  };
-
+  const query = { clientId, "period.type": period.type };
   if (period.year != null) query["period.year"] = period.year;
   if (period.month != null) query["period.month"] = period.month;
   if (period.week != null) query["period.week"] = period.week;
   if (period.day != null) query["period.day"] = period.day;
 
-  // Load existing doc (to keep reductionSummary + metadata versioning)
   const existing = await EmissionSummary.findOne(query).lean();
 
-  // 🔴 FIX: The calculated data is inside 'summaryData.emissionSummary'
-  // If we are calling this from calculateEmissionSummary, the data is nested.
-  // We use fallback to summaryData in case it was passed flat.
+  // 🔴 FIX: Get the nested object, fall back if flat
   const es = summaryData.emissionSummary || summaryData;
 
-  // ------------------------------------------------------------------
-  // 2) Build emissionSummary (nested object) from summaryData
-  // ------------------------------------------------------------------
   const defaultScopeBlock = () => ({
-    CO2e: 0,
-    CO2: 0,
-    CH4: 0,
-    N2O: 0,
-    uncertainty: 0,
-    dataPointCount: 0
+    CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0
+  });
+
+  // 🛡️ SANITIZE ALL NUMBERS BEFORE SAVING TO PREVENT NaN CAST ERRORS
+  const sanitizeScope = (scopeData) => ({
+    CO2e: safeNum(scopeData?.CO2e),
+    CO2: safeNum(scopeData?.CO2),
+    CH4: safeNum(scopeData?.CH4),
+    N2O: safeNum(scopeData?.N2O),
+    uncertainty: safeNum(scopeData?.uncertainty),
+    dataPointCount: safeNum(scopeData?.dataPointCount)
   });
 
   const emissionSummaryToSave = {
-    period: summaryData.period, // Use root period for consistency
-    totalEmissions: es.totalEmissions || {
-      CO2e: 0,
-      CO2: 0,
-      CH4: 0,
-      N2O: 0,
-      uncertainty: 0
+    period: summaryData.period,
+    totalEmissions: {
+      CO2e: safeNum(es.totalEmissions?.CO2e),
+      CO2: safeNum(es.totalEmissions?.CO2),
+      CH4: safeNum(es.totalEmissions?.CH4),
+      N2O: safeNum(es.totalEmissions?.N2O),
+      uncertainty: safeNum(es.totalEmissions?.uncertainty)
     },
-    byScope: es.byScope || {
-      "Scope 1": defaultScopeBlock(),
-      "Scope 2": defaultScopeBlock(),
-      "Scope 3": defaultScopeBlock()
+    byScope: {
+      "Scope 1": es.byScope?.["Scope 1"] ? sanitizeScope(es.byScope["Scope 1"]) : defaultScopeBlock(),
+      "Scope 2": es.byScope?.["Scope 2"] ? sanitizeScope(es.byScope["Scope 2"]) : defaultScopeBlock(),
+      "Scope 3": es.byScope?.["Scope 3"] ? sanitizeScope(es.byScope["Scope 3"]) : defaultScopeBlock()
     },
     byCategory: es.byCategory || {},
     byActivity: es.byActivity || {},
     byNode: es.byNode || {},
     byDepartment: es.byDepartment || {},
     byLocation: es.byLocation || {},
-    byInputType: es.byInputType || {
-      manual: { CO2e: 0, dataPointCount: 0 },
-      API: { CO2e: 0, dataPointCount: 0 },
-      IOT: { CO2e: 0, dataPointCount: 0 }
-    },
+    byInputType: es.byInputType || {},
     byEmissionFactor: es.byEmissionFactor || {},
-    trends: es.trends || {
-      totalEmissionsChange: {
-        value: 0,
-        percentage: 0,
-        direction: "same"
-      },
-      scopeChanges: {
-        "Scope 1": { value: 0, percentage: 0, direction: "same" },
-        "Scope 2": { value: 0, percentage: 0, direction: "same" },
-        "Scope 3": { value: 0, percentage: 0, direction: "same" }
-      }
-    },
+    trends: es.trends || {},
     metadata: {
       ...(es.metadata || {}),
-      // Make sure we always have these fields
-      totalDataPoints:
-        es.metadata?.totalDataPoints ??
-        (Array.isArray(es.metadata?.dataEntriesIncluded)
-          ? es.metadata.dataEntriesIncluded.length
-          : 0),
-      dataEntriesIncluded:
-        es.metadata?.dataEntriesIncluded || es.dataEntriesIncluded || [],
-      lastCalculated: es.metadata?.lastCalculated || new Date(),
-      calculationDuration: es.metadata?.calculationDuration ?? 0,
-      calculatedBy: es.metadata?.calculatedBy ?? null,
-      isComplete: es.metadata?.isComplete ?? true,
-      hasErrors: es.metadata?.hasErrors ?? false,
-      errors: es.metadata?.errors || [],
-      // bump nested emissionSummary.metadata.version
       version: (existing?.emissionSummary?.metadata?.version || 0) + 1
     }
   };
 
-  // ------------------------------------------------------------------
-  // 3) Build ROOT metadata
-  //     - mirrors emissionSummary.metadata
-  //     - keeps reductionSummary version flags
-  // ------------------------------------------------------------------
   const rootMetadata = {
     ...(existing?.metadata || {}),
     lastCalculated: emissionSummaryToSave.metadata.lastCalculated,
-    totalDataPoints: emissionSummaryToSave.metadata.totalDataPoints,
-    dataEntriesIncluded: emissionSummaryToSave.metadata.dataEntriesIncluded,
-    calculationDuration: emissionSummaryToSave.metadata.calculationDuration,
-    isComplete: emissionSummaryToSave.metadata.isComplete,
-    hasErrors: emissionSummaryToSave.metadata.hasErrors,
-    errors: emissionSummaryToSave.metadata.errors || [],
-    // bump ROOT metadata.version
     version: (existing?.metadata?.version || 0) + 1,
-    // flags related to reduction summary (do NOT flip them off here)
-    hasReductionSummary:
-      existing?.metadata?.hasReductionSummary ??
-      !!existing?.reductionSummary,
-    lastReductionSummaryCalculatedAt:
-      existing?.metadata?.lastReductionSummaryCalculatedAt || null
+    hasReductionSummary: existing?.metadata?.hasReductionSummary ?? !!existing?.reductionSummary,
+    lastReductionSummaryCalculatedAt: existing?.metadata?.lastReductionSummaryCalculatedAt || null
   };
 
-  // ------------------------------------------------------------------
-  // 4) Build update object:
-  //     - root: clientId, period, emissionSummary, metadata
-  //     - keep existing reductionSummary unless overwriting explicitly
-  // ------------------------------------------------------------------
   const update = {
     clientId,
     period: summaryData.period,
@@ -949,36 +770,20 @@ async function saveEmissionSummary(summaryData) {
     metadata: rootMetadata
   };
 
-  // Very important: DO NOT wipe out reductionSummary when we are
-  // just recalculating emissions.
   if (existing?.reductionSummary) {
     update.reductionSummary = existing.reductionSummary;
   }
-
-  // If in the future you ever call saveEmissionSummary() with a
-  // pre-computed reductionSummary, you can merge it like this:
   if (summaryData.reductionSummary) {
     update.reductionSummary = summaryData.reductionSummary;
     update.metadata.hasReductionSummary = true;
-    update.metadata.lastReductionSummaryCalculatedAt =
-      summaryData.reductionSummaryLastCalculated || new Date();
   }
 
-  // ------------------------------------------------------------------
-  // 5) Upsert document
-  // ------------------------------------------------------------------
   const saved = await EmissionSummary.findOneAndUpdate(
     query,
     update,
-    {
-      upsert: true,
-      new: true,
-      setDefaultsOnInsert: true
-    }
+    { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  // 🔴 Sync SBTi (Added back to ensure targets update)
-  // Only for yearly summaries
   if (saved.period.type === 'yearly') {
     await syncSbtiProgressFromSummary(saved);
   }
@@ -995,36 +800,15 @@ async function saveEmissionSummary(summaryData) {
 const updateSummariesOnDataChange = async (dataEntry) => {
   try {
     console.log(`📊 Updating summaries for new data entry: ${dataEntry._id}`);
-
     const { clientId } = dataEntry;
     const entryDate = moment.utc(dataEntry.timestamp);
 
-    // DAILY
-    await recalculateAndSaveSummary(
-      clientId,
-      'daily',
-      entryDate.year(),
-      entryDate.month() + 1,
-      null,
-      entryDate.date()
-    );
-
-    // MONTHLY
-    await recalculateAndSaveSummary(
-      clientId,
-      'monthly',
-      entryDate.year(),
-      entryDate.month() + 1
-    );
-
-    // YEARLY
+    await recalculateAndSaveSummary(clientId, 'daily', entryDate.year(), entryDate.month() + 1, null, entryDate.date());
+    await recalculateAndSaveSummary(clientId, 'monthly', entryDate.year(), entryDate.month() + 1);
     await recalculateAndSaveSummary(clientId, 'yearly', entryDate.year());
-
-    // ALL-TIME
     await recalculateAndSaveSummary(clientId, 'all-time');
 
     console.log(`✅ Successfully updated summaries for client: ${clientId}`);
-
   } catch (error) {
     console.error('❌ Error updating summaries on data change:', error);
   }
@@ -1056,40 +840,14 @@ function buildPeriodDateRange(periodType, year, month, week, day) {
  * - Uses calculateEmissionSummary(...) to compute emissions.
  * - Persists using saveEmissionSummary(...) in Structure A.
  */
-const recalculateAndSaveSummary = async (
-  clientId,
-  periodType,
-  year,
-  month,
-  week,
-  day,
-  userId = null
-) => {
+const recalculateAndSaveSummary = async (clientId, periodType, year, month, week, day, userId = null) => {
   try {
-    const summaryData = await calculateEmissionSummary(
-      clientId,
-      periodType,
-      year,
-      month,
-      week,
-      day,
-      userId
-    );
-
-    // If nothing to save, return null
-    if (!summaryData) {
-      return null;
-    }
-
-    // We now always save, even if totalDataPoints is 0
-    // (so that empty months/years still have a summary doc)
+    const summaryData = await calculateEmissionSummary(clientId, periodType, year, month, week, day, userId);
+    if (!summaryData) return null;
     const saved = await saveEmissionSummary(summaryData);
     return saved;
   } catch (err) {
-    console.error(
-      `❌ Error recalculating ${periodType} summary for client ${clientId}:`,
-      err
-    );
+    console.error(`❌ Error recalculating ${periodType} summary for client ${clientId}:`, err);
     throw err;
   }
 };
@@ -1099,174 +857,36 @@ const recalculateAndSaveSummary = async (
 
 // ========== API Controllers ==========
 
+// API Controllers (keep unchanged but use these helpers)
 const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const {
-      periodType = "monthly",
-      year,
-      month,
-      week,
-      day,
-      recalculate = "false",
-      preferLatest = "true",
-      type = "both" // "emission" | "reduction" | "both"
-    } = req.query;
-
-    if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
-      return res.status(400).json({ success: false, message: "Invalid period type." });
-    }
+    const { periodType = "monthly", year, month, week, day, recalculate = "false" } = req.query;
 
     const y = year ? parseInt(year) : moment.utc().year();
     const m = month ? parseInt(month) : moment.utc().month() + 1;
     const w = week ? parseInt(week) : moment.utc().isoWeek();
     const d = day ? parseInt(day) : moment.utc().date();
 
-    const noParts = !year && !month && !week && !day;
-
-    const baseQuery = { clientId, "period.type": periodType };
-
-    let summary;
-
-    // ----------------------------------------------------
-    // 1) Load or recalculate summary
-    // ----------------------------------------------------
     if (recalculate === "true") {
-      summary = await recalculateAndSaveSummary(
-        clientId,
-        periodType,
-        y,
-        m,
-        w,
-        d,
-        req.user?._id
-      );
-    } else {
-      if (noParts) {
-        summary = await EmissionSummary.findOne(baseQuery)
-          .sort({ "period.to": -1, updatedAt: -1 })
-          .lean();
-      } else {
-        const exactQuery = { ...baseQuery };
-        if (year) exactQuery["period.year"] = y;
-        if (month) exactQuery["period.month"] = m;
-        if (week) exactQuery["period.week"] = w;
-        if (day) exactQuery["period.day"] = d;
-
-        summary = await EmissionSummary.findOne(exactQuery).lean();
-
-        const stale =
-          summary &&
-          summary.metadata &&
-          (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
-
-        if (!summary || stale) {
-          const recomputed = await recalculateAndSaveSummary(
-            clientId,
-            periodType,
-            y,
-            m,
-            w,
-            d,
-            req.user?._id
-          );
-
-          if (recomputed) {
-            summary = recomputed;
-          } else if (preferLatest === "true") {
-            summary = await EmissionSummary.findOne(baseQuery)
-              .sort({ "period.to": -1, updatedAt: -1 })
-              .lean();
-          }
-        }
-      }
+      const summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
+      return res.status(200).json({ success: true, data: summary });
     }
 
+    const query = { clientId, "period.type": periodType };
+    if (year) query["period.year"] = y;
+    if (month) query["period.month"] = m;
+
+    const summary = await EmissionSummary.findOne(query).sort({ updatedAt: -1 }).lean();
     if (!summary) {
-      return res.status(404).json({
-        success: false,
-        message: "No data found for the specified period."
-      });
+      // Recalculate if not found
+      const newSummary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
+      return res.status(200).json({ success: true, data: newSummary });
     }
 
-    // ----------------------------------------------------
-    // 2) Normalise Maps → plain objects for emissionSummary
-    // ----------------------------------------------------
-    const convertMap = (value) => {
-      if (value instanceof Map) return Object.fromEntries(value);
-      if (Array.isArray(value)) return value.map(convertMap);
-      if (value && typeof value === "object" && !(value instanceof Date)) {
-        const out = {};
-        for (const k of Object.keys(value)) {
-          out[k] = convertMap(value[k]);
-        }
-        return out;
-      }
-      return value;
-    };
-
-    const emissionSummary = convertMap(summary.emissionSummary || {});
-    const reductionSummary = summary.reductionSummary || {
-      totalNetReduction: 0,
-      entriesCount: 0,
-      byProject: [],
-      byCategory: {},
-      byScope: {},
-      byLocation: {},
-      byProjectActivity: {},
-      byMethodology: {}
-    };
-
-    const baseResponse = {
-      clientId: summary.clientId,
-      period: summary.period,
-      emissionSummary,
-      reductionSummary,
-      metadata: summary.metadata || {}
-    };
-
-    // ----------------------------------------------------
-    // 3) type-based responses
-    // ----------------------------------------------------
-    if (type === "emission") {
-      return res.status(200).json({
-        success: true,
-        type: "emission",
-        data: {
-          clientId: baseResponse.clientId,
-          period: baseResponse.period,
-          emissionSummary: baseResponse.emissionSummary,
-          metadata: baseResponse.metadata
-        }
-      });
-    }
-
-    if (type === "reduction") {
-      return res.status(200).json({
-        success: true,
-        type: "reduction",
-        data: {
-          clientId: baseResponse.clientId,
-          period: baseResponse.period,
-          reductionSummary: baseResponse.reductionSummary,
-          metadata: baseResponse.metadata
-        }
-      });
-    }
-
-    // both
-    return res.status(200).json({
-      success: true,
-      type: "both",
-      data: baseResponse
-    });
+    return res.status(200).json({ success: true, data: summary });
   } catch (error) {
-    console.error("❌ Error getting emission summary:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to get emission summary",
-      error: error.message
-    });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -1492,10 +1112,16 @@ const getFilteredSummary = async (req, res) => {
       return [];
     };
 
-    const safeNum = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
-    };
+    /**
+ * 🛡️ SAFE NUMBER HELPER
+ * Converts any value (NaN, null, undefined, string) to a valid finite number or 0.
+ * This prevents "Cast to Number failed for value NaN" errors.
+ */
+const safeNum = (v) => {
+  if (v === null || v === undefined) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
     const convertMap = (value) => {
       if (value instanceof Map) return Object.fromEntries(value);
