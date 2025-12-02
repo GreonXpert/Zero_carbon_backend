@@ -800,6 +800,26 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
   }
 }
 
+function mapToObj(map) {
+  if (!map) return {};
+  if (map instanceof Map) {
+    return Object.fromEntries(
+      [...map.entries()].map(([k, v]) => {
+        if (v instanceof Map) return [k, mapToObj(v)];
+        if (typeof v === "object") {
+          const obj = {};
+          for (const key in v) {
+            obj[key] = v[key] instanceof Map ? mapToObj(v[key]) : v[key];
+          }
+          return [k, obj];
+        }
+        return [k, v];
+      })
+    );
+  }
+  return map; // already plain object
+}
+
 
 
 
@@ -869,17 +889,12 @@ async function saveEmissionSummary(summaryData) {
       "Scope 2": defaultScopeBlock(),
       "Scope 3": defaultScopeBlock()
     },
-    byCategory: es.byCategory || {},
-    byActivity: es.byActivity || {},
-    byNode: es.byNode || {},
-    byDepartment: es.byDepartment || {},
-    byLocation: es.byLocation || {},
-    byInputType: es.byInputType || {
-      manual: { CO2e: 0, dataPointCount: 0 },
-      API: { CO2e: 0, dataPointCount: 0 },
-      IOT: { CO2e: 0, dataPointCount: 0 }
-    },
-    byEmissionFactor: es.byEmissionFactor || {},
+  byCategory: mapToObj(es.byCategory),
+byActivity: mapToObj(es.byActivity),
+byNode: mapToObj(es.byNode),
+byDepartment: mapToObj(es.byDepartment),
+byLocation: mapToObj(es.byLocation),
+byEmissionFactor: mapToObj(es.byEmissionFactor),
     trends: es.trends || {
       totalEmissionsChange: {
         value: 0,
