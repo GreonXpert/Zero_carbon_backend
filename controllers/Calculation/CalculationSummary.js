@@ -836,9 +836,12 @@ async function saveEmissionSummary(summaryData) {
   if (period.day != null) query["period.day"] = period.day;
 
   // Load existing doc (to keep reductionSummary + metadata versioning)
-  const existing = await EmissionSummary.findOne(query).lean();
+   const existing = await EmissionSummary.findOne(query).lean();
 
-  const es = summaryData;
+  // ✅ Use the nested emissionSummary if present
+  //    fall back to summaryData only if you ever call it with a flat object
+  const es = summaryData.emissionSummary || summaryData;
+
 
   // ------------------------------------------------------------------
   // 2) Build emissionSummary (nested object) from summaryData
