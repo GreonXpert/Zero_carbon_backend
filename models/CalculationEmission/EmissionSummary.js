@@ -392,7 +392,14 @@ const emissionSummarySchema = new mongoose.Schema(
     ]
   }
 );
-
+emissionSummarySchema.index({
+  clientId: 1,
+  'period.type': 1,
+  'period.year': -1,
+  'period.month': -1,
+  'period.week': -1,
+  'period.day': -1
+});
 // =========================
 // Instance Helper Methods
 // =========================

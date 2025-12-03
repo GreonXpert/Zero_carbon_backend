@@ -3419,10 +3419,19 @@ const getMonthlySummaries = async (req, res) => {
       ];
     }
     
-    const summaries = await DataEntry.find(query)
-      .sort({ 'summaryPeriod.year': -1, 'summaryPeriod.month': -1 })
-      .populate('sourceDetails.uploadedBy', 'userName')
-      .lean();
+    const page = parseInt(req.query.page) || 1;
+const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+const skip = (page - 1) * limit;
+
+const [summaries, total] = await Promise.all([
+  DataEntry.find(query)
+    .sort({ 'summaryPeriod.year': -1, 'summaryPeriod.month': -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('sourceDetails.uploadedBy', 'userName')
+    .lean(),
+  DataEntry.countDocuments(query)
+]);
     
     // Format response
     const formattedSummaries = summaries.map(summary => ({

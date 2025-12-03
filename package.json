@@ -21,6 +21,7 @@
     "dotenv": "^16.4.5",
     "expr-eval": "^2.0.2",
     "express": "^4.21.1",
+    "helmet": "^8.1.0",
     "html-pdf-node": "^1.0.8",
     "jsonwebtoken": "^9.0.2",
     "moment": "^2.30.1",

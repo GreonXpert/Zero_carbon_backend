@@ -66,10 +66,27 @@ const {
   broadcastNetReductionCompletionUpdate
 } = require('./controllers/DataCollection/dataCompletionController');
 const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
+const helmet = require('helmet');
+
 
 dotenv.config();
 
 const app = express();
+
+app.use(helmet());
+
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    }
+  },
+  hsts: { maxAge: 31536000, includeSubDomains: true }
+}));
+
 
 // Middleware
 app.use(express.json());
@@ -82,7 +99,12 @@ app.use((req, res, next) => {
     console.log("  Body  :", req.body);
     next();
 });
-
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    next();
+  });
+}
 app.use(cors({
     origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com","http://localhost:5174"],
     credentials: true,

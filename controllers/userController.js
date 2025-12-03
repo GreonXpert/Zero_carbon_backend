@@ -185,15 +185,19 @@ const createConsultantAdmin = async (req, res) => {
       });
     }
     
-    const {
-      email,
-      password,
-      contactNumber,
-      userName,
-      address,
-      teamName,
-      employeeId
-    } = req.body;
+     // 1. Define allowed fields explicitly
+    const allowedFields = [
+      'email', 'password', 'contactNumber', 
+      'userName', 'address', 'teamName', 'employeeId'
+    ];
+    
+    // 2. Extract only allowed fields
+    const userData = {};
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        userData[field] = req.body[field];
+      }
+    });
     
     // Check if user already exists
     const existingUser = await User.findOne({
@@ -208,18 +212,15 @@ const createConsultantAdmin = async (req, res) => {
     
     const hashedPassword = bcrypt.hashSync(password, 10);
     
-    const consultantAdmin = new User({
-      email,
+      const consultantAdmin = new User({
+      ...userData,
       password: hashedPassword,
-      contactNumber,
-      userName,
-      userType: "consultant_admin",
-      address,
+      userType: "consultant_admin",  // Always set by server
       companyName: "ZeroCarbon Consultancy",
-      teamName,
-      employeeId,
-      createdBy: req.user.id,
-      permissions: {
+      createdBy: req.user.id,  // Always from authenticated user
+      isActive: true,  // Explicit default
+      sandbox: false,   // Explicit default
+      permissions: {    // Always controlled by server
         canViewAllClients: true,
         canManageUsers: true,
         canManageClients: true,

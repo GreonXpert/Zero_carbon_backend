@@ -615,20 +615,22 @@ const getAllFlowcharts = async (req, res) => {
     const total = await Flowchart.countDocuments(query);
 
     // Fetch flowcharts with pagination
-    const flowcharts = await Flowchart.find(query)
-      .populate('createdBy', 'userName email userType')
-      .populate('lastModifiedBy', 'userName email')
-      .sort(sortOptions)
-      .skip(skip)
-      .limit(parseInt(limit))
+    const [flowcharts, clientsMap] = await Promise.all([
+  Flowchart.find(query)
+    .populate('createdBy', 'userName email userType')
+    .populate('lastModifiedBy', 'userName email')
+    .sort(sortOptions)
+    .skip(skip)
+    .limit(parseInt(limit))
+    .lean(),
+  (async () => {
+    const uniqueClientIds = await Flowchart.distinct('clientId', query);
+    const clients = await Client.find({ clientId: { $in: uniqueClientIds } })
+      .select('clientId leadInfo.companyName stage status')
       .lean();
-
-    // Get client details for each flowchart
-    const clientIds = [...new Set(flowcharts.map(f => f.clientId))];
-    const clients = await Client.find({ 
-      clientId: { $in: clientIds } 
-    }).select('clientId leadInfo.companyName stage status');
-
+    return Object.fromEntries(clients.map(c => [c.clientId, c]));
+  })()
+]);
     // Create client map for quick lookup
     const clientMap = {};
     clients.forEach(client => {
