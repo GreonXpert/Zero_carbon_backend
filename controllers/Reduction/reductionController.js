@@ -168,31 +168,97 @@ const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
   return out;
 }
 
+
 /** ------------------------- */
 /** METHODOLOGY 3 HELPERS     */
 /** ------------------------- */
 
-/** Normalize a variable */
-function normalizeM3Variable(v) {
+/** ----------------------------- */
+/** M3 POLICY NORMALIZER (same as M2)
+/** ----------------------------- */
+
+// Normalize one variable of B/P/L with policy
+function normalizeM3VariableFull(v = {}) {
+  const name = String(v.name || '').trim();
+  const type = v.type === 'constant' ? 'constant' : 'manual';
+  const value = type === 'constant' ? Number(v.value ?? null) : null;
+
+  // Policy section (same structure like m2)
+  const updatePolicy = v.updatePolicy || 'manual';
+  const lastUpdatedAt = v.lastUpdatedAt ? new Date(v.lastUpdatedAt) : new Date();
+  const defaultValue = v.defaultValue ?? null;
+  const lastValue = v.lastValue ?? null;
+
+  const policy = {
+    isConstant: v.policy?.isConstant !== false,
+    schedule: {
+      frequency: v.policy?.schedule?.frequency || 'none',
+      fromDate: v.policy?.schedule?.fromDate ? new Date(v.policy.schedule.fromDate) : null,
+      toDate: v.policy?.schedule?.toDate ? new Date(v.policy.schedule.toDate) : null
+    },
+    history: Array.isArray(v.policy?.history)
+      ? v.policy.history.map(h => ({
+          oldValue: Number(h.oldValue),
+          newValue: Number(h.newValue),
+          updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
+        }))
+      : []
+  };
+
   return {
-    name: String(v.name || '').trim(),
-    type: v.type === 'constant' ? 'constant' : 'manual',
-    value: v.type === 'constant' ? Number(v.value ?? null) : null
+    name,
+    type,
+    value,
+    updatePolicy,
+    defaultValue,
+    lastValue,
+    lastUpdatedAt,
+    policy
   };
 }
 
-/** Normalize B/P/L Item */
-function normalizeM3Item(item) {
+/** Normalize one B/P/L item */
+function normalizeM3ItemFull(item = {}) {
   return {
-    id: String(item.id || '').trim(),                 // B1 / P1 / L1
+    id: String(item.id || '').trim(),
     label: String(item.label || '').trim(),
     formulaId: item.formulaId,
     formulaExpression: item.formulaExpression || '',
+    ssrType: item.ssrType || 'Source',
+    remark: item.remark || '',
+    Reference: item.Reference || '',
     variables: Array.isArray(item.variables)
-      ? item.variables.map(normalizeM3Variable)
+      ? item.variables.map(normalizeM3VariableFull)
       : []
   };
 }
+
+/** ----------------------------- */
+/** normalizeM3Body (final version)
+/** ----------------------------- */
+function normalizeM3Body(body = {}) {
+  const m3 = body.m3 || body; // in case the FE sends direct m3:{}
+
+  return {
+    projectActivity: m3.projectActivity,
+    buffer: Number(m3.buffer ?? 0),
+
+    baselineEmissions: Array.isArray(m3.baselineEmissions)
+      ? m3.baselineEmissions.map(normalizeM3ItemFull)
+      : [],
+
+    projectEmissions: Array.isArray(m3.projectEmissions)
+      ? m3.projectEmissions.map(normalizeM3ItemFull)
+      : [],
+
+    leakageEmissions: Array.isArray(m3.leakageEmissions)
+      ? m3.leakageEmissions.map(normalizeM3ItemFull)
+      : []
+  };
+}
+
+
+
 
 /** Validate payload for M3 */
 function validateM3Input(body) {
@@ -281,37 +347,48 @@ function normalizeProcessFlow(raw = {}, user) {
 exports.createReduction = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const perm = await canCreateOrEdit(req.user, clientId);
-    if (!perm.ok) return res.status(403).json({ success:false, message: perm.reason });
 
+    // --- Permission ---
+    const perm = await canCreateOrEdit(req.user, clientId);
+    if (!perm.ok) {
+      return res.status(403).json({ success:false, message: perm.reason });
+    }
+
+    // --- Extract body ---
     const {
       projectName, projectActivity, scope, location,
-      category,commissioningDate, endDate, description,
+      category, commissioningDate, endDate, description,
       baselineMethod, baselineJustification,
-      calculationMethodology, m1, m2  
+      calculationMethodology, m1, m2
     } = req.body;
 
-    // OPTIONAL: processFlow
-let processFlowPayload;
-if (req.body.processFlow) {
-  processFlowPayload = normalizeProcessFlow(req.body.processFlow, req.user);
-}
+    // --- Process Flow (optional) ---
+    let processFlowPayload;
+    if (req.body.processFlow) {
+      processFlowPayload = normalizeProcessFlow(req.body.processFlow, req.user);
+    }
 
-
+    // --- Basic validation ---
     if (!projectName) return res.status(400).json({ success:false, message:'projectName is required' });
     if (!projectActivity) return res.status(400).json({ success:false, message:'projectActivity is required' });
     if (!commissioningDate || !endDate) return res.status(400).json({ success:false, message:'commissioningDate & endDate required' });
-    if (calculationMethodology === 'methodology3') {
-  validateM3Input(req.body);
-}
-    if (!calculationMethodology) return res.status(400).json({ success:false, message:'calculationMethodology is required' });
-    if (!category) return res.status(400).json({ success:false, message:'category is required' });
 
-    // ✅ MOVE THIS BLOCK UP HERE
+    if (!calculationMethodology)
+      return res.status(400).json({ success:false, message:'calculationMethodology is required' });
+
+    if (!category)
+      return res.status(400).json({ success:false, message:'category is required' });
+
+    if (calculationMethodology === 'methodology3') {
+      validateM3Input(req.body); // ensures buffer for “Removal”
+    }
+
+    // --- reductionDataEntry normalize ---
     let reductionEntryPayload = null;
     const hasEntry =
       Object.prototype.hasOwnProperty.call(req.body, 'reductionDataEntry') ||
       Object.prototype.hasOwnProperty.call(req.body, 'reductionDateEntry');
+
     if (hasEntry) {
       try {
         const incomingEntry = readReductionEntryFromBody(req.body);
@@ -321,7 +398,9 @@ if (req.body.processFlow) {
       }
     }
 
-    // UPSERT: same client + same projectName (case-insensitive), not deleted
+    // ============================================================
+    //        UPSERT LOGIC — If same projectName already exists
+    // ============================================================
     const existing = await Reduction.findOne({
       clientId,
       isDeleted: false,
@@ -329,23 +408,27 @@ if (req.body.processFlow) {
     });
 
     if (existing) {
-      // ---- UPDATE path (same rules as updateReduction) ----
+      // ===== UPDATE PATH =====
       existing.projectName = projectName;
       existing.projectActivity = projectActivity;
       existing.scope = scope ?? existing.scope;
+
       if (location) {
         existing.location.latitude = location.latitude ?? existing.location.latitude;
         existing.location.longitude = location.longitude ?? existing.location.longitude;
         existing.location.place = location.place || existing.location.place;
         existing.location.address = location.address || existing.location.address;
       }
+
       existing.commissioningDate = new Date(commissioningDate);
       existing.endDate = new Date(endDate);
       existing.description = description ?? existing.description;
+
       if (baselineMethod != null) existing.baselineMethod = baselineMethod;
       if (baselineJustification != null) existing.baselineJustification = baselineJustification;
       if (calculationMethodology) existing.calculationMethodology = calculationMethodology;
 
+      // M1 update
       if (existing.calculationMethodology === 'methodology1') {
         existing.m1 = {
           ABD: (m1?.ABD || []).map(normalizeUnitItem('B')),
@@ -354,76 +437,59 @@ if (req.body.processFlow) {
           bufferPercent: Number(m1?.bufferPercent ?? existing.m1?.bufferPercent ?? 0)
         };
       }
+
+      // M2 update
       if (existing.calculationMethodology === 'methodology2' && req.body.m2) {
         existing.m2 = normalizeM2FromBody(req.body.m2);
       }
 
-      /** -------------------------
- *  Methodology 3 UPDATE PATH
- * ------------------------- */
-if (existing.calculationMethodology === 'methodology3' && req.body.m3) {
-  validateM3Input(req.body); // Throws error if invalid
+      // M3 update
+      if (existing.calculationMethodology === 'methodology3' && req.body.m3) {
+        validateM3Input(req.body);
+        existing.m3 = normalizeM3Body(req.body.m3);
+      }
 
-  const m3 = req.body.m3;
-
-  existing.m3 = {
-    projectActivity: req.body.projectActivity, // M3 duplicates activity
-    buffer: Number(m3.buffer ?? 0),
-    baselineEmissions: Array.isArray(m3.baselineEmissions)
-      ? m3.baselineEmissions.map(normalizeM3Item)
-      : [],
-    projectEmissions: Array.isArray(m3.projectEmissions)
-      ? m3.projectEmissions.map(normalizeM3Item)
-      : [],
-    leakageEmissions: Array.isArray(m3.leakageEmissions)
-      ? m3.leakageEmissions.map(normalizeM3Item)
-      : []
-  };
-}
-
-      // ✅ Now this is safe; variable exists
+      // Data entry
       if (reductionEntryPayload) {
         existing.reductionDataEntry = {
           ...(existing.reductionDataEntry?.toObject?.() ?? {}),
           ...reductionEntryPayload
         };
       }
-        // ✅ apply processFlow if sent (same semantics as updateReduction)
-if (processFlowPayload) {
-  if (!existing.processFlow) existing.processFlow = {};
-  if (processFlowPayload.mode) existing.processFlow.mode = processFlowPayload.mode;
 
-  if (Object.prototype.hasOwnProperty.call(processFlowPayload, 'flowchartId')) {
-    existing.processFlow.flowchartId = processFlowPayload.flowchartId;
-  }
-  if (processFlowPayload.mapping) {
-    existing.processFlow.mapping = processFlowPayload.mapping;
-  }
-  if (processFlowPayload.snapshot) {
-    const prevVer = Number(existing.processFlow.snapshot?.metadata?.version || 0);
-    const nextVer = prevVer > 0 ? prevVer + 1 : (processFlowPayload.snapshot.metadata?.version || 1);
-    processFlowPayload.snapshot.metadata = processFlowPayload.snapshot.metadata || {};
-    processFlowPayload.snapshot.metadata.version = nextVer;
+      // Process flow
+      if (processFlowPayload) {
+        if (!existing.processFlow) existing.processFlow = {};
+        if (processFlowPayload.mode) existing.processFlow.mode = processFlowPayload.mode;
+        if ('flowchartId' in processFlowPayload) existing.processFlow.flowchartId = processFlowPayload.flowchartId;
+        if (processFlowPayload.mapping) existing.processFlow.mapping = processFlowPayload.mapping;
 
-    existing.processFlow.snapshot = processFlowPayload.snapshot;
-    existing.processFlow.snapshotCreatedAt = new Date();
-    existing.processFlow.snapshotCreatedBy = req.user?.id;
-  }
-}
+        if (processFlowPayload.snapshot) {
+          const prevVer = Number(existing.processFlow.snapshot?.metadata?.version || 0);
+          const nextVer = prevVer > 0 ? prevVer + 1 : (processFlowPayload.snapshot.metadata?.version || 1);
 
+          processFlowPayload.snapshot.metadata = processFlowPayload.snapshot.metadata || {};
+          processFlowPayload.snapshot.metadata.version = nextVer;
 
-      await existing.validate(); // triggers recompute
+          existing.processFlow.snapshot = processFlowPayload.snapshot;
+          existing.processFlow.snapshotCreatedAt = new Date();
+          existing.processFlow.snapshotCreatedBy = req.user?.id;
+        }
+      }
+
+      await existing.validate();
       await existing.save();
 
-
       return res.status(200).json({
-        success: true,
-        message: 'Reduction project updated (upsert on create)',
+        success:true,
+        message:'Reduction project updated (upsert on create)',
         data: existing
       });
     }
 
-    // ---- CREATE path (unchanged; we only add the field if present) ----
+    // ============================================================
+    //        CREATE NEW DOCUMENT
+    // ============================================================
     const doc = await Reduction.create({
       clientId,
       createdBy: req.user.id,
@@ -444,58 +510,48 @@ if (processFlowPayload) {
       baselineMethod: baselineMethod || undefined,
       baselineJustification: baselineJustification || '',
       calculationMethodology,
+
       ...(reductionEntryPayload ? { reductionDataEntry: reductionEntryPayload } : {}),
-      m1: calculationMethodology === 'methodology1' ? {
-        ABD: (m1?.ABD || []).map(normalizeUnitItem('B')),
-        APD: (m1?.APD || []).map(normalizeUnitItem('P')),
-        ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
-        bufferPercent: Number(m1?.bufferPercent ?? 0)
-      } : undefined,
+
+      // M1
+      m1: calculationMethodology === 'methodology1'
+        ? {
+            ABD: (m1?.ABD || []).map(normalizeUnitItem('B')),
+            APD: (m1?.APD || []).map(normalizeUnitItem('P')),
+            ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
+            bufferPercent: Number(m1?.bufferPercent ?? 0)
+          }
+        : undefined,
+
+      // M2
       ...(calculationMethodology === 'methodology2'
         ? { m2: normalizeM2FromBody(m2 || {}) }
         : {}),
-            /** -------------------------
-       *  Methodology 3 CREATE PATH
-       * ------------------------- */
-      ...(calculationMethodology === 'methodology3'
-        ? {
-            m3: {
-              projectActivity,
-              buffer: Number(req.body.m3?.buffer ?? 0),
-              baselineEmissions: Array.isArray(req.body.m3?.baselineEmissions)
-                ? req.body.m3.baselineEmissions.map(normalizeM3Item)
-                : [],
-              projectEmissions: Array.isArray(req.body.m3?.projectEmissions)
-                ? req.body.m3.projectEmissions.map(normalizeM3Item)
-                : [],
-              leakageEmissions: Array.isArray(req.body.m3?.leakageEmissions)
-                ? req.body.m3.leakageEmissions.map(normalizeM3Item)
-                : []
-            }
-          }
-        : {}),
-            ...(processFlowPayload ? { processFlow: processFlowPayload } : {}) // ✅ correct source
 
+      // M3  **FIXED**
+      ...(calculationMethodology === 'methodology3'
+        ? { m3: normalizeM3Body(req.body.m3) }
+        : {}),
+
+      ...(processFlowPayload ? { processFlow: processFlowPayload } : {})
     });
 
-    /* ✅ INSERT THIS BLOCK HERE — after create(), before notifications/response */
-try {
-  // Ensure reductionId is present (set in schema pre('validate'))
-  await saveReductionFiles(req, doc);
-  await doc.save(); // persist coverImage/images if any
-} catch (moveErr) {
-  console.warn('⚠ saveReductionFiles(create) warning:', moveErr.message);
-}
-/* ✅ END INSERT */
+    // Save media files (images / cover)
+    try {
+      await saveReductionFiles(req, doc);
+      await doc.save();
+    } catch (moveErr) {
+      console.warn("⚠ saveReductionFiles(create) warning:", moveErr.message);
+    }
 
-      // fire-and-forget notification; don't block the response
-      notifyReductionEvent({
-        actor: req.user,
-        clientId,
-        action: 'created',
-        doc
-      }).catch(() => {});
-      syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
+    // Notifications (async)
+    notifyReductionEvent({
+      actor: req.user,
+      clientId,
+      action: 'created',
+      doc
+    }).catch(() => {});
+    syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
     return res.status(201).json({
       success: true,
@@ -513,16 +569,18 @@ try {
         projectPeriodDays: doc.projectPeriodDays,
         projectPeriodFormatted: doc.projectPeriodFormatted,
         calculationMethodology: doc.calculationMethodology,
-      ...(doc.reductionDataEntry ? { reductionDataEntry: doc.reductionDataEntry } : {}),
-      ...(doc.m1 ? { m1: doc.m1 } : {}),
-      ...(doc.m2 ? { m2: doc.m2 } : {})
+        ...(doc.reductionDataEntry ? { reductionDataEntry: doc.reductionDataEntry } : {}),
+        ...(doc.m1 ? { m1: doc.m1 } : {}),
+        ...(doc.m2 ? { m2: doc.m2 } : {}),
+        ...(doc.m3 ? { m3: doc.m3 } : {})
       }
     });
   } catch (err) {
     console.error('createReduction error:', err);
-    res.status(500).json({ success:false, message:'Failed to create reduction', error: err.message });
+    return res.status(500).json({ success:false, message:'Failed to create reduction', error: err.message });
   }
 };
+
 
 function normalizeUnitItem(prefix) {
   return (it, idx) => ({
@@ -719,11 +777,14 @@ exports.getAllReductions = async (req, res) => {
 
 
 
-/** Update + recalc */
-/** Update + recalc */
+/** ------------------------- */
+/** Update + recalc (FULL M1+M2+M3) */
+/** ------------------------- */
 exports.updateReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
+
+    // ---------------- Permission ----------------
     const perm = await canCreateOrEdit(req.user, clientId);
     if (!perm.ok) {
       return res.status(403).json({ success: false, message: perm.reason });
@@ -731,10 +792,10 @@ exports.updateReduction = async (req, res) => {
 
     const doc = await Reduction.findOne({ clientId, projectId, isDeleted: false });
     if (!doc) {
-      return res.status(404).json({ success: false, message: 'Not found' });
+      return res.status(404).json({ success: false, message: "Not found" });
     }
 
-    // ---------- 1) Unpack body ----------
+    // ---------------- Unpack body ----------------
     const body = req.body || {};
     const {
       projectName,
@@ -752,11 +813,11 @@ exports.updateReduction = async (req, res) => {
       m2
     } = body;
 
-    // ---------- 2) Optional reductionDataEntry (manual / API / IOT) ----------
+    // ---------------- reductionDataEntry ----------------
     let reductionEntryPayload = null;
     const hasEntry =
-      Object.prototype.hasOwnProperty.call(body, 'reductionDataEntry') ||
-      Object.prototype.hasOwnProperty.call(body, 'reductionDateEntry');
+      Object.prototype.hasOwnProperty.call(body, "reductionDataEntry") ||
+      Object.prototype.hasOwnProperty.call(body, "reductionDateEntry");
 
     if (hasEntry) {
       try {
@@ -767,66 +828,63 @@ exports.updateReduction = async (req, res) => {
       }
     }
 
-    // ---------- 3) Optional processFlow payload ----------
+    // ---------------- processFlow ----------------
     let processFlowPayload;
     if (body.processFlow) {
       processFlowPayload = normalizeProcessFlow(body.processFlow, req.user);
     }
 
-    // ---------- 4) Patch basic project fields ----------
-    if (projectName != null)       doc.projectName = projectName;
-    if (projectActivity != null)   doc.projectActivity = projectActivity;
-    if (scope != null)             doc.scope = scope;
-    if (category != null)          doc.category = category;
+    // ---------------- Patch basic fields ----------------
+    if (projectName != null) doc.projectName = projectName;
+    if (projectActivity != null) doc.projectActivity = projectActivity;
+    if (scope != null) doc.scope = scope;
+    if (category != null) doc.category = category;
 
     if (location) {
-      doc.location.latitude  = location.latitude  ?? doc.location.latitude;
+      doc.location.latitude = location.latitude ?? doc.location.latitude;
       doc.location.longitude = location.longitude ?? doc.location.longitude;
-
-      if (Object.prototype.hasOwnProperty.call(location, 'place')) {
-        doc.location.place = location.place ?? doc.location.place;
-      }
-      if (Object.prototype.hasOwnProperty.call(location, 'address')) {
-        doc.location.address = location.address ?? doc.location.address;
-      }
+      if ("place" in location) doc.location.place = location.place ?? doc.location.place;
+      if ("address" in location) doc.location.address = location.address ?? doc.location.address;
     }
 
     if (commissioningDate) doc.commissioningDate = new Date(commissioningDate);
-    if (endDate)           doc.endDate           = new Date(endDate);
-    if (description != null)           doc.description = description;
-    if (baselineMethod != null)        doc.baselineMethod = baselineMethod;
+    if (endDate) doc.endDate = new Date(endDate);
+    if (description != null) doc.description = description;
+    if (baselineMethod != null) doc.baselineMethod = baselineMethod;
     if (baselineJustification != null) doc.baselineJustification = baselineJustification;
+    if (calculationMethodology) doc.calculationMethodology = calculationMethodology;
 
-    if (calculationMethodology) {
-      doc.calculationMethodology = calculationMethodology;
+    // ===================================================================
+    //                     METHODOLOGY-SPECIFIC SECTION
+    // ===================================================================
+
+    // -------------------- M1 --------------------
+    if (doc.calculationMethodology === "methodology1" && m1) {
+      if (Array.isArray(m1.ABD)) doc.m1.ABD = m1.ABD.map(normalizeUnitItem("B"));
+      if (Array.isArray(m1.APD)) doc.m1.APD = m1.APD.map(normalizeUnitItem("P"));
+      if (Array.isArray(m1.ALD)) doc.m1.ALD = m1.ALD.map(normalizeUnitItem("L"));
+      if (m1.bufferPercent != null) doc.m1.bufferPercent = Number(m1.bufferPercent);
     }
 
-    // ---------- 5) Methodology-specific data (M1 / M2) ----------
-
-    // M1 (ABD/APD/ALD + bufferPercent)
-    if (doc.calculationMethodology === 'methodology1' && m1) {
-      if (Array.isArray(m1.ABD)) {
-        doc.m1.ABD = m1.ABD.map(normalizeUnitItem('B'));
-      }
-      if (Array.isArray(m1.APD)) {
-        doc.m1.APD = m1.APD.map(normalizeUnitItem('P'));
-      }
-      if (Array.isArray(m1.ALD)) {
-        doc.m1.ALD = m1.ALD.map(normalizeUnitItem('L'));
-      }
-      if (m1.bufferPercent != null) {
-        doc.m1.bufferPercent = Number(m1.bufferPercent);
-      }
-      // (optional) leave doc.m2 as is; it is ignored when methodology1
-    }
-
-    // M2 (ALD + formulaRef)
-    if (doc.calculationMethodology === 'methodology2' && m2) {
+    // -------------------- M2 --------------------
+    if (doc.calculationMethodology === "methodology2" && m2) {
       doc.m2 = normalizeM2FromBody(m2);
-      // (optional) M1 is kept as historical config; not used when methodology2
     }
 
-    // ---------- 6) reductionDataEntry (input type / endpoint / device) ----------
+    // -------------------- M3 (FULL UPDATE SUPPORT ADDED) --------------------
+    if (doc.calculationMethodology === "methodology3" && body.m3) {
+      // Validate required fields (buffer for Removal)
+      validateM3Input(body);
+
+      // Normalize the entire B/P/L structure + policy
+      doc.m3 = normalizeM3Body(body.m3);
+    }
+
+    // ===================================================================
+    //                     OTHER FIELDS
+    // ===================================================================
+
+    // -------------------- Data Entry Update --------------------
     if (reductionEntryPayload) {
       doc.reductionDataEntry = {
         ...(doc.reductionDataEntry?.toObject?.() ?? {}),
@@ -834,17 +892,13 @@ exports.updateReduction = async (req, res) => {
       };
     }
 
-    // ---------- 7) processFlow (snapshot / mapping / version bump) ----------
+    // -------------------- ProcessFlow Update --------------------
     if (processFlowPayload) {
       if (!doc.processFlow) doc.processFlow = {};
 
-      if (processFlowPayload.mode) {
-        doc.processFlow.mode = processFlowPayload.mode;
-      }
-
-      if (Object.prototype.hasOwnProperty.call(processFlowPayload, 'flowchartId')) {
+      if (processFlowPayload.mode) doc.processFlow.mode = processFlowPayload.mode;
+      if ("flowchartId" in processFlowPayload)
         doc.processFlow.flowchartId = processFlowPayload.flowchartId;
-      }
 
       if (processFlowPayload.mapping) {
         doc.processFlow.mapping = processFlowPayload.mapping;
@@ -855,7 +909,7 @@ exports.updateReduction = async (req, res) => {
         const nextVer =
           prevVer > 0
             ? prevVer + 1
-            : (processFlowPayload.snapshot.metadata?.version || 1);
+            : processFlowPayload.snapshot.metadata?.version || 1;
 
         processFlowPayload.snapshot.metadata =
           processFlowPayload.snapshot.metadata || {};
@@ -867,37 +921,42 @@ exports.updateReduction = async (req, res) => {
       }
     }
 
-    // ---------- 8) Media uploads (coverImage + extra images) ----------
+    // -------------------- Media Uploads --------------------
     try {
       await saveReductionFiles(req, doc);
     } catch (moveErr) {
-      console.warn('⚠ saveReductionFiles(update) warning:', moveErr.message);
+      console.warn("⚠ saveReductionFiles(update) warning:", moveErr.message);
     }
 
-    // ---------- 9) Recalculate + save ----------
-    await doc.validate(); // invokes pre('validate') in model to recompute M1/M2, endpoints, etc.
+    // -------------------- Validate + Save --------------------
+    await doc.validate(); // triggers recompute logic in model
     await doc.save();
 
-    // ---------- 10) Notifications / workflow sync ----------
+    // -------------------- Notifications --------------------
     notifyReductionEvent({
       actor: req.user,
       clientId,
-      action: 'updated',
+      action: "updated",
       doc
     }).catch(() => {});
-
     syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
 
-    return res.status(200).json({ success: true, message: 'Updated', data: doc });
+    // -------------------- Response --------------------
+    return res.status(200).json({
+      success: true,
+      message: "Updated",
+      data: doc
+    });
   } catch (err) {
-    console.error('updateReduction error:', err);
+    console.error("updateReduction error:", err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to update reduction',
+      message: "Failed to update reduction",
       error: err.message
     });
   }
 };
+
 
 
 
