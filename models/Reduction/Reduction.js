@@ -141,6 +141,30 @@ const M3VariableSchema = new mongoose.Schema({
     type: Number,
     default: null             // only used when type === 'constant'
   },
+    remark: { type: String, default: '' },
+  Reference: { type: String, default: '' },
+
+   // 🔥 NEW — Same as M2
+      updatePolicy: { type: String, enum: ["manual", "annual_automatic"], default: "manual" },
+      defaultValue: { type: Number, default: null },
+      lastValue:    { type: Number, default: null },
+      lastUpdatedAt:{ type: Date },
+
+      policy: {
+        isConstant: { type: Boolean, default: true },
+        schedule: {
+          frequency: { type: String, enum: ["none", "monthly", "quarterly", "yearly"], default: "none" },
+          fromDate:  { type: Date, default: null },
+          toDate:    { type: Date, default: null }
+        },
+        history: [
+          {
+            oldValue:   Number,
+            newValue:   Number,
+            updatedAt:  { type: Date, default: Date.now }
+          }
+        ],
+      }
 
 }, { _id: false });
 
@@ -191,7 +215,7 @@ const M3ItemSchema = new mongoose.Schema({
   },
     ssrType: { type: String, enum: ['Sink','Source','Reservoir'], required: true },
   remark: { type: String, default: '' },
-  Reference: { type: String, default: '' }
+
 }, { _id: false });
 
 /**
