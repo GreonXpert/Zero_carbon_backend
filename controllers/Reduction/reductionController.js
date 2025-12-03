@@ -626,24 +626,83 @@ exports.getReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
-    // Client existence + view permission (same as list)
-    const client = await Client.findOne({ clientId }).select("_id clientId");
-    if (!client) return res.status(404).json({ success:false, message:'Client not found' });
-
+    // -------- Permission Check --------
     const access = await canAccessReductions(req.user, clientId);
     if (!access.allowed) {
-      return res.status(403).json({ success:false, message:'Permission denied', reason: access.reason });
+      return res.status(403).json({
+        success: false,
+        message: "Permission denied",
+        reason: access.reason,
+      });
     }
 
-    const doc = await Reduction.findOne({ clientId, projectId, isDeleted:false });
-    if (!doc) return res.status(404).json({ success:false, message:'Not found' });
+    // -------- Fetch Project --------
+    const doc = await Reduction.findOne(
+      { clientId, projectId, isDeleted: false }
+    )
+      .lean();  // VERY IMPORTANT: lean() ensures clean JSON object
 
-    res.status(200).json({ success:true, data: doc });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: "Reduction project not found",
+      });
+    }
+
+    // --------------------------------------------------------------
+    //  FIX: Guarantee methodology3 object is always returned
+    // --------------------------------------------------------------
+    if (doc.calculationMethodology === "methodology3") {
+      // Ensure empty arrays exist if missing
+      doc.methodology3 = doc.methodology3 || {};
+
+      doc.methodology3.baseline = doc.methodology3.baseline || [];
+      doc.methodology3.project  = doc.methodology3.project  || [];
+      doc.methodology3.leakage  = doc.methodology3.leakage  || [];
+
+      doc.methodology3.totals = doc.methodology3.totals || {
+        BE_total: 0,
+        PE_total: 0,
+        LE_total: 0,
+        buffer: 0,
+        final: 0,
+      };
+    }
+
+    // --------------------------------------------------------------
+    //  FIX: Ensure M2 return shape is clean
+    // --------------------------------------------------------------
+    if (doc.calculationMethodology === "methodology2") {
+      if (!doc.m2) doc.m2 = {};
+      if (!doc.m2.formulaRef) doc.m2.formulaRef = {};
+    }
+
+    // --------------------------------------------------------------
+    //  FIX: Ensure M1 return values exist
+    // --------------------------------------------------------------
+    if (doc.calculationMethodology === "methodology1") {
+      if (!doc.m1) doc.m1 = {};
+      doc.m1.emissionReductionRate = doc.m1.emissionReductionRate || 0;
+    }
+
+    // --------------------------------------------------------------
+    //  SEND BACK CLEAN RESPONSE
+    // --------------------------------------------------------------
+    return res.status(200).json({
+      success: true,
+      data: doc,
+    });
+
   } catch (err) {
-    console.error('getReduction error:', err);
-    res.status(500).json({ success:false, message:'Failed to fetch reduction', error: err.message });
+    console.error("getReduction error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch reduction",
+      error: err.message,
+    });
   }
 };
+
 
 
 // controllers/Reduction/reductionController.js
@@ -654,9 +713,9 @@ exports.getAllReductions = async (req, res) => {
       page = 1,
       limit = 20,
       clientId: clientIdFilter,
-      q,                         // optional text query (projectName)
-      includeDeleted = 'false',  // set to 'true' to include soft-deleted
-      sort = '-createdAt'        // default newest first
+      q,                         // quick text filter
+      includeDeleted = 'false',
+      sort = '-createdAt'
     } = req.query;
 
     const role = req.user?.userType;
@@ -666,30 +725,35 @@ exports.getAllReductions = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // ---- Base filter (exclude soft-deleted by default) ----
+    // =====================================================
+    // BASE FILTER
+    // =====================================================
     const filter = {};
+
     if (includeDeleted !== 'true') {
-      filter.$or = [{ isDeleted: { $exists: false } }, { isDeleted: false }];
+      filter.$or = [
+        { isDeleted: { $exists: false } },
+        { isDeleted: false }
+      ];
     }
 
-    // quick text search on projectName (case-insensitive)
     if (q && String(q).trim()) {
       filter.projectName = { $regex: new RegExp(String(q).trim(), 'i') };
     }
 
-    // optional hard client filter (allowed for super_admin & consultant roles; ignored otherwise)
-    const applyClientIdFilter = (cid) => {
+    const applyClientFilter = (cid) => {
       if (cid && String(cid).trim()) filter.clientId = String(cid).trim();
     };
 
-    // ---- Role-specific scoping ----
+    // =====================================================
+    // ROLE-BASED ACCESS FILTERING
+    // =====================================================
+
     if (role === 'super_admin') {
-      // full access
-      applyClientIdFilter(clientIdFilter);
+      applyClientFilter(clientIdFilter);
     }
 
     else if (role === 'consultant_admin') {
-      // Created by admin OR by any consultant under this admin
       const teamConsultants = await User.find({
         userType: 'consultant',
         consultantAdminId: userId,
@@ -698,13 +762,10 @@ exports.getAllReductions = async (req, res) => {
 
       const ids = [userId, ...teamConsultants.map(u => u._id)];
       filter.$and = (filter.$and || []).concat([{ createdBy: { $in: ids } }]);
-
-      applyClientIdFilter(clientIdFilter);
+      applyClientFilter(clientIdFilter);
     }
 
     else if (role === 'consultant') {
-      // (A) reductions created by this consultant
-      // (B) reductions for clients assigned to this consultant
       const myClients = await Client.find({
         $or: [
           { 'leadInfo.assignedConsultantId': userId },
@@ -718,8 +779,7 @@ exports.getAllReductions = async (req, res) => {
       if (myClientIds.length) orList.push({ clientId: { $in: myClientIds } });
 
       filter.$and = (filter.$and || []).concat([{ $or: orList }]);
-
-      applyClientIdFilter(clientIdFilter);
+      applyClientFilter(clientIdFilter);
     }
 
     else if (
@@ -729,9 +789,11 @@ exports.getAllReductions = async (req, res) => {
       role === 'viewer' ||
       role === 'auditor'
     ) {
-      // Restrict strictly to their organization
       if (!req.user.clientId) {
-        return res.status(403).json({ success: false, message: 'No client scope for this user' });
+        return res.status(403).json({
+          success: false,
+          message: 'No client scope for this user'
+        });
       }
       filter.clientId = req.user.clientId;
     }
@@ -740,38 +802,90 @@ exports.getAllReductions = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Forbidden role' });
     }
 
-    // ---- Query & pagination ----
-    const pageNum = Math.max(1, Number(page));
+    // =====================================================
+    // PAGINATION
+    // =====================================================
+    const pageNum  = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit)));
 
     const query = Reduction.find(filter)
       .sort(sort)
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .populate('createdBy', 'userName userType email') // nice-to-have context
+      .populate('createdBy', 'userName userType email')
       .lean();
 
     const [items, total] = await Promise.all([
       query,
-      Reduction.countDocuments(filter)
+      Reduction.countDocuments(filter),
     ]);
 
+    // =====================================================
+    //  FIX: FORMAT METHODOLOGY 3 FOR ALL ITEMS
+    // =====================================================
+    const cleanedItems = items.map(r => {
+      // M3 ALWAYS must have clean structure
+      if (r.calculationMethodology === "methodology3") {
+        r.methodology3 = r.methodology3 || {};
+
+        r.methodology3.baseline = Array.isArray(r.methodology3.baseline)
+          ? r.methodology3.baseline
+          : [];
+
+        r.methodology3.project = Array.isArray(r.methodology3.project)
+          ? r.methodology3.project
+          : [];
+
+        r.methodology3.leakage = Array.isArray(r.methodology3.leakage)
+          ? r.methodology3.leakage
+          : [];
+
+        r.methodology3.totals = r.methodology3.totals || {
+          BE_total: 0,
+          PE_total: 0,
+          LE_total: 0,
+          buffer: 0,
+          final: 0
+        };
+      }
+
+      // M2 cleanup
+      if (r.calculationMethodology === "methodology2") {
+        r.m2 = r.m2 || {};
+        r.m2.formulaRef = r.m2.formulaRef || {};
+      }
+
+      // M1 cleanup
+      if (r.calculationMethodology === "methodology1") {
+        r.m1 = r.m1 || {};
+        r.m1.emissionReductionRate =
+          r.m1.emissionReductionRate ?? 0;
+      }
+
+      return r;
+    });
+
+    // =====================================================
+    // SEND RESULT
+    // =====================================================
     return res.status(200).json({
       success: true,
       total,
       page: pageNum,
       limit: limitNum,
-      data: items
+      data: cleanedItems,
     });
+
   } catch (err) {
-    console.error('getAllReductions error:', err);
+    console.error("getAllReductions error:", err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch reductions',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      message: "Failed to fetch reductions",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined
     });
   }
 };
+
 
 
 

@@ -103,6 +103,8 @@ notificationSchema.index({ scheduledPublishDate: 1, status: 1 });
 notificationSchema.index({ expiryDate: 1, status: 1 });
 notificationSchema.index({ "readBy.user": 1 });
 notificationSchema.index({ isDeleted: 1, status: 1 });
+notificationSchema.index({ targetClients: 1, status: 1, createdAt: -1 });
+notificationSchema.index({ 'readBy.user': 1 });
 
 // Virtual for checking if notification is active
 notificationSchema.virtual('isActive').get(function() {

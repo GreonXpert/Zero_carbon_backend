@@ -353,6 +353,9 @@ DataEntrySchema.index({ validationStatus: 1 });
 DataEntrySchema.index({ approvalStatus: 1 });
 DataEntrySchema.index({ isSummary: 1 });
 DataEntrySchema.index({ 'summaryPeriod.month': 1, 'summaryPeriod.year': 1 });
+DataEntrySchema.index({ clientId: 1, nodeId: 1, scopeIdentifier: 1, timestamp: -1 });
+DataEntrySchema.index({ clientId: 1, processingStatus: 1, timestamp: -1 });
+DataEntrySchema.index({ clientId: 1, 'summaryPeriod.year': -1, 'summaryPeriod.month': -1 });
 
 
 // Compound index for efficient querying

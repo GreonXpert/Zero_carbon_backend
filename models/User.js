@@ -148,5 +148,9 @@ userSchema.index({ userType: 1 });
 userSchema.index({ createdBy: 1 });
 userSchema.index({ email: 1 });
 userSchema.index({ sandbox: 1 });
+userSchema.index({ clientId: 1, userType: 1, isActive: 1 });
+userSchema.index({ consultantAdminId: 1, isActive: 1 });
+userSchema.index({ email: 1 }, { unique: true });
+
 
 module.exports = mongoose.model("User", userSchema);
