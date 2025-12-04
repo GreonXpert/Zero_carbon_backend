@@ -77,7 +77,7 @@ NetReductionEntrySchema.add({
   variables:            { type: mongoose.Schema.Types.Mixed, default: {} }, // realtime payload used for evaluation
   netReductionInFormula:{ type: Number, default: 0 },                         // result before subtracting LE
 
-   // ✅ For Methodology 3 – store totals & breakdown
+  // ✅ For Methodology 3 – store totals & breakdown
   m3: {
     // Totals (without and with buffer / “uncertainty”)
     BE_total:               { type: Number, default: 0 },  // Sum of all Bi
@@ -88,31 +88,41 @@ NetReductionEntrySchema.add({
     netWithUncertainty:     { type: Number, default: 0 },  // (BE_total - PE_total - LE_total) after buffer%
     bufferPercent:          { type: Number, default: 0 },  // snapshot from Reduction.m3.buffer
 
-    // Per-item breakdown so you see B1/B2/P1/... with their IDs and labels
+    // 🔹 Project-level cumulative totals
+    cumulativeBE: { type: Number, default: 0 },
+    cumulativePE: { type: Number, default: 0 },
+    cumulativeLE: { type: Number, default: 0 },
+    cumulativeNetWithoutUncertainty: { type: Number, default: 0 },
+    cumulativeNetWithUncertainty: { type: Number, default: 0 },
+
+    // 🔹 Per-item breakdown with per-item cumulativeValue
     breakdown: {
       baseline: [{
         id:        { type: String },
         label:     { type: String },
-        value:     { type: Number, default: 0 },  // evaluated result for Bi
-        variables: { type: mongoose.Schema.Types.Mixed, default: {} } // bag used (A, EF, etc.)
+        value:     { type: Number, default: 0 },  // evaluated result for Bi in THIS entry
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} }, // bag used (A, EF, etc.)
+        // ✅ cumulative value of this Bi across all entries up to this one
+        cumulativeValue: { type: Number, default: 0 }
       }],
       project: [{
         id:        { type: String },
         label:     { type: String },
         value:     { type: Number, default: 0 },
-        variables: { type: mongoose.Schema.Types.Mixed, default: {} }
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} },
+        cumulativeValue: { type: Number, default: 0 }
       }],
       leakage: [{
         id:        { type: String },
         label:     { type: String },
         value:     { type: Number, default: 0 },
-        variables: { type: mongoose.Schema.Types.Mixed, default: {} }
+        variables: { type: mongoose.Schema.Types.Mixed, default: {} },
+        cumulativeValue: { type: Number, default: 0 }
       }]
     }
   }
-   
-
 });
+
 
 NetReductionEntrySchema.pre('save', async function(next) {
   try {

@@ -132,17 +132,28 @@ const M3VariableSchema = new mongoose.Schema({
     required: true,           // variable name is mandatory
     trim: true
   },
-  type: {
-    type: String,
-    enum: ['constant', 'manual'],
-    required: true
-  },
+ type: {
+  type: String,
+  enum: ["manual", "constant", "internal"],
+  default: "manual"
+},
+
   value: {
     type: Number,
     default: null             // only used when type === 'constant'
   },
     remark: { type: String, default: '' },
   Reference: { type: String, default: '' },
+  internalSources: {
+  type: [String],     // store ["B1", "B3", "P1"]
+  default: []
+},
+
+// auto-filled during evaluation
+computedInternalValue: {
+  type: Number,
+  default: null
+},
 
    // 🔥 NEW — Same as M2
       updatePolicy: { type: String, enum: ["manual", "annual_automatic"], default: "manual" },

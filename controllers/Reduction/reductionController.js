@@ -88,85 +88,6 @@ function normalizeReductionDataEntry(raw = {}) {
 
 
 
-function normalizeM2FromBody(raw = {}) {
-  const out = {};
-
-  // ALD (same shape as M1 items)
-  if (Array.isArray(raw.ALD)) {
-    out.ALD = raw.ALD.map(normalizeUnitItem('L'));
-  }
-
-  // accept { m2: { formulaRef:{...} } } or flattened { m2:{ formulaId, version, ... } }
-  const ref = raw.formulaRef || {};
-  const formulaId = ref.formulaId || raw.formulaId;
-  const version   = ref.version != null ? Number(ref.version)
-                    : (raw.version != null ? Number(raw.version) : undefined);
-
-  // ---- (A) variableKinds: { U:'frozen', fNRB:'realtime', ... }
-  const incomingKinds = ref.variableKinds || raw.variableKinds || {};
-  // normalize to plain object with safe values ('frozen'|'realtime'|'manual')
-  const kindsObj = {};
-  for (const [k, v] of Object.entries(incomingKinds)) {
-    const role = String(v || '').toLowerCase();
-    if (role) {
-      // only allow expected roles; model will re-check as well
-      kindsObj[k] = (role === 'frozen' || role === 'realtime' || role === 'manual')
-        ? role
-        : role; // keep as-is; model throws if invalid
-    }
-  }
-
-  // ---- (B) frozen values: allow { variables:{ A:{value,..}, ... } } or { frozenValues:{ A: 123, ... } }
-  const incomingVars = ref.variables || raw.frozenValues || {};
-const varsObj = {};
-for (const [k, v] of Object.entries(incomingVars)) {
-  // support both { value: 1.23, policy:{...}, history:[...]} and plain number
-  const baseVal = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
-  const pol     = (v && typeof v === 'object' && v.updatePolicy) ? v.updatePolicy : 'manual';
-  const ts      = (v && typeof v === 'object' && v.lastUpdatedAt) ? new Date(v.lastUpdatedAt) : new Date();
-
-  const policy  = (v && typeof v === 'object' && v.policy && typeof v.policy === 'object')
-    ? {
-        isConstant: v.policy.isConstant !== false, // default true
-        schedule: {
-          frequency: v.policy.schedule?.frequency || 'monthly',
-          ...(v.policy.schedule?.fromDate ? { fromDate: new Date(v.policy.schedule.fromDate) } : {}),
-          ...(v.policy.schedule?.toDate   ? { toDate:   new Date(v.policy.schedule.toDate)   } : {})
-        }
-      }
-    : { isConstant: true, schedule: { frequency: 'monthly' } };
-
-  const history = Array.isArray(v?.history)
-    ? v.history.map(h => ({
-        value: Number(h.value),
-        from:  new Date(h.from),
-        ...(h.to ? { to: new Date(h.to) } : {}),
-        updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
-      }))
-    : undefined;
-      const varRemark = (v && typeof v === 'object' && typeof v.remark === 'string') ? v.remark : '';
-
-  varsObj[k] = {
-    value: Number(baseVal ?? 0),
-    updatePolicy: pol,
-    lastUpdatedAt: ts,
-    policy,
-    ...(history ? { history } : {}),
-    remark: varRemark
-  };
-}
-const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
-  if (formulaId) {
-    out.formulaRef = {
-      formulaId,
-      ...(version != null ? { version } : {}),
-      ...(Object.keys(kindsObj).length ? { variableKinds: kindsObj } : {}),
-      ...(Object.keys(varsObj).length   ? { variables: varsObj }     : {}),
-      ...(refRemark ? { remark: refRemark } : {})
-    };
-  }
-  return out;
-}
 
 
 /** ------------------------- */
@@ -178,44 +99,57 @@ const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
 /** ----------------------------- */
 
 // Normalize one variable of B/P/L with policy
+// Normalize one variable of B/P/L with policy (supports manual | constant | internal)
 function normalizeM3VariableFull(v = {}) {
   const name = String(v.name || '').trim();
-  const type = v.type === 'constant' ? 'constant' : 'manual';
+
+  // Accept array from form-data: type = ["internal"]
+  let rawType = Array.isArray(v.type) ? v.type[0] : v.type;
+
+  let type = String(rawType || '').toLowerCase().trim();
+
+  // If FE missed type or sent empty string → DO NOT default to manual.
+  // Instead keep undefined so we can detect error.
+  if (!type) type = v.type; // preserve original if FE sent 'internal'
+
+  // Now validate allowed types
+  if (!['manual', 'constant', 'internal'].includes(type)) {
+    type = 'manual'; // default fallback
+  }
+
+  // Only constants store value
   const value = type === 'constant' ? Number(v.value ?? null) : null;
-
-  // Policy section (same structure like m2)
-  const updatePolicy = v.updatePolicy || 'manual';
-  const lastUpdatedAt = v.lastUpdatedAt ? new Date(v.lastUpdatedAt) : new Date();
-  const defaultValue = v.defaultValue ?? null;
-  const lastValue = v.lastValue ?? null;
-
-  const policy = {
-    isConstant: v.policy?.isConstant !== false,
-    schedule: {
-      frequency: v.policy?.schedule?.frequency || 'none',
-      fromDate: v.policy?.schedule?.fromDate ? new Date(v.policy.schedule.fromDate) : null,
-      toDate: v.policy?.schedule?.toDate ? new Date(v.policy.schedule.toDate) : null
-    },
-    history: Array.isArray(v.policy?.history)
-      ? v.policy.history.map(h => ({
-          oldValue: Number(h.oldValue),
-          newValue: Number(h.newValue),
-          updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
-        }))
-      : []
-  };
 
   return {
     name,
-    type,
+    type,                   // ✔ internal now preserved
     value,
-    updatePolicy,
-    defaultValue,
-    lastValue,
-    lastUpdatedAt,
-    policy
+    updatePolicy: v.updatePolicy || 'manual',
+    defaultValue: v.defaultValue ?? null,
+    lastValue: v.lastValue ?? null,
+    lastUpdatedAt: v.lastUpdatedAt ? new Date(v.lastUpdatedAt) : new Date(),
+    policy: {
+      isConstant: v.policy?.isConstant !== false,
+      schedule: {
+        frequency: v.policy?.schedule?.frequency || 'none',
+        fromDate: v.policy?.schedule?.fromDate ? new Date(v.policy.schedule.fromDate) : null,
+        toDate: v.policy?.schedule?.toDate ? new Date(v.policy.schedule.toDate) : null
+      },
+      history: Array.isArray(v.policy?.history)
+        ? v.policy.history.map(h => ({
+            oldValue: Number(h.oldValue),
+            newValue: Number(h.newValue),
+            updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
+          }))
+        : []
+    },
+    internalSources: Array.isArray(v.internalSources)
+      ? v.internalSources
+      : [],
+    computedInternalValue: null
   };
 }
+
 
 /** Normalize one B/P/L item */
 function normalizeM3ItemFull(item = {}) {
@@ -274,7 +208,47 @@ function validateM3Input(body) {
   }
 }
 
+async function computeInternalValue(item, reductionDoc) {
+  let sum = 0;
 
+  for (const ref of (item.internalSources || [])) {
+    // ref examples: "B1", "B2", "P1", "P3"
+    const type = ref.startsWith("B") ? "baselineEmissions" :
+                 ref.startsWith("P") ? "projectEmissions" :
+                 null;
+
+    if (!type) continue;
+
+    const id = ref;
+    const arr = reductionDoc.m3[type] || [];
+
+    const found = arr.find(x => x.id === id);
+    if (!found) continue;
+
+    // evaluate found formula
+    const formula = await ReductionFormula.findById(found.formulaId).lean();
+    if (!formula) continue;
+
+    // Build variables bag for that B/P item
+    let bag = {};
+    for (const v of (found.variables || [])) {
+      if (v.type === "constant") {
+        bag[v.name] = Number(v.value);
+      }
+      if (v.type === "manual") {
+        // manual is provided in net reduction entry
+        bag[v.name] = Number(item.variables?.find(m => m.name === v.name)?.value || 0);
+      }
+    }
+
+    const parser = Parser.parse(formula.expression);
+    const val = parser.evaluate(bag);
+
+    sum += Number(val || 0);
+  }
+
+  return sum;
+}
 function cleanString(x) { return (typeof x === 'string') ? x.trim() : x; }
 
 function normalizeProcessFlow(raw = {}, user) {
