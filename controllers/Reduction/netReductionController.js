@@ -274,8 +274,11 @@ const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
 const formulasById = {};
 formulas.forEach(f => formulasById[f._id.toString()] = f);
 
+
+
+
 // 3. evaluate correctly
-const result = evaluateM3(ctx.doc, formulasById, entry);
+const result = await evaluateM3(ctx.doc, formulasById, entry);
 
     const saved = await NetReductionEntry.create({
       clientId,
@@ -373,6 +376,8 @@ function evaluateM2(red, formula, incomingVars) {
   return { netInFormula, LE, finalNet };
 }
 
+
+
 // === M3 helper: evaluate B/P/L groups using formulas & variable config =================
 
 /**
@@ -381,112 +386,267 @@ function evaluateM2(red, formula, incomingVars) {
  * - formula: ReductionFormula document (expression + variables metadata)
  * - entryPayload: object like { B1: { A: 100 }, ... }
  */
-function evaluateM3Item(item, formula, entryPayload) {
-  if (!formula || !formula.expression) {
-    throw new Error(`Formula not found or missing expression for item ${item.id}`);
-  }
+/**
+ * Evaluate a single M3 item (B1/P1/L1)
+ * Supports: constant, manual, internal (auto-sum)
+ */
+/**
+ * Evaluate a single M3 item (B1 / P1 / L1)
+ */
+/**
+ * Evaluate a single M3 item (B1 / P1 / L1)
+ * FIXED VERSION → no "entry is not defined", no undefined groupTotals
+ */
+/**
+ * Evaluate a single M3 emission component (B1 / P1 / L1 / etc.)
+ *
+ * Supports:
+ *  - manual variables (value entered per entry)
+ *  - constant variables
+ *  - internal variables → auto-sum from Bn / Pn / Ln totals
+ *
+ * PARAMS:
+ *   item        = { id, formulaExpression, variables[] }
+ *   formula     = Formula document
+ *   entryPayload = { B1:{A:100}, P1:{A:80}, ... }
+ *   groupTotals  = { B1:250, P1:96, ... }
+ *
+ * RETURNS:
+ *   { id, label, value, variables }
+ */
+async function evaluateM3Item(item, entry, groupTotals, Formula) {
 
-  const parser = new Parser();
-  const expr = parser.parse(formula.expression);
+  const computedVars = {};
+  const formulaBag = {};
 
-  // Build variable bag:
-  //  - constant → from item.variables[].value
-  //  - manual   → from entryPayload[item.id][varName]
-  const bag = {};
-  const varsConfig = item.variables || [];
-  const entryForItem = (entryPayload && entryPayload[item.id]) || {};
+  for (const v of item.variables) {
+    const varName = v.name;
+    const type = v.type;
 
-  for (const v of varsConfig) {
-    const name = v.name;
+    // constant
+    if (type === "constant") {
+      const num = Number(v.value || 0);
+      computedVars[varName] = num;
+      formulaBag[varName] = num;
+      continue;
+    }
 
-    if (v.type === 'constant') {
-      // constant value is stored in Reduction.m3 config
-      if (v.value == null || !isFinite(v.value)) {
-        throw new Error(`Constant variable '${name}' for ${item.id} is missing or not numeric`);
+    // manual
+    if (type === "manual") {
+      if (entry?.[varName] == null) {
+        throw new Error(`Manual variable '${varName}' missing for ${item.id}`);
       }
-      bag[name] = Number(v.value);
-    } else if (v.type === 'manual') {
-      const raw = entryForItem[name];
-      if (raw == null || raw === '') {
-        throw new Error(`Manual variable '${name}' for ${item.id} is missing in the entry payload`);
+      const num = Number(entry[varName]);
+      computedVars[varName] = num;
+      formulaBag[varName] = num;
+      continue;
+    }
+
+    // internal → use cumulative totals
+    if (type === "internal") {
+      let sum = 0;
+      for (const ref of v.internalSources || []) {
+        sum += Number(groupTotals.cumulative[ref] || 0);
       }
-      bag[name] = Number(raw);
-    } else {
-      throw new Error(`Unsupported variable type '${v.type}' for ${item.id}.${name}`);
+      computedVars[varName] = sum;
+      formulaBag[varName] = sum;
+      continue;
     }
   }
 
-  // Ensure all formula symbols are present
-  const symbols = expr.variables();
-  for (const s of symbols) {
-    if (!(s in bag)) {
-      throw new Error(
-        `Missing variable '${s}' for item ${item.id}. ` +
-        `Make sure it's configured in Reduction.m3.variables and/or provided in entry payload.`
-      );
-    }
-  }
-
-  const value = round6(expr.evaluate(bag)); // evaluate and round like other places
+  const formulaDoc = await Formula.findById(item.formulaId).lean();
+  const parser = Parser.parse(formulaDoc.expression);
+  const value = Number(parser.evaluate(formulaBag) || 0);
 
   return {
     id: item.id,
     label: item.label,
+    formulaExpression: formulaDoc.expression,
     value,
-    variables: bag
+    variables: computedVars
   };
 }
 
-function evaluateM3(reductionDoc, formulasById, entryPayload = {}) {
-  const m3 = reductionDoc.m3 || {};
 
-  const baselineItems = m3.baselineEmissions || [];
-  const projectItems = m3.projectEmissions || [];
-  const leakageItems = m3.leakageEmissions || [];
 
-  const baselineBreakdown = [];
-  const projectBreakdown = [];
-  const leakageBreakdown = [];
 
-  let BE_total = 0;
-  let PE_total = 0;
-  let LE_total = 0;
 
-  function processGroup(items, breakdownArr) {
-    let total = 0;
+/**
+ * INTERNAL VARIABLE AUTO-SUM
+ * internalSources example:
+ *   ["B1","B3","P2"]
+ *
+ * Steps:
+ *   1. Fetch B/P items from reductionDoc
+ *   2. Evaluate formula for each referenced B/P item
+ *   3. Sum all values
+ */
+async function computeInternalValueForM3Variable(v, reductionDoc, entryPayload) {
+  let sum = 0;
 
-    for (const item of items) {
-      const fId = item.formulaId.toString();
-      const formula = formulasById[fId];
-      const result = evaluateM3Item(item, formula, entryPayload);
-      breakdownArr.push(result);
-      total += result.value;
+  for (const ref of v.internalSources || []) {
+    const isBaseline = ref.startsWith("B");
+    const isProject = ref.startsWith("P");
+
+    const group = isBaseline ? "baselineEmissions" :
+                  isProject  ? "projectEmissions" :
+                               null;
+
+    if (!group) continue;
+
+    const arr = reductionDoc.m3[group] || [];
+    const target = arr.find(x => x.id === ref);
+    if (!target) continue;
+
+    const formula = await ReductionFormula.findById(target.formulaId).lean();
+    if (!formula) continue;
+
+    const parser = new Parser();
+    const expr = parser.parse(formula.expression);
+
+    const bag = {};
+    const entry = entryPayload[ref] || {};
+
+    for (const tv of (target.variables || [])) {
+      if (tv.type === "constant") bag[tv.name] = Number(tv.value);
+      if (tv.type === "manual")  bag[tv.name] = Number(entry[tv.name] || 0);
     }
 
-    return round6(total);
+    const value = Number(expr.evaluate(bag) || 0);
+    sum += value;
   }
 
-  BE_total = processGroup(baselineItems, baselineBreakdown);
-  PE_total = processGroup(projectItems, projectBreakdown);
-  LE_total = processGroup(leakageItems, leakageBreakdown);
+  return round6(sum);
+}
 
-  const rawNet = BE_total - PE_total - LE_total;
-  const bufferPercent = Number(m3.buffer || 0);
+function normalizeToFormatB(payload, reductionDoc) {
+  const out = { baseline: [], project: [], leakage: [] };
+
+  const baseline = reductionDoc.m3.baselineEmissions || [];
+  const project = reductionDoc.m3.projectEmissions || [];
+  const leakage = reductionDoc.m3.leakageEmissions || [];
+
+  baseline.forEach(it => {
+    out.baseline.push({
+      id: it.id,
+      vars: payload[it.id] || {}
+    });
+  });
+
+  project.forEach(it => {
+    out.project.push({
+      id: it.id,
+      vars: payload[it.id] || {}
+    });
+  });
+
+  leakage.forEach(it => {
+    out.leakage.push({
+      id: it.id,
+      vars: payload[it.id] || {}
+    });
+  });
+
+  return out;
+}
+
+async function evaluateM3(reductionDoc, formulasById, entryPayload) {
+  const m3 = reductionDoc.m3 || {};
+
+  const baseline = m3.baselineEmissions || [];
+  const project  = m3.projectEmissions  || [];
+  const leakage  = m3.leakageEmissions  || [];
+
+  let BE = 0, PE = 0, LE = 0;
+
+  const breakdownBaseline = [];
+  const breakdownProject  = [];
+  const breakdownLeakage  = [];
+
+  // Track per-item current + cumulative totals *within this entry*
+  // (cross-entry cumulatives will be handled in the controller)
+  const groupTotals = {
+    current:   {}, // e.g. { B1: 250, P1: 96 }
+    cumulative: {} // e.g. { B1: 250, B2: 400, P1: 96, ... } for this entry only
+  };
+
+  async function process(items, arr) {
+    let sum = 0;
+
+    for (const item of items) {
+      const varsForItem = entryPayload[item.id] || {};
+
+      const result = await evaluateM3Item(
+        item,
+        varsForItem,
+        groupTotals,
+        ReductionFormula
+      );
+
+      arr.push(result);
+      sum += result.value;
+
+      // store latest single-entry value
+      groupTotals.current[item.id] = result.value;
+
+      // maintain per-item cumulative (for internal variables inside THIS entry)
+      const prevVal = Number(groupTotals.cumulative[item.id] || 0);
+      groupTotals.cumulative[item.id] = round6(prevVal + Number(result.value || 0));
+    }
+
+    return round6(sum);
+  }
+
+  BE = await process(baseline, breakdownBaseline);
+  PE = await process(project,  breakdownProject);
+  LE = await process(leakage,  breakdownLeakage);
+
+  const raw    = BE - PE - LE;
+  const buffer = Number(m3.buffer || 0);
+
+  const netWithout = round6(raw);
+  const netWith    = round6(raw * (1 - buffer / 100));
+
+  // For *this* entry, we can still derive “local” cumulatives by summing
+  // the per-item cumulative map keyed by IDs.
+  const cumulativeBE = round6(
+    baseline.reduce((acc, it) => acc + Number(groupTotals.cumulative[it.id] || 0), 0)
+  );
+  const cumulativePE = round6(
+    project.reduce((acc, it) => acc + Number(groupTotals.cumulative[it.id] || 0), 0)
+  );
+  const cumulativeLE = round6(
+    leakage.reduce((acc, it) => acc + Number(groupTotals.cumulative[it.id] || 0), 0)
+  );
 
   return {
-    BE_total,
-    PE_total,
-    LE_total,
-    bufferPercent,
-    netWithoutUncertainty: round6(rawNet),
-    netWithUncertainty: round6(rawNet * (1 - bufferPercent / 100)),
+    BE_total: BE,
+    PE_total: PE,
+    LE_total: LE,
+    bufferPercent: buffer,
+    netWithoutUncertainty: netWithout,
+    netWithUncertainty: netWith,
+
+    // “per-entry” cumulatives – will be rolled up across entries in controller
+    cumulativeBE,
+    cumulativePE,
+    cumulativeLE,
+
+    // placeholders – controller will fill cross-entry cumulatives
+    cumulativeNetWithoutUncertainty: 0,
+    cumulativeNetWithUncertainty: 0,
+
     breakdown: {
-      baseline: baselineBreakdown,
-      project: projectBreakdown,
-      leakage: leakageBreakdown,
-    },
+      baseline: breakdownBaseline,
+      project:  breakdownProject,
+      leakage:  breakdownLeakage
+    }
   };
 }
+
+
+
+
 
   function parseDateTimeOrNowIST(rawDate, rawTime) {
     // Accept either provided or default IST now; enforce "DD/MM/YYYY" and "HH:mm"
@@ -518,6 +678,51 @@ function evaluateM3(reductionDoc, formulasById, entryPayload = {}) {
     throw new Error('Selected methodology not supported yet for net reduction');
   }
 
+
+  // 🔹 Build per-item cumulative for baseline / project / leakage
+function buildM3BreakdownWithCumulative(prevM3, currentResult) {
+  const prevBaseline = prevM3?.breakdown?.baseline || [];
+  const prevProject  = prevM3?.breakdown?.project  || [];
+  const prevLeakage  = prevM3?.breakdown?.leakage  || [];
+
+  const prevBMap = {};
+  const prevPMap = {};
+  const prevLMap = {};
+
+  // previous cumulative per ID (fallback to previous value if no cumulativeValue yet)
+  for (const it of prevBaseline) {
+    if (!it.id) continue;
+    prevBMap[it.id] = Number(it.cumulativeValue ?? it.value ?? 0);
+  }
+  for (const it of prevProject) {
+    if (!it.id) continue;
+    prevPMap[it.id] = Number(it.cumulativeValue ?? it.value ?? 0);
+  }
+  for (const it of prevLeakage) {
+    if (!it.id) continue;
+    prevLMap[it.id] = Number(it.cumulativeValue ?? it.value ?? 0);
+  }
+
+  const withCum = (currArr, prevMap) =>
+    (currArr || []).map(it => {
+      const currVal = Number(it.value || 0);
+      const prevCum = Number(prevMap[it.id] || 0);
+      return {
+        ...it,
+        cumulativeValue: round6(prevCum + currVal)
+      };
+    });
+
+  return {
+    baseline: withCum(currentResult.breakdown.baseline, prevBMap),
+    project:  withCum(currentResult.breakdown.project,  prevPMap),
+    leakage:  withCum(currentResult.breakdown.leakage,  prevLMap)
+  };
+}
+
+
+
+
   /**
  * Evaluate full Methodology 3 for a Reduction document:
  *  - sums BE_total, PE_total, LE_total
@@ -536,73 +741,6 @@ function evaluateM3(reductionDoc, formulasById, entryPayload = {}) {
  *     L2: { A: 20 }
  *   }
  */
-function evaluateM3(reductionDoc, formulasById, entryPayload = {}) {
-  const m3 = reductionDoc.m3 || {};
-
-  const baselineItems = m3.baselineEmissions || [];
-  const projectItems  = m3.projectEmissions  || [];
-  const leakageItems  = m3.leakageEmissions  || [];
-
-  const baselineBreakdown = [];
-  const projectBreakdown  = [];
-  const leakageBreakdown  = [];
-
-  let BE_total = 0;
-  let PE_total = 0;
-  let LE_total = 0;
-
-  // Helper to process a group
-  function processGroup(items, breakdownArr) {
-    let total = 0;
-
-    for (const item of items) {
-      const fId = item.formulaId && item.formulaId.toString();
-      const formula = fId ? formulasById[fId] : null;
-      if (!formula) {
-        throw new Error(`Formula not found for M3 item ${item.id}`);
-      }
-
-      const result = evaluateM3Item(item, formula, entryPayload);
-      breakdownArr.push(result);
-      total += result.value;
-    }
-
-    return round6(total);
-  }
-
-  BE_total = processGroup(baselineItems, baselineBreakdown);
-  PE_total = processGroup(projectItems,  projectBreakdown);
-  LE_total = processGroup(leakageItems,  leakageBreakdown);
-
-  const rawNet = BE_total - PE_total - LE_total;
-  const bufferPercent = Number(m3.buffer || 0);
-
-  // Your requirement:
-  //   BE_total = sum(Bi results)
-  //   PE_total = sum(Pi results)
-  //   LE_total = sum(Li results)
-  //   Final   = BE_total – PE_total – LE_total – buffer%
-  //
-  // We interpret "buffer%" as percentage discount:
-  //   netWithoutUncertainty = rawNet
-  //   netWithUncertainty    = rawNet * (1 - bufferPercent/100)
-  const netWithoutUncertainty = round6(rawNet);
-  const netWithUncertainty    = round6(rawNet * (1 - bufferPercent / 100));
-
-  return {
-    BE_total,
-    PE_total,
-    LE_total,
-    bufferPercent,
-    netWithoutUncertainty,
-    netWithUncertainty,
-    breakdown: {
-      baseline: baselineBreakdown,
-      project:  projectBreakdown,
-      leakage:  leakageBreakdown
-    }
-  };
-}
 
 /**
  * Save a single Methodology 3 Net Reduction entry (manual channel)
@@ -624,6 +762,38 @@ function evaluateM3(reductionDoc, formulasById, entryPayload = {}) {
  *   }
  * }
  */
+/**
+ * Save a single Methodology 3 Net Reduction entry (manual channel)
+ *
+ * Route:
+ *   POST /api/net-reduction/:clientId/:projectId/methodology3/manual
+ *
+ * Body example:
+ * {
+ *   "date": "2025-04-02",
+ *   "time": "10:30",
+ *   "entry": {
+ *     "B1": { "A": 200 },
+ *     "P1": { "A": 160 }
+ *   }
+ * }
+ */
+/**
+ * Save a single Methodology 3 Net Reduction entry (manual channel)
+ *
+ * Route:
+ *   POST /api/net-reduction/:clientId/:projectId/methodology3/manual
+ *
+ * Body example:
+ * {
+ *   "date": "2025-04-02",
+ *   "time": "10:30",
+ *   "entry": {
+ *     "B1": { "A": 200 },
+ *     "P1": { "A": 160 }
+ *   }
+ * }
+ */
 exports.saveM3NetReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
@@ -632,63 +802,107 @@ exports.saveM3NetReduction = async (req, res) => {
     const reductionDoc = await Reduction.findOne({
       clientId,
       projectId,
-      isDeleted: false,
+      isDeleted: false
     }).select("calculationMethodology m3 reductionDataEntry");
 
-    if (!reductionDoc)
-      return res
-        .status(404)
-        .json({ success: false, message: "Reduction project not found" });
+    if (!reductionDoc) {
+      return res.status(404).json({
+        success: false,
+        message: "Reduction project not found"
+      });
+    }
 
-    if (reductionDoc.calculationMethodology !== "methodology3")
+    if (reductionDoc.calculationMethodology !== "methodology3") {
       return res.status(400).json({
         success: false,
-        message: `Project uses ${reductionDoc.calculationMethodology}`,
+        message: `Project uses ${reductionDoc.calculationMethodology}`
       });
+    }
 
-    // 2. Must be manual
-    const actual = (reductionDoc.reductionDataEntry?.inputType || "manual")
-      .toLowerCase();
-    if (actual !== "manual")
+    // 2. Must be manual channel
+    const inputType = (reductionDoc.reductionDataEntry?.inputType || "manual").toLowerCase();
+    if (inputType !== "manual") {
       return res.status(400).json({
         success: false,
-        message: `This endpoint only supports MANUAL input`,
+        message: "This endpoint only supports MANUAL input"
       });
+    }
 
-    // 3. Parse date/time
+    // 3. Parse timestamp (IST)
     const { date, time } = req.body;
     const when = parseDateTimeOrNowIST(date, time);
 
-    // 4. Entry object
+    // 4. Entry payload (Format B: { B1:{A:..}, P1:{A:..}, ... })
     const entryPayload = req.body.entry;
-    if (!entryPayload)
+    if (!entryPayload || typeof entryPayload !== "object") {
       return res.status(400).json({
         success: false,
-        message: "entry is required (B1,B2,P1,P2,L1,L2...)",
+        message: "entry object required for M3 (example: { B1:{A:100}, P1:{A:80} })"
       });
+    }
 
-    // 5. Collect formulas
+    // 5. Collect formulas referred by M3 config
     const allItems = [
-      ...(reductionDoc.m3.baselineEmissions || []),
-      ...(reductionDoc.m3.projectEmissions || []),
-      ...(reductionDoc.m3.leakageEmissions || []),
+      ...(reductionDoc?.m3?.baselineEmissions || []),
+      ...(reductionDoc?.m3?.projectEmissions  || []),
+      ...(reductionDoc?.m3?.leakageEmissions  || [])
     ];
 
-    const formulaIds = [
-      ...new Set(allItems.map((it) => it.formulaId.toString())),
-    ];
+    const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
 
     const formulas = await ReductionFormula.find({
-      _id: { $in: formulaIds },
+      _id: { $in: formulaIds }
     });
 
     const formulasById = {};
-    formulas.forEach((f) => (formulasById[f._id.toString()] = f));
+    formulas.forEach(f => {
+      formulasById[f._id.toString()] = f;
+    });
 
-    // 6. Evaluate M3
-    const result = evaluateM3(reductionDoc, formulasById, entryPayload);
+    // 6. Evaluate THIS entry (per-entry totals)
+    const result = await evaluateM3(reductionDoc, formulasById, entryPayload);
 
-    // 7. Save record
+    const BE_now  = Number(result.BE_total || 0);
+    const PE_now  = Number(result.PE_total || 0);
+    const LE_now  = Number(result.LE_total || 0);
+    const Nw_now  = Number(result.netWithoutUncertainty || 0);
+    const NwU_now = Number(result.netWithUncertainty || 0);
+
+    // 7. Find latest previous entry for this project & methodology
+    const prev = await NetReductionEntry.findOne({
+      clientId,
+      projectId,
+      calculationMethodology: "methodology3"
+    })
+      .sort({ timestamp: -1 })
+      .lean();
+
+    const prevM3 = (prev && prev.m3) ? prev.m3 : {};
+
+    const prevCumBE  = Number(prevM3.cumulativeBE  ?? 0);
+    const prevCumPE  = Number(prevM3.cumulativePE  ?? 0);
+    const prevCumLE  = Number(prevM3.cumulativeLE  ?? 0);
+    const prevCumNw  = Number(prevM3.cumulativeNetWithoutUncertainty ?? 0);
+    const prevCumNwU = Number(prevM3.cumulativeNetWithUncertainty   ?? 0);
+
+    // 🔹 Per-item cumulative breakdown
+    const breakdownWithCum = buildM3BreakdownWithCumulative(prevM3, result);
+
+    // 8. Build final M3 block with CROSS-ENTRY cumulatives
+    const m3Final = {
+      ...result,
+
+      cumulativeBE: round6(prevCumBE + BE_now),
+      cumulativePE: round6(prevCumPE + PE_now),
+      cumulativeLE: round6(prevCumLE + LE_now),
+
+      cumulativeNetWithoutUncertainty: round6(prevCumNw + Nw_now),
+      cumulativeNetWithUncertainty:   round6(prevCumNwU + NwU_now),
+
+      breakdown: breakdownWithCum
+    };
+
+    // 9. Save entry
     const entry = await NetReductionEntry.create({
       clientId,
       projectId,
@@ -696,47 +910,51 @@ exports.saveM3NetReduction = async (req, res) => {
       inputType: "manual",
       sourceDetails: {
         uploadedBy: req.user._id || req.user.id,
-        dataSource: "manual",
+        dataSource: "manual"
       },
       date: when.date,
       time: when.time,
       timestamp: when.timestamp,
 
-      // Save totals and breakdown
-      m3: result,
-      netReduction: result.netWithUncertainty,
+      m3: m3Final,
+
+      // ⚠️ netReduction is per-entry final, NOT cumulative
+      netReduction: NwU_now
     });
 
-    await recomputeProjectCumulative(
-      clientId,
-      projectId,
-      "methodology3"
-    );
+    // 10. Recompute project-level cumulative stats (uses netReduction series)
+    await recomputeProjectCumulative(clientId, projectId, "methodology3");
     try {
       await recomputeClientNetReductionSummary(clientId);
-    } catch {}
+    } catch (e) {
+      console.warn("recomputeClientNetReductionSummary failed:", e.message);
+    }
 
+    // 11. Socket broadcast
     emitNR("net-reduction:m3-manual-saved", {
       clientId,
       projectId,
       methodology: "methodology3",
-      netReduction: entry.netReduction,
       m3: entry.m3,
+      netReduction: entry.netReduction,
+      cumulativeNetReduction: entry.cumulativeNetReduction
     });
 
     return res.status(201).json({
       success: true,
       message: "Methodology 3 net reduction entry saved",
-      data: entry,
+      data: entry
     });
   } catch (err) {
     return res.status(500).json({
       success: false,
       message: "Failed to save M3 net reduction",
-      error: err.message,
+      error: err.message
     });
   }
 };
+
+
 
 
 
@@ -1212,7 +1430,7 @@ exports.saveApiNetReduction = async (req, res) => {
       formulas.forEach(f => (formulasById[f._id.toString()] = f));
 
       // Evaluate Methodology 3
-      const result = evaluateM3(ctx.doc, formulasById, entryPayload);
+      const result = await evaluateM3(ctx.doc, formulasById, entryPayload);
 
       const entry = await NetReductionEntry.create({
         clientId,
@@ -1460,7 +1678,7 @@ exports.saveIotNetReduction = async (req, res) => {
       formulas.forEach(f => (formulasById[f._id.toString()] = f));
 
       // Run Methodology-3 evaluator
-      const result = evaluateM3(ctx.doc, formulasById, entryPayload);
+      const result =await evaluateM3(ctx.doc, formulasById, entryPayload);
 
       const entry = await NetReductionEntry.create({
         clientId,
@@ -1735,7 +1953,7 @@ exports.uploadCsvNetReduction = async (req, res) => {
 
           const when = parseDateTimeOrNowIST(r.date, r.time);
 
-          const result = evaluateM3(ctx.doc, formulasById, entryPayload);
+          const result = await evaluateM3(ctx.doc, formulasById, entryPayload);
 
           const entry = await NetReductionEntry.create({
             clientId,
@@ -2142,98 +2360,369 @@ async function recomputeSeries(clientId, projectId, calculationMethodology) {
  * Body (m2):
  *   { "variables": { "N": 12000, "U": 0.83 }, "date": "14/08/2025", "time": "11:05" }
  */
+/**
+ * UPDATE a MANUAL Net-Reduction Entry (M1, M2, M3)
+ *
+ * Route:
+ *   PATCH /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ *
+ * Supports:
+ *   - methodology1  (value-based)
+ *   - methodology2  (formula variable based)
+ *   - methodology3  (baseline/project/leakage structured evaluation)
+ */
+/**
+ * UPDATE a MANUAL Net-Reduction Entry (M1, M2, M3)
+ *
+ * Route:
+ *   PATCH /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ *
+ * For M3:
+ *   Body:
+ *   {
+ *     "date": "2025-04-02",
+ *     "time": "11:00",
+ *     "entry": {
+ *       "B1": { "A": 220 },
+ *       "P1": { "A": 170 }
+ *     }
+ *   }
+ */
 exports.updateManualNetReductionEntry = async (req, res) => {
   try {
     const { clientId, projectId, calculationMethodology, entryId } = req.params;
 
-    // permission
+    // Permission
     const can = await canWriteReductionData(req.user, clientId);
-    if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
+    if (!can.ok)
+      return res.status(403).json({ success: false, message: can.reason });
 
-    // must exist & be manual
-    const entry = await NetReductionEntry.findOne({ _id: entryId, clientId, projectId, calculationMethodology });
-    if (!entry) return res.status(404).json({ success:false, message: 'Entry not found' });
-    if ((entry.inputType || '').toLowerCase() !== 'manual') {
-      return res.status(400).json({ success:false, message: 'Only manual entries can be edited with this endpoint' });
-    }
+    // Find entry
+    const entry = await NetReductionEntry.findOne({
+      _id: entryId,
+      clientId,
+      projectId,
+      calculationMethodology
+    });
 
-    // Ensure the project & channel are valid (and load formula for m2)
-    let ctx;
-    try {
-      ctx = await requireReductionForEntry(clientId, projectId, calculationMethodology, 'manual');
-    } catch (e) {
-      return res.status(400).json({ success:false, message: e.message });
-    }
+    if (!entry)
+      return res.status(404).json({ success: false, message: "Entry not found" });
 
-    // If date/time provided, rebuild timestamp in IST
-    const hasDateOrTime = (req.body.date != null) || (req.body.time != null);
+    if ((entry.inputType || "").toLowerCase() !== "manual")
+      return res
+        .status(400)
+        .json({ success: false, message: "Only manual entries can be updated" });
+
+    // Load reduction
+    const reductionDoc = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    }).select("m3 calculationMethodology reductionDataEntry");
+
+    if (!reductionDoc)
+      return res
+        .status(404)
+        .json({ success: false, message: "Reduction not found" });
+
+    // Date/time update
+    const hasDateOrTime = req.body.date != null || req.body.time != null;
     if (hasDateOrTime) {
-      const when = parseDateTimeOrNowIST(req.body.date || entry.date, req.body.time || entry.time);
+      const when = parseDateTimeOrNowIST(
+        req.body.date || entry.date,
+        req.body.time || entry.time
+      );
       entry.date = when.date;
       entry.time = when.time;
       entry.timestamp = when.timestamp;
     }
 
-    if (ctx.mode === 'm1') {
-      // Optional: update inputValue
-      if (req.body.value != null) {
-        const v = Number(req.body.value);
-        if (!isFinite(v)) return res.status(400).json({ success:false, message: 'value must be numeric' });
-        entry.inputValue = v;
-      }
-      // Optional: let the user re-snapshot the current ER rate from project
-      if (req.body.recalcRateFromProject) {
-        entry.emissionReductionRate = ctx.rate; // current project snapshot
-      }
-      // For m1, netReduction will be recomputed by pre('save')
-      await entry.save();
-    } else {
-      // M2: update variables (merge or replace; here we replace if provided)
-      if (req.body.variables && typeof req.body.variables === 'object') {
-        entry.variables = req.body.variables;
-      }
+    // Only M3 here
+    if (reductionDoc.calculationMethodology !== "methodology3")
+      return res.status(400).json({
+        success: false,
+        message: "This update endpoint only supports M3"
+      });
 
-      // Re-evaluate using current formula + Reduction.m2.LE
-      try {
-        const { netInFormula, LE, finalNet } = evaluateM2(ctx.doc, ctx.formula, entry.variables || {});
-        entry.formulaId = ctx.formula._id;
-        entry.netReductionInFormula = netInFormula;
-        entry.netReduction = finalNet;
-        // Keep placeholders consistent for schema
-        entry.inputValue = 0;
-        entry.emissionReductionRate = 0;
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
-      }
+    const payload = req.body.entry;
+    if (!payload || typeof payload !== "object")
+      return res
+        .status(400)
+        .json({ success: false, message: "entry payload required" });
 
-      await entry.save({ validateBeforeSave: false });
-    }
+    // Collect formulas
+    const allItems = [
+      ...(reductionDoc.m3.baselineEmissions || []),
+      ...(reductionDoc.m3.projectEmissions || []),
+      ...(reductionDoc.m3.leakageEmissions || [])
+    ];
 
-    // After changing an entry (could be in the past) — recompute the whole series
-    const summary = await recomputeSeries(clientId, projectId, calculationMethodology);
-    try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
+    const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
+    const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
 
-    // Return the freshly-saved entry
-    const fresh = await NetReductionEntry.findById(entry._id).lean();
+    const formulasById = {};
+    formulas.forEach(f => (formulasById[f._id.toString()] = f));
 
-        emitNR('net-reduction:manual-updated', {
-          clientId, projectId, calculationMethodology,
-          entryId: fresh._id, date: fresh.date, time: fresh.time,
-          netReductionInFormula: fresh.netReductionInFormula ?? null,
-          netReduction: fresh.netReduction,
-          cumulativeNetReduction: fresh.cumulativeNetReduction,
-          highNetReduction: fresh.highNetReduction,
-          lowNetReduction: fresh.lowNetReduction
-        });
+    // Evaluate M3 for THIS updated entry
+    const result = await evaluateM3(reductionDoc, formulasById, payload);
+
+    const BE_now  = Number(result.BE_total || 0);
+    const PE_now  = Number(result.PE_total || 0);
+    const LE_now  = Number(result.LE_total || 0);
+    const Nw_now  = Number(result.netWithoutUncertainty || 0);
+    const NwU_now = Number(result.netWithUncertainty || 0);
+
+    // Get previous entry (excluding this one)
+    const prev = await NetReductionEntry.findOne({
+      clientId,
+      projectId,
+      calculationMethodology,
+      _id: { $ne: entry._id }
+    })
+      .sort({ timestamp: -1 })
+      .lean();
+
+    const prevM3 = prev && prev.m3 ? prev.m3 : {};
+
+    const prevCumBE  = Number(prevM3.cumulativeBE  ?? 0);
+    const prevCumPE  = Number(prevM3.cumulativePE  ?? 0);
+    const prevCumLE  = Number(prevM3.cumulativeLE  ?? 0);
+    const prevCumNw  = Number(prevM3.cumulativeNetWithoutUncertainty ?? 0);
+    const prevCumNwU = Number(prevM3.cumulativeNetWithUncertainty   ?? 0);
+
+    // Per-item cumulative breakdown
+    const breakdownWithCum = buildM3BreakdownWithCumulative(prevM3, result);
+
+    // Build final cumulative block
+    const m3Final = {
+      ...result,
+
+      cumulativeBE: round6(prevCumBE + BE_now),
+      cumulativePE: round6(prevCumPE + PE_now),
+      cumulativeLE: round6(prevCumLE + LE_now),
+
+      cumulativeNetWithoutUncertainty: round6(prevCumNw + Nw_now),
+      cumulativeNetWithUncertainty:   round6(prevCumNwU + NwU_now),
+
+      breakdown: breakdownWithCum
+    };
+
+    // Save on entry
+    entry.m3 = m3Final;
+    entry.netReduction = NwU_now; // per-entry value
+
+    await entry.save({ validateBeforeSave: false });
+
+    // Recompute full series (cumulativeNetReduction / high / low)
+    const series = await recomputeProjectCumulative(
+      clientId,
+      projectId,
+      calculationMethodology
+    );
+
+    try {
+      await recomputeClientNetReductionSummary(clientId);
+    } catch {}
+
+    emitNR("net-reduction:m3-manual-updated", {
+      clientId,
+      projectId,
+      entryId: entry._id,
+      m3: entry.m3,
+      netReduction: entry.netReduction,
+      cumulativeNetReduction: entry.cumulativeNetReduction
+    });
 
     return res.status(200).json({
       success: true,
-      message: 'Manual entry updated and series recomputed',
-      series: summary,
-      data: fresh
+      message: "M3 entry updated",
+      series,
+      data: entry
     });
+
   } catch (err) {
-    return res.status(500).json({ success:false, message: 'Failed to update manual net reduction entry', error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update M3 entry",
+      error: err.message
+    });
+  }
+};
+/**
+ * UPDATE a MANUAL Net-Reduction Entry (M1, M2, M3)
+ *
+ * Route:
+ *   PATCH /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ *
+ * For M3:
+ *   Body:
+ *   {
+ *     "date": "2025-04-02",
+ *     "time": "11:00",
+ *     "entry": {
+ *       "B1": { "A": 220 },
+ *       "P1": { "A": 170 }
+ *     }
+ *   }
+ */
+exports.updateManualNetReductionEntry = async (req, res) => {
+  try {
+    const { clientId, projectId, calculationMethodology, entryId } = req.params;
+
+    // Permission
+    const can = await canWriteReductionData(req.user, clientId);
+    if (!can.ok)
+      return res.status(403).json({ success: false, message: can.reason });
+
+    // Find entry
+    const entry = await NetReductionEntry.findOne({
+      _id: entryId,
+      clientId,
+      projectId,
+      calculationMethodology
+    });
+
+    if (!entry)
+      return res.status(404).json({ success: false, message: "Entry not found" });
+
+    if ((entry.inputType || "").toLowerCase() !== "manual")
+      return res
+        .status(400)
+        .json({ success: false, message: "Only manual entries can be updated" });
+
+    // Load reduction
+    const reductionDoc = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    }).select("m3 calculationMethodology reductionDataEntry");
+
+    if (!reductionDoc)
+      return res
+        .status(404)
+        .json({ success: false, message: "Reduction not found" });
+
+    // Date/time update
+    const hasDateOrTime = req.body.date != null || req.body.time != null;
+    if (hasDateOrTime) {
+      const when = parseDateTimeOrNowIST(
+        req.body.date || entry.date,
+        req.body.time || entry.time
+      );
+      entry.date = when.date;
+      entry.time = when.time;
+      entry.timestamp = when.timestamp;
+    }
+
+    // Only M3 here
+    if (reductionDoc.calculationMethodology !== "methodology3")
+      return res.status(400).json({
+        success: false,
+        message: "This update endpoint only supports M3"
+      });
+
+    const payload = req.body.entry;
+    if (!payload || typeof payload !== "object")
+      return res
+        .status(400)
+        .json({ success: false, message: "entry payload required" });
+
+    // Collect formulas
+    const allItems = [
+      ...(reductionDoc.m3.baselineEmissions || []),
+      ...(reductionDoc.m3.projectEmissions || []),
+      ...(reductionDoc.m3.leakageEmissions || [])
+    ];
+
+    const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
+    const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+
+    const formulasById = {};
+    formulas.forEach(f => (formulasById[f._id.toString()] = f));
+
+    // Evaluate M3 for THIS updated entry
+    const result = await evaluateM3(reductionDoc, formulasById, payload);
+
+    const BE_now  = Number(result.BE_total || 0);
+    const PE_now  = Number(result.PE_total || 0);
+    const LE_now  = Number(result.LE_total || 0);
+    const Nw_now  = Number(result.netWithoutUncertainty || 0);
+    const NwU_now = Number(result.netWithUncertainty || 0);
+
+    // Get previous entry (excluding this one)
+    const prev = await NetReductionEntry.findOne({
+      clientId,
+      projectId,
+      calculationMethodology,
+      _id: { $ne: entry._id }
+    })
+      .sort({ timestamp: -1 })
+      .lean();
+
+    const prevM3 = prev && prev.m3 ? prev.m3 : {};
+
+    const prevCumBE  = Number(prevM3.cumulativeBE  ?? 0);
+    const prevCumPE  = Number(prevM3.cumulativePE  ?? 0);
+    const prevCumLE  = Number(prevM3.cumulativeLE  ?? 0);
+    const prevCumNw  = Number(prevM3.cumulativeNetWithoutUncertainty ?? 0);
+    const prevCumNwU = Number(prevM3.cumulativeNetWithUncertainty   ?? 0);
+
+    // Per-item cumulative breakdown
+    const breakdownWithCum = buildM3BreakdownWithCumulative(prevM3, result);
+
+    // Build final cumulative block
+    const m3Final = {
+      ...result,
+
+      cumulativeBE: round6(prevCumBE + BE_now),
+      cumulativePE: round6(prevCumPE + PE_now),
+      cumulativeLE: round6(prevCumLE + LE_now),
+
+      cumulativeNetWithoutUncertainty: round6(prevCumNw + Nw_now),
+      cumulativeNetWithUncertainty:   round6(prevCumNwU + NwU_now),
+
+      breakdown: breakdownWithCum
+    };
+
+    // Save on entry
+    entry.m3 = m3Final;
+    entry.netReduction = NwU_now; // per-entry value
+
+    await entry.save({ validateBeforeSave: false });
+
+    // Recompute full series (cumulativeNetReduction / high / low)
+    const series = await recomputeProjectCumulative(
+      clientId,
+      projectId,
+      calculationMethodology
+    );
+
+    try {
+      await recomputeClientNetReductionSummary(clientId);
+    } catch {}
+
+    emitNR("net-reduction:m3-manual-updated", {
+      clientId,
+      projectId,
+      entryId: entry._id,
+      m3: entry.m3,
+      netReduction: entry.netReduction,
+      cumulativeNetReduction: entry.cumulativeNetReduction
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "M3 entry updated",
+      series,
+      data: entry
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update M3 entry",
+      error: err.message
+    });
   }
 };
 
