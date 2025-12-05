@@ -838,7 +838,6 @@ const getNotificationStats = async (req, res) => {
 };
 const markAllReadHandler = async (req, res) => {
   try {
-
     // ✅ USER ID NORMALIZATION
     const userId = (req.user._id || req.user.id || req.user.userId).toString();
 
@@ -853,24 +852,27 @@ const markAllReadHandler = async (req, res) => {
       ]
     };
 
-    // ✅ FULL 4-LEVEL TARGETING PRIORITY (DO NOT CHANGE ORDER)
+    // ✅ FULL 4-LEVEL TARGETING PRIORITY
     const query = {
       ...baseQuery,
       $or: [
-
+        // 1️⃣ Specific Users
         { targetUsers: userId },
 
+        // 2️⃣ UserType (when targetUsers empty)
         {
           targetUserTypes: req.user.userType,
           targetUsers: { $size: 0 }
         },
 
+        // 3️⃣ Client (optional)
         ...(req.user.clientId ? [{
           targetClients: req.user.clientId,
           targetUsers: { $size: 0 },
           targetUserTypes: { $size: 0 }
         }] : []),
 
+        // 4️⃣ Global
         {
           targetUsers: { $size: 0 },
           targetUserTypes: { $size: 0 },
@@ -879,23 +881,30 @@ const markAllReadHandler = async (req, res) => {
       ]
     };
 
+    // ✅ FETCH ALL MATCHING NOTIFICATIONS
     const notifications = await Notification.find(query);
 
+    // ❗ IMPORTANT FIX → pass req.user instead of userId
     await Promise.all(
-      notifications.map(n => n.markAsReadBy(userId))
+      notifications.map(n => n.markAsReadBy(req.user))
     );
 
-    res.status(200).json({
+    return res.status(200).json({
+      success: true,
+      count: notifications.length,
       message: `Marked ${notifications.length} notifications as read`
     });
 
   } catch (error) {
-    res.status(500).json({
-      message: "Failed to mark all as read",
+    console.error("❌ markAllRead error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to mark all notifications as read",
       error: error.message
     });
   }
 };
+
 
 
 
