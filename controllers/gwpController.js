@@ -36,55 +36,60 @@ exports.addGWP = async (req, res) => {
 exports.getAllGWP = async (req, res) => {
   try {
     // -----------------------------------
-    // ✅ 1. Read Query Params Safely
+    // ✅ 1. Safe Pagination Params
     // -----------------------------------
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const skip = (page - 1) * limit;
 
     const search = req.query.search?.trim() || "";
-    const sortBy = req.query.sortBy || "chemicalName";   // ✅ model field
+    const sortBy = req.query.sortBy || "chemicalName"; // ✅ Valid field
     const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
 
     // -----------------------------------
-    // ✅ 2. Build Search Query (MODEL BASED)
+    // ✅ 2. Safe Search (MODEL BASED)
     // -----------------------------------
     const query = {};
 
     if (search) {
-      const safeRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), "i");
+      const safeRegex = new RegExp(
+        search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      );
 
       query.$or = [
         { chemicalName: safeRegex },
         { chemicalFormula: safeRegex }
-        // ❌ DO NOT search assessments directly (it's a Map)
       ];
     }
 
     // -----------------------------------
-    // ✅ 3. Get Total Count
+    // ✅ 3. Total Count
     // -----------------------------------
     const totalRecords = await GWP.countDocuments(query);
 
     // -----------------------------------
-    // ✅ 4. Fetch Paginated Data
+    // ✅ 4. Fetch Data
     // -----------------------------------
     const gwpData = await GWP.find(query)
       .sort({ [sortBy]: sortOrder })
       .skip(skip)
       .limit(limit)
-      .lean();
+      .lean(); // ✅ converts Map → Object automatically
 
     // -----------------------------------
-    // ✅ 5. Convert Map → Object for Frontend
+    // ✅ 5. SAFE Assessments Handling (NO Object.fromEntries)
     // -----------------------------------
     const formattedData = gwpData.map(item => ({
       ...item,
-      assessments: item.assessments ? Object.fromEntries(item.assessments) : {}
+      assessments:
+        item.assessments && typeof item.assessments === "object"
+          ? item.assessments   // ✅ already a normal object
+          : {}
     }));
 
     // -----------------------------------
-    // ✅ 6. Final Response
+    // ✅ 6. Success Response
     // -----------------------------------
     res.status(200).json({
       success: true,
