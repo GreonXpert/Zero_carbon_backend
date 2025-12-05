@@ -67,9 +67,6 @@ function publicUrlFrom(absPath) {
   return idx >= 0 ? `/${norm.slice(idx)}` : '';
 }
 
-// ----------------------------------------------------
-// MOVE FILES FROM TEMP TO FINAL FOLDERS
-// ----------------------------------------------------
 exports.saveReductionFiles = async function saveReductionFiles(req, doc) {
   if (!req || !doc) return;
 
@@ -78,19 +75,25 @@ exports.saveReductionFiles = async function saveReductionFiles(req, doc) {
   if (!rid) return;
 
   const coverDir = path.join('uploads', 'Reduction', 'CoverImage', userId);
-  const imgsDir = path.join('uploads', 'Reduction', 'images', userId);
+  const imgsDir  = path.join('uploads', 'Reduction', 'images', userId);
 
   ensureDir(coverDir);
   ensureDir(imgsDir);
 
-  // ----------------------------------------------------
-  // SAVE COVER IMAGE (1 FILE)
-  // ----------------------------------------------------
+  // ---------------- COVER ----------------
   const cover = req.files?.coverImage?.[0];
-  if (cover) {
-    const ext = path.extname(cover.originalname || '.jpg') || '.jpg';
-    const target = path.join(coverDir, `${rid}${ext}`);
 
+  if (cover) {
+    let ext = path.extname(cover.originalname || '').toLowerCase();
+    if (!ext) ext = '.jpg';
+    if (cover.mimetype === 'image/svg+xml') ext = '.svg';
+
+    // remove previous file
+    if (doc.coverImage?.path && fs.existsSync(doc.coverImage.path)) {
+      fs.unlinkSync(doc.coverImage.path);
+    }
+
+    const target = path.join(coverDir, `${rid}${ext}`);
     fs.renameSync(cover.path, target);
 
     doc.coverImage = {
@@ -101,20 +104,21 @@ exports.saveReductionFiles = async function saveReductionFiles(req, doc) {
     };
   }
 
-  // ----------------------------------------------------
-  // SAVE GALLERY IMAGES (MAX 5)
-  // ----------------------------------------------------
+  // ---------------- GALLERY ----------------
   const incoming = Array.isArray(req.files?.images) ? req.files.images.slice(0, 5) : [];
+
   if (incoming.length) {
     const existing = Array.isArray(doc.images) ? doc.images : [];
     const slotsLeft = Math.max(0, 5 - existing.length);
     const toUse = incoming.slice(0, slotsLeft);
 
     const appended = toUse.map((file, i) => {
-      const ext = path.extname(file.originalname || '.jpg') || '.jpg';
-      const fileIndex = existing.length + i + 1;
+      let ext = path.extname(file.originalname || '').toLowerCase();
+      if (!ext) ext = '.jpg';
+      if (file.mimetype === 'image/svg+xml') ext = '.svg';
 
-      const target = path.join(imgsDir, `${rid}-${fileIndex}${ext}`);
+      const indexNum = existing.length + i + 1;
+      const target = path.join(imgsDir, `${rid}-${indexNum}${ext}`);
       fs.renameSync(file.path, target);
 
       return {
