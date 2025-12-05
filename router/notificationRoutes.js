@@ -11,7 +11,7 @@ const {
   deleteNotification,
   getNotificationStats,
   markAllReadHandler,
-   markAllRead
+  
 } = require("../controllers/notificationControllers");
 
 // Apply auth middleware to all routes
@@ -26,9 +26,9 @@ router.patch("/:notificationId/read", markAsRead); // Mark notification as read
 router.delete("/:notificationId", deleteNotification); // Delete notification
 
 // PATCH works as before
-router.patch("/mark-all-read",  markAllRead);
+router.patch("/mark-all-read", markAllReadHandler);
 // …and now GET works too
-router.get(  "/mark-all-read", markAllRead); // Mark all notifications as read
+router.get(  "/mark-all-read", markAllReadHandler); // Mark all notifications as read
 
 // Statistics and analytics
 router.get("/stats", getNotificationStats); // Get notification statistics (Admin only)
