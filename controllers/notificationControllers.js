@@ -897,86 +897,6 @@ const markAllReadHandler = async (req, res) => {
   }
 };
 
-// ===========================
-// MARK ALL NOTIFICATIONS READ
-// ===========================
-const markAllRead = async (req, res) => {
-  try {
-    // 1️⃣ USER ID NORMALIZATION
-    const userId = (req.user._id || req.user.id || req.user.userId).toString();
-
-    // 2️⃣ BASE QUERY (STANDARD IN ALL NOTIFICATION FUNCTIONS)
-    const baseQuery = {
-      status: 'published',
-      isDeleted: false,
-      'readBy.user': { $ne: userId }, // unread only
-      $or: [
-        { expiryDate: null },
-        { expiryDate: { $gt: new Date() } }
-      ]
-    };
-
-    // 3️⃣ TARGETING PRIORITY (STRICT ORDER)
-    const targeting = [
-      // 1. Specific users
-      { targetUsers: userId },
-
-      // 2. UserType (only if targetUsers empty)
-      {
-        targetUserTypes: req.user.userType,
-        targetUsers: { $size: 0 }
-      }
-    ];
-
-    // 3. Client (optional)
-    if (req.user.clientId) {
-      targeting.push({
-        targetClients: req.user.clientId,
-        targetUsers: { $size: 0 },
-        targetUserTypes: { $size: 0 }
-      });
-    }
-
-    // 4. Global (no targeting)
-    targeting.push({
-      targetUsers: { $size: 0 },
-      targetUserTypes: { $size: 0 },
-      targetClients: { $size: 0 }
-    });
-
-    // 4️⃣ COMBINED QUERY
-    const finalQuery = {
-      ...baseQuery,
-      $or: targeting
-    };
-
-    // 5️⃣ UPDATE ALL MATCHING NOTIFICATIONS
-    await Notification.updateMany(
-      finalQuery,
-      {
-        $push: {
-          readBy: {
-            user: userId,
-            readAt: new Date()
-          }
-        }
-      }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "All notifications marked as read"
-    });
-
-  } catch (error) {
-    console.error("❌ markAllRead error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to mark notifications as read",
-      error: error.message
-    });
-  }
-};
 
 
 
@@ -990,6 +910,5 @@ module.exports = {
   publishScheduledNotifications,
   createUserStatusNotification,
   getNotificationStats,
-  markAllReadHandler,
-   markAllRead
+  markAllReadHandler
 };
