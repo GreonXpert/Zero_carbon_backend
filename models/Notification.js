@@ -181,37 +181,47 @@ notificationSchema.methods.canBeViewedBy = async function(user) {
 };
 
 
-// Method to mark as read by user
-notificationSchema.methods.markAsReadBy = async function(userId) {
-  // Ensure readBy is always an array
-  if (!Array.isArray(this.readBy)) {
-    this.readBy = [];
-  }
+// // Method to mark as read by user
+// notificationSchema.methods.markAsReadBy = async function(userId) {
+//   // Ensure readBy is always an array
+//   if (!Array.isArray(this.readBy)) {
+//     this.readBy = [];
+//   }
 
-  // Check if this user has already read it, guarding against undefined read.user
-  const alreadyRead = this.readBy.some(read =>
-    read.user && read.user.toString() === userId.toString()
-  );
+//   // Check if this user has already read it, guarding against undefined read.user
+//   const alreadyRead = this.readBy.some(read =>
+//     read.user && read.user.toString() === userId.toString()
+//   );
 
-  if (!alreadyRead) {
-    this.readBy.push({
-      user: userId,
-      readAt: new Date()
-    });
+//   if (!alreadyRead) {
+//     this.readBy.push({
+//       user: userId,
+//       readAt: new Date()
+//     });
+//     await this.save();
+//   }
+// };
+
+notificationSchema.methods.markAsReadBy = async function(user) {
+  const userId = (user._id || user.id || user.userId).toString();
+
+  if (!this.readBy.some(r => r.user.toString() === userId)) {
+    this.readBy.push({ user: userId, readAt: new Date() });
     await this.save();
   }
 };
 
-
 // Static method to get notifications for a user
 notificationSchema.statics.getNotificationsForUser = async function(user, options = {}) {
+  const userId = (user._id || user.id || user.userId).toString();
+
   const {
     includeRead = true,
     limit = 50,
     skip = 0,
     sortBy = '-createdAt'
   } = options;
-  
+
   const baseQuery = {
     status: 'published',
     isDeleted: false,
@@ -220,54 +230,88 @@ notificationSchema.statics.getNotificationsForUser = async function(user, option
       { expiryDate: { $gt: new Date() } }
     ]
   };
-  
-  // Build targeting conditions
-  const targetingConditions = [];
-  
-  // 1. Specifically targeted user
-  targetingConditions.push({ targetUsers: user._id });
-  
-  // 2. User type is targeted (only if no specific users are targeted)
-  targetingConditions.push({
-    targetUserTypes: user.userType,
-    targetUsers: { $size: 0 } // Only apply if no specific users are targeted
-  });
-  
-  // 3. Client is targeted (only if no specific users/types are targeted)
+
+  const targeting = [
+    { targetUsers: userId },
+    {
+      targetUserTypes: user.userType,
+      targetUsers: { $size: 0 }
+    }
+  ];
+
   if (user.clientId) {
-    targetingConditions.push({
+    targeting.push({
       targetClients: user.clientId,
-      targetUsers: { $size: 0 }, // Only apply if no specific users are targeted
-      targetUserTypes: { $size: 0 } // Only apply if no user types are targeted
+      targetUsers: { $size: 0 },
+      targetUserTypes: { $size: 0 }
     });
   }
-  
-  // 4. Global notifications (no targeting specified)
-  targetingConditions.push({
+
+  targeting.push({
     targetUsers: { $size: 0 },
     targetUserTypes: { $size: 0 },
     targetClients: { $size: 0 }
   });
-  
+
   const query = {
     ...baseQuery,
-    $or: targetingConditions
+    $or: targeting
   };
-  
-  // Exclude read notifications if requested
+
   if (!includeRead) {
-    query['readBy.user'] = { $ne: user._id };
+    query['readBy.user'] = { $ne: userId };
   }
-  
-  const notifications = await this.find(query)
-    .populate('createdBy', 'userName email userType')
-    .populate('approvedBy', 'userName email')
+
+  return await this.find(query)
     .sort(sortBy)
+    .skip(skip)
     .limit(limit)
-    .skip(skip);
-  
-  return notifications;
+    .populate("createdBy", "userName email");
 };
+
+
+notificationSchema.statics.getUnreadCountForUser = async function(user) {
+  const userId = (user._id || user.id || user.userId).toString();
+
+  const baseQuery = {
+    status: 'published',
+    isDeleted: false,
+    'readBy.user': { $ne: userId },
+    $or: [
+      { expiryDate: null },
+      { expiryDate: { $gt: new Date() } }
+    ]
+  };
+
+  const targeting = [
+    { targetUsers: userId },
+    {
+      targetUserTypes: user.userType,
+      targetUsers: { $size: 0 }
+    }
+  ];
+
+  if (user.clientId) {
+    targeting.push({
+      targetClients: user.clientId,
+      targetUsers: { $size: 0 },
+      targetUserTypes: { $size: 0 }
+    });
+  }
+
+  targeting.push({
+    targetUsers: { $size: 0 },
+    targetUserTypes: { $size: 0 },
+    targetClients: { $size: 0 }
+  });
+
+  return await this.countDocuments({
+    ...baseQuery,
+    $or: targeting
+  });
+};
+
+
 
 // Static method to schedule auto-deletion
 notificationSchema.statics.scheduleAutoDeletion = async function() {
