@@ -19,7 +19,18 @@ const { uploadReductionMedia } = require('../../utils/uploads/reductionUpload');
 router.use(auth);
 
 // Create: consultant_admin (creator of lead) or assigned consultant
-router.post('/:clientId',uploadReductionMedia, createReduction);
+router.post(
+  '/:clientId',
+  uploadReductionMedia,   // <-- IMPORTANT
+  createReduction
+);
+
+router.patch(
+  '/:clientId/:projectId',
+  uploadReductionMedia,   // <-- IMPORTANT
+  updateReduction
+);
+
 
 router.get('/getall',getAllReductions);
 
@@ -27,8 +38,6 @@ router.get('/getall',getAllReductions);
 
 router.get('/:clientId/:projectId', getReduction);
 
-// Update
-router.put('/:clientId/:projectId',uploadReductionMedia, updateReduction);
 
 // Force recalc (optional convenience)
 router.post('/:clientId/:projectId/recalculate', recalculateReduction);

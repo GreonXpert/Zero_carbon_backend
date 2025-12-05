@@ -596,6 +596,7 @@ async function canAccessReductions(user, clientId) {
 }
 
 /** Get list for a client */
+/** Get list for a client */
 exports.getReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
@@ -613,8 +614,7 @@ exports.getReduction = async (req, res) => {
     // -------- Fetch Project --------
     const doc = await Reduction.findOne(
       { clientId, projectId, isDeleted: false }
-    )
-      .lean();  // VERY IMPORTANT: lean() ensures clean JSON object
+    ).lean(); // lean = plain JSON
 
     if (!doc) {
       return res.status(404).json({
@@ -627,7 +627,6 @@ exports.getReduction = async (req, res) => {
     //  FIX: Guarantee methodology3 object is always returned
     // --------------------------------------------------------------
     if (doc.calculationMethodology === "methodology3") {
-      // Ensure empty arrays exist if missing
       doc.methodology3 = doc.methodology3 || {};
 
       doc.methodology3.baseline = doc.methodology3.baseline || [];
@@ -659,6 +658,24 @@ exports.getReduction = async (req, res) => {
       doc.m1.emissionReductionRate = doc.m1.emissionReductionRate || 0;
     }
 
+    // --------------------------------------------------------------------
+    //  🔥 FIX: APPEND PUBLIC URL TO IMAGES BEFORE SENDING RESPONSE
+    // --------------------------------------------------------------------
+    const BASE = process.env.SERVER_BASE_URL || "";
+
+    // ---- Cover Image ----
+    if (doc.coverImage?.path) {
+      doc.coverImage.url = BASE + "/" + doc.coverImage.path.replace(/\\/g, "/");
+    }
+
+    // ---- Gallery Images ----
+    if (Array.isArray(doc.images)) {
+      doc.images = doc.images.map(img => ({
+        ...img,
+        url: BASE + "/" + img.path.replace(/\\/g, "/")
+      }));
+    }
+
     // --------------------------------------------------------------
     //  SEND BACK CLEAN RESPONSE
     // --------------------------------------------------------------
@@ -676,6 +693,7 @@ exports.getReduction = async (req, res) => {
     });
   }
 };
+
 
 
 
