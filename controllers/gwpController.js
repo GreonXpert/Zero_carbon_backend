@@ -32,15 +32,60 @@ exports.addGWP = async (req, res) => {
     }
   };
 
-// Get all GWP data
+// Get all GWP data with pagination, search, and sorting
 exports.getAllGWP = async (req, res) => {
   try {
-    const gwpData = await GWP.find();
-    res.status(200).json(gwpData);
+    // ✅ 1. Read query params safely
+    const page = parseInt(req.query.page, 10) || 1;      // Default page = 1
+    const limit = parseInt(req.query.limit, 10) || 10;   // Default limit = 10
+    const search = req.query.search || "";               // Optional search
+    const sortBy = req.query.sortBy || "createdAt";      // Default sort field
+    const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+
+    const skip = (page - 1) * limit;
+
+    // ✅ 2. Build search query (you can add more fields here)
+    const query = {};
+
+    if (search) {
+      query.$or = [
+        { gasName: { $regex: search, $options: "i" } },
+        { source: { $regex: search, $options: "i" } }
+      ];
+    }
+
+    // ✅ 3. Fetch total count
+    const totalRecords = await GWP.countDocuments(query);
+
+    // ✅ 4. Fetch paginated data
+    const gwpData = await GWP.find(query)
+      .sort({ [sortBy]: sortOrder })
+      .skip(skip)
+      .limit(limit);
+
+    // ✅ 5. Send structured response
+    res.status(200).json({
+      success: true,
+      message: "GWP data fetched successfully",
+      data: gwpData,
+      pagination: {
+        totalRecords,
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        limit
+      }
+    });
+
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch GWP data', error: error.message });
+    console.error("❌ Error fetching GWP data:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch GWP data",
+      error: error.message
+    });
   }
 };
+
 
 // Update GWP entry (supports dynamic addition of assessments)
 exports.updateGWP = async (req, res) => {

@@ -2931,6 +2931,7 @@ const updateProposalStatus = async (req, res) => {
 // ===============================================
 // FINAL FULL VERSION OF getClients WITH FILTERS
 // ===============================================
+
 const getClients = async (req, res) => {
   try {
     const {
@@ -2984,6 +2985,8 @@ const getClients = async (req, res) => {
         break;
 
       case "client_admin":
+      case "client_employee_head":
+      case "employee":
       case "auditor":
       case "viewer":
         query.clientId = req.user.clientId;
@@ -2999,7 +3002,6 @@ const getClients = async (req, res) => {
     // -----------------------------------------------
     // 2. APPLY FILTERS
     // -----------------------------------------------
-
     if (stage) query.stage = stage;
     if (status) query.status = status;
 
@@ -3019,7 +3021,8 @@ const getClients = async (req, res) => {
       query["workflowTracking.flowchartStatus"] = flowchartStatus;
 
     if (processFlowchartStatus)
-      query["workflowTracking.processFlowchartStatus"] = processFlowchartStatus;
+      query["workflowTracking.processFlowchartStatus"] =
+        processFlowchartStatus;
 
     if (reductionStatus)
       query["workflowTracking.reduction.status"] = reductionStatus;
@@ -3063,56 +3066,77 @@ const getClients = async (req, res) => {
     // 5. PAGINATION
     // -----------------------------------------------
     const skip = (page - 1) * limit;
-
     const total = await Client.countDocuments(query);
 
+    // -----------------------------------------------
+    // 6. FETCH CLIENTS WITH ALL REQUIRED FIELDS
+    // -----------------------------------------------
     const clients = await Client.find(query)
       .populate("leadInfo.consultantAdminId", "userName email")
       .populate("leadInfo.assignedConsultantId", "userName email")
       .populate("workflowTracking.assignedConsultantId", "userName email")
       .sort(sortOptions)
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
 
     // -----------------------------------------------
-    // 6. FORMAT RESPONSE
+    // 7. FORMAT RESPONSE DATA
     // -----------------------------------------------
-    const responseData = {
-      clients: clients.map(client => ({
-        _id: client._id,
-        clientId: client.clientId,
-        stage: client.stage,
-        status: client.status,
-        sandbox: client.sandbox,
-        leadInfo: {
-          companyName: client.leadInfo.companyName,
-          contactPersonName: client.leadInfo.contactPersonName,
-          email: client.leadInfo.email,
-          mobileNumber: client.leadInfo.mobileNumber,
-          hasAssignedConsultant: client.leadInfo.hasAssignedConsultant,
-          salesPersonName: client.leadInfo.salesPersonName,
-          referenceName: client.leadInfo.referenceName,
-          eventName: client.leadInfo.eventName,
-          consultantAdmin: client.leadInfo.consultantAdminId ? {
-            id: client.leadInfo.consultantAdminId._id,
-            name: client.leadInfo.consultantAdminId.userName,
-            email: client.leadInfo.consultantAdminId.email
-          } : null,
-          assignedConsultant: client.leadInfo.assignedConsultantId ? {
-            id: client.leadInfo.assignedConsultantId._id,
-            name: client.leadInfo.assignedConsultantId.userName,
-            email: client.leadInfo.assignedConsultantId.email
-          } : null
-        },
-        workflowTracking: client.workflowTracking,
-        accountDetails: client.accountDetails,
-        submissionData: {
-          validationStatus: client.submissionData?.validationStatus
-        },
-        createdAt: client.createdAt,
-        updatedAt: client.updatedAt
-      })),
+    const responseClients = clients.map(client => ({
+      _id: client._id,
+      clientId: client.clientId,
+      stage: client.stage,
+      status: client.status,
+      sandbox: client.sandbox,
 
+      // Lead Information
+      leadInfo: {
+        ...client.leadInfo,
+        consultantAdmin: client.leadInfo.consultantAdminId
+          ? {
+              id: client.leadInfo.consultantAdminId._id,
+              name: client.leadInfo.consultantAdminId.userName,
+              email: client.leadInfo.consultantAdminId.email
+            }
+          : null,
+        assignedConsultant: client.leadInfo.assignedConsultantId
+          ? {
+              id: client.leadInfo.assignedConsultantId._id,
+              name: client.leadInfo.assignedConsultantId.userName,
+              email: client.leadInfo.assignedConsultantId.email
+            }
+          : null
+      },
+
+      // Submission Data (FULL)
+      submissionData: {
+        assessmentLevel: client.submissionData?.assessmentLevel || [],
+        companyInfo: client.submissionData?.companyInfo || {},
+        organizationalOverview:
+          client.submissionData?.organizationalOverview || {},
+        emissionProfile: client.submissionData?.emissionProfile || [],
+        projectProfile: client.submissionData?.projectProfile || [],
+        validationStatus: client.submissionData?.validationStatus || null
+      },
+
+      // Workflow Tracking
+      workflowTracking: client.workflowTracking,
+
+      // Account Details
+      accountDetails: client.accountDetails,
+
+      createdAt: client.createdAt,
+      updatedAt: client.updatedAt
+    }));
+
+    // -----------------------------------------------
+    // 8. SEND FINAL RESPONSE
+    // -----------------------------------------------
+    return res.status(200).json({
+      success: true,
+      message: "Clients fetched successfully",
+      clients: responseClients,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -3121,23 +3145,6 @@ const getClients = async (req, res) => {
         hasNextPage: page < Math.ceil(total / limit),
         hasPrevPage: page > 1
       }
-    };
-
-    // -----------------------------------------------
-    // 7. REAL-TIME UPDATES (Optional)
-    // -----------------------------------------------
-    if (global.io) {
-      global.io.to(`user_${req.user.id}`).emit("clients_data", {
-        type: "clients_list",
-        data: responseData,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "Clients fetched successfully",
-      ...responseData
     });
 
   } catch (error) {
@@ -3149,6 +3156,7 @@ const getClients = async (req, res) => {
     });
   }
 };
+
 
 
 
