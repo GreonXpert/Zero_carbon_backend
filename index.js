@@ -91,6 +91,10 @@ app.use(helmet({
 // Middleware
 app.use(express.json());
 
+
+// Allow frontend origins to fetch images
+
+
 // Global request logger
 app.use((req, res, next) => {
     console.log(`\n[${new Date().toISOString()}] ➜ ${req.method} ${req.originalUrl}`);
@@ -105,13 +109,25 @@ if (process.env.NODE_ENV !== 'production') {
     next();
   });
 }
+// CORS allowed frontend domains
 app.use(cors({
-    origin: ["http://localhost:3000", "http://localhost:3002", "https://api.zerohero.ebhoom.com", "https://zerotohero.ebhoom.com","http://localhost:5174"],
-    credentials: true,
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:3002",
+    "http://localhost:5174",
+    "https://api.zerohero.ebhoom.com",
+    "https://zerotohero.ebhoom.com"
+  ],
+  credentials: true,
 }));
 
 // in index.js / server.js once:
-app.use('/uploads', express.static('uploads'));
+app.use(
+  '/uploads',
+  helmet.crossOriginResourcePolicy({ policy: "cross-origin" }),
+  express.static('uploads')
+);
+
 
 
 // Routes
