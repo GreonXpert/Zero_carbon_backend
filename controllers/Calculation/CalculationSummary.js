@@ -5,6 +5,9 @@ const DataEntry = require('../../models/DataEntry');
 const Flowchart = require('../../models/Flowchart');
 const Client = require('../../models/Client');
 const moment = require('moment');
+const ProcessFlowchart = require('../../models/ProcessFlowchart'); 
+const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
+const Reduction = require("../../models/Reduction/Reduction");
 
 // SBTi targets – to link summary emissions with SBTi trajectories
 const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
@@ -572,6 +575,48 @@ function calculateTrends(current, previous) {
 
 
 
+/**
+ * GET /api/summaries/:clientId/sbti-progress
+ *
+ * Returns SBTi target progress for the SAME YEAR
+ * using yearly summary OR fallback summary.
+ */
+const getSbtiProgress = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "clientId is required" });
+    }
+
+    // Step 1: Load latest or yearly summary to compute progress
+    const baseSummary = await EmissionSummary.findOne({ clientId })
+      .sort({ "period.year": -1, createdAt: -1 })
+      .lean();
+
+    if (!baseSummary) {
+      return res.status(404).json({
+        success: false,
+        message: "No summary found for SBTi evaluation",
+      });
+    }
+
+    // Step 2: Build progress using helper you already have
+    const progress = await buildSbtiProgressForSummary(clientId, baseSummary);
+
+    return res.status(200).json({
+      success: true,
+      data: progress || null,
+    });
+  } catch (err) {
+    console.error("Error in getSbtiProgress:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to build SBTi progress",
+      error: err.message,
+    });
+  }
+};
 
 /**
  * Helper: get CO2e value for a given scope from a plain object or a Mongoose Map
@@ -3272,45 +3317,72 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
 /**
  * GET /api/summaries/:clientId/scope-identifiers/hierarchy
  */
+/**
+ * GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ * NEW VERSION USING EmissionSummary MODEL
+ */
+// ======================= SCOPE IDENTIFIER HIERARCHY (USING DATAENTRY) =======================
+
+/**
+ * Build hierarchical emissions view from DataEntry:
+ *
+ * Scope Type
+ *   → Category
+ *     → Activity
+ *       → Scope Identifier
+ *         → { CO2e, CO2, CH4, N2O }
+ *
+ * Also returns simple node/location/department/scopeType hierarchies
+ * in the SAME response shape that your frontend already expects.
+ *
+ * Route (to be added):
+ *   GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ */
 const getScopeIdentifierHierarchy = async (req, res) => {
   try {
     const { clientId } = req.params;
-    let { periodType = 'monthly', year, month, week, day } = req.query;
+    let { periodType = "monthly", year, month, day, from, to } = req.query;
 
     if (!clientId) {
-      return res.status(400).json({ success: false, message: 'clientId is required' });
+      return res.status(400).json({ success: false, message: "clientId is required" });
     }
 
-    // 1. Use the Model's static method for consistent Date Ranges
-    // (This aligns with the logic inside EmissionSummary.js)
-    let dateRange;
-    try {
-        dateRange = EmissionSummary.getDateRangeForPeriod(
-            periodType, 
-            year ? parseInt(year) : undefined, 
-            month ? parseInt(month) : undefined, 
-            week ? parseInt(week) : undefined, 
-            day ? parseInt(day) : undefined
-        );
-    } catch (err) {
-        return res.status(400).json({ success: false, message: err.message });
-    }
-    
-    const { from, to } = dateRange;
+    // ---------------------------- PERIOD RANGE ----------------------------
+    const now = moment.utc();
+    const y = parseInt(year) || now.year();
+    const m = parseInt(month) || now.month() + 1;
+    const d = parseInt(day) || now.date();
 
-    // 2. Load Processed Entries
-    const dataEntries = await DataEntry.find({
+    let startDate, endDate;
+
+    if (periodType === "custom" && (from || to)) {
+      startDate = moment.utc(from).startOf("day");
+      endDate = moment.utc(to).endOf("day");
+    } else if (periodType === "yearly") {
+      startDate = moment.utc({ year: y }).startOf("year");
+      endDate = moment.utc({ year: y }).endOf("year");
+    } else if (periodType === "daily") {
+      startDate = moment.utc({ year: y, month: m - 1, day: d }).startOf("day");
+      endDate = moment.utc({ year: y, month: m - 1, day: d }).endOf("day");
+    } else {
+      // monthly default
+      startDate = moment.utc({ year: y, month: m - 1 }).startOf("month");
+      endDate = moment.utc({ year: y, month: m - 1 }).endOf("month");
+    }
+
+    // ---------------------------- LOAD DATAENTRY ----------------------------
+    const entries = await DataEntry.find({
       clientId,
-      processingStatus: 'processed',
-      timestamp: { $gte: from, $lte: to },
+      timestamp: { $gte: startDate.toDate(), $lte: endDate.toDate() },
+      processingStatus: "processed"
     }).lean();
 
-    if (!dataEntries.length) {
+    if (!entries.length) {
       return res.status(200).json({
         success: true,
         data: {
           clientId,
-          period: { type: periodType, from, to, year, month, week, day },
+          period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
           totals: { totalEntries: 0, totalCO2e: 0 },
           scopeIdentifierHierarchy: { list: [] },
           nodeHierarchy: { list: [] },
@@ -3318,295 +3390,472 @@ const getScopeIdentifierHierarchy = async (req, res) => {
           departmentHierarchy: { list: [] },
           scopeTypeHierarchy: { list: [] }
         },
-        message: 'No data entries found for this period'
+        message: "No summary found for this period"
       });
     }
 
-    // 3. Load Node Metadata (Flowchart)
-    const flowchartDoc = await Flowchart.findOne({ clientId, isActive: true }).lean();
-    const nodeMetaMap = new Map();
+    // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
+    const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
+    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
 
-    if (flowchartDoc && flowchartDoc.chart && Array.isArray(flowchartDoc.chart.nodes)) {
-      flowchartDoc.chart.nodes.forEach((node) => {
-        nodeMetaMap.set(node.id, {
-          nodeId: node.id,
-          label: node.label || 'Unnamed node',
-          department: node.details?.department || 'Unknown',
-          location: node.details?.location || 'Unknown',
-        });
-      });
-    }
+    const allNodes = {};
+    const allScopes = {};
 
-    // Helper to normalize numbers
-    const safeNum = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
+    const ingestChart = (chart) => {
+      if (!chart?.nodes) return;
+      for (const node of chart.nodes) {
+        allNodes[node.id] = {
+          label: node.label || "Unknown Node",
+          department: node.details?.department || null,
+          location: node.details?.location || null
+        };
+
+        for (const s of node.details?.scopeDetails || []) {
+          allScopes[`${node.id}::${s.scopeIdentifier}`] = {
+            scopeType: s.scopeType,
+            categoryName: s.categoryName,
+            activity: s.activity
+          };
+        }
+      }
     };
 
-    // 4. Aggregation Maps
-    const scopeIdentifierMap = new Map();
-    const globalNodeMap = new Map();
-    const locationMap = new Map();
-    const departmentMap = new Map();
+    ingestChart(orgChart);
+    ingestChart(processChart);
+
+    // ---------------------------- AGGREGATION MAPS ----------------------------
+    const scopeTree = new Map();
+    const nodeMap = new Map();
+    const locMap = new Map();
+    const deptMap = new Map();
     const scopeTypeMap = new Map();
 
-    let totalCO2e = 0;
+    const safe = (v) => (v ? Number(v) : 0);
 
-    // 5. Main Processing Loop
-    for (const entry of dataEntries) {
-      // Extract Metadata
-      const scopeIdentifier = entry.scopeIdentifier || 'Unknown';
-      const nodeId = entry.nodeId || 'Unknown';
-      const scopeType = entry.scopeType || 'Unknown';
-      
-      const nodeMeta = nodeMetaMap.get(nodeId) || {};
-      const nodeLabel = nodeMeta.label || nodeId;
-      const department = nodeMeta.department || 'Unknown';
-      const location = nodeMeta.location || 'Unknown';
+    const sumFromEntry = (entry) => {
+      const src = entry.calculatedEmissions?.incoming || entry.calculatedEmissions?.cumulative || {};
+      let totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
-      // Extract Emission Value
-      // Assumes calculatedEmissions structure from your DataEntry model
-      const co2e = safeNum(entry.calculatedEmissions?.CO2e);
-      totalCO2e += co2e;
-
-      const entryInfo = {
-        entryId: entry._id,
-        nodeId, nodeLabel, department, location,
-        scopeType, scopeIdentifier,
-        CO2e: co2e,
-        date: entry.date, // Assuming string "DD:MM:YYYY" or similar
-        timestamp: entry.timestamp
-      };
-
-      // --- Helper to update a Generic Hierarchy Map ---
-      const updateHierarchy = (map, key, keyLabel, parentMeta) => {
-        if (!map.has(key)) {
-            map.set(key, {
-                [keyLabel]: key,
-                totalCO2e: 0,
-                entriesCount: 0,
-                nodes: new Map(),
-                entries: []
-            });
-        }
-        const item = map.get(key);
-        item.totalCO2e += co2e;
-        item.entriesCount += 1;
-        item.entries.push(entryInfo);
-
-        // Sub-group by Node within this hierarchy
-        if (!item.nodes.has(nodeId)) {
-            item.nodes.set(nodeId, {
-                nodeId, nodeLabel, department, location,
-                totalCO2e: 0, entriesCount: 0, entries: []
-            });
-        }
-        const nodeItem = item.nodes.get(nodeId);
-        nodeItem.totalCO2e += co2e;
-        nodeItem.entriesCount += 1;
-        nodeItem.entries.push(entryInfo);
-      };
-
-      // Apply updates
-      updateHierarchy(scopeIdentifierMap, scopeIdentifier, 'scopeIdentifier');
-      updateHierarchy(locationMap, location, 'location');
-      updateHierarchy(departmentMap, department, 'department');
-      // ScopeType is special (nested ScopeIdentifiers), but for simple hierarchy matching others:
-      updateHierarchy(scopeTypeMap, scopeType, 'scopeType');
-
-      // Global Node Map (Flat)
-      if (!globalNodeMap.has(nodeId)) {
-          globalNodeMap.set(nodeId, {
-              nodeId, nodeLabel, department, location,
-              totalCO2e: 0, entriesCount: 0, entries: []
-          });
+      for (const bucket of Object.values(src)) {
+        totals.CO2e += safe(bucket.CO2e);
+        totals.CO2 += safe(bucket.CO2);
+        totals.CH4 += safe(bucket.CH4);
+        totals.N2O += safe(bucket.N2O);
       }
-      const gNode = globalNodeMap.get(nodeId);
-      gNode.totalCO2e += co2e;
-      gNode.entriesCount += 1;
-      gNode.entries.push(entryInfo);
-    }
-
-    // 6. Formatting & Sorting Helper
-    const processMapToList = (map, keyName) => {
-        const list = Array.from(map.values()).map(item => {
-            // Sort entries High -> Low
-            item.entries.sort((a,b) => b.CO2e - a.CO2e);
-            
-            // Convert Nodes Map to Array & Sort
-            if(item.nodes) {
-                const nodesArr = Array.from(item.nodes.values());
-                nodesArr.forEach(n => n.entries.sort((a,b) => b.CO2e - a.CO2e));
-                nodesArr.sort((a,b) => b.totalCO2e - a.totalCO2e);
-                item.nodes = nodesArr;
-            }
-            return item;
-        });
-        // Sort Main List High -> Low
-        list.sort((a,b) => b.totalCO2e - a.totalCO2e);
-        
-        const highest = list.length > 0 ? list[0] : null;
-        // Find lowest that is greater than 0, or just the last one
-        const lowest = list.length > 0 ? 
-            (list.slice().reverse().find(x => x.totalCO2e > 0) || list[list.length-1]) 
-            : null;
-
-        return { highest, lowest, list };
+      return totals;
     };
 
-    // 7. Final Response Construction
+    // ---------------------------- PROCESS EACH DATAENTRY ----------------------------
+    let grandTotal = 0;
+
+    for (const entry of entries) {
+      const emissions = sumFromEntry(entry);
+      const { CO2e } = emissions;
+      if (!CO2e) continue;
+
+      grandTotal += CO2e;
+
+      // Extract metadata from Flowchart
+      const scopeKey = `${entry.nodeId}::${entry.scopeIdentifier}`;
+      const meta = allScopes[scopeKey] || {};
+
+      const scopeType = meta.scopeType || entry.scopeType || "Unknown Scope";
+      const category = meta.categoryName || "Uncategorized";
+      const activity = meta.activity || "Unspecified";
+
+      const nodeMeta = allNodes[entry.nodeId] || {};
+      const nodeLabel = nodeMeta.label || "Unknown Node";
+      const department = nodeMeta.department || "Unknown Department";
+      const location = nodeMeta.location || "Unknown Location";
+
+      // ----------------- NESTED HIERARCHY -----------------
+      if (!scopeTree.has(scopeType)) {
+        scopeTree.set(scopeType, {
+          id: scopeType,
+          label: scopeType,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+          categories: new Map()
+        });
+      }
+      const scopeNode = scopeTree.get(scopeType);
+      scopeNode.CO2e += emissions.CO2e;
+      scopeNode.CO2 += emissions.CO2;
+      scopeNode.CH4 += emissions.CH4;
+      scopeNode.N2O += emissions.N2O;
+
+      // Category level
+      if (!scopeNode.categories.has(category)) {
+        scopeNode.categories.set(category, {
+          id: `${scopeType}::${category}`,
+          label: category,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+          activities: new Map()
+        });
+      }
+      const catNode = scopeNode.categories.get(category);
+      catNode.CO2e += emissions.CO2e;
+
+      // Activity level
+      if (!catNode.activities.has(activity)) {
+        catNode.activities.set(activity, {
+          id: `${scopeType}::${category}::${activity}`,
+          label: activity,
+          CO2e: 0,
+          children: []
+        });
+      }
+      const actNode = catNode.activities.get(activity);
+      actNode.CO2e += emissions.CO2e;
+
+      // Leaf: Scope Identifier
+      actNode.children.push({
+        id: `${scopeType}::${category}::${activity}::${entry.scopeIdentifier}`,
+        label: entry.scopeIdentifier,
+        ...emissions
+      });
+
+      // ----------------- FLAT HIERARCHIES -----------------
+      const pushSum = (map, key, label) => {
+        if (!map.has(key)) map.set(key, { id: key, label, CO2e: 0 });
+        map.get(key).CO2e += emissions.CO2e;
+      };
+
+      pushSum(nodeMap, entry.nodeId, nodeLabel);
+      pushSum(locMap, location, location);
+      pushSum(deptMap, department, department);
+      pushSum(scopeTypeMap, scopeType, scopeType);
+    }
+
+    // ---------------------------- FORMAT FINAL TREE ----------------------------
+    const scopeList = [];
+
+    for (const [scopeType, scopeObj] of scopeTree.entries()) {
+      const catList = [];
+
+      for (const [cat, catObj] of scopeObj.categories.entries()) {
+        const actList = [];
+
+        for (const [act, actObj] of catObj.activities.entries()) {
+          actObj.children.sort((a, b) => b.CO2e - a.CO2e);
+          actList.push(actObj);
+        }
+
+        actList.sort((a, b) => b.CO2e - a.CO2e);
+        catObj.children = actList;
+        delete catObj.activities;
+
+        catList.push(catObj);
+      }
+
+      catList.sort((a, b) => b.CO2e - a.CO2e);
+      scopeObj.children = catList;
+      delete scopeObj.categories;
+
+      scopeList.push(scopeObj);
+    }
+
+    scopeList.sort((a, b) => b.CO2e - a.CO2e);
+
+    // ---------------------------- FINAL RESPONSE ----------------------------
     return res.status(200).json({
       success: true,
       data: {
         clientId,
-        period: { type: periodType, from, to, year, month, week, day },
-        totals: {
-          totalEntries: dataEntries.length,
-          totalCO2e,
-        },
-        scopeIdentifierHierarchy: processMapToList(scopeIdentifierMap, 'scopeIdentifier'),
-        nodeHierarchy: processMapToList(globalNodeMap, 'nodeId'),
-        locationHierarchy: processMapToList(locationMap, 'location'),
-        departmentHierarchy: processMapToList(departmentMap, 'department'),
-        scopeTypeHierarchy: processMapToList(scopeTypeMap, 'scopeType')
-      },
+        period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
+        totals: { totalEntries: entries.length, totalCO2e: grandTotal },
+        scopeIdentifierHierarchy: { list: scopeList },
+        nodeHierarchy: { list: Array.from(nodeMap.values()) },
+        locationHierarchy: { list: Array.from(locMap.values()) },
+        departmentHierarchy: { list: Array.from(deptMap.values()) },
+        scopeTypeHierarchy: { list: Array.from(scopeTypeMap.values()) }
+      }
     });
 
   } catch (error) {
-    console.error('Error in getScopeIdentifierHierarchy:', error);
-    return res.status(500).json({ success: false, message: 'Failed to compute hierarchy', error: error.message });
+    console.error("Hierarchy Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
+
+
 
 
 /**
  * GET /api/summaries/:clientId/reduction/hierarchy
- * * Fetches the pre-calculated reduction summary from the EmissionSummary document
- * and formats it into hierarchies for Project, Category, Scope, and Location.
+ *
+ * Builds hierarchies FROM NetReductionEntry collection.
+ * Does NOT use EmissionSummary.
+ *
+ * Supported periodType:
+ *  - monthly (default)
+ *  - yearly
+ *  - daily
+ *  - custom?from&to
  */
+
+
+
 const getReductionSummaryHierarchy = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { periodType = 'monthly', year, month, week, day } = req.query;
+    let { projectId, periodType = "monthly", year, month, day, from, to } =
+      req.query;
 
     if (!clientId) {
-      return res.status(400).json({ success: false, message: 'clientId is required' });
-    }
-
-    // 1. Build Query for EmissionSummary
-    const query = {
-      clientId,
-      'period.type': periodType
-    };
-
-    // Add specific period fields based on type
-    if (periodType !== 'all-time') {
-      if (year) query['period.year'] = parseInt(year);
-      if (periodType === 'monthly' && month) query['period.month'] = parseInt(month);
-      if (periodType === 'weekly' && week) query['period.week'] = parseInt(week);
-      if (periodType === 'daily' && day) query['period.day'] = parseInt(day);
-    }
-
-    // 2. Fetch the Summary Document
-    const summaryDoc = await EmissionSummary.findOne(query).lean();
-
-    if (!summaryDoc || !summaryDoc.reductionSummary) {
-      return res.status(404).json({
+      return res.status(400).json({
         success: false,
-        message: 'No reduction summary found for this client and period',
-        data: null
+        message: "clientId is required",
       });
     }
 
-    const rs = summaryDoc.reductionSummary;
+    // -------------------------------
+    // 1) RESOLVE PERIOD RANGE
+    // -------------------------------
+    const now = moment.utc();
 
-    // 3. Helper to process Maps/Arrays into Hierarchy (Highest/Lowest/List)
-    // Supports both Maps (from schema) and Arrays (byProject is an array)
-    const processReductionData = (sourceData, labelKey = 'label') => {
-      let list = [];
+    const y = parseInt(year) || now.year();
+    const m = parseInt(month) || now.month() + 1;
+    const d = parseInt(day) || now.date();
 
-      if (Array.isArray(sourceData)) {
-        // If it's the project array
-        list = sourceData.map(item => ({
-          ...item,
-          // specific mapping for projects if keys differ, otherwise spread
-          label: item[labelKey] || item.name || 'Unknown' 
-        }));
-      } else if (sourceData && typeof sourceData === 'object') {
-        // If it's a Map/Object (byCategory, byScope, etc.)
-        // Handling Mongoose Map which comes out as Object in .lean() or Map
-        const entries = sourceData instanceof Map ? sourceData.entries() : Object.entries(sourceData);
-        
-        for (const [key, val] of entries) {
-           list.push({
-             label: key,
-             ...val // contains totalNetReduction, entriesCount
-           });
-        }
-      }
+    let start, end;
 
-      // Sort High -> Low based on totalNetReduction
-      list.sort((a, b) => (b.totalNetReduction || 0) - (a.totalNetReduction || 0));
+    if (periodType === "custom") {
+      start = from ? moment.utc(from).startOf("day") : moment.utc().startOf("year");
+      end = to ? moment.utc(to).endOf("day") : moment.utc().endOf("year");
+    } else if (periodType === "yearly") {
+      start = moment.utc({ year: y }).startOf("year");
+      end = moment.utc({ year: y }).endOf("year");
+    } else if (periodType === "daily") {
+      start = moment.utc({ year: y, month: m - 1, day: d }).startOf("day");
+      end = moment.utc({ year: y, month: m - 1, day: d }).endOf("day");
+    } else {
+      // default monthly
+      start = moment.utc({ year: y, month: m - 1 }).startOf("month");
+      end = moment.utc({ year: y, month: m - 1 }).endOf("month");
+    }
 
-      const highest = list.length > 0 ? list[0] : null;
-      // Find lowest non-zero, or just last
-      const lowest = list.length > 0 ? 
-        (list.slice().reverse().find(x => x.totalNetReduction > 0) || list[list.length-1]) 
-        : null;
-
-      return { highest, lowest, list };
+    const rangeQuery = {
+      timestamp: {
+        $gte: start.toDate(),
+        $lte: end.toDate(),
+      },
     };
 
-    // 4. Build Hierarchies
-    
-    // Project Hierarchy (Source is Array in schema)
-    const projectHierarchy = processReductionData(rs.byProject, 'projectName');
+    // -------------------------------
+    // 2) LOAD ALL NET REDUCTION ENTRIES
+    // -------------------------------
+    const filters = {
+      clientId,
+      ...rangeQuery,
+    };
 
-    // Category Hierarchy (Source is Map in schema)
-    const categoryHierarchy = processReductionData(rs.byCategory);
+    if (projectId) filters.projectId = projectId;
 
-    // Scope Hierarchy (Source is Map in schema)
-    const scopeHierarchy = processReductionData(rs.byScope);
+    const rows = await NetReductionEntry.find(filters).lean();
 
-    // Location Hierarchy (Source is Map in schema)
-    const locationHierarchy = processReductionData(rs.byLocation);
+    if (!rows.length) {
+      return res.status(200).json({
+        success: true,
+        message: "No net reduction data for this range",
+        data: {
+          clientId,
+          period: {
+            type: periodType,
+            year: y,
+            month: m,
+            day: d,
+            from: start,
+            to: end,
+          },
+          totals: {
+            totalEntries: 0,
+            totalNetReduction: 0,
+          },
+          projectHierarchy: { list: [] },
+          categoryHierarchy: { list: [] },
+          methodologyHierarchy: { list: [] },
+          locationHierarchy: { list: [] }, // safe empty
+          scopeHierarchy: { list: [] }, // safe empty
+        },
+      });
+    }
 
-    // Methodology Hierarchy (Source is Map in schema)
-    const methodologyHierarchy = processReductionData(rs.byMethodology);
+    // -------------------------------
+    // 3) SAFE HELPERS
+    // -------------------------------
+    const safe = (n) => (isNaN(n) ? 0 : Number(n));
 
+    // Map → list(sorted)
+    const toList = (map) =>
+      Array.from(map.values()).sort((a, b) => safe(b.total) - safe(a.total));
 
-    // 5. Response
+    // -------------------------------
+    // 4) BUILD HIERARCHY MAPS
+    // -------------------------------
+    const projectMap = new Map();
+    const categoryMap = new Map();
+    const methodologyMap = new Map();
+
+    let grandTotal = 0;
+
+    for (const row of rows) {
+      const project = row.projectId;
+      const meth = row.calculationMethodology;
+      const net = safe(row.netReduction);
+
+      grandTotal += net;
+
+      // ---------------------------------
+      // PROJECT HIERARCHY
+      // ---------------------------------
+      if (!projectMap.has(project)) {
+        projectMap.set(project, {
+          id: project,
+          label: project,
+          total: 0,
+          methodologies: new Map(),
+        });
+      }
+      const pObj = projectMap.get(project);
+      pObj.total += net;
+
+      // METHODOLOGY UNDER PROJECT
+      if (!pObj.methodologies.has(meth)) {
+        pObj.methodologies.set(meth, {
+          id: `${project}::${meth}`,
+          label: meth,
+          total: 0,
+        });
+      }
+      pObj.methodologies.get(meth).total += net;
+
+      // ---------------------------------
+      // CATEGORY HIERARCHY (for M3 items)
+      // fallback for M1/M2: put into generic categories
+      // ---------------------------------
+      if (meth === "methodology3") {
+        // Add baseline
+        for (const x of row.m3?.breakdown?.baseline || []) {
+          const key = `Baseline::${x.id}`;
+          if (!categoryMap.has(key)) {
+            categoryMap.set(key, {
+              id: key,
+              label: `${project} - Baseline ${x.id}`,
+              total: 0,
+            });
+          }
+          categoryMap.get(key).total += safe(x.value);
+        }
+
+        // Project group
+        for (const x of row.m3?.breakdown?.project || []) {
+          const key = `Project::${x.id}`;
+          if (!categoryMap.has(key)) {
+            categoryMap.set(key, {
+              id: key,
+              label: `${project} - Project ${x.id}`,
+              total: 0,
+            });
+          }
+          categoryMap.get(key).total += safe(x.value);
+        }
+
+        // Leakage group
+        for (const x of row.m3?.breakdown?.leakage || []) {
+          const key = `Leakage::${x.id}`;
+          if (!categoryMap.has(key)) {
+            categoryMap.set(key, {
+              id: key,
+              label: `${project} - Leakage ${x.id}`,
+              total: 0,
+            });
+          }
+          categoryMap.get(key).total += safe(x.value);
+        }
+      } else if (meth === "methodology2") {
+        const key = `Formula:${project}`;
+        if (!categoryMap.has(key)) {
+          categoryMap.set(key, {
+            id: key,
+            label: `${project} - Formula`,
+            total: 0,
+          });
+        }
+        categoryMap.get(key).total += net;
+      } else {
+        // M1
+        const key = `Value:${project}`;
+        if (!categoryMap.has(key)) {
+          categoryMap.set(key, {
+            id: key,
+            label: `${project} - Value Based`,
+            total: 0,
+          });
+        }
+        categoryMap.get(key).total += net;
+      }
+
+      // ---------------------------------
+      // METHODOLOGY HIERARCHY (GLOBAL)
+      // ---------------------------------
+      if (!methodologyMap.has(meth)) {
+        methodologyMap.set(meth, {
+          id: meth,
+          label: meth,
+          total: 0,
+        });
+      }
+      methodologyMap.get(meth).total += net;
+    }
+
+    // -------------------------------
+    // 5) FINAL_FORMATTING
+    // -------------------------------
+    const projectList = Array.from(projectMap.values()).map((p) => {
+      return {
+        ...p,
+        methodologies: toList(p.methodologies),
+      };
+    });
+
     return res.status(200).json({
       success: true,
       data: {
         clientId,
-        period: summaryDoc.period,
-        totals: {
-            totalNetReduction: rs.totalNetReduction || 0,
-            entriesCount: rs.entriesCount || 0
+        period: {
+          type: periodType,
+          year: y,
+          month: m,
+          day: d,
+          from: start,
+          to: end,
         },
-        projectHierarchy,
-        categoryHierarchy,
-        scopeHierarchy,
-        locationHierarchy,
-        methodologyHierarchy
-      }
-    });
+        totals: {
+          totalEntries: rows.length,
+          totalNetReduction: grandTotal,
+        },
 
+        projectHierarchy: { list: projectList },
+        categoryHierarchy: { list: toList(categoryMap) },
+        methodologyHierarchy: { list: toList(methodologyMap) },
+
+        // optional empty (no location/scope fields exist in NetReductionEntry)
+        locationHierarchy: { list: [] },
+        scopeHierarchy: { list: [] },
+      },
+    });
   } catch (error) {
-    console.error('Error in getReductionSummaryHierarchy:', error);
-    return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to retrieve reduction hierarchy', 
-        error: error.message 
+    console.error("getReductionSummaryHierarchy error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to build reduction summary hierarchy",
+      error: error.message,
     });
   }
 };
 
-module.exports = {
-    getScopeIdentifierHierarchy,
-    getReductionSummaryHierarchy
-};
 
 module.exports = {
   setSocketIO,
@@ -3621,6 +3870,7 @@ module.exports = {
   getTopLowEmissionStats,
   getScopeIdentifierEmissionExtremes,
   getScopeIdentifierHierarchy, 
+  getSbtiProgress,
   getReductionSummaryHierarchy,
     
 

@@ -9,7 +9,8 @@ const {
   getTopLowEmissionStats,
   getScopeIdentifierEmissionExtremes,
   getScopeIdentifierHierarchy, 
-    getReductionSummaryHierarchy,
+  getReductionSummaryHierarchy,
+     getSbtiProgress
   
   
 } = require('../controllers/Calculation/CalculationSummary');
@@ -109,16 +110,25 @@ router.get(
  * @query   day=<1-31> (optional)
  */
 router.get(
-  '/:clientId/hierarchy',
+  "/:clientId/scope-identifiers/hierarchy",
   checkSummaryPermission,
   getScopeIdentifierHierarchy
 );
-
 
 router.get(
   '/:clientId/reduction/hierarchy',
   checkSummaryPermission,
   getReductionSummaryHierarchy
+);
+
+/**
+ * @route GET /api/summaries/:clientId/sbti-progress
+ * @desc  Returns SBTi yearly progress for the client
+ */
+router.get(
+  "/:clientId/sbti-progress",
+  checkSummaryPermission,
+  getSbtiProgress
 );
 
 
