@@ -34,48 +34,77 @@ router.get(  "/mark-all-read", markAllReadHandler); // Mark all notifications as
 router.get("/stats", getNotificationStats); // Get notification statistics (Admin only)
 
 // Unread count endpoint
+// ==============================
+// GET UNREAD NOTIFICATION COUNT
+// ==============================
 router.get("/unread-count", async (req, res) => {
   try {
     const Notification = require("../models/Notification");
-    
-    // Build targeting conditions for accurate unread count
-    const targetingConditions = [
-      { targetUsers: req.user.id },
-      {
-        targetUserTypes: req.user.userType,
-        $or: [
-          { targetUsers: { $exists: false } },
-          { targetUsers: { $size: 0 } }
-        ]
-      }
-    ];
-    
-    if (req.user.clientId) {
-      targetingConditions.push({
-        targetClients: req.user.clientId,
-        $and: [
-          { $or: [{ targetUsers: { $exists: false } }, { targetUsers: { $size: 0 } }] },
-          { $or: [{ targetUserTypes: { $exists: false } }, { targetUserTypes: { $size: 0 } }] }
-        ]
-      });
-    }
-    
-    const unreadCount = await Notification.countDocuments({
-      status: 'published',
+
+    // ✅ USER ID NORMALIZATION (MANDATORY)
+    const userId = (
+      req.user._id ||
+      req.user.id ||
+      req.user.userId
+    ).toString();
+
+    // ✅ BASE QUERY (MUST MATCH ALL HANDLERS)
+    const baseQuery = {
+      status: "published",
       isDeleted: false,
-      'readBy.user': { $ne: req.user.id },
+      "readBy.user": { $ne: userId }, // unread only
       $or: [
         { expiryDate: null },
         { expiryDate: { $gt: new Date() } }
-      ],
-      $or: targetingConditions
+      ]
+    };
+
+    // ✅ FULL TARGETING PRIORITY (STRICT ORDER — DO NOT CHANGE)
+    const targeting = [
+      // 1️⃣ Specific Users
+      { targetUsers: userId },
+
+      // 2️⃣ UserType (only when no targetUsers)
+      {
+        targetUserTypes: req.user.userType,
+        targetUsers: { $size: 0 }
+      },
+    ];
+
+    // 3️⃣ Client (only when no users + no types)
+    if (req.user.clientId) {
+      targeting.push({
+        targetClients: req.user.clientId,
+        targetUsers: { $size: 0 },
+        targetUserTypes: { $size: 0 }
+      });
+    }
+
+    // 4️⃣ Global
+    targeting.push({
+      targetUsers: { $size: 0 },
+      targetUserTypes: { $size: 0 },
+      targetClients: { $size: 0 }
     });
-    
-    res.status(200).json({
+
+    // FINAL QUERY
+    const finalQuery = {
+      ...baseQuery,
+      $or: targeting
+    };
+
+    // EXECUTE COUNT
+    const unreadCount = await Notification.countDocuments(finalQuery);
+
+    return res.status(200).json({
+      success: true,
       unreadCount
     });
+
   } catch (error) {
-    res.status(500).json({
+    console.error("❌ unread-count error:", error);
+    return res.status(500).json({
+      success: false,
       message: "Failed to get unread count",
       error: error.message
     });

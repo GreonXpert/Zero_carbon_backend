@@ -593,7 +593,7 @@ const markAsRead = async (req, res) => {
       });
     }
     
-    await notification.markAsReadBy(req.user.id || req.user._id);
+    await notification.markAsReadBy(req.user);
     
     res.status(200).json({
       message: "Notification marked as read"
