@@ -2170,137 +2170,6 @@ exports.uploadCsvNetReduction = async (req, res) => {
 
 
 
-  exports.listNetReductions = async (req, res) => {
-    try {
-      const user = req.user;
-      if (!user) return res.status(401).json({ success:false, message: 'Unauthenticated' });
-
-      // ✅ Allow super_admin, consultant_admin, consultant, client_admin
-      const ALLOWED = ['super_admin','consultant_admin','consultant','client_admin'];
-      if (!ALLOWED.includes(user.userType)) {
-        return res.status(403).json({ success:false, message: 'Forbidden' });
-      }
-
-      const {
-        clientId: clientIdParam,
-        projectId,
-        methodology,         // 'methodology1' | 'methodology2'
-        inputType,           // 'manual' | 'API' | 'IOT' | 'CSV'
-        from, to,            // date range (timestamp)
-        q,                   // free-text search (clientId/projectId)
-        minNet, maxNet,      // numeric filter on netReduction
-        page = 1,
-        limit = 20,
-        sortBy = 'timestamp',
-        sortOrder = 'desc'
-      } = req.query;
-
-      // ---- Access scope: which clientIds are allowed for this user ----
-      let allowedClientIds = null; // null === all (super_admin)
-      if (user.userType === 'super_admin') {
-        allowedClientIds = null; // all clients
-      } else if (user.userType === 'client_admin') {
-        // ✅ client_admin can ONLY see their own client
-        if (!user.clientId) {
-          return res.status(400).json({ success:false, message:'Your account has no clientId bound' });
-        }
-        allowedClientIds = [user.clientId];
-      } else if (user.userType === 'consultant_admin') {
-        const created = await Client.find({ 'leadInfo.createdBy': user.id }).select('clientId');
-        allowedClientIds = created.map(c => c.clientId);
-      } else if (user.userType === 'consultant') {
-        const assigned = await Client.find({ 'leadInfo.assignedConsultantId': user.id }).select('clientId');
-        allowedClientIds = assigned.map(c => c.clientId);
-      }
-
-      // ---- Build filter ----
-      const filter = {};
-
-      // Client scoping
-      if (clientIdParam) {
-        // If restricted, enforce membership
-        if (allowedClientIds && !allowedClientIds.includes(clientIdParam)) {
-          return res.status(403).json({ success:false, message:'Permission denied for this clientId' });
-        }
-        filter.clientId = clientIdParam;
-      } else if (allowedClientIds) {
-        // If user is restricted and no clientId was specified, scope to theirs
-        filter.clientId = { $in: allowedClientIds };
-      }
-      // (super_admin with no clientIdParam => all clients)
-
-      // Project filter (case-insensitive contains)
-      if (projectId) {
-        const esc = projectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        filter.projectId = { $regex: new RegExp(esc, 'i') };
-      }
-
-      if (methodology) filter.calculationMethodology = methodology;
-      if (inputType)   filter.inputType = inputType;
-
-      // Free-text search across clientId + projectId
-      if (q && q.trim()) {
-        const rx = { $regex: q.trim(), $options: 'i' };
-        filter.$or = [{ clientId: rx }, { projectId: rx }];
-      }
-
-      // Date range on timestamp
-      const parseDate = (raw) => {
-        if (!raw) return null;
-        const m = moment(raw, ['DD/MM/YYYY','YYYY-MM-DD','YYYY-MM-DDTHH:mm:ss.SSSZ'], true);
-        return m.isValid() ? m.toDate() : null;
-      };
-      const fromDate = parseDate(from);
-      const toDate   = parseDate(to);
-      if (fromDate || toDate) {
-        filter.timestamp = {};
-        if (fromDate) filter.timestamp.$gte = fromDate;
-        if (toDate)   filter.timestamp.$lte = toDate;
-      }
-
-      // Numeric filter on netReduction
-      const minNR = Number(minNet);
-      const maxNR = Number(maxNet);
-      if (isFinite(minNR) || isFinite(maxNR)) {
-        filter.netReduction = {};
-        if (isFinite(minNR)) filter.netReduction.$gte = minNR;
-        if (isFinite(maxNR)) filter.netReduction.$lte = maxNR;
-      }
-
-      // ---- Pagination / sorting ----
-      const pageNum  = Math.max(1, parseInt(page, 10) || 1);
-      const limNum   = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
-      const skip     = (pageNum - 1) * limNum;
-      const sort     = { [sortBy]: (String(sortOrder).toLowerCase() === 'asc') ? 1 : -1 };
-
-      const [total, rows] = await Promise.all([
-        NetReductionEntry.countDocuments(filter),
-        NetReductionEntry.find(filter)
-          .sort(sort)
-          .skip(skip)
-          .limit(limNum)
-          .select('-__v')
-          .lean()
-      ]);
-
-      return res.status(200).json({
-        success: true,
-        meta: {
-          page: pageNum,
-          limit: limNum,
-          total,
-          totalPages: Math.ceil(total / limNum),
-          hasNextPage: pageNum < Math.ceil(total / limNum),
-          hasPrevPage: pageNum > 1
-        },
-        filter,
-        data: rows
-      });
-    } catch (err) {
-      console.error('listNetReductions error:', err);
-      return res.status(500).json({ success:false, message:'Failed to fetch net reductions', error: err.message });
-    }
-  };
 
 
   // --- ADD THIS HELPER NEAR THE TOP (below other helpers) ---
@@ -2388,166 +2257,6 @@ async function recomputeSeries(clientId, projectId, calculationMethodology) {
  *     }
  *   }
  */
-exports.updateManualNetReductionEntry = async (req, res) => {
-  try {
-    const { clientId, projectId, calculationMethodology, entryId } = req.params;
-
-    // Permission
-    const can = await canWriteReductionData(req.user, clientId);
-    if (!can.ok)
-      return res.status(403).json({ success: false, message: can.reason });
-
-    // Find entry
-    const entry = await NetReductionEntry.findOne({
-      _id: entryId,
-      clientId,
-      projectId,
-      calculationMethodology
-    });
-
-    if (!entry)
-      return res.status(404).json({ success: false, message: "Entry not found" });
-
-    if ((entry.inputType || "").toLowerCase() !== "manual")
-      return res
-        .status(400)
-        .json({ success: false, message: "Only manual entries can be updated" });
-
-    // Load reduction
-    const reductionDoc = await Reduction.findOne({
-      clientId,
-      projectId,
-      isDeleted: false
-    }).select("m3 calculationMethodology reductionDataEntry");
-
-    if (!reductionDoc)
-      return res
-        .status(404)
-        .json({ success: false, message: "Reduction not found" });
-
-    // Date/time update
-    const hasDateOrTime = req.body.date != null || req.body.time != null;
-    if (hasDateOrTime) {
-      const when = parseDateTimeOrNowIST(
-        req.body.date || entry.date,
-        req.body.time || entry.time
-      );
-      entry.date = when.date;
-      entry.time = when.time;
-      entry.timestamp = when.timestamp;
-    }
-
-    // Only M3 here
-    if (reductionDoc.calculationMethodology !== "methodology3")
-      return res.status(400).json({
-        success: false,
-        message: "This update endpoint only supports M3"
-      });
-
-    const payload = req.body.entry;
-    if (!payload || typeof payload !== "object")
-      return res
-        .status(400)
-        .json({ success: false, message: "entry payload required" });
-
-    // Collect formulas
-    const allItems = [
-      ...(reductionDoc.m3.baselineEmissions || []),
-      ...(reductionDoc.m3.projectEmissions || []),
-      ...(reductionDoc.m3.leakageEmissions || [])
-    ];
-
-    const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
-    const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
-
-    const formulasById = {};
-    formulas.forEach(f => (formulasById[f._id.toString()] = f));
-
-    // Evaluate M3 for THIS updated entry
-    const result = await evaluateM3(reductionDoc, formulasById, payload);
-
-    const BE_now  = Number(result.BE_total || 0);
-    const PE_now  = Number(result.PE_total || 0);
-    const LE_now  = Number(result.LE_total || 0);
-    const Nw_now  = Number(result.netWithoutUncertainty || 0);
-    const NwU_now = Number(result.netWithUncertainty || 0);
-
-    // Get previous entry (excluding this one)
-    const prev = await NetReductionEntry.findOne({
-      clientId,
-      projectId,
-      calculationMethodology,
-      _id: { $ne: entry._id }
-    })
-      .sort({ timestamp: -1 })
-      .lean();
-
-    const prevM3 = prev && prev.m3 ? prev.m3 : {};
-
-    const prevCumBE  = Number(prevM3.cumulativeBE  ?? 0);
-    const prevCumPE  = Number(prevM3.cumulativePE  ?? 0);
-    const prevCumLE  = Number(prevM3.cumulativeLE  ?? 0);
-    const prevCumNw  = Number(prevM3.cumulativeNetWithoutUncertainty ?? 0);
-    const prevCumNwU = Number(prevM3.cumulativeNetWithUncertainty   ?? 0);
-
-    // Per-item cumulative breakdown
-    const breakdownWithCum = buildM3BreakdownWithCumulative(prevM3, result);
-
-    // Build final cumulative block
-    const m3Final = {
-      ...result,
-
-      cumulativeBE: round6(prevCumBE + BE_now),
-      cumulativePE: round6(prevCumPE + PE_now),
-      cumulativeLE: round6(prevCumLE + LE_now),
-
-      cumulativeNetWithoutUncertainty: round6(prevCumNw + Nw_now),
-      cumulativeNetWithUncertainty:   round6(prevCumNwU + NwU_now),
-
-      breakdown: breakdownWithCum
-    };
-
-    // Save on entry
-    entry.m3 = m3Final;
-    entry.netReduction = NwU_now; // per-entry value
-
-    await entry.save({ validateBeforeSave: false });
-
-    // Recompute full series (cumulativeNetReduction / high / low)
-    const series = await recomputeProjectCumulative(
-      clientId,
-      projectId,
-      calculationMethodology
-    );
-
-    try {
-      await recomputeClientNetReductionSummary(clientId);
-    } catch {}
-
-    emitNR("net-reduction:m3-manual-updated", {
-      clientId,
-      projectId,
-      entryId: entry._id,
-      m3: entry.m3,
-      netReduction: entry.netReduction,
-      cumulativeNetReduction: entry.cumulativeNetReduction
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "M3 entry updated",
-      series,
-      data: entry
-    });
-
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update M3 entry",
-      error: err.message
-    });
-  }
-};
 /**
  * UPDATE a MANUAL Net-Reduction Entry (M1, M2, M3)
  *
@@ -3043,6 +2752,158 @@ exports.reconnectNetReductionSource = async (req, res) => {
     return res.status(500).json({
       message: 'Failed to reconnect net reduction source',
       error: error.message
+    });
+  }
+};
+
+// GET /api/net-reduction
+exports.listNetReductions = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) return res.status(401).json({ success: false, message: 'Unauthenticated' });
+
+    // ----------------------------
+    // 1. PERMISSION SCOPING
+    // ----------------------------
+    let allowedClientIds = null;
+
+    if (user.userType === 'consultant') {
+      const assigned = await Client.find({ 'leadInfo.assignedConsultantId': user.id }).select('clientId');
+      allowedClientIds = assigned.map(c => c.clientId);
+    }
+
+    if (user.userType === 'consultant_admin') {
+      const consultants = await User.find({ consultantAdminId: user.id }).select('_id');
+      const consultantIds = consultants.map(c => c._id.toString());
+      consultantIds.push(user.id);
+
+      const clients = await Client.find({
+        $or: [
+          { 'leadInfo.consultantAdminId': user.id },
+          { 'leadInfo.assignedConsultantId': { $in: consultantIds } }
+        ]
+      }).select('clientId');
+
+      allowedClientIds = clients.map(c => c.clientId);
+    }
+
+    // ----------------------------
+    // 2. BUILD FILTER
+    //----------------------------
+    const {
+      clientId: clientIdParam,
+      projectId,
+      methodology,
+      inputType,
+      q,
+      from,
+      to,
+      minNet,
+      maxNet,
+      page = 1,
+      limit = 20,
+      sortBy = 'timestamp',
+      sortOrder = 'desc'
+    } = req.query;
+
+    const filter = {};
+
+    // Client filter + permission enforcement
+    if (clientIdParam) {
+      if (allowedClientIds && !allowedClientIds.includes(clientIdParam)) {
+        return res.status(403).json({ success: false, message: 'Permission denied for this clientId' });
+      }
+      filter.clientId = clientIdParam;
+    } else if (allowedClientIds) {
+      filter.clientId = { $in: allowedClientIds };
+    }
+
+    // Project filter (partial match)
+    if (projectId) {
+      const esc = projectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.projectId = { $regex: new RegExp(esc, 'i') };
+    }
+
+    if (methodology) filter.calculationMethodology = methodology;
+    if (inputType) filter.inputType = inputType;
+
+    // Free text search
+    if (q && q.trim()) {
+      const rx = { $regex: q.trim(), $options: 'i' };
+      filter.$or = [{ clientId: rx }, { projectId: rx }];
+    }
+
+    // Date filtering
+    const parseDate = raw => {
+      if (!raw) return null;
+      const m = moment(raw, ['DD/MM/YYYY','YYYY-MM-DD'], true);
+      return m.isValid() ? m.toDate() : null;
+    };
+
+    const fromDate = parseDate(from);
+    const toDate = parseDate(to);
+
+    if (fromDate || toDate) {
+      filter.timestamp = {};
+      if (fromDate) filter.timestamp.$gte = fromDate;
+      if (toDate) filter.timestamp.$lte = toDate;
+    }
+
+    // Min-max Net Reduction
+    const minNR = Number(minNet);
+    const maxNR = Number(maxNet);
+
+    if (isFinite(minNR) || isFinite(maxNR)) {
+      filter.netReduction = {};
+      if (isFinite(minNR)) filter.netReduction.$gte = minNR;
+      if (isFinite(maxNR)) filter.netReduction.$lte = maxNR;
+    }
+
+    // ----------------------------
+    // 3. PAGINATION + SORTING
+    // ----------------------------
+    const pageNum = Math.max(1, parseInt(page));
+    const limNum = Math.min(200, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limNum;
+
+    const sort = { [sortBy]: sortOrder.toLowerCase() === 'asc' ? 1 : -1 };
+
+    // ----------------------------
+    // 4. DB QUERY
+    // ----------------------------
+    const [total, rows] = await Promise.all([
+      NetReductionEntry.countDocuments(filter),
+      NetReductionEntry.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(limNum)
+        .select('-__v')
+        .lean()
+    ]);
+
+    // ----------------------------
+    // 5. RESPONSE
+    // ----------------------------
+    return res.status(200).json({
+      success: true,
+      meta: {
+        page: pageNum,
+        limit: limNum,
+        total,
+        totalPages: Math.ceil(total / limNum),
+        hasNextPage: pageNum < Math.ceil(total / limNum),
+        hasPrevPage: pageNum > 1
+      },
+      filter,
+      data: rows
+    });
+
+  } catch (err) {
+    console.error('listNetReductions error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch net reductions',
+      error: err.message
     });
   }
 };

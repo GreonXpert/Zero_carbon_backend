@@ -62,8 +62,8 @@ const createNotification = async (req, res) => {
         // Get all clients managed by this consultant admin
         const managedClients = await Client.find({
           $or: [
-            { "leadInfo.consultantAdminId": req.user.id },
-            { "leadInfo.assignedConsultantId": { $in: await getConsultantIds(req.user.id) } }
+            { "leadInfo.consultantAdminId": req.user.id || req.user._id },
+            { "leadInfo.assignedConsultantId": { $in: await getConsultantIds(req.user.id || req.user._id) } }
           ],
           stage: "active"
         }).select("clientId");
@@ -243,12 +243,31 @@ ZeroCarbon Team`
 };
 
 // Helper function to get consultant IDs under a consultant admin
-async function getConsultantIds(consultantAdminId) {
-  const consultants = await User.find({ 
-    consultantAdminId: consultantAdminId,
-    userType: "consultant"
-  }).select("_id");
-  return consultants.map(c => c._id);
+async function getConsultantIds(consultantAdmin) {
+  try {
+    if (!consultantAdmin) return [];
+
+    // ✅ MANDATORY USER ID NORMALIZATION (GLOBAL STANDARD)
+    const consultantAdminId = (
+      consultantAdmin._id ||
+      consultantAdmin.id ||
+      consultantAdmin.userId
+    ).toString();
+
+    // ✅ Fetch only ACTIVE consultant users under this admin
+    const consultants = await User.find({
+      consultantAdminId: consultantAdminId,
+      userType: "consultant",
+      isDeleted: false
+    }).select("_id");
+
+    // ✅ Always return normalized string IDs
+    return consultants.map(c => c._id.toString());
+
+  } catch (error) {
+    console.error("❌ getConsultantIds failed:", error);
+    return [];
+  }
 }
 
 // Helper function to notify super admin about client notifications
@@ -287,31 +306,38 @@ ZeroCarbon System
   }
 }
 
-// Get notifications for user
+// ✅ Get notifications for user — FULLY STANDARDIZED
 const getNotifications = async (req, res) => {
   try {
     const { includeRead, limit, skip, unreadOnly } = req.query;
-    
+
+    // ✅ USER ID NORMALIZATION (MANDATORY)
+    const userId = (
+      req.user._id ||
+      req.user.id ||
+      req.user.userId
+    ).toString();
+
     const options = {
       includeRead: includeRead !== 'false',
       limit: parseInt(limit) || 50,
       skip: parseInt(skip) || 0,
       sortBy: '-createdAt'
     };
-    
-    // Get notifications based on user hierarchy
+
+    // ✅ Fetch notifications using unified model logic
     let notifications = await Notification.getNotificationsForUser(req.user, options);
-    
-    // If unreadOnly, filter out read notifications
+
+    // ✅ UNREAD FILTER — MUST MATCH RULE
     if (unreadOnly === 'true') {
-      notifications = notifications.filter(notif => 
-        !notif.readBy.some(read => read.user.toString() === req.user.id)
+      notifications = notifications.filter(
+        notif => !notif.readBy.some(r => r.user.toString() === userId)
       );
     }
-    
-    // Get unread count
+
+    // ✅ Unread Count (same rules)
     const unreadCount = await getUnreadCountForUser(req.user);
-    
+
     res.status(200).json({
       message: "Notifications fetched successfully",
       notifications: notifications.map(notif => ({
@@ -321,8 +347,11 @@ const getNotifications = async (req, res) => {
         priority: notif.priority,
         createdBy: notif.createdBy,
         createdAt: notif.createdAt,
-        isRead: notif.readBy.some(read => read.user.toString() === req.user.id),
-        readAt: notif.readBy.find(read => read.user.toString() === req.user.id)?.readAt,
+
+        // ✅ READ STATUS MUST MATCH RULE
+        isRead: notif.readBy.some(r => r.user.toString() === userId),
+        readAt: notif.readBy.find(r => r.user.toString() === userId)?.readAt,
+
         expiryDate: notif.expiryDate,
         attachments: notif.attachments
       })),
@@ -333,9 +362,9 @@ const getNotifications = async (req, res) => {
         total: notifications.length
       }
     });
-    
+
   } catch (error) {
-    console.error("Get notifications error:", error);
+    console.error("❌ Get notifications error:", error);
     res.status(500).json({
       message: "Failed to fetch notifications",
       error: error.message
@@ -343,49 +372,58 @@ const getNotifications = async (req, res) => {
   }
 };
 
-// Helper function to get unread count
+// ✅ Helper function to get unread count — FULLY STANDARDIZED
 async function getUnreadCountForUser(user) {
+
+  // ✅ USER ID NORMALIZATION (MANDATORY)
+  const userId = (
+    user._id ||
+    user.id ||
+    user.userId
+  ).toString();
+
+  // ✅ BASE QUERY (MUST BE SAME EVERYWHERE)
   const baseQuery = {
     status: 'published',
     isDeleted: false,
-    'readBy.user': { $ne: user._id },
+    'readBy.user': { $ne: userId },
     $or: [
       { expiryDate: null },
       { expiryDate: { $gt: new Date() } }
     ]
   };
-  
-  // Build targeting conditions
-  const targetingConditions = [];
-  
-  // Specifically targeted user
-  targetingConditions.push({ targetUsers: user._id });
-  
-  // User type targeted
-  targetingConditions.push({
-    targetUserTypes: user.userType,
-    $or: [
-      { targetUsers: { $exists: false } },
-      { targetUsers: { $size: 0 } }
-    ]
-  });
-  
-  // Client targeted
-  if (user.clientId) {
-    targetingConditions.push({
-      targetClients: user.clientId,
-      $and: [
-        { $or: [{ targetUsers: { $exists: false } }, { targetUsers: { $size: 0 } }] },
-        { $or: [{ targetUserTypes: { $exists: false } }, { targetUserTypes: { $size: 0 } }] }
-      ]
-    });
-  }
-  
+
+  // ✅ TARGETING PRIORITY (DO NOT CHANGE ORDER)
   const query = {
     ...baseQuery,
-    $or: targetingConditions
+    $or: [
+
+      // 🔹 1. Specific Users (Highest Priority)
+      { targetUsers: userId },
+
+      // 🔹 2. User Type (Only if targetUsers is empty)
+      {
+        targetUserTypes: user.userType,
+        targetUsers: { $size: 0 }
+      },
+
+      // 🔹 3. Client (Only if users + types are empty)
+      ...(user.clientId ? [{
+        targetClients: user.clientId,
+        targetUsers: { $size: 0 },
+        targetUserTypes: { $size: 0 }
+      }] : []),
+
+      // 🔹 4. Global (No targeting at all)
+      {
+        targetUsers: { $size: 0 },
+        targetUserTypes: { $size: 0 },
+        targetClients: { $size: 0 }
+      }
+
+    ]
   };
-  
+
   return await Notification.countDocuments(query);
 }
 
@@ -555,7 +593,7 @@ const markAsRead = async (req, res) => {
       });
     }
     
-    await notification.markAsReadBy(req.user.id);
+    await notification.markAsReadBy(req.user.id || req.user._id);
     
     res.status(200).json({
       message: "Notification marked as read"
@@ -801,21 +839,50 @@ const getNotificationStats = async (req, res) => {
 const markAllReadHandler = async (req, res) => {
   try {
 
-    // find all unread for this user
-    const notifications = await Notification.find({
+    // ✅ USER ID NORMALIZATION
+    const userId = (req.user._id || req.user.id || req.user.userId).toString();
+
+    // ✅ BASE QUERY (MUST MATCH EVERYWHERE)
+    const baseQuery = {
       status: 'published',
       isDeleted: false,
-      'readBy.user': { $ne: req.user.id },
+      'readBy.user': { $ne: userId },
       $or: [
-        { targetUsers: req.user.id },
-        { targetUserTypes: req.user.userType },
-        { targetClients: req.user.clientId }
+        { expiryDate: null },
+        { expiryDate: { $gt: new Date() } }
       ]
-    });
+    };
 
-    // mark each read
+    // ✅ FULL 4-LEVEL TARGETING PRIORITY (DO NOT CHANGE ORDER)
+    const query = {
+      ...baseQuery,
+      $or: [
+
+        { targetUsers: userId },
+
+        {
+          targetUserTypes: req.user.userType,
+          targetUsers: { $size: 0 }
+        },
+
+        ...(req.user.clientId ? [{
+          targetClients: req.user.clientId,
+          targetUsers: { $size: 0 },
+          targetUserTypes: { $size: 0 }
+        }] : []),
+
+        {
+          targetUsers: { $size: 0 },
+          targetUserTypes: { $size: 0 },
+          targetClients: { $size: 0 }
+        }
+      ]
+    };
+
+    const notifications = await Notification.find(query);
+
     await Promise.all(
-      notifications.map(n => n.markAsReadBy(req.user.id))
+      notifications.map(n => n.markAsReadBy(userId))
     );
 
     res.status(200).json({
@@ -829,6 +896,7 @@ const markAllReadHandler = async (req, res) => {
     });
   }
 };
+
 module.exports = {
   createNotification,
   getNotifications,
