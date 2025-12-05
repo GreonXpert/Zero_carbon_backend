@@ -32,42 +32,64 @@ exports.addGWP = async (req, res) => {
     }
   };
 
-// Get all GWP data with pagination, search, and sorting
+// ✅ Get all GWP data with pagination, search & sorting (MODEL SAFE)
 exports.getAllGWP = async (req, res) => {
   try {
-    // ✅ 1. Read query params safely
-    const page = parseInt(req.query.page, 10) || 1;      // Default page = 1
-    const limit = parseInt(req.query.limit, 10) || 10;   // Default limit = 10
-    const search = req.query.search || "";               // Optional search
-    const sortBy = req.query.sortBy || "createdAt";      // Default sort field
-    const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
-
+    // -----------------------------------
+    // ✅ 1. Read Query Params Safely
+    // -----------------------------------
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const skip = (page - 1) * limit;
 
-    // ✅ 2. Build search query (you can add more fields here)
+    const search = req.query.search?.trim() || "";
+    const sortBy = req.query.sortBy || "chemicalName";   // ✅ model field
+    const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+
+    // -----------------------------------
+    // ✅ 2. Build Search Query (MODEL BASED)
+    // -----------------------------------
     const query = {};
 
     if (search) {
+      const safeRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), "i");
+
       query.$or = [
-        { gasName: { $regex: search, $options: "i" } },
-        { source: { $regex: search, $options: "i" } }
+        { chemicalName: safeRegex },
+        { chemicalFormula: safeRegex }
+        // ❌ DO NOT search assessments directly (it's a Map)
       ];
     }
 
-    // ✅ 3. Fetch total count
+    // -----------------------------------
+    // ✅ 3. Get Total Count
+    // -----------------------------------
     const totalRecords = await GWP.countDocuments(query);
 
-    // ✅ 4. Fetch paginated data
+    // -----------------------------------
+    // ✅ 4. Fetch Paginated Data
+    // -----------------------------------
     const gwpData = await GWP.find(query)
       .sort({ [sortBy]: sortOrder })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
-    // ✅ 5. Send structured response
+    // -----------------------------------
+    // ✅ 5. Convert Map → Object for Frontend
+    // -----------------------------------
+    const formattedData = gwpData.map(item => ({
+      ...item,
+      assessments: item.assessments ? Object.fromEntries(item.assessments) : {}
+    }));
+
+    // -----------------------------------
+    // ✅ 6. Final Response
+    // -----------------------------------
     res.status(200).json({
       success: true,
       message: "GWP data fetched successfully",
-      data: gwpData,
+      data: formattedData,
       pagination: {
         totalRecords,
         currentPage: page,
@@ -85,6 +107,7 @@ exports.getAllGWP = async (req, res) => {
     });
   }
 };
+
 
 
 // Update GWP entry (supports dynamic addition of assessments)
