@@ -1,203 +1,214 @@
+// ============================================================
+// ENHANCED SYNC FUNCTION: Auto-determine Workflow Status
+// Replace the existing syncClientReductionProjects in:
 // utils/Workflow/syncReductionProjects.js
-const Client = require('../../models/Client');
+// ============================================================
+
 const Reduction = require('../../models/Reduction/Reduction');
+const Client = require('../../models/Client');
 
 /**
- * Sync all Reduction projects for a specific client
- * Updates Client.workflowTracking.reduction.projects with current counts
+ * Automatically determine the overall workflow status based on project statuses
+ * Logic:
+ * - If ALL projects are 'completed' → 'completed'
+ * - If ANY project is 'on_going' → 'on_going'
+ * - If ANY project is 'pending' and NONE are 'on_going' → 'pending'
+ * - If ALL projects are 'not_started' → 'not_started'
+ * - If mixed but no active work → 'pending'
+ */
+function determineWorkflowStatus(statusCounts) {
+  const { not_started, on_going, pending, completed, totalCount } = statusCounts;
+
+  // No projects at all
+  if (totalCount === 0) {
+    return 'not_started';
+  }
+
+  // All projects completed
+  if (completed === totalCount) {
+    return 'completed';
+  }
+
+  // Any project actively in progress
+  if (on_going > 0) {
+    return 'on_going';
+  }
+
+  // Some pending, but none in progress
+  if (pending > 0) {
+    return 'pending';
+  }
+
+  // All not started
+  if (not_started === totalCount) {
+    return 'not_started';
+  }
+
+  // Mixed state but no active work - default to pending
+  return 'pending';
+}
+
+/**
+ * Sync all reduction projects for a specific client
+ * - Counts projects by status
+ * - Counts projects by input type
+ * - Auto-determines overall workflow status
+ * - Updates Client.workflowTracking.reduction
  */
 async function syncClientReductionProjects(clientId) {
   try {
-    // Find the client
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      console.warn(`[syncClientReductionProjects] Client ${clientId} not found`);
-      return { success: false, message: 'Client not found' };
-    }
+    console.log(`[Sync] Starting reduction projects sync for client: ${clientId}`);
 
-    // Count all projects for this client (excluding deleted)
-    const allProjects = await Reduction.countDocuments({
+    // Find all active (non-deleted) reduction projects for this client
+    const projects = await Reduction.find({
       clientId,
-      $or: [
-        { isDeleted: { $exists: false } },
-        { isDeleted: false }
-      ]
-    });
+      isDeleted: false
+    }).select('status reductionDataEntry.inputType createdAt updatedAt');
 
-    // Count by status
-    const statusCounts = await Reduction.aggregate([
-      {
-        $match: {
-          clientId,
-          $or: [
-            { isDeleted: { $exists: false } },
-            { isDeleted: false }
-          ]
-        }
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
+    // Initialize counts
+    const statusCounts = {
+      not_started: 0,
+      on_going: 0,
+      pending: 0,
+      completed: 0,
+      totalCount: 0
+    };
 
-    // Extract counts
-    const statusMap = {};
-    statusCounts.forEach(item => {
-      statusMap[item._id] = item.count;
-    });
-
-    // Get the most recent project creation date
-    const latestProject = await Reduction.findOne({
-      clientId,
-      $or: [
-        { isDeleted: { $exists: false } },
-        { isDeleted: false }
-      ]
-    })
-    .sort({ createdAt: -1 })
-    .select('createdAt')
-    .lean();
-
-    // Count data input points by type
-    const dataInputCounts = await Reduction.aggregate([
-      {
-        $match: {
-          clientId,
-          $or: [
-            { isDeleted: { $exists: false } },
-            { isDeleted: false }
-          ]
-        }
-      },
-      {
-        $group: {
-          _id: '$reductionDataEntry.inputType',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    const inputTypeMap = {
+    const inputTypeCounts = {
       manual: 0,
       API: 0,
       IOT: 0
     };
 
-    dataInputCounts.forEach(item => {
-      const type = item._id;
-      if (type === 'manual') inputTypeMap.manual = item.count;
-      else if (type === 'API') inputTypeMap.API = item.count;
-      else if (type === 'IOT') inputTypeMap.IOT = item.count;
+    let lastProjectCreatedAt = null;
+
+    // Count projects by status and input type
+    projects.forEach(project => {
+      // Count by status
+      const status = project.status || 'not_started';
+      if (statusCounts.hasOwnProperty(status)) {
+        statusCounts[status]++;
+      }
+      statusCounts.totalCount++;
+
+      // Count by input type
+      const inputType = project.reductionDataEntry?.inputType || 'manual';
+      if (inputTypeCounts.hasOwnProperty(inputType)) {
+        inputTypeCounts[inputType]++;
+      }
+
+      // Track last created
+      if (!lastProjectCreatedAt || project.createdAt > lastProjectCreatedAt) {
+        lastProjectCreatedAt = project.createdAt;
+      }
     });
 
-    // Update client's reduction tracking
-    if (!client.workflowTracking) {
-      client.workflowTracking = {};
-    }
-    if (!client.workflowTracking.reduction) {
-      client.workflowTracking.reduction = {
-        status: 'not_started',
-        projects: {},
-        dataInputPoints: {}
+    // Auto-determine overall workflow status
+    const autoWorkflowStatus = determineWorkflowStatus(statusCounts);
+
+    // Update Client document
+    const updateData = {
+      'workflowTracking.reduction.projects.totalCount': statusCounts.totalCount,
+      'workflowTracking.reduction.projects.activeCount': statusCounts.on_going,
+      'workflowTracking.reduction.projects.completedCount': statusCounts.completed,
+      'workflowTracking.reduction.projects.pendingCount': statusCounts.pending,
+      'workflowTracking.reduction.projects.notStartedCount': statusCounts.not_started,
+      'workflowTracking.reduction.projects.lastProjectCreatedAt': lastProjectCreatedAt,
+      'workflowTracking.reduction.dataInputPoints.manual.totalCount': inputTypeCounts.manual,
+      'workflowTracking.reduction.dataInputPoints.api.totalCount': inputTypeCounts.API,
+      'workflowTracking.reduction.dataInputPoints.iot.totalCount': inputTypeCounts.IOT,
+      'workflowTracking.reduction.dataInputPoints.totalDataPoints': statusCounts.totalCount,
+      // Auto-update workflow status based on project statuses
+      'workflowTracking.reduction.status': autoWorkflowStatus,
+      'workflowTracking.reduction.lastUpdated': new Date()
+    };
+
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { $set: updateData },
+      { new: true, upsert: false }
+    );
+
+    if (!client) {
+      console.error(`[Sync] Client not found: ${clientId}`);
+      return {
+        success: false,
+        error: 'Client not found'
       };
     }
 
-    // Update project counts
-    client.workflowTracking.reduction.projects = {
-      totalCount: allProjects,
-      activeCount: statusMap['on_going'] || 0,
-      completedCount: statusMap['completed'] || 0,
-      pendingCount: statusMap['pending'] || 0,
-      notStartedCount: statusMap['not_started'] || 0,
-      lastProjectCreatedAt: latestProject?.createdAt || null
-    };
-
-    // Update data input points counts
-    client.workflowTracking.reduction.dataInputPoints = {
-      manual: { totalCount: inputTypeMap.manual },
-      api: { totalCount: inputTypeMap.API },
-      iot: { totalCount: inputTypeMap.IOT },
-      totalDataPoints: inputTypeMap.manual + inputTypeMap.API + inputTypeMap.IOT
-    };
-
-    // Update reduction status based on project counts
-    if (allProjects === 0) {
-      client.workflowTracking.reduction.status = 'not_started';
-    } else if (statusMap['completed'] === allProjects && allProjects > 0) {
-      client.workflowTracking.reduction.status = 'completed';
-      if (!client.workflowTracking.reduction.completedAt) {
-        client.workflowTracking.reduction.completedAt = new Date();
-      }
-    } else if (statusMap['on_going'] > 0 || statusMap['pending'] > 0) {
-      client.workflowTracking.reduction.status = 'on_going';
-      if (!client.workflowTracking.reduction.startedAt) {
-        client.workflowTracking.reduction.startedAt = new Date();
-      }
-    } else {
-      client.workflowTracking.reduction.status = 'not_started';
-    }
-
-    // Save the client
-    await client.save();
-
-    console.log(`[syncClientReductionProjects] Successfully synced ${allProjects} projects for client ${clientId}`);
+    console.log(`[Sync] ✅ Synced ${statusCounts.totalCount} projects for ${clientId}`);
+    console.log(`[Sync] Auto-determined workflow status: ${autoWorkflowStatus}`);
+    console.log(`[Sync] Status breakdown:`, statusCounts);
 
     return {
       success: true,
       clientId,
-      totalProjects: allProjects,
+      totalProjects: statusCounts.totalCount,
+      workflowStatus: autoWorkflowStatus,
       statusCounts: {
-        not_started: statusMap['not_started'] || 0,
-        on_going: statusMap['on_going'] || 0,
-        pending: statusMap['pending'] || 0,
-        completed: statusMap['completed'] || 0
+        not_started: statusCounts.not_started,
+        on_going: statusCounts.on_going,
+        pending: statusCounts.pending,
+        completed: statusCounts.completed
       },
-      dataInputTypes: inputTypeMap
+      dataInputTypes: inputTypeCounts,
+      lastProjectCreatedAt
     };
 
   } catch (error) {
-    console.error(`[syncClientReductionProjects] Error for client ${clientId}:`, error);
-    return { success: false, message: error.message };
+    console.error(`[Sync] Error syncing reduction projects for ${clientId}:`, error);
+    return {
+      success: false,
+      error: error.message
+    };
   }
 }
 
 /**
- * Sync all clients - useful for bulk operations or migrations
+ * Sync all clients' reduction projects (bulk operation)
+ * Use sparingly - this can be resource-intensive
  */
 async function syncAllClientsReductionProjects() {
   try {
-    // Get all unique clientIds from Reduction collection
-    const clientIds = await Reduction.distinct('clientId', {
-      $or: [
-        { isDeleted: { $exists: false } },
-        { isDeleted: false }
-      ]
-    });
+    console.log('[Sync] Starting bulk sync for ALL clients...');
 
-    console.log(`[syncAllClientsReductionProjects] Syncing ${clientIds.length} clients...`);
-
+    // Get all clients
+    const clients = await Client.find({}).select('clientId');
+    
     const results = [];
-    for (const clientId of clientIds) {
-      const result = await syncClientReductionProjects(clientId);
-      results.push(result);
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const client of clients) {
+      const result = await syncClientReductionProjects(client.clientId);
+      results.push({
+        clientId: client.clientId,
+        success: result.success,
+        totalProjects: result.totalProjects,
+        workflowStatus: result.workflowStatus
+      });
+      
+      if (result.success) successCount++;
+      else failCount++;
     }
 
-    const successCount = results.filter(r => r.success).length;
-    console.log(`[syncAllClientsReductionProjects] Completed: ${successCount}/${clientIds.length} successful`);
+    console.log(`[Sync] ✅ Bulk sync complete: ${successCount} success, ${failCount} failed`);
 
     return {
       success: true,
-      totalClients: clientIds.length,
+      totalClients: clients.length,
       successCount,
+      failCount,
       results
     };
 
   } catch (error) {
-    console.error('[syncAllClientsReductionProjects] Error:', error);
-    return { success: false, message: error.message };
+    console.error('[Sync] Error in bulk sync:', error);
+    return {
+      success: false,
+      error: error.message
+    };
   }
 }
 

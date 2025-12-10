@@ -5,8 +5,8 @@ const User = require('../../models/User');
 const { canManageFlowchart } = require("../../utils/Permissions/permissions");
 const { notifyReductionEvent } = require('../../utils/notifications/reductionNotifications');
 const { syncReductionWorkflow } = require('../../utils/Workflow/workflow');
+const { syncClientReductionProjects } = require('../../utils/Workflow/syncReductionProjects'); // <-- ADD THIS LINE
 const { uploadReductionMedia, saveReductionFiles } = require('../../utils/uploads/reductionUpload');
-
 
 
 
@@ -525,7 +525,10 @@ exports.createReduction = async (req, res) => {
       action: 'created',
       doc
     }).catch(() => {});
-    syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
+    Promise.all([
+  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
+  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
+]);
 
     return res.status(201).json({
       success: true,
@@ -1045,7 +1048,10 @@ exports.updateReduction = async (req, res) => {
       action: "updated",
       doc
     }).catch(() => {});
-    syncReductionWorkflow(clientId, req.user?.id).catch(() => {});
+    Promise.all([
+  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
+  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
+]);
 
     // -------------------- Response --------------------
     return res.status(200).json({
@@ -1106,7 +1112,11 @@ exports.deleteReduction = async (req, res) => {
       action: 'deleted',
       doc
     }).catch(() => {});
-    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); 
+    Promise.all([
+  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
+  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
+]);
+
 
     res.status(200).json({ success:true, message:'Deleted' });
   } catch (err) {
@@ -1147,7 +1157,11 @@ exports.deleteFromDB = async (req, res) => {
       doc,
       projectId
     }).catch(() => {});
-    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); // ✅ add thi
+    Promise.all([
+  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
+  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
+]);
+
 
     return res.status(200).json({ success:true, message:'Reduction permanently deleted' });
   } catch (err) {
@@ -1205,7 +1219,10 @@ exports.restoreSoftDeletedReduction = async (req, res) => {
     doc.deletedBy = undefined;
 
     await doc.save();
-    syncReductionWorkflow(clientId, req.user?.id).catch(() => {}); 
+    Promise.all([
+  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
+  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
+]);
     return res.status(200).json({ success: true, message: 'Reduction restored', data: doc });
   } catch (err) {
     console.error('restoreSoftDeletedReduction error:', err);
@@ -1588,3 +1605,183 @@ exports.getReductionProjectsSummary = async (req, res) => {
     });
   }
 };
+
+
+// ============================================================
+// NEW CONTROLLER FUNCTION: Update Client-Level Reduction Workflow Status
+// Add this to reductionController.js
+// ============================================================
+
+/**
+ * @route   PATCH /api/reductions/workflow-status/:clientId
+ * @desc    Update the overall reduction workflow status for a client
+ *          (Different from individual project status)
+ * @access  Private (consultant_admin/consultant)
+ */
+exports.updateClientReductionWorkflowStatus = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { status } = req.body;
+
+    // Validate status
+    const validStatuses = ['not_started', 'on_going', 'pending', 'completed'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Permission check
+    const perm = await canCreateOrEdit(req.user, clientId);
+    if (!perm.ok) {
+      return res.status(403).json({
+        success: false,
+        message: perm.reason
+      });
+    }
+
+    // Find and update client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Store previous status
+    const previousStatus = client.workflowTracking?.reduction?.status || 'not_started';
+
+    // Update the workflow status
+    if (!client.workflowTracking) {
+      client.workflowTracking = {};
+    }
+    if (!client.workflowTracking.reduction) {
+      client.workflowTracking.reduction = {
+        status: 'not_started',
+        projects: {
+          totalCount: 0,
+          activeCount: 0,
+          completedCount: 0,
+          pendingCount: 0,
+          notStartedCount: 0
+        }
+      };
+    }
+
+    client.workflowTracking.reduction.status = status;
+    client.workflowTracking.reduction.lastUpdated = new Date();
+
+    await client.save();
+
+    // Log the change
+    console.log(`[Workflow Status] Client ${clientId}: ${previousStatus} → ${status}`);
+
+    // Notify relevant users (optional)
+    try {
+      await notifyReductionEvent(
+        'workflow_status_updated',
+        clientId,
+        null, // no specific project
+        req.user.id,
+        {
+          previousStatus,
+          currentStatus: status,
+          updatedBy: req.user.email || req.user.id
+        }
+      );
+    } catch (notifyErr) {
+      console.error('Notification error:', notifyErr);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Workflow status updated successfully',
+      data: {
+        clientId,
+        previousStatus,
+        currentStatus: status,
+        updatedAt: client.workflowTracking.reduction.lastUpdated,
+        projectsSummary: client.workflowTracking.reduction.projects
+      }
+    });
+
+  } catch (error) {
+    console.error('[updateClientReductionWorkflowStatus] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error updating workflow status',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+
+/**
+ * @route   GET /api/reductions/workflow-status/:clientId
+ * @desc    Get the current reduction workflow status for a client
+ * @access  Private (consultant_admin/consultant)
+ */
+exports.getClientReductionWorkflowStatus = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Permission check
+    const perm = await canCreateOrEdit(req.user, clientId);
+    if (!perm.ok) {
+      return res.status(403).json({
+        success: false,
+        message: perm.reason
+      });
+    }
+
+    // Find client
+    const client = await Client.findOne({ clientId })
+      .select('clientId workflowTracking.reduction');
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    const workflowData = client.workflowTracking?.reduction || {
+      status: 'not_started',
+      projects: {
+        totalCount: 0,
+        activeCount: 0,
+        completedCount: 0,
+        pendingCount: 0,
+        notStartedCount: 0
+      }
+    };
+
+    res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        status: workflowData.status,
+        projects: workflowData.projects,
+        lastUpdated: workflowData.lastUpdated || null
+      }
+    });
+
+  } catch (error) {
+    console.error('[getClientReductionWorkflowStatus] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error retrieving workflow status',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+
+
+
+
+
+
+
