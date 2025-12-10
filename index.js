@@ -66,6 +66,11 @@ const {
   broadcastNetReductionCompletionUpdate
 } = require('./controllers/DataCollection/dataCompletionController');
 const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
+   const apiKeyRoutes = require('./router/apiKeyRoutes');
+   const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
+
+  
+
 const helmet = require('helmet');
 
 
@@ -158,6 +163,8 @@ app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
+app.use('/api', apiKeyRoutes);
+
 
 // Create HTTP server and bind Socket.io
 const server = http.createServer(app);
@@ -1143,6 +1150,10 @@ connectDB().then(() => {
       }
     })();
     
+     // ✅ NEW: Start API Key Expiry Checker
+    console.log('🔐 Starting API Key expiry checker...');
+    startApiKeyExpiryChecker();
+
     // Initialize MQTT Subscriber
     // global.mqttSubscriber = new MQTTSubscriber();
     
