@@ -1,8 +1,10 @@
+// routes/dataCollectionRoutes.js (UPDATED WITH API KEY PROTECTION)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { auth, checkRole, checkPermission } = require("../middleware/auth"); // Using the comprehensive auth from middleware folder
+const { auth, checkRole, checkPermission } = require("../middleware/auth");
+const { apiKeyMiddleware, apiKeyRateLimit } = require('../middleware/apiKeyAuth');
 const {
   saveAPIData,
   saveIoTData,
@@ -24,10 +26,45 @@ const {
   getDataCompletionStats,
 } = require('../controllers/DataCollection/dataCompletionController');
 
+// ============== PROTECTED API/IoT ENDPOINTS ==============
+// These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
+
+/**
+ * DATA COLLECTION API DATA INGESTION
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data
+ * 
+ * ✅ PROTECTED with API Key (type: DC_API)
+ * Headers: X-API-Key: <your-api-key>
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data',
+  apiKeyMiddleware.dataCollectionAPI,   // ✅ API Key Auth
+  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  saveAPIData
+);
+
+/**
+ * DATA COLLECTION IoT DATA INGESTION
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data
+ * 
+ * ✅ PROTECTED with API Key (type: DC_IOT)
+ * Headers: X-API-Key: <your-api-key>
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data',
+  apiKeyMiddleware.dataCollectionIoT,   // ✅ API Key Auth
+  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  saveIoTData
+);
+
+// ============== AUTHENTICATED ENDPOINTS ==============
+// Apply authentication to all remaining routes
+router.use(auth);
+
 // Configure multer for CSV uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/temp/'); // Temporary storage
+    cb(null, 'uploads/temp/');
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -49,28 +86,18 @@ const upload = multer({
   }
 });
 
-// API Data Ingestion
-// POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data
-router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data', saveAPIData);
-
-// IoT Data Ingestion
-// POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data
-router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data', saveIoTData);
-
-
-// Apply authentication to all routes
-router.use(auth);
-
 // ============== Data Ingestion Routes ==============
 
-
-
-// Manual Data Entry
-// POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data
+/**
+ * MANUAL DATA ENTRY
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data
+ */
 router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data', saveManualData);
 
-// CSV Upload for Manual Data
-// POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv
+/**
+ * CSV UPLOAD FOR MANUAL DATA
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv
+ */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv',
   upload.single('csvFile'),
@@ -79,56 +106,115 @@ router.post(
 
 // ============== Data Management Routes ==============
 
-// Edit Manual Data Entry
-// PUT /api/data-collection/data-entries/:dataId
+/**
+ * EDIT MANUAL DATA ENTRY
+ * PUT /api/data-collection/data-entries/:dataId
+ */
 router.put('/data-entries/:dataId', editManualData);
 
+/**
+ * DELETE MANUAL DATA ENTRY
+ * DELETE /api/data-collection/data-entries/:dataId
+ */
 router.delete('/data-entries/:dataId', deleteManualData);
 
-// Get Data Entries (with filtering and pagination)
-// GET /api/data-collection/clients/:clientId/data-entries
-// GET /api/data-collection/clients/:clientId/nodes/:nodeId/data-entries
-// GET /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries
+/**
+ * GET DATA ENTRIES (with filtering and pagination)
+ * GET /api/data-collection/clients/:clientId/data-entries
+ * GET /api/data-collection/clients/:clientId/nodes/:nodeId/data-entries
+ * GET /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries
+ */
 router.get('/clients/:clientId/data-entries', getDataEntries);
 router.get('/clients/:clientId/nodes/:nodeId/data-entries', getDataEntries);
 router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries', getDataEntries);
 
 // ============== Configuration Routes ==============
 
-// Switch Input Type for a Scope
-// PATCH /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type
+/**
+ * SWITCH INPUT TYPE FOR A SCOPE
+ * PATCH /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type
+ */
 router.patch('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type', switchInputType);
 
-// Disconnect API/IoT Source
-// POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect
+/**
+ * DISCONNECT API/IoT SOURCE
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect
+ */
 router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect', disconnectSource);
+
+/**
+ * RECONNECT API/IoT SOURCE
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/reconnect
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/reconnect',
+  reconnectSource
+);
 
 // ============== Monitoring Routes ==============
 
-// Get Collection Status
-// GET /api/data-collection/clients/:clientId/collection-status
+/**
+ * GET COLLECTION STATUS
+ * GET /api/data-collection/clients/:clientId/collection-status
+ */
 router.get('/clients/:clientId/collection-status', getCollectionStatus);
 
-
-// Data completion statistics for emission (Flowchart + ProcessFlowchart)
+/**
+ * DATA COMPLETION STATISTICS
+ * GET /api/data-collection/clients/:clientId/data-completion
+ */
 router.get(
   '/clients/:clientId/data-completion',
-  auth, // or whatever auth you use
+  auth,
   getDataCompletionStats
 );
 
+// ============== Monthly Summary Routes ==============
 
-// ============== Public IoT Endpoint (No Auth) ==============
-// This endpoint is for IoT devices that may not support complex authentication
-// Security is handled by device ID verification
+/**
+ * CREATE MONTHLY SUMMARY (MANUAL)
+ * POST /api/data-collection/summary/:clientId/:nodeId/:scopeIdentifier
+ */
+router.post(
+  '/summary/:clientId/:nodeId/:scopeIdentifier',
+  checkRole('super_admin', 'client_admin'),
+  createMonthlySummaryManual
+);
+
+/**
+ * GET MONTHLY SUMMARIES
+ * GET /api/data-collection/summaries/:clientId/:nodeId/:scopeIdentifier
+ */
+router.get(
+  '/summaries/:clientId/:nodeId/:scopeIdentifier',
+  checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
+  getMonthlySummaries
+);
+
+/**
+ * GET CURRENT CUMULATIVE VALUES
+ * GET /api/data-collection/cumulative/:clientId/:nodeId/:scopeIdentifier
+ */
+router.get(
+  '/cumulative/:clientId/:nodeId/:scopeIdentifier',
+  checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
+  getCurrentCumulative
+);
+
+// ============== Public IoT Endpoint (Legacy - consider deprecating) ==============
 const iotRouter = express.Router();
 
-// POST /api/iot/data
+/**
+ * LEGACY PUBLIC IoT ENDPOINT
+ * POST /api/iot/data
+ * 
+ * ⚠️ DEPRECATED: Use the protected IoT endpoint with API key instead
+ * This endpoint is kept for backward compatibility but should be migrated
+ */
 iotRouter.post('/data', async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier, deviceId, data } = req.body;
     
-    // Basic validation
     if (!clientId || !nodeId || !scopeIdentifier || !deviceId || !data) {
       return res.status(400).json({ 
         message: 'Missing required fields',
@@ -136,11 +222,9 @@ iotRouter.post('/data', async (req, res) => {
       });
     }
     
-    // Forward to main controller with device authentication
     req.params = { clientId, nodeId, scopeIdentifier };
     req.body = { ...data, deviceId };
     
-    // Call the IoT data handler
     await saveIoTData(req, res);
     
   } catch (error) {
@@ -152,32 +236,7 @@ iotRouter.post('/data', async (req, res) => {
   }
 });
 
-router.post(
-  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/reconnect',
-  reconnectSource
-);
-
-// Monthly Summary Routes
-router.post(
-  '/summary/:clientId/:nodeId/:scopeIdentifier',
-checkRole('super_admin', 'client_admin'),
-  createMonthlySummaryManual
-);
-
-router.get(
-  '/summaries/:clientId/:nodeId/:scopeIdentifier',
- checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
-  getMonthlySummaries
-);
-
-// Get Current Cumulative Values
-router.get(
-  '/cumulative/:clientId/:nodeId/:scopeIdentifier',
-  checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
-  getCurrentCumulative
-);
-
-// ============== Export Routes ==============
+// ============== Export ==============
 module.exports = {
   dataCollectionRouter: router,
   iotRouter

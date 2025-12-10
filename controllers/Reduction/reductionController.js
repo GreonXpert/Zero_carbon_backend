@@ -88,6 +88,86 @@ function normalizeReductionDataEntry(raw = {}) {
 
 
 
+function normalizeM2FromBody(raw = {}) {
+  const out = {};
+
+  // ALD (same shape as M1 items)
+  if (Array.isArray(raw.ALD)) {
+    out.ALD = raw.ALD.map(normalizeUnitItem('L'));
+  }
+
+  // accept { m2: { formulaRef:{...} } } or flattened { m2:{ formulaId, version, ... } }
+  const ref = raw.formulaRef || {};
+  const formulaId = ref.formulaId || raw.formulaId;
+  const version   = ref.version != null ? Number(ref.version)
+                    : (raw.version != null ? Number(raw.version) : undefined);
+
+  // ---- (A) variableKinds: { U:'frozen', fNRB:'realtime', ... }
+  const incomingKinds = ref.variableKinds || raw.variableKinds || {};
+  // normalize to plain object with safe values ('frozen'|'realtime'|'manual')
+  const kindsObj = {};
+  for (const [k, v] of Object.entries(incomingKinds)) {
+    const role = String(v || '').toLowerCase();
+    if (role) {
+      // only allow expected roles; model will re-check as well
+      kindsObj[k] = (role === 'frozen' || role === 'realtime' || role === 'manual')
+        ? role
+        : role; // keep as-is; model throws if invalid
+    }
+  }
+
+  // ---- (B) frozen values: allow { variables:{ A:{value,..}, ... } } or { frozenValues:{ A: 123, ... } }
+  const incomingVars = ref.variables || raw.frozenValues || {};
+const varsObj = {};
+for (const [k, v] of Object.entries(incomingVars)) {
+  // support both { value: 1.23, policy:{...}, history:[...]} and plain number
+  const baseVal = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+  const pol     = (v && typeof v === 'object' && v.updatePolicy) ? v.updatePolicy : 'manual';
+  const ts      = (v && typeof v === 'object' && v.lastUpdatedAt) ? new Date(v.lastUpdatedAt) : new Date();
+
+  const policy  = (v && typeof v === 'object' && v.policy && typeof v.policy === 'object')
+    ? {
+        isConstant: v.policy.isConstant !== false, // default true
+        schedule: {
+          frequency: v.policy.schedule?.frequency || 'monthly',
+          ...(v.policy.schedule?.fromDate ? { fromDate: new Date(v.policy.schedule.fromDate) } : {}),
+          ...(v.policy.schedule?.toDate   ? { toDate:   new Date(v.policy.schedule.toDate)   } : {})
+        }
+      }
+    : { isConstant: true, schedule: { frequency: 'monthly' } };
+
+  const history = Array.isArray(v?.history)
+    ? v.history.map(h => ({
+        value: Number(h.value),
+        from:  new Date(h.from),
+        ...(h.to ? { to: new Date(h.to) } : {}),
+        updatedAt: h.updatedAt ? new Date(h.updatedAt) : new Date()
+      }))
+    : undefined;
+      const varRemark = (v && typeof v === 'object' && typeof v.remark === 'string') ? v.remark : '';
+
+  varsObj[k] = {
+    value: Number(baseVal ?? 0),
+    updatePolicy: pol,
+    lastUpdatedAt: ts,
+    policy,
+    ...(history ? { history } : {}),
+    remark: varRemark
+  };
+}
+const refRemark = typeof ref.remark === 'string' ? ref.remark : '';
+  if (formulaId) {
+    out.formulaRef = {
+      formulaId,
+      ...(version != null ? { version } : {}),
+      ...(Object.keys(kindsObj).length ? { variableKinds: kindsObj } : {}),
+      ...(Object.keys(varsObj).length   ? { variables: varsObj }     : {}),
+      ...(refRemark ? { remark: refRemark } : {})
+    };
+  }
+  return out;
+}
+
 
 
 /** ------------------------- */

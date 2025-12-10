@@ -1,7 +1,8 @@
-// routes/netReductionR.js
+// routes/Reduction/netReductionR.js (UPDATED WITH API KEY PROTECTION)
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../../middleware/auth');
+const { apiKeyMiddleware, apiKeyRateLimit } = require('../../middleware/apiKeyAuth');
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 
@@ -19,77 +20,123 @@ const {
   switchNetReductionInputType
 } = require('../../controllers/Reduction/netReductionController');
 
-// NEW: net-reduction data completion / frequency stats
 const {
   getNetReductionCompletionStats
 } = require('../../controllers/DataCollection/dataCompletionController');
 
-router.post('/:clientId/:projectId/:calculationMethodology/api',    saveApiNetReduction);
-router.post('/:clientId/:projectId/:calculationMethodology/iot',    saveIotNetReduction);
+// ============== PROTECTED API/IoT ENDPOINTS ==============
+// These endpoints REQUIRE API key authentication
 
+/**
+ * NET REDUCTION API DATA INGESTION
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/api
+ * 
+ * ✅ PROTECTED with API Key (type: NET_API)
+ * Headers: X-API-Key: <your-api-key>
+ */
+router.post(
+  '/:clientId/:projectId/:calculationMethodology/api',
+  apiKeyMiddleware.netReductionAPI,     // ✅ API Key Auth
+  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  saveApiNetReduction
+);
+
+/**
+ * NET REDUCTION IoT DATA INGESTION
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/iot
+ * 
+ * ✅ PROTECTED with API Key (type: NET_IOT)
+ * Headers: X-API-Key: <your-api-key>
+ */
+router.post(
+  '/:clientId/:projectId/:calculationMethodology/iot',
+  apiKeyMiddleware.netReductionIoT,     // ✅ API Key Auth
+  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  saveIotNetReduction
+);
+
+// ============== AUTHENTICATED ENDPOINTS ==============
+// These endpoints require standard user authentication
 
 router.use(auth);
 
-// :calculationMethodology must be 'methodology1' (methodology2 later)
+/**
+ * MANUAL NET REDUCTION DATA ENTRY
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual
+ * Requires: Standard auth (consultant, client users)
+ */
 router.post('/:clientId/:projectId/:calculationMethodology/manual', saveManualNetReduction);
 
-router.post('/:clientId/:projectId/:calculationMethodology/csv',    upload.single('file'), uploadCsvNetReduction);
+/**
+ * CSV UPLOAD FOR NET REDUCTION
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/csv
+ */
+router.post('/:clientId/:projectId/:calculationMethodology/csv', upload.single('file'), uploadCsvNetReduction);
 
-router.get('/:clientId/:projectId/:calculationMethodology/stats',   getNetReductionStats);
+/**
+ * GET NET REDUCTION STATISTICS
+ * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/stats
+ */
+router.get('/:clientId/:projectId/:calculationMethodology/stats', getNetReductionStats);
 
+/**
+ * NET REDUCTION DATA COMPLETION STATS
+ * GET /api/net-reduction/:clientId/data-completion
+ */
+router.get('/:clientId/data-completion', getNetReductionCompletionStats);
 
-// ---------------------------------------------------
-// Net Reduction data completion (frequency-based) stats
-// GET /api/net-reduction/:clientId/data-completion
-// ---------------------------------------------------
-router.get('/:clientId/data-completion',  getNetReductionCompletionStats);
+/**
+ * LIST NET REDUCTIONS
+ * GET /api/net-reduction
+ */
+router.get('/', listNetReductions);
 
-
-
-router.get(
-  '/',
-  
- listNetReductions
-);
-
-
-// Edit & Delete manual entries
+/**
+ * UPDATE MANUAL NET REDUCTION ENTRY
+ * PATCH /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ */
 router.patch(
   '/:clientId/:projectId/:calculationMethodology/manual/:entryId',
-  
   updateManualNetReductionEntry
 );
 
+/**
+ * DELETE MANUAL NET REDUCTION ENTRY
+ * DELETE /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ */
 router.delete(
   '/:clientId/:projectId/:calculationMethodology/manual/:entryId',
-  
   deleteManualNetReductionEntry
 );
 
-// 🆕 Switch input type for a reduction project
-// PATCH /api/net-reduction/:clientId/:projectId/input-type
+/**
+ * SWITCH INPUT TYPE
+ * PATCH /api/net-reduction/:clientId/:projectId/input-type
+ */
 router.patch(
   '/:clientId/:projectId/input-type',
-  auth,                      // keep this if your router does NOT already use router.use(auth)
+  auth,
   switchNetReductionInputType
 );
 
-// 🆕 Disconnect external source (API / IOT) for a reduction project
-// PATCH /api/net-reduction/:clientId/:projectId/disconnect
+/**
+ * DISCONNECT EXTERNAL SOURCE (API/IoT)
+ * PATCH /api/net-reduction/:clientId/:projectId/disconnect
+ */
 router.patch(
   '/:clientId/:projectId/disconnect',
-  auth,                      // keep this if auth is not applied globally
+  auth,
   disconnectNetReductionSource
 );
 
-// 🆕 Reconnect external source (API / IOT) for a reduction project
-// PATCH /api/net-reduction/:clientId/:projectId/reconnect
+/**
+ * RECONNECT EXTERNAL SOURCE (API/IoT)
+ * PATCH /api/net-reduction/:clientId/:projectId/reconnect
+ */
 router.patch(
   '/:clientId/:projectId/reconnect',
-  auth,                      // keep this if auth is not applied globally
+  auth,
   reconnectNetReductionSource
 );
-
-
 
 module.exports = router;
