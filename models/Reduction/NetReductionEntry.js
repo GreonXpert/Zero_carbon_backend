@@ -79,7 +79,7 @@ NetReductionEntrySchema.add({
 
   // ✅ For Methodology 3 – store totals & breakdown
   m3: {
-    // Totals (without and with buffer / “uncertainty”)
+    // Totals (without and with buffer / "uncertainty")
     BE_total:               { type: Number, default: 0 },  // Sum of all Bi
     PE_total:               { type: Number, default: 0 },  // Sum of all Pi
     LE_total:               { type: Number, default: 0 },  // Sum of all Li
@@ -126,6 +126,13 @@ NetReductionEntrySchema.add({
 
 NetReductionEntrySchema.pre('save', async function(next) {
   try {
+    // 🔹 SKIP RECALCULATION FLAG - used when recalculating historical entries
+    // to prevent infinite loops
+    if (this._skipRecalculation) {
+      delete this._skipRecalculation;
+      return next();
+    }
+    
     // M1 → compute from inputValue * rate (unchanged behavior)
     // M2 → controller provides netReduction; don't overwrite here
     if (this.calculationMethodology === 'methodology1') {
@@ -148,7 +155,7 @@ NetReductionEntrySchema.pre('save', async function(next) {
       timestamp: { $lt: this.timestamp }
     })
       .sort({ timestamp: -1 })
-      .select('cumulativeNetReduction highNetReduction lowNetReduction');
+      .select('cumulativeNetReduction highNetReduction lowNetReduction m3');
 
     // Cumulative & min/max tracking
     if (prev) {
@@ -158,10 +165,84 @@ NetReductionEntrySchema.pre('save', async function(next) {
         (typeof prev.lowNetReduction === 'number' ? prev.lowNetReduction : this.netReduction),
         this.netReduction
       );
+      
+      // 🔹 For Methodology 3, calculate cumulative M3 values
+      if (this.calculationMethodology === 'methodology3' && this.m3 && prev.m3) {
+        this.m3.cumulativeBE = round6((prev.m3.cumulativeBE || 0) + (this.m3.BE_total || 0));
+        this.m3.cumulativePE = round6((prev.m3.cumulativePE || 0) + (this.m3.PE_total || 0));
+        this.m3.cumulativeLE = round6((prev.m3.cumulativeLE || 0) + (this.m3.LE_total || 0));
+        this.m3.cumulativeNetWithoutUncertainty = round6(
+          (prev.m3.cumulativeNetWithoutUncertainty || 0) + (this.m3.netWithoutUncertainty || 0)
+        );
+        this.m3.cumulativeNetWithUncertainty = round6(
+          (prev.m3.cumulativeNetWithUncertainty || 0) + (this.m3.netWithUncertainty || 0)
+        );
+        
+        // Calculate per-item cumulative values
+        if (this.m3.breakdown) {
+          // Baseline items
+          if (this.m3.breakdown.baseline && Array.isArray(this.m3.breakdown.baseline)) {
+            for (const item of this.m3.breakdown.baseline) {
+              const prevItem = prev.m3.breakdown?.baseline?.find(b => b.id === item.id);
+              item.cumulativeValue = round6(
+                (prevItem?.cumulativeValue || 0) + (item.value || 0)
+              );
+            }
+          }
+          
+          // Project items
+          if (this.m3.breakdown.project && Array.isArray(this.m3.breakdown.project)) {
+            for (const item of this.m3.breakdown.project) {
+              const prevItem = prev.m3.breakdown?.project?.find(p => p.id === item.id);
+              item.cumulativeValue = round6(
+                (prevItem?.cumulativeValue || 0) + (item.value || 0)
+              );
+            }
+          }
+          
+          // Leakage items
+          if (this.m3.breakdown.leakage && Array.isArray(this.m3.breakdown.leakage)) {
+            for (const item of this.m3.breakdown.leakage) {
+              const prevItem = prev.m3.breakdown?.leakage?.find(l => l.id === item.id);
+              item.cumulativeValue = round6(
+                (prevItem?.cumulativeValue || 0) + (item.value || 0)
+              );
+            }
+          }
+        }
+      }
     } else {
       this.cumulativeNetReduction = round6(this.netReduction || 0);
       this.highNetReduction = this.netReduction || 0;
       this.lowNetReduction  = this.netReduction || 0;
+      
+      // For M3 without previous entry, cumulative = current values
+      if (this.calculationMethodology === 'methodology3' && this.m3) {
+        this.m3.cumulativeBE = this.m3.BE_total || 0;
+        this.m3.cumulativePE = this.m3.PE_total || 0;
+        this.m3.cumulativeLE = this.m3.LE_total || 0;
+        this.m3.cumulativeNetWithoutUncertainty = this.m3.netWithoutUncertainty || 0;
+        this.m3.cumulativeNetWithUncertainty = this.m3.netWithUncertainty || 0;
+        
+        // Set per-item cumulative values equal to current values
+        if (this.m3.breakdown) {
+          if (this.m3.breakdown.baseline) {
+            for (const item of this.m3.breakdown.baseline) {
+              item.cumulativeValue = item.value || 0;
+            }
+          }
+          if (this.m3.breakdown.project) {
+            for (const item of this.m3.breakdown.project) {
+              item.cumulativeValue = item.value || 0;
+            }
+          }
+          if (this.m3.breakdown.leakage) {
+            for (const item of this.m3.breakdown.leakage) {
+              item.cumulativeValue = item.value || 0;
+            }
+          }
+        }
+      }
     }
 
     next();
@@ -169,4 +250,65 @@ NetReductionEntrySchema.pre('save', async function(next) {
     next(err);
   }
 });
+
+// 🔹 POST-SAVE HOOK - Trigger recalculation of later entries when a historical entry is inserted
+NetReductionEntrySchema.post('save', async function(doc) {
+  try {
+    // Skip if this is part of a recalculation process
+    if (doc._skipRecalculation || doc._isRecalculating) {
+      return;
+    }
+    
+    // Check if there are any entries after this timestamp that need recalculation
+    const laterEntriesCount = await this.constructor.countDocuments({
+      clientId: doc.clientId,
+      projectId: doc.projectId,
+      calculationMethodology: doc.calculationMethodology,
+      timestamp: { $gt: doc.timestamp },
+      _id: { $ne: doc._id }
+    });
+    
+    if (laterEntriesCount > 0) {
+      console.log(`🔄 Found ${laterEntriesCount} entries after this timestamp. Triggering recalculation...`);
+      
+      // Import the recalculation helper
+      const { recalculateDataEntriesAfter } = require('../../utils/Calculation/recalculateHelpers');
+      
+      // Trigger recalculation in background (don't await to avoid blocking)
+      setImmediate(async () => {
+        try {
+          await recalculateNetReductionEntriesAfter(doc);
+          
+          // 🔹 After recalculation, trigger summary updates
+          console.log(`📊 Triggering summary recalculation for client: ${doc.clientId}`);
+          try {
+            const { recomputeClientNetReductionSummary } = require('../controllers/Reduction/netReductionSummaryController');
+            await recomputeClientNetReductionSummary(doc.clientId);
+            console.log(`📊 ✅ Summary recalculation completed`);
+          } catch (summaryError) {
+            console.error(`📊 ❌ Error recalculating summary:`, summaryError);
+          }
+        } catch (recalcError) {
+          console.error('❌ Error in post-save recalculation:', recalcError);
+        }
+      });
+    } else {
+      // No later entries, but still trigger summary update for this period
+      console.log(`📊 No later entries. Triggering summary update for client: ${doc.clientId}`);
+      setImmediate(async () => {
+        try {
+          const { recomputeClientNetReductionSummary } = require('../controllers/Reduction/netReductionSummaryController');
+          await recomputeClientNetReductionSummary(doc.clientId);
+          console.log(`📊 ✅ Summary update completed`);
+        } catch (summaryError) {
+          console.error(`📊 ❌ Error updating summary:`, summaryError);
+        }
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in NetReductionEntry post-save hook:', error);
+    // Don't throw - we don't want to break the save operation
+  }
+});
+
 module.exports = mongoose.model('NetReductionEntry', NetReductionEntrySchema);

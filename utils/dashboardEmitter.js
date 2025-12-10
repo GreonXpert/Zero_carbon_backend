@@ -385,7 +385,36 @@ const emitFilteredClientListUpdate = async (filters = {}, userIds = []) => {
 // In moveClientStage:
 // const previousStage = client.stage;
 // await client.save();
-// await emitClientStageChange(client, previousStage, req.user.id);
+
+// Additional helper function to emit targeted updates based on filters
+const emitTargetedClientUpdate = async (client, action, userId, additionalFilters = {}) => {
+    try {
+        // Get all users who might be viewing this client
+        const affectedUsers = await getAffectedUsers(client);
+        
+        // Emit update with filters
+        for (const affectedUserId of affectedUsers) {
+            if (global.io) {
+                global.io.to(`user_${affectedUserId}`).emit('targeted_client_update', {
+                    action: action,
+                    client: {
+                        _id: client._id,
+                        clientId: client.clientId,
+                        stage: client.stage,
+                        status: client.status,
+                        leadInfo: {
+                            companyName: client.leadInfo.companyName
+                        }
+                    },
+                    filters: additionalFilters,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+    } catch (error) {
+        console.error('Error emitting targeted client update:', error);
+    }
+};
 
 module.exports = {
   emitFlowchartStatusUpdate,
@@ -395,5 +424,6 @@ module.exports = {
   emitDashboardRefresh,
   emitClientListUpdate,
   emitBatchClientUpdate,
-  emitFilteredClientListUpdate
+  emitFilteredClientListUpdate,
+  emitTargetedClientUpdate
 };
