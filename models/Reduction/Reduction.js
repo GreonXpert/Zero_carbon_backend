@@ -309,8 +309,15 @@ const reductionSchema = new mongoose.Schema({
   projectId:   { type: String, required: true, unique: true },  // `${clientId}-${reductionId}`
 
   // Project basics
-  projectName: { type: String, required: true },
-  projectActivity: { type: String, enum: ['Reduction','Removal'], required: true }, // enum
+   projectName: { type: String, required: true },
+  projectActivity: { type: String, enum: ['Reduction','Removal'], required: true },
+  
+  // Project status for workflow tracking
+  status: {
+    type: String,
+    enum: ['not_started', 'on_going', 'pending', 'completed'],
+    default: 'not_started'
+  },
   category: { type: String, default: '' }, // optional, e.g. 'Energy Efficiency'
   scope: { type: String, default: '' }, // optional
   location: {

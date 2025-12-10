@@ -369,6 +369,12 @@ DataEntrySchema.index({
 // Pre-save middleware
 DataEntrySchema.pre('save', async function(next) {
   try {
+    // 🔹 SKIP RECALCULATION FLAG - used when recalculating historical entries
+    if (this._skipRecalculation) {
+      delete this._skipRecalculation;
+      return next();
+    }
+    
     // Auto-generate timestamp from date and time if not set
     if (!this.timestamp && this.date && this.time) {
       const [day, month, year] = this.date.split(':').map(Number);
@@ -394,6 +400,67 @@ DataEntrySchema.pre('save', async function(next) {
     next();
   } catch (error) {
     next(error);
+  }
+});
+// 🔹 POST-SAVE HOOK - Trigger recalculation of later entries when a historical entry is inserted
+DataEntrySchema.post('save', async function(doc) {
+  try {
+    // Skip if this is part of a recalculation process or is a summary
+    if (doc._skipRecalculation || doc._isRecalculating || doc.isSummary) {
+      return;
+    }
+    
+    // Check if there are any entries after this timestamp that need recalculation
+    const laterEntriesCount = await this.constructor.countDocuments({
+      clientId: doc.clientId,
+      nodeId: doc.nodeId,
+      scopeIdentifier: doc.scopeIdentifier,
+      inputType: doc.inputType,
+      timestamp: { $gt: doc.timestamp },
+      _id: { $ne: doc._id },
+      isSummary: false
+    });
+    
+    if (laterEntriesCount > 0) {
+      console.log(`🔄 Found ${laterEntriesCount} data entries after this timestamp. Triggering recalculation...`);
+      
+      // Import the recalculation helper
+      const { recalculateDataEntriesAfter } = require('../utils/Calculation/recalculateHelpers');
+      
+      // Trigger recalculation in background (don't await to avoid blocking)
+      setImmediate(async () => {
+        try {
+          await recalculateDataEntriesAfter(doc);
+          
+          // 🔹 After recalculation, trigger summary updates
+          console.log(`📊 Triggering emission summary recalculation for client: ${doc.clientId}`);
+          try {
+            const { updateSummariesOnDataChange } = require('../controllers/Calculation/CalculationSummary');
+            await updateSummariesOnDataChange(doc);
+            console.log(`📊 ✅ Emission summary recalculation completed`);
+          } catch (summaryError) {
+            console.error(`📊 ❌ Error recalculating emission summary:`, summaryError);
+          }
+        } catch (recalcError) {
+          console.error('❌ Error in post-save recalculation:', recalcError);
+        }
+      });
+    } else {
+      // No later entries, but still trigger summary update for this period
+      console.log(`📊 No later entries. Triggering emission summary update for client: ${doc.clientId}`);
+      setImmediate(async () => {
+        try {
+          const { updateSummariesOnDataChange } = require('../controllers/Calculation/CalculationSummary');
+          await updateSummariesOnDataChange(doc);
+          console.log(`📊 ✅ Emission summary update completed`);
+        } catch (summaryError) {
+          console.error(`📊 ❌ Error updating emission summary:`, summaryError);
+        }
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in DataEntry post-save hook:', error);
+    // Don't throw - we don't want to break the save operation
   }
 });
 

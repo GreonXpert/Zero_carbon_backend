@@ -1373,3 +1373,218 @@ exports.assignEmployeesToProject = async (req, res) => {
   }
 };
 
+// ============================================================
+// ADD THESE NEW FUNCTIONS TO reductionController.js
+// Place them before the module.exports at the end of the file
+// ============================================================
+
+// IMPORTANT: Add this import at the top of reductionController.js (around line 8):
+// const { syncClientReductionProjects, syncAllClientsReductionProjects } = require('../../utils/Workflow/syncReductionProjects');
+
+/**
+ * Update Reduction Status
+ * PUT /api/reductions/:projectId/status
+ */
+exports.updateReductionStatus = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { status } = req.body;
+    
+    // Validate status
+    const validStatuses = ['not_started', 'on_going', 'pending', 'completed'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Find the reduction project
+    const reduction = await Reduction.findOne({ 
+      projectId,
+      $or: [
+        { isDeleted: { $exists: false } },
+        { isDeleted: false }
+      ]
+    });
+
+    if (!reduction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Project not found'
+      });
+    }
+
+    // Check permissions
+    const authCheck = await canCreateOrEdit(req.user, reduction.clientId);
+    if (!authCheck.ok) {
+      return res.status(403).json({
+        success: false,
+        message: authCheck.reason
+      });
+    }
+
+    // Update status
+    const previousStatus = reduction.status;
+    reduction.status = status;
+    await reduction.save();
+
+    // Sync with client workflow tracking
+    await syncClientReductionProjects(reduction.clientId);
+
+    // Send notification
+    await notifyReductionEvent(
+      reduction.clientId,
+      req.user.id,
+      'reduction_status_updated',
+      {
+        projectId: reduction.projectId,
+        projectName: reduction.projectName,
+        previousStatus,
+        newStatus: status
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Project status updated successfully',
+      data: {
+        projectId: reduction.projectId,
+        projectName: reduction.projectName,
+        previousStatus,
+        currentStatus: status
+      }
+    });
+
+  } catch (error) {
+    console.error('Update reduction status error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update project status',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Sync Reduction Projects for a Client
+ * POST /api/reductions/sync/:clientId
+ */
+exports.syncReductionProjects = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Validate user has access to this client
+    const authCheck = await canCreateOrEdit(req.user, clientId);
+    if (!authCheck.ok) {
+      return res.status(403).json({
+        success: false,
+        message: authCheck.reason
+      });
+    }
+
+    // Perform sync
+    const result = await syncClientReductionProjects(clientId);
+
+    if (!result.success) {
+      return res.status(404).json({
+        success: false,
+        message: result.message
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Projects synced successfully',
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Sync reduction projects error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to sync projects',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get Reduction Projects Summary for a Client
+ * GET /api/reductions/summary/:clientId
+ */
+exports.getReductionProjectsSummary = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Validate user has access to this client
+    const authCheck = await canCreateOrEdit(req.user, clientId);
+    if (!authCheck.ok) {
+      return res.status(403).json({
+        success: false,
+        message: authCheck.reason
+      });
+    }
+
+    // Get client
+    const client = await Client.findOne({ clientId })
+      .select('clientId workflowTracking.reduction')
+      .lean();
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Get all projects for this client with their status
+    const projects = await Reduction.find({
+      clientId,
+      $or: [
+        { isDeleted: { $exists: false } },
+        { isDeleted: false }
+      ]
+    })
+    .select('projectId projectName reductionId status createdAt updatedAt reductionDataEntry')
+    .sort({ createdAt: -1 })
+    .lean();
+
+    // Format projects
+    const formattedProjects = projects.map(p => ({
+      projectId: p.projectId,
+      projectName: p.projectName,
+      reductionId: p.reductionId,
+      status: p.status || 'not_started',
+      inputType: p.reductionDataEntry?.inputType || 'manual',
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        summary: client.workflowTracking?.reduction || {
+          status: 'not_started',
+          projects: {
+            totalCount: 0,
+            activeCount: 0,
+            completedCount: 0,
+            pendingCount: 0,
+            notStartedCount: 0
+          }
+        },
+        projects: formattedProjects
+      }
+    });
+
+  } catch (error) {
+    console.error('Get reduction projects summary error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get projects summary',
+      error: error.message
+    });
+  }
+};
