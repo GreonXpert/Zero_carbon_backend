@@ -5,13 +5,42 @@ const Flowchart = require('../models/Flowchart');
 const { generateKeyPackage, calculateExpiryDate } = require('../utils/ApiKey/keyGenerator');
 const { createApiKeyNotification } = require('../utils/ApiKey/apiKeyNotifications');
 
+// ============== HELPER FUNCTION ==============
+/**
+ * Safely extract user ID from user object
+ * Handles both req.user.id (from auth middleware) and user._id (from direct DB queries)
+ * @param {Object} user - User object
+ * @returns {string|null} - User ID as string, or null if not found
+ */
+const getUserId = (user) => {
+  if (!user) return null;
+  
+  // Check for id field first (set by auth middleware)
+  if (user.id) {
+    return typeof user.id === 'string' ? user.id : user.id.toString();
+  }
+  
+  // Check for _id field (Mongoose document)
+  if (user._id) {
+    return typeof user._id === 'string' ? user._id : user._id.toString();
+  }
+  
+  return null;
+};
+
 /**
  * Check if user has permission to manage API keys for a client
  */
 const canManageApiKeys = async (user, clientId) => {
-  // ✅ CRITICAL FIX: Check if user and user._id exist
-  if (!user || !user._id) {
-    console.error('[API Key] Invalid user object:', user);
+  // ✅ FIXED: Check if user exists and extract userId safely
+  const userId = getUserId(user);
+  if (!userId) {
+    console.error('[API Key] Invalid user object:', {
+      hasUser: !!user,
+      hasId: !!user?.id,
+      has_Id: !!user?._id,
+      userType: user?.userType
+    });
     return false;
   }
 
@@ -26,31 +55,45 @@ const canManageApiKeys = async (user, clientId) => {
     .lean();
 
   if (!client) {
+    console.error('[API Key] Client not found:', clientId);
     return false;
   }
 
-  // ✅ FIX: Add null/undefined checks before calling toString()
-  const userId = user._id.toString();
+  // Helper to safely convert ObjectId to string
+  const getIdString = (field) => {
+    if (!field) return null;
+    if (field._id) return field._id.toString();
+    if (field.$oid) return field.$oid;
+    return field.toString();
+  };
 
-  // Consultant admin: can manage keys for clients they created
+  // Consultant admin: can manage keys for clients they created or are assigned to
   if (user.userType === 'consultant_admin') {
-    // Check if consultantAdminId exists and matches
-    if (client.leadInfo && 
-        client.leadInfo.consultantAdminId && 
-        client.leadInfo.consultantAdminId.toString() === userId) {
+    const consultantAdminId = getIdString(client.leadInfo?.consultantAdminId);
+    const createdById = getIdString(client.leadInfo?.createdBy);
+    
+    if (consultantAdminId === userId || createdById === userId) {
       return true;
     }
   }
 
   // Consultant: can manage keys for assigned clients
   if (user.userType === 'consultant') {
-    // Check if assignedConsultantId exists and matches
-    if (client.workflowTracking && 
-        client.workflowTracking.assignedConsultantId && 
-        client.workflowTracking.assignedConsultantId.toString() === userId) {
+    const leadAssignedConsultantId = getIdString(client.leadInfo?.assignedConsultantId);
+    const workflowAssignedConsultantId = getIdString(client.workflowTracking?.assignedConsultantId);
+    
+    if (leadAssignedConsultantId === userId || workflowAssignedConsultantId === userId) {
       return true;
     }
   }
+
+  console.error('[API Key] Permission denied:', {
+    userId,
+    userType: user.userType,
+    clientId,
+    consultantAdminId: getIdString(client.leadInfo?.consultantAdminId),
+    assignedConsultantId: getIdString(client.leadInfo?.assignedConsultantId)
+  });
 
   return false;
 };
@@ -75,77 +118,56 @@ const validateClientStatus = (client, isSandboxKey, durationDays) => {
     }
   } else {
     // Regular key for sandbox client
-    if (client.sandbox && ![10, 30].includes(durationDays)) {
-      throw new Error('Keys for sandbox clients must have duration of 10 or 30 days');
+    if (client.sandbox && !client.leadInfo?.isSandboxApproved) {
+      throw new Error('Cannot create regular keys for sandbox clients. Use 10 or 30 day sandbox keys.');
     }
   }
-
-  return true;
 };
 
 /**
- * Validate that the target (project or node/scope) exists
+ * Validate that the target (project/node+scope) exists
  */
 const validateKeyTarget = async (keyType, clientId, metadata) => {
   if (keyType === 'NET_API' || keyType === 'NET_IOT') {
-    // Validate project exists
-    const project = await Reduction.findOne({
-      clientId,
-      projectId: metadata.projectId,
-      isDeleted: false
-    }).select('_id projectId calculationMethodology');
-
+    const { projectId, calculationMethodology } = metadata;
+    
+    const project = await Reduction.findOne({ 
+      clientId, 
+      projectId, 
+      calculationMethodology 
+    });
+    
     if (!project) {
-      throw new Error(`Project ${metadata.projectId} not found for client ${clientId}`);
+      throw new Error(`Net Reduction project not found: ${projectId} with methodology ${calculationMethodology}`);
     }
-
-    // Validate methodology matches
-    if (project.calculationMethodology !== metadata.calculationMethodology) {
-      throw new Error(
-        `Project ${metadata.projectId} uses ${project.calculationMethodology}, ` +
-        `but key requested for ${metadata.calculationMethodology}`
-      );
-    }
-
-    return project;
-  }
-
-  if (keyType === 'DC_API' || keyType === 'DC_IOT') {
-    // Validate node and scope exist
-    const flowchart = await Flowchart.findOne({
-      clientId,
-      'nodes.nodeId': metadata.nodeId,
-      isDeleted: false
-    }).select('nodes');
-
+  } else if (keyType === 'DC_API' || keyType === 'DC_IOT') {
+    const { nodeId, scopeIdentifier } = metadata;
+    
+    const flowchart = await Flowchart.findOne({ 
+      clientId, 
+      'versions.isActive': true 
+    });
+    
     if (!flowchart) {
-      throw new Error(`Node ${metadata.nodeId} not found for client ${clientId}`);
+      throw new Error('No active flowchart found for this client');
     }
-
-    const node = flowchart.nodes.find(n => n.nodeId === metadata.nodeId);
+    
+    const activeVersion = flowchart.versions.find(v => v.isActive);
+    const node = activeVersion.chart.nodes.find(n => n.id === nodeId);
+    
     if (!node) {
-      throw new Error(`Node ${metadata.nodeId} not found`);
+      throw new Error(`Node not found: ${nodeId}`);
     }
-
-    // Check if scope exists in node
-    const scopeExists = node.emissionData?.some(
-      scope => scope.scopeIdentifier === metadata.scopeIdentifier
-    );
-
-    if (!scopeExists) {
-      throw new Error(
-        `Scope ${metadata.scopeIdentifier} not found in node ${metadata.nodeId}`
-      );
+    
+    const scope = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
+    if (!scope) {
+      throw new Error(`Scope not found: ${scopeIdentifier} in node ${nodeId}`);
     }
-
-    return { node, scopeIdentifier: metadata.scopeIdentifier };
   }
-
-  throw new Error(`Invalid key type: ${keyType}`);
 };
 
 /**
- * Create API key
+ * Create new API key
  */
 const createKey = async (req, res) => {
   try {
@@ -157,14 +179,14 @@ const createKey = async (req, res) => {
       nodeId,
       scopeIdentifier,
       durationDays = 365,
-      description,
+      description = '',
       ipWhitelist = []
     } = req.body;
 
-    // ✅ CRITICAL: Log user object for debugging
     console.log('[API Key] Request user:', {
       exists: !!req.user,
       _id: req.user?._id,
+      id: req.user?.id,
       userType: req.user?.userType,
       userName: req.user?.userName
     });
@@ -175,6 +197,16 @@ const createKey = async (req, res) => {
         success: false,
         error: 'Authentication required',
         message: 'No user found in request. Please login again.'
+      });
+    }
+
+    // ✅ FIXED: Extract user ID safely
+    const userId = getUserId(req.user);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid user session',
+        message: 'User ID not found in session. Please login again.'
       });
     }
 
@@ -251,24 +283,17 @@ const createKey = async (req, res) => {
       return res.status(409).json({
         success: false,
         error: 'Key already exists',
-        message: `An active ${keyType} key already exists for this endpoint. ` +
-                 `Please revoke the existing key first or use the renew endpoint.`,
-        data: {
-          existingKeyId: existingKey._id,
-          keyPrefix: existingKey.keyPrefix,
-          expiresAt: existingKey.expiresAt,
-          createdAt: existingKey.createdAt
-        }
+        message: `An active ${keyType} key already exists for this endpoint. Please revoke the existing key first or use the renew endpoint.`,
+        existingKeyId: existingKey._id,
+        existingKeyPrefix: existingKey.keyPrefix
       });
     }
 
-    // Generate API key
+    // Generate key
     const { key, hash, prefix } = await generateKeyPackage(keyType, metadata);
-
-    // Calculate expiry
     const expiresAt = calculateExpiryDate(isSandboxKey, durationDays);
 
-    // Create key document
+    // Create API key document - ✅ FIXED: Use extracted userId
     const apiKeyDoc = new ApiKey({
       clientId,
       keyType,
@@ -282,7 +307,7 @@ const createKey = async (req, res) => {
       sandboxDuration: isSandboxKey ? durationDays : undefined,
       description,
       ipWhitelist,
-      createdBy: req.user._id,
+      createdBy: userId,  // ✅ FIXED: Use extracted userId
       creatorRole: req.user.userType
     });
 
@@ -297,7 +322,7 @@ const createKey = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'API key created successfully',
-      warning: 'IMPORTANT: Save this key securely. It will not be shown again.',
+      warning: 'IMPORTANT: This is the only time the full API key will be displayed. Save it securely. It will not be shown again.',
       data: {
         apiKey: key, // ⚠️ Only time the actual key is shown
         keyId: apiKeyDoc._id,
@@ -446,6 +471,16 @@ const renewKey = async (req, res) => {
     const { clientId, keyId } = req.params;
     const { durationDays = 365 } = req.body;
 
+    // ✅ FIXED: Extract user ID safely
+    const userId = getUserId(req.user);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid user session',
+        message: 'User ID not found in session. Please login again.'
+      });
+    }
+
     // Check permission
     const hasPermission = await canManageApiKeys(req.user, clientId);
     if (!hasPermission) {
@@ -495,7 +530,7 @@ const renewKey = async (req, res) => {
     const { key, hash, prefix } = await generateKeyPackage(oldKey.keyType, metadata);
     const expiresAt = calculateExpiryDate(isSandboxKey, durationDays);
 
-    // Create new key
+    // Create new key - ✅ FIXED: Use extracted userId
     const newKey = new ApiKey({
       clientId,
       keyType: oldKey.keyType,
@@ -515,17 +550,17 @@ const renewKey = async (req, res) => {
       sandboxDuration: isSandboxKey ? durationDays : undefined,
       description: oldKey.description,
       ipWhitelist: oldKey.ipWhitelist,
-      createdBy: req.user._id,
+      createdBy: userId,  // ✅ FIXED: Use extracted userId
       creatorRole: req.user.userType,
       renewedFrom: oldKey._id
     });
 
     await newKey.save();
 
-    // Revoke old key
+    // Revoke old key - ✅ FIXED: Use extracted userId
     oldKey.status = 'REVOKED';
     oldKey.revokedAt = new Date();
-    oldKey.revokedBy = req.user._id;
+    oldKey.revokedBy = userId;  // ✅ FIXED: Use extracted userId
     oldKey.revocationReason = 'Renewed - replaced with new key';
     oldKey.renewedTo = newKey._id;
     await oldKey.save();
@@ -576,6 +611,16 @@ const revokeKey = async (req, res) => {
     const { clientId, keyId } = req.params;
     const { reason } = req.body;
 
+    // ✅ FIXED: Extract user ID safely
+    const userId = getUserId(req.user);
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid user session',
+        message: 'User ID not found in session. Please login again.'
+      });
+    }
+
     // Check permission
     const hasPermission = await canManageApiKeys(req.user, clientId);
     if (!hasPermission) {
@@ -604,8 +649,8 @@ const revokeKey = async (req, res) => {
       });
     }
 
-    // Revoke key
-    await key.revoke(req.user._id, reason);
+    // Revoke key - ✅ FIXED: Use extracted userId
+    await key.revoke(userId, reason);  // ✅ FIXED: Pass userId string
 
     // Get client for notification
     const client = await Client.findOne({ clientId });

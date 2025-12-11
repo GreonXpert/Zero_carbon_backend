@@ -19,6 +19,9 @@ const { verifyApiKey, isIpWhitelisted } = require('../utils/ApiKey/keyGenerator'
 function apiKeyAuth(keyType) {
   return async (req, res, next) => {
     try {
+      console.log(`[API Key Auth] Authenticating ${keyType} request`);
+      console.log(`[API Key Auth] Headers:`, req.headers);
+      
       // ============== Extract API Key ==============
       // Try multiple header formats for flexibility
       const apiKey = 
@@ -26,7 +29,10 @@ function apiKeyAuth(keyType) {
         req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
         req.query.apiKey; // Fallback to query param (not recommended for production)
 
+      console.log(`[API Key Auth] Extracted key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'NONE'}`);
+
       if (!apiKey) {
+        console.log('[API Key Auth] No API key provided');
         return res.status(401).json({
           success: false,
           error: 'API key is required',
@@ -45,8 +51,11 @@ function apiKeyAuth(keyType) {
           calculationMethodology: req.params.calculationMethodology
         };
 
+        console.log('[API Key Auth] Route params:', routeParams);
+
         // Validate required params
         if (!routeParams.clientId || !routeParams.projectId || !routeParams.calculationMethodology) {
+          console.log('[API Key Auth] Missing required route parameters');
           return res.status(400).json({
             success: false,
             error: 'Missing route parameters',
@@ -61,8 +70,11 @@ function apiKeyAuth(keyType) {
           scopeIdentifier: req.params.scopeIdentifier
         };
 
+        console.log('[API Key Auth] Route params:', routeParams);
+
         // Validate required params
         if (!routeParams.clientId || !routeParams.nodeId || !routeParams.scopeIdentifier) {
+          console.log('[API Key Auth] Missing required route parameters');
           return res.status(400).json({
             success: false,
             error: 'Missing route parameters',
@@ -73,6 +85,7 @@ function apiKeyAuth(keyType) {
 
       // ============== Find Key by Prefix ==============
       const keyPrefix = apiKey.substring(0, 6);
+      console.log(`[API Key Auth] Key prefix: ${keyPrefix}`);
       
       // Build query to find matching keys
       const query = {
@@ -91,10 +104,15 @@ function apiKeyAuth(keyType) {
         query.scopeIdentifier = routeParams.scopeIdentifier;
       }
 
+      console.log('[API Key Auth] Searching for key with query:', JSON.stringify(query, null, 2));
+
       // Find all potential matching keys
       const potentialKeys = await ApiKey.find(query);
 
+      console.log(`[API Key Auth] Found ${potentialKeys.length} potential matching key(s)`);
+
       if (!potentialKeys || potentialKeys.length === 0) {
+        console.log('[API Key Auth] No matching API key found');
         return res.status(401).json({
           success: false,
           error: 'Invalid API key',
@@ -109,11 +127,13 @@ function apiKeyAuth(keyType) {
         const isValid = await verifyApiKey(apiKey, keyDoc.keyHash);
         if (isValid) {
           validKey = keyDoc;
+          console.log(`[API Key Auth] Key hash verified successfully`);
           break;
         }
       }
 
       if (!validKey) {
+        console.log('[API Key Auth] Key hash verification failed');
         return res.status(401).json({
           success: false,
           error: 'Invalid API key',
@@ -123,6 +143,7 @@ function apiKeyAuth(keyType) {
 
       // ============== Check Expiry ==============
       if (validKey.expiresAt < new Date()) {
+        console.log('[API Key Auth] Key has expired');
         // Mark as expired if not already
         if (validKey.status === 'ACTIVE') {
           await validKey.markExpired();
@@ -138,6 +159,7 @@ function apiKeyAuth(keyType) {
 
       // ============== Check Revocation ==============
       if (validKey.status === 'REVOKED') {
+        console.log('[API Key Auth] Key has been revoked');
         return res.status(401).json({
           success: false,
           error: 'API key revoked',
@@ -152,6 +174,7 @@ function apiKeyAuth(keyType) {
         const requestIp = req.ip || req.connection.remoteAddress;
         
         if (!isIpWhitelisted(requestIp, validKey.ipWhitelist)) {
+          console.log(`[API Key Auth] IP ${requestIp} not whitelisted`);
           // Log the attempt
           validKey.lastError = `Unauthorized IP: ${requestIp}`;
           validKey.lastErrorAt = new Date();
@@ -169,6 +192,7 @@ function apiKeyAuth(keyType) {
       const scopeMatches = ApiKey.validateKeyScope(validKey, routeParams);
       
       if (!scopeMatches) {
+        console.log('[API Key Auth] Key scope does not match route parameters');
         return res.status(403).json({
           success: false,
           error: 'Key scope mismatch',
@@ -181,6 +205,7 @@ function apiKeyAuth(keyType) {
       setImmediate(async () => {
         try {
           await validKey.recordUsage();
+          console.log('[API Key Auth] Usage recorded');
         } catch (err) {
           console.error('[API Key Auth] Failed to record usage:', err);
         }
@@ -201,6 +226,8 @@ function apiKeyAuth(keyType) {
           scopeIdentifier: validKey.scopeIdentifier
         }
       };
+
+      console.log('[API Key Auth] Authentication successful, proceeding to controller');
 
       // Proceed to the next middleware/controller
       next();
