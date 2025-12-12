@@ -1,12 +1,14 @@
-// middleware/apiKeyAuth.js
+// middleware/apiKeyAuth.js (UPDATED - API Key in URL Params)
 const ApiKey = require('../models/ApiKey');
 const { verifyApiKey, isIpWhitelisted } = require('../utils/ApiKey/keyGenerator');
 
 /**
  * Middleware to authenticate API/IoT requests using API keys
  * 
+ * ⚠️ UPDATED: API key is now passed as URL parameter instead of header
+ * 
  * This middleware:
- * 1. Extracts the API key from the request header
+ * 1. Extracts the API key from req.params.apiKey
  * 2. Validates the key exists and is active
  * 3. Verifies the key matches the route parameters
  * 4. Checks expiry
@@ -20,23 +22,19 @@ function apiKeyAuth(keyType) {
   return async (req, res, next) => {
     try {
       console.log(`[API Key Auth] Authenticating ${keyType} request`);
-      console.log(`[API Key Auth] Headers:`, req.headers);
+      console.log(`[API Key Auth] URL Params:`, req.params);
       
-      // ============== Extract API Key ==============
-      // Try multiple header formats for flexibility
-      const apiKey = 
-        req.headers['x-api-key'] || 
-        req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
-        req.query.apiKey; // Fallback to query param (not recommended for production)
+      // ============== Extract API Key from URL Params ==============
+      const apiKey = req.params.apiKey;
 
       console.log(`[API Key Auth] Extracted key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'NONE'}`);
 
       if (!apiKey) {
-        console.log('[API Key Auth] No API key provided');
+        console.log('[API Key Auth] No API key provided in URL');
         return res.status(401).json({
           success: false,
           error: 'API key is required',
-          message: 'Please provide an API key in the X-API-Key header or Authorization header'
+          message: 'Please provide an API key as a URL parameter. Format: /.../:apiKey/api or /.../:apiKey/iot'
         });
       }
 
@@ -51,7 +49,7 @@ function apiKeyAuth(keyType) {
           calculationMethodology: req.params.calculationMethodology
         };
 
-        console.log('[API Key Auth] Route params:', routeParams);
+        console.log('[API Key Auth] Net Reduction Route params:', routeParams);
 
         // Validate required params
         if (!routeParams.clientId || !routeParams.projectId || !routeParams.calculationMethodology) {
@@ -70,7 +68,7 @@ function apiKeyAuth(keyType) {
           scopeIdentifier: req.params.scopeIdentifier
         };
 
-        console.log('[API Key Auth] Route params:', routeParams);
+        console.log('[API Key Auth] Data Collection Route params:', routeParams);
 
         // Validate required params
         if (!routeParams.clientId || !routeParams.nodeId || !routeParams.scopeIdentifier) {
