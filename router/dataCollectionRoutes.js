@@ -29,30 +29,42 @@ const {
 // ============== PROTECTED API/IoT ENDPOINTS ==============
 // These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
 
+// ============== PROTECTED API/IoT ENDPOINTS ==============
+// ⚠️ UPDATED: API key is now in URL params instead of headers
+// These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
+
 /**
  * DATA COLLECTION API DATA INGESTION
- * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/api-data
  * 
  * ✅ PROTECTED with API Key (type: DC_API)
- * Headers: X-API-Key: <your-api-key>
+ * ⚠️ NEW: API key passed in URL as :apiKey parameter
+ * 
+ * Example:
+ * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/dcapi_abc123xyz456/api-data
+ * Body: { value: 100, date: "2024-12-12", ... }
  */
 router.post(
-  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data',
-  apiKeyMiddleware.dataCollectionAPI,   // ✅ API Key Auth
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/api-data',
+  apiKeyMiddleware.dataCollectionAPI,   // ✅ API Key Auth (from URL params)
   apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
   saveAPIData
 );
 
 /**
  * DATA COLLECTION IoT DATA INGESTION
- * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/iot-data
  * 
  * ✅ PROTECTED with API Key (type: DC_IOT)
- * Headers: X-API-Key: <your-api-key>
+ * ⚠️ NEW: API key passed in URL as :apiKey parameter
+ * 
+ * Example:
+ * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/dciot_abc123xyz456/iot-data
+ * Body: { value: 100, timestamp: "2024-12-12T10:00:00Z", ... }
  */
 router.post(
-  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data',
-  apiKeyMiddleware.dataCollectionIoT,   // ✅ API Key Auth
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/iot-data',
+  apiKeyMiddleware.dataCollectionIoT,   // ✅ API Key Auth (from URL params)
   apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
   saveIoTData
 );
