@@ -181,55 +181,34 @@ const login = async (req, res) => {
 // ==========================================
 const createConsultantAdmin = async (req, res) => {
   try {
-    // ───────────────────────────────────────
-    // 1. Authorization
-    // ───────────────────────────────────────
+    console.log("[DEBUG] req.body:", req.body);
+
     if (!req.user || req.user.userType !== "super_admin") {
-      return res.status(403).json({
-        message: "Only Super Admin can create Consultant Admins"
-      });
+      return res.status(403).json({ message: "Only Super Admin can create Consultant Admins" });
     }
 
-    // ───────────────────────────────────────
-    // 2. Extract & validate body
-    // ───────────────────────────────────────
-    const {
-      email,
-      password,
-      contactNumber,
-      userName,
-      address,
-      teamName,
-      employeeId
-    } = req.body;
+    const email = req.body.email;
+    const password = req.body.password;
+    const userName = req.body.userName;
+    const contactNumber = req.body.contactNumber;
+    const address = req.body.address;
+    const teamName = req.body.teamName;
+    const employeeId = req.body.employeeId;
 
     if (!email || !password || !userName) {
-      return res.status(400).json({
-        message: "email, password and userName are required"
-      });
+      return res.status(400).json({ message: "email, password and userName are required" });
     }
 
-    // ───────────────────────────────────────
-    // 3. Check for existing user
-    // ───────────────────────────────────────
     const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
+      $or: [{ email: email }, { userName: userName }]
     });
 
     if (existingUser) {
-      return res.status(409).json({
-        message: "Email or Username already exists"
-      });
+      return res.status(409).json({ message: "Email or Username already exists" });
     }
 
-    // ───────────────────────────────────────
-    // 4. Hash password
-    // ───────────────────────────────────────
     const hashedPassword = bcrypt.hashSync(password, 10);
 
-    // ───────────────────────────────────────
-    // 5. Create consultant admin user
-    // ───────────────────────────────────────
     const consultantAdmin = new User({
       email,
       password: hashedPassword,
@@ -238,67 +217,34 @@ const createConsultantAdmin = async (req, res) => {
       address,
       teamName,
       employeeId,
-
       userType: "consultant_admin",
       companyName: "ZeroCarbon Consultancy",
       createdBy: req.user.id,
-
       isActive: true,
-      sandbox: false,
-
-      permissions: {
-        canViewAllClients: true,
-        canManageUsers: true,
-        canManageClients: true,
-        canViewReports: true,
-        canEditBoundaries: false,
-        canSubmitData: false,
-        canAudit: false
-      }
+      sandbox: false
     });
 
     await consultantAdmin.save();
 
-    // ───────────────────────────────────────
-    // 6. Save profile image (optional)
-    // ───────────────────────────────────────
     try {
       await saveUserProfileImage(req, consultantAdmin);
-    } catch (err) {
-      console.warn("Profile image skipped:", err.message);
+    } catch (e) {
+      console.warn("Profile image skipped:", e.message);
     }
 
-    // ───────────────────────────────────────
-    // 7. Send welcome email
-    // ───────────────────────────────────────
-    const emailSubject = "Welcome to ZeroCarbon – Consultant Admin Account";
-    const emailMessage = `
-Hello ${userName},
+    await sendMail(
+      email,
+      "Welcome to ZeroCarbon – Consultant Admin Account",
+      `Hello ${userName},\n\nYour account has been created.\n\nEmail: ${email}\nPassword: ${password}`
+    );
 
-Your Consultant Admin account has been created successfully.
-
-Login details:
-Email: ${email}
-Username: ${userName}
-Password: ${password}
-
-Please change your password after first login.
-
-— ZeroCarbon Team
-    `;
-
-    await sendMail(email, emailSubject, emailMessage);
-
-    // ───────────────────────────────────────
-    // 8. Success response
-    // ───────────────────────────────────────
     return res.status(201).json({
       message: "Consultant Admin created successfully",
       consultantAdmin: {
         id: consultantAdmin._id,
-        email: consultantAdmin.email,
-        userName: consultantAdmin.userName,
-        teamName: consultantAdmin.teamName
+        email,
+        userName,
+        teamName
       }
     });
 
