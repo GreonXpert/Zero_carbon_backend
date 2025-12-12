@@ -2,6 +2,7 @@
 const mongoose = require('mongoose');
 const moment = require('moment');
 
+
 const NetReductionEntrySchema = new mongoose.Schema({
   // Keys
   clientId:        { type: String, required: true, index: true },
@@ -282,7 +283,7 @@ NetReductionEntrySchema.post('save', async function(doc) {
           // 🔹 After recalculation, trigger summary updates
           console.log(`📊 Triggering summary recalculation for client: ${doc.clientId}`);
           try {
-            const { recomputeClientNetReductionSummary } = require('../controllers/Reduction/netReductionSummaryController');
+            const { recomputeClientNetReductionSummary } = require('../../controllers/Reduction/netReductionSummaryController');
             await recomputeClientNetReductionSummary(doc.clientId);
             console.log(`📊 ✅ Summary recalculation completed`);
           } catch (summaryError) {
@@ -297,7 +298,7 @@ NetReductionEntrySchema.post('save', async function(doc) {
       console.log(`📊 No later entries. Triggering summary update for client: ${doc.clientId}`);
       setImmediate(async () => {
         try {
-          const { recomputeClientNetReductionSummary } = require('../controllers/Reduction/netReductionSummaryController');
+          const { recomputeClientNetReductionSummary } = require('../../controllers/Reduction/netReductionSummaryController');
           await recomputeClientNetReductionSummary(doc.clientId);
           console.log(`📊 ✅ Summary update completed`);
         } catch (summaryError) {

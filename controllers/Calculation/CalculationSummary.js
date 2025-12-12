@@ -8,6 +8,7 @@ const moment = require('moment');
 const ProcessFlowchart = require('../../models/ProcessFlowchart'); 
 const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
 const Reduction = require("../../models/Reduction/Reduction");
+const netReductionSummaryController = require('../Reduction/netReductionSummaryController');
 
 // SBTi targets – to link summary emissions with SBTi trajectories
 const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');

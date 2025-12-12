@@ -55,6 +55,8 @@ const netReductionSummaryController = require('./controllers/Reduction/netReduct
 const sbtiController = require('./controllers/Decabonization/sbtiController');
 const transportFlowRouter = require('./router/transportFlowR');
 const sandboxRoutes = require('./router/sandboxRoutes');
+   const apiKeyRoutes = require('./router/apiKeyRoutes');
+   const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
 
 
 // Import models for real-time features
@@ -66,8 +68,7 @@ const {
   broadcastNetReductionCompletionUpdate
 } = require('./controllers/DataCollection/dataCompletionController');
 const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
-   const apiKeyRoutes = require('./router/apiKeyRoutes');
-   const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
+
 
   
 
@@ -148,7 +149,7 @@ app.use("/api/processflow", processFlowR);
 app.use('/api/transport-flowchart', transportFlowRouter);
 // app.use('/api/data-entry', dataEntryRoutes);
 app.use('/api/emission-factor-hub', EmissionFactorHub);
-app.use('/api', iotRoutes);
+app.use('/api/iot', iotRoutes);
 app.use('/api/ipcc', ipccDataRoutes);
 app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
@@ -163,6 +164,7 @@ app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
+
 app.use('/api', apiKeyRoutes);
 
 

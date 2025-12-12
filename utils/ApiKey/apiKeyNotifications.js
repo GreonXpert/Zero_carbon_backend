@@ -4,6 +4,23 @@ const User = require('../../models/User');
 const Client = require('../../models/Client');
 
 /**
+ * ✅ HELPER: Safely extract user ID from user object
+ */
+const getUserId = (user) => {
+  if (!user) return null;
+  
+  if (user.id) {
+    return typeof user.id === 'string' ? user.id : user.id.toString();
+  }
+  
+  if (user._id) {
+    return typeof user._id === 'string' ? user._id : user._id.toString();
+  }
+  
+  return null;
+};
+
+/**
  * Create a notification for API key lifecycle events
  * @param {string} action - 'created', 'renewed', 'revoked', 'expired'
  * @param {Object} apiKey - The API key document
@@ -12,6 +29,13 @@ const Client = require('../../models/Client');
  */
 async function createApiKeyNotification(action, apiKey, performedBy, client) {
   try {
+    // ✅ FIX: Safely extract user ID
+    const performedById = getUserId(performedBy);
+    if (!performedById) {
+      console.error('[API Key Notification] Invalid performedBy user object:', performedBy);
+      return; // Skip notification if no valid user ID
+    }
+
     let title, message, priority;
     const targetUsers = [];
 
@@ -127,7 +151,7 @@ Please create or renew this key to continue API access.
         title,
         message,
         priority,
-        createdBy: performedBy._id,
+        createdBy: performedById, // ✅ FIX: Use extracted ID
         creatorType: performedBy.userType,
         targetUsers,
         status: 'published',
@@ -152,11 +176,11 @@ Please create or renew this key to continue API access.
         await global.broadcastNotification(notification);
       }
 
-      console.log(`[API Key] Notification sent for ${action}: ${apiKey.keyPrefix}***`);
+      console.log(`[API Key] ✅ Notification sent for ${action}: ${apiKey.keyPrefix}***`);
     }
 
   } catch (error) {
-    console.error(`Failed to create API key ${action} notification:`, error);
+    console.error(`[API Key] ❌ Failed to create API key ${action} notification:`, error);
   }
 }
 
@@ -190,6 +214,13 @@ async function createKeyExpiryWarning(apiKey, daysUntilExpiry) {
     if (consultantAdmin) targetUsers.push(consultantAdmin._id);
     if (assignedConsultant && assignedConsultant._id.toString() !== consultantAdmin?._id.toString()) {
       targetUsers.push(assignedConsultant._id);
+    }
+
+    // ✅ FIX: Ensure we have a valid createdBy
+    const createdBy = consultantAdmin?._id || clientAdmin?._id;
+    if (!createdBy) {
+      console.log('[API Key] No valid user found for expiry warning notification');
+      return;
     }
 
     // Format key type
@@ -231,7 +262,7 @@ Please renew this key to avoid service interruption.
         title,
         message,
         priority,
-        createdBy: consultantAdmin?._id || clientAdmin?._id,
+        createdBy, // ✅ FIX: Use valid createdBy
         creatorType: 'system',
         targetUsers,
         status: 'published',
@@ -265,11 +296,11 @@ Please renew this key to avoid service interruption.
       });
       await apiKey.save();
 
-      console.log(`[API Key] Expiry warning sent for ${apiKey.keyPrefix}***: ${daysUntilExpiry} days`);
+      console.log(`[API Key] ✅ Expiry warning sent for ${apiKey.keyPrefix}***: ${daysUntilExpiry} days`);
     }
 
   } catch (error) {
-    console.error('Failed to create key expiry warning:', error);
+    console.error('[API Key] ❌ Failed to create key expiry warning:', error);
   }
 }
 
@@ -290,14 +321,23 @@ async function createKeyExpiredNotification(apiKey) {
     const creator = await User.findById(apiKey.createdBy);
 
     // Use the main notification function
-    await createApiKeyNotification('expired', apiKey, creator || { userName: 'System', _id: apiKey.createdBy, userType: 'system' }, client);
+    await createApiKeyNotification(
+      'expired', 
+      apiKey, 
+      creator || { 
+        userName: 'System',
+        id: apiKey.createdBy, // ✅ FIX: Use 'id' not '_id'
+        userType: 'system' 
+      }, 
+      client
+    );
 
     // Mark notification as sent
     apiKey.expiryNotificationSent = true;
     await apiKey.save();
 
   } catch (error) {
-    console.error('Failed to create key expired notification:', error);
+    console.error('[API Key] ❌ Failed to create key expired notification:', error);
   }
 }
 
