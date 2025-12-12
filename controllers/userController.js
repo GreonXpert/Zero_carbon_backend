@@ -311,6 +311,7 @@ Please change your password after first login.
   }
 };
 
+
 // Create Consultant (Consultant Admin only)
 const createConsultant = async (req, res) => {
   try {
