@@ -1,4 +1,5 @@
-// routes/apiKeyRoutes.js
+// routes/apiKeyRoutes.js - UPDATED WITH PDF DOWNLOAD & EMAIL ENDPOINTS
+
 const express = require('express');
 const router = express.Router();
 const { auth, checkRole } = require('../middleware/auth');
@@ -7,22 +8,24 @@ const {
   renewKey,
   revokeKey,
   listKeys,
-  getKeyDetails
+  getKeyDetails,
+  downloadKeyPDF,     // ✅ NEW
+  sendKeyEmail        // ✅ NEW
 } = require('../controllers/apiKeyController');
-// ✅ FIXED: Correct path - jobs folder is at root level, not in utils
 const { manualExpiryCheck, getApiKeyStats } = require('../utils/jobs/apiKeyExpiryChecker');
 
 // ============== API Key Management Routes ==============
 
 /**
  * All routes require authentication
- * Only super_admin, consultant_admin, and consultant can manage API keys
  */
 router.use(auth);
 
 /**
  * CREATE API KEY
  * POST /api/clients/:clientId/api-keys
+ * 
+ * ✅ UPDATED: Now optionally generates PDF and sends email
  * 
  * Body:
  * {
@@ -31,9 +34,10 @@ router.use(auth);
  *   "calculationMethodology": "string",  // For NET keys
  *   "nodeId": "string",                  // For DC keys
  *   "scopeIdentifier": "string",         // For DC keys
- *   "durationDays": 365,                 // Optional (default: 365, sandbox: 10 or 30)
+ *   "durationDays": 365,                 // Optional (default: 365)
  *   "description": "string",             // Optional
- *   "ipWhitelist": ["1.2.3.4"]          // Optional
+ *   "ipWhitelist": ["1.2.3.4"],         // Optional
+ *   "sendEmail": true                    // ✅ NEW: Optional (default: true)
  * }
  */
 router.post(
@@ -65,6 +69,8 @@ router.get(
   checkRole('super_admin', 'consultant_admin', 'consultant'),
   getKeyDetails
 );
+
+
 
 /**
  * RENEW API KEY
