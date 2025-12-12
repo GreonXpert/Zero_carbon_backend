@@ -1,8 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { auth, checkRole, checkPermission } = require("../middleware/auth"); // Using the comprehensive auth from middleware folder
-const { uploadUserImage } = require("../utils/uploads/userImageUpload");
-
+const { uploadUserImage } = require('../utils/uploads/userImageUploadS3');
 const {
   login,
   createConsultantAdmin,
