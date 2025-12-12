@@ -6,7 +6,7 @@ const { canManageFlowchart } = require("../../utils/Permissions/permissions");
 const { notifyReductionEvent } = require('../../utils/notifications/reductionNotifications');
 const { syncReductionWorkflow } = require('../../utils/Workflow/workflow');
 const { syncClientReductionProjects } = require('../../utils/Workflow/syncReductionProjects'); // <-- ADD THIS LINE
-const { uploadReductionMedia, saveReductionFiles } = require('../../utils/uploads/reductionUpload');
+const { uploadReductionMedia, saveReductionFiles } = require('../../utils/uploads/reductionUploadS3');
 
 
 

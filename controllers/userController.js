@@ -9,7 +9,7 @@ const Notification = require("../models/Notification");
 // Import the notification controller
 const { createUserStatusNotification } = require("./notificationControllers");
 const Flowchart = require('../models/Flowchart');
-const { saveUserProfileImage } = require('../utils/uploads/userImageUpload');
+const { saveUserProfileImage } = require('../utils/uploads/userImageUploadS3');
 
 const { getNormalizedLevels } = require("../utils/Permissions/permissions");
 
@@ -176,51 +176,77 @@ const login = async (req, res) => {
 
 
 
+// ==========================================
 // Create Consultant Admin (Super Admin only)
+// ==========================================
 const createConsultantAdmin = async (req, res) => {
   try {
+    // ───────────────────────────────────────
+    // 1. Authorization
+    // ───────────────────────────────────────
     if (!req.user || req.user.userType !== "super_admin") {
-      return res.status(403).json({ 
-        message: "Only Super Admin can create Consultant Admins" 
+      return res.status(403).json({
+        message: "Only Super Admin can create Consultant Admins"
       });
     }
-    
-     // 1. Define allowed fields explicitly
-    const allowedFields = [
-      'email', 'password', 'contactNumber', 
-      'userName', 'address', 'teamName', 'employeeId'
-    ];
-    
-    // 2. Extract only allowed fields
-    const userData = {};
-    allowedFields.forEach(field => {
-      if (req.body[field] !== undefined) {
-        userData[field] = req.body[field];
-      }
-    });
-    
-    // Check if user already exists
+
+    // ───────────────────────────────────────
+    // 2. Extract & validate body
+    // ───────────────────────────────────────
+    const {
+      email,
+      password,
+      contactNumber,
+      userName,
+      address,
+      teamName,
+      employeeId
+    } = req.body;
+
+    if (!email || !password || !userName) {
+      return res.status(400).json({
+        message: "email, password and userName are required"
+      });
+    }
+
+    // ───────────────────────────────────────
+    // 3. Check for existing user
+    // ───────────────────────────────────────
     const existingUser = await User.findOne({
       $or: [{ email }, { userName }]
     });
-    
+
     if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
+      return res.status(409).json({
+        message: "Email or Username already exists"
       });
     }
-    
+
+    // ───────────────────────────────────────
+    // 4. Hash password
+    // ───────────────────────────────────────
     const hashedPassword = bcrypt.hashSync(password, 10);
-    
-      const consultantAdmin = new User({
-      ...userData,
+
+    // ───────────────────────────────────────
+    // 5. Create consultant admin user
+    // ───────────────────────────────────────
+    const consultantAdmin = new User({
+      email,
       password: hashedPassword,
-      userType: "consultant_admin",  // Always set by server
+      contactNumber,
+      userName,
+      address,
+      teamName,
+      employeeId,
+
+      userType: "consultant_admin",
       companyName: "ZeroCarbon Consultancy",
-      createdBy: req.user.id,  // Always from authenticated user
-      isActive: true,  // Explicit default
-      sandbox: false,   // Explicit default
-      permissions: {    // Always controlled by server
+      createdBy: req.user.id,
+
+      isActive: true,
+      sandbox: false,
+
+      permissions: {
         canViewAllClients: true,
         canManageUsers: true,
         canManageClients: true,
@@ -230,29 +256,43 @@ const createConsultantAdmin = async (req, res) => {
         canAudit: false
       }
     });
-    
+
     await consultantAdmin.save();
-        // optional profile image
-      try { await saveUserProfileImage(req, consultantAdmin); } catch (e) {
-      console.warn('profile image save skipped:', e.message);
+
+    // ───────────────────────────────────────
+    // 6. Save profile image (optional)
+    // ───────────────────────────────────────
+    try {
+      await saveUserProfileImage(req, consultantAdmin);
+    } catch (err) {
+      console.warn("Profile image skipped:", err.message);
     }
-    
-    // Send welcome email
-    const emailSubject = "Welcome to ZeroCarbon - Consultant Admin Account";
+
+    // ───────────────────────────────────────
+    // 7. Send welcome email
+    // ───────────────────────────────────────
+    const emailSubject = "Welcome to ZeroCarbon – Consultant Admin Account";
     const emailMessage = `
-      Your Consultant Admin account has been created successfully.
-      
-      Login Credentials:
-      Username: ${userName}
-      Email: ${email}
-      Password: ${password}
-      
-      Please change your password after first login.
+Hello ${userName},
+
+Your Consultant Admin account has been created successfully.
+
+Login details:
+Email: ${email}
+Username: ${userName}
+Password: ${password}
+
+Please change your password after first login.
+
+— ZeroCarbon Team
     `;
-    
+
     await sendMail(email, emailSubject, emailMessage);
-    
-    res.status(201).json({
+
+    // ───────────────────────────────────────
+    // 8. Success response
+    // ───────────────────────────────────────
+    return res.status(201).json({
       message: "Consultant Admin created successfully",
       consultantAdmin: {
         id: consultantAdmin._id,
@@ -261,12 +301,12 @@ const createConsultantAdmin = async (req, res) => {
         teamName: consultantAdmin.teamName
       }
     });
-    
+
   } catch (error) {
     console.error("Create consultant admin error:", error);
-    res.status(500).json({ 
-      message: "Failed to create Consultant Admin", 
-      error: error.message 
+    return res.status(500).json({
+      message: "Failed to create Consultant Admin",
+      error: error.message
     });
   }
 };

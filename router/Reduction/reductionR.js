@@ -22,7 +22,7 @@ const {
   updateClientReductionWorkflowStatus,  // 🆕 NEW
   getClientReductionWorkflowStatus      // 🆕 NEW
 } = require('../../controllers/Reduction/reductionController');
-const { uploadReductionMedia } = require('../../utils/uploads/reductionUpload');
+const { uploadReductionMedia } = require('../../utils/uploads/reductionUploadS3');
 
 router.use(auth);
 
