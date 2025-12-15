@@ -2218,6 +2218,349 @@ async function recomputeSeries(clientId, projectId, calculationMethodology) {
   return { count: rows.length, cumulative: cum, high, low };
 }
 
+
+
+
+// controllers/Reduction/netReductionController.js
+
+/**
+ * GET NET REDUCTION ENTRIES
+ * 
+ * Route: GET /api/net-reduction?clientId=Greon216&projectId=PROJECT123&limit=50&page=1
+ * 
+ * Query Parameters:
+ *   - clientId (REQUIRED): Client ID to fetch data for
+ *   - projectId (OPTIONAL): Specific project ID filter
+ *   - calculationMethodology (OPTIONAL): methodology1, methodology2, or methodology3
+ *   - limit (OPTIONAL): Number of records per page (default: 20, max: 200)
+ *   - page (OPTIONAL): Page number (default: 1)
+ *   - sortBy (OPTIONAL): Field to sort by (default: 'timestamp')
+ *   - sortOrder (OPTIONAL): 'asc' or 'desc' (default: 'desc')
+ *   - from (OPTIONAL): Start date filter (DD/MM/YYYY or YYYY-MM-DD)
+ *   - to (OPTIONAL): End date filter (DD/MM/YYYY or YYYY-MM-DD)
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "message": "Net reduction entries fetched successfully",
+ *   "meta": {
+ *     "page": 1,
+ *     "limit": 50,
+ *     "total": 150,
+ *     "totalPages": 3,
+ *     "hasNextPage": true,
+ *     "hasPrevPage": false
+ *   },
+ *   "filter": {
+ *     "clientId": "Greon216",
+ *     "projectId": "PROJECT123"
+ *   },
+ *   "data": [...]
+ * }
+ */
+exports.getNetReduction = async (req, res) => {
+  try {
+    const user = req.user;
+    
+    // ============================================
+    // 1. VALIDATE REQUIRED PARAMS
+    // ============================================
+    const { clientId } = req.query;
+    
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'clientId is required as a query parameter'
+      });
+    }
+
+    // ============================================
+    // 2. PERMISSION CHECK
+    // ============================================
+    const hasAccess = await checkNetReductionReadAccess(user, clientId);
+    
+    if (!hasAccess.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: 'Permission denied',
+        reason: hasAccess.reason
+      });
+    }
+
+    // ============================================
+    // 3. BUILD QUERY FILTER
+    // ============================================
+    const {
+      projectId,
+      calculationMethodology,
+      limit = 20,
+      page = 1,
+      sortBy = 'timestamp',
+      sortOrder = 'desc',
+      from,
+      to
+    } = req.query;
+
+    const filter = { clientId };
+
+    // Optional project filter
+    if (projectId) {
+      filter.projectId = projectId;
+    }
+
+    // Optional methodology filter
+    if (calculationMethodology) {
+      if (!['methodology1', 'methodology2', 'methodology3'].includes(calculationMethodology)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid calculationMethodology. Must be methodology1, methodology2, or methodology3'
+        });
+      }
+      filter.calculationMethodology = calculationMethodology;
+    }
+
+    // Date range filter
+    if (from || to) {
+      filter.timestamp = {};
+      
+      if (from) {
+        const fromDate = parseDate(from);
+        if (fromDate) {
+          filter.timestamp.$gte = fromDate;
+        }
+      }
+      
+      if (to) {
+        const toDate = parseDate(to);
+        if (toDate) {
+          // Set to end of day
+          toDate.setHours(23, 59, 59, 999);
+          filter.timestamp.$lte = toDate;
+        }
+      }
+    }
+
+    // ============================================
+    // 4. PAGINATION & SORTING
+    // ============================================
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const sortOptions = {};
+    sortOptions[sortBy] = sortOrder.toLowerCase() === 'asc' ? 1 : -1;
+
+    // ============================================
+    // 5. FETCH DATA
+    // ============================================
+    const [total, entries] = await Promise.all([
+      NetReductionEntry.countDocuments(filter),
+      NetReductionEntry.find(filter)
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(limitNum)
+        .populate('sourceDetails.uploadedBy', 'userName email')
+        .populate('formulaId', 'name expression variables')
+        .select('-__v')
+        .lean()
+    ]);
+
+    // ============================================
+    // 6. CALCULATE AGGREGATES (Optional)
+    // ============================================
+    const aggregates = await calculateAggregates(filter);
+
+    // ============================================
+    // 7. RESPONSE
+    // ============================================
+    return res.status(200).json({
+      success: true,
+      message: 'Net reduction entries fetched successfully',
+      meta: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
+        hasNextPage: pageNum < Math.ceil(total / limitNum),
+        hasPrevPage: pageNum > 1
+      },
+      filter: {
+        clientId,
+        projectId: projectId || null,
+        calculationMethodology: calculationMethodology || null,
+        dateRange: {
+          from: from || null,
+          to: to || null
+        }
+      },
+      aggregates,
+      data: entries
+    });
+
+  } catch (error) {
+    console.error('❌ getNetReduction error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch net reduction entries',
+      error: error.message
+    });
+  }
+};
+
+// ============================================
+// HELPER: CHECK READ ACCESS
+// ============================================
+async function checkNetReductionReadAccess(user, clientId) {
+  if (!user) {
+    return { allowed: false, reason: 'Authentication required' };
+  }
+
+  const userId = user._id || user.id;
+
+  // 1. Super Admin - full access
+  if (user.userType === 'super_admin') {
+    return { allowed: true, reason: 'Super admin access' };
+  }
+
+  // 2. Client-side users (same clientId)
+  const clientSideRoles = [
+    'client_admin',
+    'client_employee_head',
+    'employee',
+    'auditor',
+    'viewer'
+  ];
+  
+  if (clientSideRoles.includes(user.userType) && user.clientId === clientId) {
+    return { allowed: true, reason: 'Client user access' };
+  }
+
+  // 3. Consultant Admin - created this client OR manages consultants assigned to it
+  if (user.userType === 'consultant_admin') {
+    const client = await Client.findOne({ clientId })
+      .select('leadInfo.createdBy leadInfo.assignedConsultantId')
+      .lean();
+
+    if (!client) {
+      return { allowed: false, reason: 'Client not found' };
+    }
+
+    // Created by this consultant admin
+    if (client.leadInfo?.createdBy?.toString() === userId.toString()) {
+      return { allowed: true, reason: 'Consultant admin (creator) access' };
+    }
+
+    // Check if assigned consultant reports to this consultant admin
+    const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+    if (assignedConsultantId) {
+      const consultant = await User.findById(assignedConsultantId)
+        .select('consultantAdminId')
+        .lean();
+
+      if (consultant?.consultantAdminId?.toString() === userId.toString()) {
+        return { allowed: true, reason: 'Consultant admin (manager) access' };
+      }
+    }
+
+    return { allowed: false, reason: 'Not authorized for this client' };
+  }
+
+  // 4. Consultant - assigned to this client
+  if (user.userType === 'consultant') {
+    const client = await Client.findOne({
+      clientId,
+      'leadInfo.assignedConsultantId': userId
+    }).lean();
+
+    if (client) {
+      return { allowed: true, reason: 'Assigned consultant access' };
+    }
+
+    return { allowed: false, reason: 'Not assigned to this client' };
+  }
+
+  return { allowed: false, reason: 'Insufficient permissions' };
+}
+
+// ============================================
+// HELPER: PARSE DATE
+// ============================================
+function parseDate(dateStr) {
+  if (!dateStr) return null;
+
+  const moment = require('moment');
+  
+  // Try multiple formats
+  const formats = ['DD/MM/YYYY', 'YYYY-MM-DD', 'DD-MM-YYYY'];
+  const m = moment(dateStr, formats, true);
+  
+  return m.isValid() ? m.toDate() : null;
+}
+
+// ============================================
+// HELPER: CALCULATE AGGREGATES
+// ============================================
+async function calculateAggregates(filter) {
+  try {
+    const pipeline = [
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalEntries: { $sum: 1 },
+          totalNetReduction: { $sum: '$netReduction' },
+          avgNetReduction: { $avg: '$netReduction' },
+          maxNetReduction: { $max: '$netReduction' },
+          minNetReduction: { $min: '$netReduction' },
+          latestCumulative: { $max: '$cumulativeNetReduction' }
+        }
+      }
+    ];
+
+    const result = await NetReductionEntry.aggregate(pipeline);
+
+    if (result.length === 0) {
+      return {
+        totalEntries: 0,
+        totalNetReduction: 0,
+        avgNetReduction: 0,
+        maxNetReduction: 0,
+        minNetReduction: 0,
+        latestCumulative: 0
+      };
+    }
+
+    const aggregates = result[0];
+    delete aggregates._id;
+
+    // Round values
+    return {
+      totalEntries: aggregates.totalEntries || 0,
+      totalNetReduction: round6(aggregates.totalNetReduction || 0),
+      avgNetReduction: round6(aggregates.avgNetReduction || 0),
+      maxNetReduction: round6(aggregates.maxNetReduction || 0),
+      minNetReduction: round6(aggregates.minNetReduction || 0),
+      latestCumulative: round6(aggregates.latestCumulative || 0)
+    };
+
+  } catch (error) {
+    console.error('Error calculating aggregates:', error);
+    return {
+      totalEntries: 0,
+      totalNetReduction: 0,
+      avgNetReduction: 0,
+      maxNetReduction: 0,
+      minNetReduction: 0,
+      latestCumulative: 0
+    };
+  }
+}
+
+function round6(n) {
+  return Math.round((Number(n) || 0) * 1e6) / 1e6;
+}
+
+
 // --- ADD THIS EXPORT ---
 /**
  * Edit a MANUAL net-reduction entry.
