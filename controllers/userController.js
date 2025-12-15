@@ -181,10 +181,20 @@ const login = async (req, res) => {
 // ==========================================
 const createConsultantAdmin = async (req, res) => {
   try {
+    console.log("[DEBUG] ====== CREATE CONSULTANT ADMIN START ======");
     console.log("[DEBUG] req.body:", req.body);
+    console.log("[DEBUG] req.file:", req.file ? {
+      fieldname: req.file.fieldname,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      buffer: req.file.buffer ? `Buffer(${req.file.buffer.length} bytes)` : 'No buffer'
+    } : 'No file uploaded');
 
     if (!req.user || req.user.userType !== "super_admin") {
-      return res.status(403).json({ message: "Only Super Admin can create Consultant Admins" });
+      return res.status(403).json({ 
+        message: "Only Super Admin can create Consultant Admins" 
+      });
     }
 
     const email = req.body.email;
@@ -196,7 +206,9 @@ const createConsultantAdmin = async (req, res) => {
     const employeeId = req.body.employeeId;
 
     if (!email || !password || !userName) {
-      return res.status(400).json({ message: "email, password and userName are required" });
+      return res.status(400).json({ 
+        message: "email, password and userName are required" 
+      });
     }
 
     const existingUser = await User.findOne({
@@ -204,7 +216,9 @@ const createConsultantAdmin = async (req, res) => {
     });
 
     if (existingUser) {
-      return res.status(409).json({ message: "Email or Username already exists" });
+      return res.status(409).json({ 
+        message: "Email or Username already exists" 
+      });
     }
 
     const hashedPassword = bcrypt.hashSync(password, 10);
@@ -225,18 +239,46 @@ const createConsultantAdmin = async (req, res) => {
     });
 
     await consultantAdmin.save();
+    console.log("[DEBUG] ✅ User saved to DB with ID:", consultantAdmin._id);
 
-    try {
-      await saveUserProfileImage(req, consultantAdmin);
-    } catch (e) {
-      console.warn("Profile image skipped:", e.message);
+    // Handle profile image upload
+    let imageUploadResult = { success: false, error: null };
+    
+    if (req.file) {
+      console.log("[DEBUG] 📸 Profile image detected, attempting S3 upload...");
+      
+      try {
+        await saveUserProfileImage(req, consultantAdmin);
+        imageUploadResult.success = true;
+        console.log("[DEBUG] ✅ Profile image uploaded successfully");
+        console.log("[DEBUG] Image metadata:", consultantAdmin.profileImage);
+        
+      } catch (imageError) {
+        imageUploadResult.error = imageError.message;
+        console.error("[DEBUG] ❌ Profile image upload failed:", imageError);
+        console.error("[DEBUG] Full error:", imageError);
+        
+        // Continue with user creation even if image fails
+        // But return the error in response
+      }
+    } else {
+      console.log("[DEBUG] ⚠️ No profile image file in request");
     }
 
-    await sendMail(
-      email,
-      "Welcome to ZeroCarbon – Consultant Admin Account",
-      `Hello ${userName},\n\nYour account has been created.\n\nEmail: ${email}\nPassword: ${password}`
-    );
+    // Send welcome email
+    try {
+      await sendMail(
+        email,
+        "Welcome to ZeroCarbon – Consultant Admin Account",
+        `Hello ${userName},\n\nYour account has been created.\n\nEmail: ${email}\nPassword: ${password}\n\nPlease change your password after first login.`
+      );
+      console.log("[DEBUG] ✅ Welcome email sent");
+    } catch (emailError) {
+      console.error("[DEBUG] ⚠️ Failed to send welcome email:", emailError.message);
+      // Continue even if email fails
+    }
+
+    console.log("[DEBUG] ====== CREATE CONSULTANT ADMIN END ======");
 
     return res.status(201).json({
       message: "Consultant Admin created successfully",
@@ -244,15 +286,20 @@ const createConsultantAdmin = async (req, res) => {
         id: consultantAdmin._id,
         email,
         userName,
-        teamName
-      }
+        teamName,
+        profileImage: consultantAdmin.profileImage || null
+      },
+      imageUpload: imageUploadResult
     });
 
   } catch (error) {
-    console.error("Create consultant admin error:", error);
+    console.error("[DEBUG] ❌ CREATE CONSULTANT ADMIN ERROR:", error);
+    console.error("[DEBUG] Error stack:", error.stack);
+    
     return res.status(500).json({
       message: "Failed to create Consultant Admin",
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };

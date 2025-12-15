@@ -1,155 +1,142 @@
 // utils/s3Helper.js
-const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { Upload } = require('@aws-sdk/lib-storage');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const fs = require('fs');
-const path = require('path');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
 // Initialize S3 Client
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-  }
+  // If using EC2 with IAM role, credentials are automatically loaded
+  // If using access keys, add:
+  // credentials: {
+  //   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  //   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  // }
 });
 
 /**
- * Upload file to S3 from local file path
- * @param {string} localFilePath - Path to local file
+ * Upload buffer to S3
+ * @param {Buffer} buffer - File buffer from multer
  * @param {string} bucketName - S3 bucket name
- * @param {string} s3Key - S3 object key (path in bucket)
- * @returns {Promise<string>} - S3 object URL
+ * @param {string} key - S3 object key (file path)
+ * @param {string} contentType - MIME type
+ * @returns {Promise<string>} - S3 URL
  */
-async function uploadToS3(localFilePath, bucketName, s3Key) {
+async function uploadBufferToS3(buffer, bucketName, key, contentType) {
   try {
-    const fileStream = fs.createReadStream(localFilePath);
-    const contentType = getContentType(localFilePath);
-
-    const upload = new Upload({
-      client: s3Client,
-      params: {
-        Bucket: bucketName,
-        Key: s3Key,
-        Body: fileStream,
-        ContentType: contentType
-      }
+    console.log(`📤 Uploading to S3: ${bucketName}/${key}`);
+    
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      // Make it publicly readable (optional - adjust based on your security needs)
+      // ACL: 'public-read',
+      // Or use bucket policy for public access
     });
 
-    const result = await upload.done();
+    await s3Client.send(command);
     
-    // Delete local file after successful upload
-    if (fs.existsSync(localFilePath)) {
-      fs.unlinkSync(localFilePath);
-    }
-
-    return `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
+    // Construct the S3 URL
+    const s3Url = `https://${bucketName}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${key}`;
+    
+    console.log(`✅ Successfully uploaded to S3: ${s3Url}`);
+    return s3Url;
+    
   } catch (error) {
-    console.error('S3 Upload Error:', error);
-    throw error;
+    console.error('❌ S3 Upload Error:', error);
+    throw new Error(`Failed to upload to S3: ${error.message}`);
   }
 }
 
 /**
- * Upload file buffer to S3
- * @param {Buffer} buffer - File buffer
+ * Upload file to S3 (legacy method for file paths)
  * @param {string} bucketName - S3 bucket name
- * @param {string} s3Key - S3 object key
+ * @param {string} key - S3 object key
+ * @param {Buffer} body - File content
  * @param {string} contentType - MIME type
- * @returns {Promise<string>} - S3 object URL
  */
-async function uploadBufferToS3(buffer, bucketName, s3Key, contentType) {
-  try {
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: s3Key,
-      Body: buffer,
-      ContentType: contentType
-    });
-
-    await s3Client.send(command);
-    return `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
-  } catch (error) {
-    console.error('S3 Buffer Upload Error:', error);
-    throw error;
-  }
+async function uploadToS3(bucketName, key, body, contentType) {
+  return uploadBufferToS3(body, bucketName, key, contentType);
 }
 
 /**
  * Delete object from S3
  * @param {string} bucketName - S3 bucket name
- * @param {string} s3Key - S3 object key
+ * @param {string} key - S3 object key
  */
-async function deleteFromS3(bucketName, s3Key) {
+async function deleteFromS3(bucketName, key) {
   try {
+    console.log(`🗑️ Deleting from S3: ${bucketName}/${key}`);
+    
     const command = new DeleteObjectCommand({
       Bucket: bucketName,
-      Key: s3Key
+      Key: key
     });
+
     await s3Client.send(command);
+    console.log(`✅ Successfully deleted from S3: ${key}`);
+    
   } catch (error) {
-    console.error('S3 Delete Error:', error);
-    throw error;
+    console.error('❌ S3 Delete Error:', error);
+    // Don't throw error for delete failures - just log it
+    console.warn(`Failed to delete ${key} from S3: ${error.message}`);
   }
 }
 
 /**
- * Generate signed URL for private S3 objects
+ * Check if object exists in S3
  * @param {string} bucketName - S3 bucket name
- * @param {string} s3Key - S3 object key
- * @param {number} expiresIn - URL expiration in seconds (default 1 hour)
- * @returns {Promise<string>} - Signed URL
+ * @param {string} key - S3 object key
+ * @returns {Promise<boolean>}
  */
-async function getSignedS3Url(bucketName, s3Key, expiresIn = 3600) {
+async function objectExistsInS3(bucketName, key) {
   try {
-    const command = new GetObjectCommand({
+    const command = new HeadObjectCommand({
       Bucket: bucketName,
-      Key: s3Key
+      Key: key
     });
-    return await getSignedUrl(s3Client, command, { expiresIn });
+    
+    await s3Client.send(command);
+    return true;
+    
   } catch (error) {
-    console.error('S3 Signed URL Error:', error);
+    if (error.name === 'NotFound') {
+      return false;
+    }
     throw error;
   }
 }
 
 /**
- * Extract S3 key from full S3 URL
- * @param {string} s3Url - Full S3 URL
- * @returns {string} - S3 key
+ * Extract S3 key from URL
+ * @param {string} url - S3 URL
+ * @returns {string|null} - S3 key or null
  */
-function extractS3Key(s3Url) {
-  if (!s3Url) return null;
-  const match = s3Url.match(/amazonaws\.com\/(.+)$/);
-  return match ? match[1] : null;
-}
-
-/**
- * Get content type from file extension
- * @param {string} filename - File name or path
- * @returns {string} - MIME type
- */
-function getContentType(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  const mimeTypes = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.pdf': 'application/pdf',
-    '.csv': 'text/csv',
-    '.json': 'application/json'
-  };
-  return mimeTypes[ext] || 'application/octet-stream';
+function extractS3Key(url) {
+  if (!url) return null;
+  
+  try {
+    // Handle different S3 URL formats
+    // Format 1: https://bucket.s3.region.amazonaws.com/key
+    // Format 2: https://s3.region.amazonaws.com/bucket/key
+    
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname;
+    
+    // Remove leading slash
+    return pathname.startsWith('/') ? pathname.substring(1) : pathname;
+    
+  } catch (error) {
+    console.error('Error extracting S3 key:', error);
+    return null;
+  }
 }
 
 module.exports = {
+  s3Client,
   uploadToS3,
   uploadBufferToS3,
   deleteFromS3,
-  getSignedS3Url,
-  extractS3Key,
-  getContentType,
-  s3Client
+  objectExistsInS3,
+  extractS3Key
 };
