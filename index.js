@@ -137,35 +137,35 @@ app.use(
 
 
 // Routes
-app.use("/users", userR);
-app.use("/clients", clientR);
-app.use('/sandbox', sandboxRoutes);
-app.use("/flowchart", flowchartR);
-app.use("/defra", defraDataR);
-app.use("/gwp", gwpRoutes);
-app.use("/fuelCombustion", fuelCombustionRoutes);
-app.use("/country-emission-factors", CountryemissionFactorRouter);
-app.use("/processflow", processFlowR);
-app.use('/transport-flowchart', transportFlowRouter);
-// app.use('/data-entry', dataEntryRoutes);
-app.use('/emission-factor-hub', EmissionFactorHub);
-app.use('/iot', iotRoutes);
-app.use('/ipcc', ipccDataRoutes);
-app.use('/epa', EPADataRoutes);
-app.use('/emission-factors', emissionFactorRoutes);
-app.use('/emission-factor', ipccConverstionCalculation);
-app.use('/summaries', summaryRoutes); // 🆕 Summary routes
-app.use('/reductions', reductionRoutes); // 🆕 Reduction routes
-app.use('/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
-app.use('/formulas', FormulaR); // 🆕 M2 Formula routes
-app.use('/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
+app.use("/api/users", userR);
+app.use("/api/clients", clientR);
+app.use('/api/sandbox', sandboxRoutes);
+app.use("/api/flowchart", flowchartR);
+app.use("/api/defra", defraDataR);
+app.use("/api/gwp", gwpRoutes);
+app.use("/api/fuelCombustion", fuelCombustionRoutes);
+app.use("/api/country-emission-factors", CountryemissionFactorRouter);
+app.use("/api/processflow", processFlowR);
+app.use('/api/transport-flowchart', transportFlowRouter);
+// app.use('/api/data-entry', dataEntryRoutes);
+app.use('/api/emission-factor-hub', EmissionFactorHub);
+app.use('/api/iot', iotRoutes);
+app.use('/api/ipcc', ipccDataRoutes);
+app.use('/api/epa', EPADataRoutes);
+app.use('/api/emission-factors', emissionFactorRoutes);
+app.use('/api/emission-factor', ipccConverstionCalculation);
+app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
+app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
+app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
+app.use('/api/formulas', FormulaR); // 🆕 M2 Formula routes
+app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 
 // Notification and data collection routes
-app.use('/notifications', notificationRoutes);
-app.use('/data-collection', dataCollectionRouter);
-app.use('/iot', iotRouter);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/data-collection', dataCollectionRouter);
+app.use('/api/iot', iotRouter);
 
-app.use('/', apiKeyRoutes);
+app.use('/api', apiKeyRoutes);
 
 
 // Create HTTP server and bind Socket.io
