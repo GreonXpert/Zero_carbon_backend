@@ -70,35 +70,35 @@ function buildS3Key(user, ext) {
       break;
     
     case 'consultant_admin':
-      s3Key = `profiles/consultant_admin/${sanitize(user.teamName)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/consultant_admin/${sanitize(user.teamName)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'consultant':
-      s3Key = `profiles/consultant/${sanitize(user.teamName)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/consultant/${sanitize(user.teamName)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'client_admin':
-      s3Key = `profiles/client_admin/${sanitize(user.clientId)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/client_admin/${sanitize(user.clientId)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'client_employee_head':
-      s3Key = `profiles/employee_head/${sanitize(user.clientId)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/employee_head/${sanitize(user.clientId)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'employee':
-      s3Key = `profiles/employee/${sanitize(user.clientId)}/${sanitize(user.employeeHeadId || 'unassigned')}/${userId}_${sanitize(user.userName)}_${timestamp}${ext}`;
+      s3Key = `profiles/employee/${sanitize(user.clientId)}/${sanitize(user.employeeHeadId || 'unassigned')}/${userId}_${sanitize(user.userName)}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'auditor':
-      s3Key = `profiles/auditor/${sanitize(user.clientId)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/auditor/${sanitize(user.clientId)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     case 'viewer':
-      s3Key = `profiles/viewer/${sanitize(user.clientId)}/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/viewer/${sanitize(user.clientId)}/${userId}_${timestamp}_${user.userName}_${ext}`;
       break;
     
     default:
-      s3Key = `profiles/misc/${userId}_${timestamp}${ext}`;
+      s3Key = `profiles/misc/${userId}_${timestamp}_${user.userName}_${ext}`;
   }
   
   console.log('[IMAGE UPLOAD] Generated S3 key:', s3Key);
