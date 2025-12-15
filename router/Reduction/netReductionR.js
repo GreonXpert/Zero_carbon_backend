@@ -17,7 +17,8 @@ const {
   updateManualNetReductionEntry,
   disconnectNetReductionSource,
   reconnectNetReductionSource,
-  switchNetReductionInputType
+  switchNetReductionInputType,
+  getNetReduction
 } = require('../../controllers/Reduction/netReductionController');
 
 const {
@@ -82,6 +83,9 @@ router.post('/:clientId/:projectId/:calculationMethodology/manual', saveManualNe
  */
 router.post('/:clientId/:projectId/:calculationMethodology/csv', upload.single('file'), uploadCsvNetReduction);
 
+
+
+router.get('/', getNetReduction);
 /**
  * GET NET REDUCTION STATISTICS
  * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/stats

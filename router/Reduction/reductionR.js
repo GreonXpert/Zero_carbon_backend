@@ -21,7 +21,7 @@ const {
   getReductionProjectsSummary,
   updateClientReductionWorkflowStatus,  // 🆕 NEW
   getClientReductionWorkflowStatus,      // 🆕 NEW
-  getNetReduction
+
 } = require('../../controllers/Reduction/reductionController');
 const { uploadReductionMedia } = require('../../utils/uploads/reductionUploadS3');
 
@@ -34,7 +34,6 @@ router.use(auth);
 
 // Get all reductions
 
-router.get('/', getNetReduction);
 router.get('/getall', getAllReductions);
 
 // 🆕 CLIENT-LEVEL WORKFLOW STATUS ROUTES (before parametric routes)
