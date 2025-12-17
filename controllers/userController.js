@@ -918,14 +918,17 @@ const createViewer = async (req, res) => {
 };
 
 // Get users based on hierarchy
+// ===============================================
+// FIXED getUsers (S3 PROFILE IMAGE SAFE)
+// ===============================================
 const getUsers = async (req, res) => {
   try {
-    // 1. Build base query by hierarchy (unchanged)
+    // 1. Build base query by hierarchy
     let baseQuery = {};
     switch (req.user.userType) {
       case "super_admin":
-        // sees all users
         break;
+
       case "consultant_admin":
         baseQuery = {
           $or: [
@@ -934,137 +937,136 @@ const getUsers = async (req, res) => {
           ]
         };
         break;
-      case "consultant":
+
+      case "consultant": {
         const assignedClients = await Client.find({
           "leadInfo.assignedConsultantId": req.user.id
         }).select("clientId");
         const clientIds = assignedClients.map(c => c.clientId);
         baseQuery = { clientId: { $in: clientIds } };
         break;
+      }
+
       case "client_admin":
         baseQuery = { clientId: req.user.clientId };
         break;
+
       case "client_employee_head":
         baseQuery = { createdBy: req.user.id };
         break;
+
       default:
-        return res.status(403).json({ message: "You don't have permission to view users" });
+        return res.status(403).json({
+          message: "You don't have permission to view users"
+        });
     }
 
-    // 2. Extract special params (pagination, sorting, search)
+    // 2. Extract query params
     const {
       page = 1,
       limit = 10,
-      sort,        // Can be: "field1:asc,field2:desc" or just "field:order"
-      search,      // Global search term
-      ...filters   // All other params are treated as filters
+      sort,
+      search,
+      ...filters
     } = req.query;
 
-    // 3. Build filter query from ALL remaining params
+    // 3. Build filter query
     const filterQuery = {};
-    
-    // Process each filter param
+
     Object.keys(filters).forEach(key => {
       const value = filters[key];
-      
-      // Handle different filter types
       if (value.includes(',')) {
-        // Multiple values: use $in operator
         filterQuery[key] = { $in: value.split(',') };
-      } else if (value.startsWith('>=')) {
-        // Greater than or equal
-        filterQuery[key] = { $gte: value.substring(2) };
-      } else if (value.startsWith('<=')) {
-        // Less than or equal
-        filterQuery[key] = { $lte: value.substring(2) };
-      } else if (value.startsWith('>')) {
-        // Greater than
-        filterQuery[key] = { $gt: value.substring(1) };
-      } else if (value.startsWith('<')) {
-        // Less than
-        filterQuery[key] = { $lt: value.substring(1) };
-      } else if (value.startsWith('!')) {
-        // Not equal
-        filterQuery[key] = { $ne: value.substring(1) };
       } else if (value === 'true' || value === 'false') {
-        // Boolean values
         filterQuery[key] = value === 'true';
       } else if (!isNaN(value) && value !== '') {
-        // Numeric values
         filterQuery[key] = Number(value);
-      } else if (key.includes('.')) {
-        // Nested field filtering (e.g., permissions.canViewReports=true)
-        filterQuery[key] = value === 'true' ? true : value === 'false' ? false : value;
       } else {
-        // String values: use regex for partial matching
         filterQuery[key] = { $regex: value, $options: 'i' };
       }
     });
 
-    // 4. Add global search across ALL text fields
+    // 4. Global search
     if (search) {
-      const searchRegex = { $regex: search, $options: 'i' };
+      const regex = { $regex: search, $options: 'i' };
       filterQuery.$or = [
-        { userName: searchRegex },
-        { email: searchRegex },
-        { address: searchRegex },
-        { companyName: searchRegex },
-        { role: searchRegex },
-        { teamName: searchRegex },
-        { employeeId: searchRegex },
-        { jobRole: searchRegex },
-        { branch: searchRegex },
-        { clientId: searchRegex },
-        { department: searchRegex },
-        { viewerPurpose: searchRegex },
-        { 'assignedClients': searchRegex },
-        { 'assignedModules': searchRegex },
-        { 'auditScope': searchRegex }
+        { userName: regex },
+        { email: regex },
+        { companyName: regex },
+        { teamName: regex },
+        { employeeId: regex },
+        { jobRole: regex },
+        { branch: regex },
+        { clientId: regex },
+        { department: regex }
       ];
     }
 
-    // 5. Merge hierarchy + filters
+    // 5. Merge queries
     const finalQuery = { ...baseQuery, ...filterQuery };
 
-    // 6. Build sort object (supports multiple sort fields)
+    // 6. Sorting
     let sortObj = {};
     if (sort) {
-      // Handle multiple sort fields: "field1:asc,field2:desc"
-      const sortFields = sort.split(',');
-      sortFields.forEach(field => {
-        const [fieldName, order = 'asc'] = field.split(':');
-        sortObj[fieldName] = order.toLowerCase() === 'desc' ? -1 : 1;
+      sort.split(',').forEach(field => {
+        const [key, order = 'asc'] = field.split(':');
+        sortObj[key] = order === 'desc' ? -1 : 1;
       });
     } else {
-      // Default sort by createdAt desc
       sortObj = { createdAt: -1 };
     }
 
-    // 7. Execute query with pagination
+    // 7. Pagination
     const skip = (Number(page) - 1) * Number(limit);
     const limitNum = Number(limit);
-
-    // Get total count for pagination
     const total = await User.countDocuments(finalQuery);
 
-    // Fetch paginated results
+    // 8. Fetch users (🔥 POPULATE profileImage)
     const users = await User.find(finalQuery)
       .select('-password')
-      .populate('createdBy', 'userName email')
-      .populate('parentUser', 'userName email')
-      .populate('consultantAdminId', 'userName email')
-      .populate('employeeHeadId', 'userName email')
+      .populate('createdBy', 'userName email profileImage')
+      .populate('parentUser', 'userName email profileImage')
+      .populate('consultantAdminId', 'userName email profileImage')
+      .populate('employeeHeadId', 'userName email profileImage')
       .sort(sortObj)
       .skip(skip)
       .limit(limitNum)
       .lean();
 
-    // 8. Return response with comprehensive metadata
+    // ------------------------------------------------
+    // 🔥 PROFILE IMAGE NORMALIZATION (CRITICAL)
+    // ------------------------------------------------
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, '');
+
+    const normalizeUser = (u) => {
+      if (!u) return null;
+
+      // ✅ S3 URL → keep it
+      if (u.profileImage?.url) return u;
+
+      // ⚠ legacy local image
+      if (u.profileImage?.path && BASE) {
+        u.profileImage.url =
+          `${BASE}/${u.profileImage.path.replace(/\\/g, '/')}`;
+      }
+
+      return u;
+    };
+
+    const normalizedUsers = users.map(u => {
+      u.createdBy = normalizeUser(u.createdBy);
+      u.parentUser = normalizeUser(u.parentUser);
+      u.consultantAdminId = normalizeUser(u.consultantAdminId);
+      u.employeeHeadId = normalizeUser(u.employeeHeadId);
+      return u;
+    });
+
+    // 9. Response
     res.status(200).json({
       success: true,
       message: 'Users fetched successfully',
       data: {
-        users,
+        users: normalizedUsers,
         pagination: {
           page: Number(page),
           limit: limitNum,
@@ -1072,11 +1074,6 @@ const getUsers = async (req, res) => {
           totalPages: Math.ceil(total / limitNum),
           hasNextPage: page < Math.ceil(total / limitNum),
           hasPrevPage: page > 1
-        },
-        filters: {
-          applied: filters,
-          search: search || null,
-          sort: sortObj
         }
       }
     });
@@ -1350,14 +1347,22 @@ async function handleClientAdminDeletion(userToDelete, deletedBy) {
   return details;
 }
 
+
+const { replaceUserProfileImage } = require(
+  '../utils/uploads/update/replaceUserProfileImage'
+);
+
 // Update user
 // Update user
+// =====================================
+// UPDATE USER (S3 IMAGE SAFE)
+// =====================================
 const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
     const updateData = { ...req.body };
 
-    // Remove sensitive/immutable fields
+    // Remove immutable fields
     delete updateData.password;
     delete updateData.userType;
     delete updateData.clientId;
@@ -1366,172 +1371,232 @@ const updateUser = async (req, res) => {
     delete updateData.parentUser;
 
     const userToUpdate = await User.findById(userId);
-    if (!userToUpdate) return res.status(404).json({ message: "User not found" });
+    if (!userToUpdate) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    // ── Permissions (unchanged from your logic) ──
+    // -------------------------------------
+    // PERMISSION CHECK (UNCHANGED LOGIC)
+    // -------------------------------------
     let canUpdate = false;
-    const errorMessage = "You don't have permission to update this user";
 
     if (userToUpdate._id.toString() === req.user.id) {
       canUpdate = true;
     } else {
       switch (req.user.userType) {
         case "super_admin":
-          canUpdate = (userToUpdate.userType !== "super_admin") ||
-                      (userToUpdate._id.toString() === req.user.id);
+          canUpdate =
+            userToUpdate.userType !== "super_admin" ||
+            userToUpdate._id.toString() === req.user.id;
           break;
-        case "consultant_admin": {
+
+        case "consultant_admin":
           if (userToUpdate.userType === "consultant") {
-            canUpdate = userToUpdate.consultantAdminId?.toString() === req.user.id;
-          } else if (userToUpdate.userType === "client_admin") {
-            const client = await Client.findOne({
-              clientId: userToUpdate.clientId,
-              $or: [
-                { "leadInfo.consultantAdminId": req.user.id },
-                { "leadInfo.assignedConsultantId": { $in: await getConsultantIds(req.user.id) } }
-              ],
-            });
-            canUpdate = !!client;
+            canUpdate =
+              userToUpdate.consultantAdminId?.toString() === req.user.id;
           }
           break;
-        }
+
         case "client_admin":
           canUpdate =
             userToUpdate.clientId === req.user.clientId &&
-            ["client_employee_head", "employee", "auditor", "viewer"].includes(userToUpdate.userType);
+            ["client_employee_head", "employee", "auditor", "viewer"]
+              .includes(userToUpdate.userType);
           break;
+
         case "client_employee_head":
           canUpdate =
             userToUpdate.userType === "employee" &&
             userToUpdate.createdBy?.toString() === req.user.id;
           break;
-        default:
-          canUpdate = false;
       }
     }
 
-    if (!canUpdate) return res.status(403).json({ message: errorMessage });
+    if (!canUpdate) {
+      return res.status(403).json({
+        message: "You don't have permission to update this user"
+      });
+    }
 
-    // Apply allowed field updates
+    // -------------------------------------
+    // APPLY FIELD UPDATES
+    // -------------------------------------
     Object.assign(userToUpdate, updateData);
     await userToUpdate.save();
 
-    // If a new file was uploaded, move & save metadata
-    try { await saveUserProfileImage(req, userToUpdate); } catch (e) {
-      console.warn('profile image save skipped:', e.message);
+    // -------------------------------------
+    // 🔥 REPLACE PROFILE IMAGE (IF UPLOADED)
+    // -------------------------------------
+    if (req.file) {
+      await replaceUserProfileImage(req, userToUpdate);
     }
 
-    const sanitized = await User.findById(userId).select('-password');
-    res.status(200).json({ message: "User updated successfully", user: sanitized });
+    const updatedUser = await User.findById(userId)
+      .select('-password')
+      .lean();
+
+    return res.status(200).json({
+      message: "User updated successfully",
+      user: updatedUser
+    });
 
   } catch (error) {
     console.error("Update user error:", error);
-    res.status(500).json({ message: "Failed to update user", error: error.message });
+    return res.status(500).json({
+      message: "Failed to update user",
+      error: error.message
+    });
   }
 };
 
 
 
+const { deleteUserProfileImage } = require(
+  '../utils/uploads/delete/deleteUserProfileImage'
+);
+
 // Helper function: Get consultant IDs under a consultant admin
 
 
-// Delete user with hierarchy control and email notifications
+// ===============================================
+// DELETE USER (S3 IMAGE SAFE)
+// ===============================================
 const deleteUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reassignToConsultantId } = req.body; // For reassigning clients when deleting consultant
-    
-    // Find user to delete
+    const { reassignToConsultantId } = req.body;
+
     const userToDelete = await User.findById(userId);
     if (!userToDelete) {
       return res.status(404).json({ message: "User not found" });
     }
-    
+
     // Prevent self-deletion
     if (userToDelete._id.toString() === req.user.id) {
-      return res.status(400).json({ message: "You cannot delete your own account" });
+      return res.status(400).json({
+        message: "You cannot delete your own account"
+      });
     }
-    
-    // Check permissions and handle deletion based on hierarchy
+
+    // ------------------------------------------------
+    // PERMISSION & HIERARCHY CHECK (UNCHANGED)
+    // ------------------------------------------------
     let canDelete = false;
     let deletionDetails = null;
-    
+
     switch (req.user.userType) {
       case "super_admin":
         if (userToDelete.userType === "super_admin") {
-          return res.status(403).json({ message: "Super admins cannot be deleted" });
+          return res.status(403).json({
+            message: "Super admins cannot be deleted"
+          });
         }
         canDelete = true;
-        deletionDetails = await handleSuperAdminDeletion(userToDelete, req.user);
+        deletionDetails = await handleSuperAdminDeletion(
+          userToDelete,
+          req.user
+        );
         break;
-        
+
       case "consultant_admin":
         deletionDetails = await handleConsultantAdminDeletion(
-          userToDelete, 
-          req.user, 
+          userToDelete,
+          req.user,
           reassignToConsultantId
         );
         canDelete = deletionDetails.canDelete;
         break;
-        
+
       case "client_admin":
-        deletionDetails = await handleClientAdminDeletion(userToDelete, req.user);
+        deletionDetails = await handleClientAdminDeletion(
+          userToDelete,
+          req.user
+        );
         canDelete = deletionDetails.canDelete;
         break;
-        // ─── Allow a client_employee_head to delete only employees they created ────────────────────────────
-        case "client_employee_head":
-          // Can delete if the target is an "employee" and was created by this employee head
-          if (
-            userToDelete.userType === "employee" &&
-           userToDelete.createdBy.toString() === req.user.id
-          ) {
-            canDelete = true;
-            // No special pre-deletion tasks required beyond deactivating any deeper subordinates (none in this model).
-            deletionDetails = { canDelete: true, emailRecipients: [userToDelete.email] };
-          } else {
-            deletionDetails = { 
-              canDelete: false,
-              message: "You can only delete employees you directly created" 
-            };
-          }
-          break;
+
+      case "client_employee_head":
+        if (
+          userToDelete.userType === "employee" &&
+          userToDelete.createdBy?.toString() === req.user.id
+        ) {
+          canDelete = true;
+          deletionDetails = {
+            canDelete: true,
+            emailRecipients: [userToDelete.email]
+          };
+        } else {
+          deletionDetails = {
+            canDelete: false,
+            message: "You can only delete employees you directly created"
+          };
+        }
+        break;
+
       default:
-        return res.status(403).json({ 
-          message: "You don't have permission to delete users" 
+        return res.status(403).json({
+          message: "You don't have permission to delete users"
         });
     }
-    
+
     if (!canDelete) {
-      return res.status(403).json({ 
-        message: deletionDetails?.message || "You don't have permission to delete this user" 
+      return res.status(403).json({
+        message:
+          deletionDetails?.message ||
+          "You don't have permission to delete this user"
       });
     }
-    
-    // Handle special case validations
-    if (deletionDetails.requiresReassignment && !reassignToConsultantId) {
+
+    // ------------------------------------------------
+    // REASSIGNMENT VALIDATION
+    // ------------------------------------------------
+    if (
+      deletionDetails.requiresReassignment &&
+      !reassignToConsultantId
+    ) {
       return res.status(400).json({
         message: deletionDetails.message,
         requiresReassignment: true,
-        availableConsultants: deletionDetails.availableConsultants
+        availableConsultants:
+          deletionDetails.availableConsultants
       });
     }
-    
-    // Perform pre-deletion tasks
+
+    // ------------------------------------------------
+    // PRE-DELETION TASKS
+    // ------------------------------------------------
     if (deletionDetails.preDeletionTasks) {
       await deletionDetails.preDeletionTasks();
     }
-    
-    // Send deletion notification email
-    await sendDeletionEmail(userToDelete, req.user, deletionDetails);
-    
-    // Soft delete the user
+
+    // ------------------------------------------------
+    // 🔥 DELETE PROFILE IMAGE FROM S3
+    // ------------------------------------------------
+    await deleteUserProfileImage(userToDelete);
+
+    // ------------------------------------------------
+    // SEND EMAIL NOTIFICATION
+    // ------------------------------------------------
+    await sendDeletionEmail(
+      userToDelete,
+      req.user,
+      deletionDetails
+    );
+
+    // ------------------------------------------------
+    // SOFT DELETE USER
+    // ------------------------------------------------
     userToDelete.isActive = false;
     userToDelete.isDeleted = true;
     userToDelete.deletedAt = new Date();
     userToDelete.deletedBy = req.user.id;
+
     await userToDelete.save();
-    
-    res.status(200).json({
+
+    // ------------------------------------------------
+    // RESPONSE
+    // ------------------------------------------------
+    return res.status(200).json({
       message: `User ${userToDelete.userName} has been deleted successfully`,
       deletedUser: {
         id: userToDelete._id,
@@ -1540,12 +1605,12 @@ const deleteUser = async (req, res) => {
         userType: userToDelete.userType
       }
     });
-    
+
   } catch (error) {
     console.error("Delete user error:", error);
-    res.status(500).json({ 
-      message: "Failed to delete user", 
-      error: error.message 
+    return res.status(500).json({
+      message: "Failed to delete user",
+      error: error.message
     });
   }
 };

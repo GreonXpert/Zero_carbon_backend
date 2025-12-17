@@ -811,7 +811,7 @@ exports.getAllReductions = async (req, res) => {
       page = 1,
       limit = 20,
       clientId: clientIdFilter,
-      q,                         // quick text filter
+      q,
       includeDeleted = 'false',
       sort = '-createdAt'
     } = req.query;
@@ -820,7 +820,10 @@ exports.getAllReductions = async (req, res) => {
     const userId = req.user?.id;
 
     if (!role || !userId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
+      });
     }
 
     // =====================================================
@@ -836,17 +839,20 @@ exports.getAllReductions = async (req, res) => {
     }
 
     if (q && String(q).trim()) {
-      filter.projectName = { $regex: new RegExp(String(q).trim(), 'i') };
+      filter.projectName = {
+        $regex: new RegExp(String(q).trim(), 'i')
+      };
     }
 
     const applyClientFilter = (cid) => {
-      if (cid && String(cid).trim()) filter.clientId = String(cid).trim();
+      if (cid && String(cid).trim()) {
+        filter.clientId = String(cid).trim();
+      }
     };
 
     // =====================================================
-    // ROLE-BASED ACCESS FILTERING
+    // ROLE-BASED ACCESS
     // =====================================================
-
     if (role === 'super_admin') {
       applyClientFilter(clientIdFilter);
     }
@@ -859,7 +865,10 @@ exports.getAllReductions = async (req, res) => {
       }).select('_id');
 
       const ids = [userId, ...teamConsultants.map(u => u._id)];
-      filter.$and = (filter.$and || []).concat([{ createdBy: { $in: ids } }]);
+      filter.$and = (filter.$and || []).concat([
+        { createdBy: { $in: ids } }
+      ]);
+
       applyClientFilter(clientIdFilter);
     }
 
@@ -874,9 +883,14 @@ exports.getAllReductions = async (req, res) => {
       const myClientIds = myClients.map(c => c.clientId);
 
       const orList = [{ createdBy: userId }];
-      if (myClientIds.length) orList.push({ clientId: { $in: myClientIds } });
+      if (myClientIds.length) {
+        orList.push({ clientId: { $in: myClientIds } });
+      }
 
-      filter.$and = (filter.$and || []).concat([{ $or: orList }]);
+      filter.$and = (filter.$and || []).concat([
+        { $or: orList }
+      ]);
+
       applyClientFilter(clientIdFilter);
     }
 
@@ -897,13 +911,16 @@ exports.getAllReductions = async (req, res) => {
     }
 
     else {
-      return res.status(403).json({ success: false, message: 'Forbidden role' });
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden role'
+      });
     }
 
     // =====================================================
     // PAGINATION
     // =====================================================
-    const pageNum  = Math.max(1, Number(page));
+    const pageNum = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit)));
 
     const query = Reduction.find(filter)
@@ -915,83 +932,97 @@ exports.getAllReductions = async (req, res) => {
 
     const [items, total] = await Promise.all([
       query,
-      Reduction.countDocuments(filter),
+      Reduction.countDocuments(filter)
     ]);
 
     // =====================================================
-    //  FIX: FORMAT METHODOLOGY 3 FOR ALL ITEMS
+    // CLEAN + IMAGE SAFE NORMALIZATION
     // =====================================================
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, '');
+
     const cleanedItems = items.map(r => {
-      // M3 ALWAYS must have clean structure
-      if (r.calculationMethodology === "methodology3") {
-        r.methodology3 = r.methodology3 || {};
 
-        r.methodology3.baseline = Array.isArray(r.methodology3.baseline)
-          ? r.methodology3.baseline
-          : [];
-
-        r.methodology3.project = Array.isArray(r.methodology3.project)
-          ? r.methodology3.project
-          : [];
-
-        r.methodology3.leakage = Array.isArray(r.methodology3.leakage)
-          ? r.methodology3.leakage
-          : [];
-
-        r.methodology3.totals = r.methodology3.totals || {
-          BE_total: 0,
-          PE_total: 0,
-          LE_total: 0,
-          buffer: 0,
-          final: 0
-        };
+      // ---------------- METHODOLOGY SAFETY ----------------
+      if (r.calculationMethodology === 'methodology3') {
+        r.m3 = r.m3 || {};
+        r.m3.baselineEmissions = Array.isArray(r.m3.baselineEmissions) ? r.m3.baselineEmissions : [];
+        r.m3.projectEmissions  = Array.isArray(r.m3.projectEmissions)  ? r.m3.projectEmissions  : [];
+        r.m3.leakageEmissions  = Array.isArray(r.m3.leakageEmissions)  ? r.m3.leakageEmissions  : [];
+        r.m3.buffer = r.m3.buffer ?? 0;
       }
 
-      // M2 cleanup
-      if (r.calculationMethodology === "methodology2") {
+      if (r.calculationMethodology === 'methodology2') {
         r.m2 = r.m2 || {};
         r.m2.formulaRef = r.m2.formulaRef || {};
       }
 
-      // M1 cleanup
-      if (r.calculationMethodology === "methodology1") {
+      if (r.calculationMethodology === 'methodology1') {
         r.m1 = r.m1 || {};
         r.m1.emissionReductionRate =
           r.m1.emissionReductionRate ?? 0;
+      }
+
+      // ---------------- 🔥 IMAGE FIX ----------------
+
+      // Cover image
+      if (r.coverImage) {
+        // ✅ keep S3 url
+        if (!r.coverImage.url && r.coverImage.path && BASE) {
+          r.coverImage.url =
+            `${BASE}/${r.coverImage.path.replace(/\\/g, '/')}`;
+        }
+      }
+
+      // Gallery images
+      if (Array.isArray(r.images)) {
+        r.images = r.images.map(img => {
+          // ✅ S3 url already exists
+          if (img.url) return img;
+
+          // ⚠ legacy local image
+          if (!img.url && img.path && BASE) {
+            return {
+              ...img,
+              url: `${BASE}/${img.path.replace(/\\/g, '/')}`
+            };
+          }
+
+          return img;
+        });
       }
 
       return r;
     });
 
     // =====================================================
-    // SEND RESULT
+    // RESPONSE
     // =====================================================
     return res.status(200).json({
       success: true,
       total,
       page: pageNum,
       limit: limitNum,
-      data: cleanedItems,
+      data: cleanedItems
     });
 
   } catch (err) {
-    console.error("getAllReductions error:", err);
+    console.error('getAllReductions error:', err);
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch reductions",
-      error: process.env.NODE_ENV === "development" ? err.message : undefined
+      message: 'Failed to fetch reductions',
+      error: process.env.NODE_ENV === 'development'
+        ? err.message
+        : undefined
     });
   }
 };
 
 
 
+const { replaceReductionMedia } = require(
+  '../../utils/uploads/update/replaceReductionMedia'
+);
 
-
-
-/** ------------------------- */
-/** Update + recalc (FULL M1+M2+M3) */
-/** ------------------------- */
 exports.updateReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
@@ -1002,12 +1033,16 @@ exports.updateReduction = async (req, res) => {
       return res.status(403).json({ success: false, message: perm.reason });
     }
 
-    const doc = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    const doc = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    });
+
     if (!doc) {
       return res.status(404).json({ success: false, message: "Not found" });
     }
 
-    // ---------------- Unpack body ----------------
     const body = req.body || {};
     const {
       projectName,
@@ -1025,28 +1060,7 @@ exports.updateReduction = async (req, res) => {
       m2
     } = body;
 
-    // ---------------- reductionDataEntry ----------------
-    let reductionEntryPayload = null;
-    const hasEntry =
-      Object.prototype.hasOwnProperty.call(body, "reductionDataEntry") ||
-      Object.prototype.hasOwnProperty.call(body, "reductionDateEntry");
-
-    if (hasEntry) {
-      try {
-        const incomingEntry = readReductionEntryFromBody(body);
-        reductionEntryPayload = normalizeReductionDataEntry(incomingEntry);
-      } catch (e) {
-        return res.status(400).json({ success: false, message: e.message });
-      }
-    }
-
-    // ---------------- processFlow ----------------
-    let processFlowPayload;
-    if (body.processFlow) {
-      processFlowPayload = normalizeProcessFlow(body.processFlow, req.user);
-    }
-
-    // ---------------- Patch basic fields ----------------
+    // ---------------- Patch fields ----------------
     if (projectName != null) doc.projectName = projectName;
     if (projectActivity != null) doc.projectActivity = projectActivity;
     if (scope != null) doc.scope = scope;
@@ -1055,113 +1069,84 @@ exports.updateReduction = async (req, res) => {
     if (location) {
       doc.location.latitude = location.latitude ?? doc.location.latitude;
       doc.location.longitude = location.longitude ?? doc.location.longitude;
-      if ("place" in location) doc.location.place = location.place ?? doc.location.place;
-      if ("address" in location) doc.location.address = location.address ?? doc.location.address;
+      if ("place" in location) doc.location.place = location.place;
+      if ("address" in location) doc.location.address = location.address;
     }
 
     if (commissioningDate) doc.commissioningDate = new Date(commissioningDate);
     if (endDate) doc.endDate = new Date(endDate);
     if (description != null) doc.description = description;
     if (baselineMethod != null) doc.baselineMethod = baselineMethod;
-    if (baselineJustification != null) doc.baselineJustification = baselineJustification;
-    if (calculationMethodology) doc.calculationMethodology = calculationMethodology;
+    if (baselineJustification != null)
+      doc.baselineJustification = baselineJustification;
+    if (calculationMethodology)
+      doc.calculationMethodology = calculationMethodology;
 
-    // ===================================================================
-    //                     METHODOLOGY-SPECIFIC SECTION
-    // ===================================================================
-
-    // -------------------- M1 --------------------
+    // ---------------- M1 ----------------
     if (doc.calculationMethodology === "methodology1" && m1) {
       if (Array.isArray(m1.ABD)) doc.m1.ABD = m1.ABD.map(normalizeUnitItem("B"));
       if (Array.isArray(m1.APD)) doc.m1.APD = m1.APD.map(normalizeUnitItem("P"));
       if (Array.isArray(m1.ALD)) doc.m1.ALD = m1.ALD.map(normalizeUnitItem("L"));
-      if (m1.bufferPercent != null) doc.m1.bufferPercent = Number(m1.bufferPercent);
+      if (m1.bufferPercent != null)
+        doc.m1.bufferPercent = Number(m1.bufferPercent);
     }
 
-    // -------------------- M2 --------------------
+    // ---------------- M2 ----------------
     if (doc.calculationMethodology === "methodology2" && m2) {
       doc.m2 = normalizeM2FromBody(m2);
     }
 
-    // -------------------- M3 (FULL UPDATE SUPPORT ADDED) --------------------
+    // ---------------- M3 ----------------
     if (doc.calculationMethodology === "methodology3" && body.m3) {
-      // Validate required fields (buffer for Removal)
       validateM3Input(body);
-
-      // Normalize the entire B/P/L structure + policy
       doc.m3 = normalizeM3Body(body.m3);
     }
 
-    // ===================================================================
-    //                     OTHER FIELDS
-    // ===================================================================
-
-    // -------------------- Data Entry Update --------------------
-    if (reductionEntryPayload) {
+    // ---------------- Data Entry ----------------
+    if (body.reductionDataEntry) {
+      const entry = normalizeReductionDataEntry(
+        readReductionEntryFromBody(body)
+      );
       doc.reductionDataEntry = {
         ...(doc.reductionDataEntry?.toObject?.() ?? {}),
-        ...reductionEntryPayload
+        ...entry
       };
     }
 
-    // -------------------- ProcessFlow Update --------------------
-    if (processFlowPayload) {
-      if (!doc.processFlow) doc.processFlow = {};
-
-      if (processFlowPayload.mode) doc.processFlow.mode = processFlowPayload.mode;
-      if ("flowchartId" in processFlowPayload)
-        doc.processFlow.flowchartId = processFlowPayload.flowchartId;
-
-      if (processFlowPayload.mapping) {
-        doc.processFlow.mapping = processFlowPayload.mapping;
-      }
-
-      if (processFlowPayload.snapshot) {
-        const prevVer = Number(doc.processFlow.snapshot?.metadata?.version || 0);
-        const nextVer =
-          prevVer > 0
-            ? prevVer + 1
-            : processFlowPayload.snapshot.metadata?.version || 1;
-
-        processFlowPayload.snapshot.metadata =
-          processFlowPayload.snapshot.metadata || {};
-        processFlowPayload.snapshot.metadata.version = nextVer;
-
-        doc.processFlow.snapshot = processFlowPayload.snapshot;
-        doc.processFlow.snapshotCreatedAt = new Date();
-        doc.processFlow.snapshotCreatedBy = req.user?.id;
-      }
+    // ---------------- ProcessFlow ----------------
+    if (body.processFlow) {
+      const pf = normalizeProcessFlow(body.processFlow, req.user);
+      doc.processFlow = { ...doc.processFlow, ...pf };
     }
 
-    // -------------------- Media Uploads --------------------
-    try {
-      await saveReductionFiles(req, doc);
-    } catch (moveErr) {
-      console.warn("⚠ saveReductionFiles(update) warning:", moveErr.message);
-    }
+    // ------------------------------------------------
+    // 🔥 MEDIA REPLACEMENT (DELETE + UPLOAD)
+    // ------------------------------------------------
+    await replaceReductionMedia(req, doc);
 
-    // -------------------- Validate + Save --------------------
-    await doc.validate(); // triggers recompute logic in model
+    // ---------------- Validate & Save ----------------
+    await doc.validate();
     await doc.save();
 
-    // -------------------- Notifications --------------------
+    // ---------------- Notifications ----------------
     notifyReductionEvent({
       actor: req.user,
       clientId,
       action: "updated",
       doc
     }).catch(() => {});
-    Promise.all([
-  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
-  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
-]);
 
-    // -------------------- Response --------------------
+    Promise.all([
+      syncReductionWorkflow(clientId, req.user?.id),
+      syncClientReductionProjects(clientId)
+    ]).catch(() => {});
+
     return res.status(200).json({
       success: true,
       message: "Updated",
       data: doc
     });
+
   } catch (err) {
     console.error("updateReduction error:", err);
     return res.status(500).json({
@@ -1171,7 +1156,6 @@ exports.updateReduction = async (req, res) => {
     });
   }
 };
-
 
 
 
@@ -1195,44 +1179,91 @@ exports.recalculateReduction = async (req, res) => {
   }
 };
 
+
+const { deleteReductionMedia } = require(
+  '../../utils/uploads/delete/deleteReductionMedia'
+);
+
+/** Soft delete */
 /** Soft delete */
 exports.deleteReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
+
     const perm = await canCreateOrEdit(req.user, clientId);
-    if (!perm.ok) return res.status(403).json({ success:false, message: perm.reason });
+    if (!perm.ok) {
+      return res.status(403).json({
+        success: false,
+        message: perm.reason
+      });
+    }
 
-    const doc = await Reduction.findOne({ clientId, projectId, isDeleted:false });
-    if (!doc) return res.status(404).json({ success:false, message:'Not found' });
+    const doc = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    });
 
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: 'Not found'
+      });
+    }
+
+    // 🔥 DELETE MEDIA FROM S3
+    await deleteReductionMedia(doc);
+
+    // Soft delete
     doc.isDeleted = true;
     doc.deletedAt = new Date();
     doc.deletedBy = req.user.id;
     await doc.save();
-        notifyReductionEvent({
+
+    // Notifications & sync
+    notifyReductionEvent({
       actor: req.user,
       clientId,
       action: 'deleted',
       doc
     }).catch(() => {});
+
     Promise.all([
-  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
-  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
-]);
+      syncReductionWorkflow(clientId, req.user?.id)
+        .catch(err => console.error('Workflow sync error:', err)),
+      syncClientReductionProjects(clientId)
+        .catch(err => console.error('Project sync error:', err))
+    ]);
 
+    return res.status(200).json({
+      success: true,
+      message: 'Deleted'
+    });
 
-    res.status(200).json({ success:true, message:'Deleted' });
   } catch (err) {
-    res.status(500).json({ success:false, message:'Failed to delete reduction', error: err.message });
+    console.error('deleteReduction error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete reduction',
+      error: err.message
+    });
   }
 };
+
 
 exports.deleteFromDB = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
-    const client = await Client.findOne({ clientId }).select('leadInfo.createdBy');
-    if (!client) return res.status(404).json({ success:false, message:'Client not found' });
+    const client = await Client.findOne({ clientId })
+      .select('leadInfo.createdBy');
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
 
     const u = req.user;
     const isSuper = u?.userType === 'super_admin';
@@ -1241,18 +1272,34 @@ exports.deleteFromDB = async (req, res) => {
       client.leadInfo?.createdBy?.toString() === u.id.toString();
 
     if (!isSuper && !isCreatorConsultantAdmin) {
-      return res.status(403).json({ success:false, message:'Permission denied (hard delete restricted)' });
+      return res.status(403).json({
+        success: false,
+        message: 'Permission denied (hard delete restricted)'
+      });
     }
 
-    // fetch doc for notification context (name, etc.)
+    // Fetch document FIRST (needed for S3 delete + notification)
     const doc = await Reduction.findOne({ clientId, projectId });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: 'Reduction not found'
+      });
+    }
 
+    // 🔥 DELETE MEDIA FROM S3
+    await deleteReductionMedia(doc);
+
+    // Hard delete from DB
     const result = await Reduction.deleteOne({ clientId, projectId });
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success:false, message:'Reduction not found or already deleted' });
+      return res.status(404).json({
+        success: false,
+        message: 'Reduction not found or already deleted'
+      });
     }
 
-    // notify
+    // Notifications & sync
     notifyReductionEvent({
       actor: req.user,
       clientId,
@@ -1260,19 +1307,28 @@ exports.deleteFromDB = async (req, res) => {
       doc,
       projectId
     }).catch(() => {});
+
     Promise.all([
-  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
-  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
-]);
+      syncReductionWorkflow(clientId, req.user?.id)
+        .catch(err => console.error('Workflow sync error:', err)),
+      syncClientReductionProjects(clientId)
+        .catch(err => console.error('Project sync error:', err))
+    ]);
 
+    return res.status(200).json({
+      success: true,
+      message: 'Reduction permanently deleted'
+    });
 
-    return res.status(200).json({ success:true, message:'Reduction permanently deleted' });
   } catch (err) {
     console.error('deleteFromDB error:', err);
-    res.status(500).json({ success:false, message:'Failed to hard delete reduction', error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to hard delete reduction',
+      error: err.message
+    });
   }
 };
-
 
 // --- ADD this helper near the other helpers ---
 async function canViewSoftDeletedReduction(user, clientId, reductionDoc) {

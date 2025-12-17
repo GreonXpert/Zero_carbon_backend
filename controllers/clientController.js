@@ -2984,6 +2984,9 @@ const updateProposalStatus = async (req, res) => {
 // FINAL FULL VERSION OF getClients WITH FILTERS
 // ===============================================
 
+// ===============================================
+// FINAL FIXED VERSION OF getClients (S3 SAFE)
+// ===============================================
 const getClients = async (req, res) => {
   try {
     const {
@@ -3073,8 +3076,7 @@ const getClients = async (req, res) => {
       query["workflowTracking.flowchartStatus"] = flowchartStatus;
 
     if (processFlowchartStatus)
-      query["workflowTracking.processFlowchartStatus"] =
-        processFlowchartStatus;
+      query["workflowTracking.processFlowchartStatus"] = processFlowchartStatus;
 
     if (reductionStatus)
       query["workflowTracking.reduction.status"] = reductionStatus;
@@ -3086,11 +3088,10 @@ const getClients = async (req, res) => {
       query["leadInfo.hasAssignedConsultant"] = false;
 
     // -----------------------------------------------
-    // 3. SEARCH FILTER
+    // 3. SEARCH
     // -----------------------------------------------
     if (search) {
       const regex = new RegExp(search, "i");
-
       query.$and = [
         ...(query.$and || []),
         {
@@ -3099,99 +3100,90 @@ const getClients = async (req, res) => {
             { "leadInfo.companyName": regex },
             { "leadInfo.contactPersonName": regex },
             { "leadInfo.email": regex },
-            { "leadInfo.mobileNumber": regex },
-            { "leadInfo.salesPersonName": regex },
-            { "leadInfo.referenceName": regex },
-            { "leadInfo.eventName": regex }
+            { "leadInfo.mobileNumber": regex }
           ]
         }
       ];
     }
 
     // -----------------------------------------------
-    // 4. SORTING
+    // 4. SORT + PAGINATION
     // -----------------------------------------------
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === "asc" ? 1 : -1;
-
-    // -----------------------------------------------
-    // 5. PAGINATION
-    // -----------------------------------------------
+    const sortOptions = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
     const skip = (page - 1) * limit;
     const total = await Client.countDocuments(query);
 
     // -----------------------------------------------
-    // 6. FETCH CLIENTS WITH ALL REQUIRED FIELDS
+    // 5. FETCH CLIENTS (IMPORTANT FIX HERE)
     // -----------------------------------------------
     const clients = await Client.find(query)
-      .populate("leadInfo.consultantAdminId", "userName email")
-      .populate("leadInfo.assignedConsultantId", "userName email")
-      .populate("workflowTracking.assignedConsultantId", "userName email")
+      .populate("leadInfo.consultantAdminId", "userName email profileImage")
+      .populate("leadInfo.assignedConsultantId", "userName email profileImage")
+      .populate("workflowTracking.assignedConsultantId", "userName email profileImage")
       .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
 
-    // -----------------------------------------------
-    // 7. FORMAT RESPONSE DATA
-    // -----------------------------------------------
-    const responseClients = clients.map(client => ({
-      _id: client._id,
-      clientId: client.clientId,
-      stage: client.stage,
-      status: client.status,
-      sandbox: client.sandbox,
-
-      // Lead Information
-      leadInfo: {
-        ...client.leadInfo,
-        consultantAdmin: client.leadInfo.consultantAdminId
-          ? {
-              id: client.leadInfo.consultantAdminId._id,
-              name: client.leadInfo.consultantAdminId.userName,
-              email: client.leadInfo.consultantAdminId.email
-            }
-          : null,
-        assignedConsultant: client.leadInfo.assignedConsultantId
-          ? {
-              id: client.leadInfo.assignedConsultantId._id,
-              name: client.leadInfo.assignedConsultantId.userName,
-              email: client.leadInfo.assignedConsultantId.email
-            }
-          : null
-      },
-
-      // Submission Data (FULL)
-      submissionData: {
-        assessmentLevel: client.submissionData?.assessmentLevel || [],
-        companyInfo: client.submissionData?.companyInfo || {},
-        organizationalOverview:
-          client.submissionData?.organizationalOverview || {},
-        emissionProfile: client.submissionData?.emissionProfile || [],
-        projectProfile: client.submissionData?.projectProfile || [],
-        validationStatus: client.submissionData?.validationStatus || null
-      },
-
-      // Workflow Tracking
-      workflowTracking: client.workflowTracking,
-
-      // Account Details
-      accountDetails: client.accountDetails,
-
-      createdAt: client.createdAt,
-      updatedAt: client.updatedAt
-    }));
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
 
     // -----------------------------------------------
-    // 8. SEND FINAL RESPONSE
+    // 6. FORMAT RESPONSE + 🔥 IMAGE FIX
+    // -----------------------------------------------
+    const responseClients = clients.map(client => {
+      const normalizeUser = (user) => {
+        if (!user) return null;
+
+        // ✅ Keep S3 URL untouched
+        if (user.profileImage?.url) return user;
+
+        // ⚠ legacy local image support
+        if (user.profileImage?.path && BASE) {
+          user.profileImage.url =
+            `${BASE}/${user.profileImage.path.replace(/\\/g, "/")}`;
+        }
+
+        return user;
+      };
+
+      return {
+        _id: client._id,
+        clientId: client.clientId,
+        stage: client.stage,
+        status: client.status,
+        sandbox: client.sandbox,
+
+        leadInfo: {
+          ...client.leadInfo,
+          consultantAdmin: normalizeUser(client.leadInfo.consultantAdminId),
+          assignedConsultant: normalizeUser(client.leadInfo.assignedConsultantId)
+        },
+
+        workflowTracking: {
+          ...client.workflowTracking,
+          assignedConsultant: normalizeUser(
+            client.workflowTracking.assignedConsultantId
+          )
+        },
+
+        submissionData: client.submissionData || {},
+        accountDetails: client.accountDetails || {},
+
+        createdAt: client.createdAt,
+        updatedAt: client.updatedAt
+      };
+    });
+
+    // -----------------------------------------------
+    // 7. RESPONSE
     // -----------------------------------------------
     return res.status(200).json({
       success: true,
       message: "Clients fetched successfully",
       clients: responseClients,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: Number(page),
+        limit: Number(limit),
         total,
         totalPages: Math.ceil(total / limit),
         hasNextPage: page < Math.ceil(total / limit),
@@ -3213,65 +3205,126 @@ const getClients = async (req, res) => {
 
 
 
-// Get single client details
+
+// ===============================================
+// FIXED getClientById (S3 PROFILE IMAGE SAFE)
+// ===============================================
 const getClientById = async (req, res) => {
   try {
     const { clientId } = req.params;
+
     const client = await Client.findOne({ clientId })
-      .populate("leadInfo.consultantAdminId", "userName email")
-      .populate("leadInfo.assignedConsultantId", "userName email")
-      .populate("timeline.performedBy", "userName email");
-    
+      .populate("leadInfo.consultantAdminId", "userName email profileImage")
+      .populate("leadInfo.assignedConsultantId", "userName email profileImage")
+      .populate("workflowTracking.assignedConsultantId", "userName email profileImage")
+      .populate("timeline.performedBy", "userName email profileImage")
+      .lean();
+
     if (!client) {
-      return res.status(404).json({ message: "Client not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Client not found"
+      });
     }
-    
-    // Check permissions
+
+    // ------------------------------------------------
+    // PERMISSION CHECK
+    // ------------------------------------------------
     let hasAccess = false;
-    
+
     switch (req.user.userType) {
       case "super_admin":
         hasAccess = true;
         break;
-        
+
       case "consultant_admin":
-        hasAccess = client.leadInfo.consultantAdminId._id.toString() === req.user.id;
+        hasAccess =
+          client.leadInfo.consultantAdminId?._id.toString() === req.user.id;
         break;
-        
+
       case "consultant":
-        hasAccess = client.leadInfo.assignedConsultantId?._id.toString() === req.user.id;
+        hasAccess =
+          client.leadInfo.assignedConsultantId?._id.toString() === req.user.id ||
+          client.workflowTracking.assignedConsultantId?._id.toString() === req.user.id;
         break;
-        
+
       case "client_admin":
       case "client_employee_head":
       case "auditor":
       case "viewer":
         hasAccess = client.clientId === req.user.clientId;
         break;
-        
+
       default:
         hasAccess = false;
     }
-    
+
     if (!hasAccess) {
-      return res.status(403).json({ 
-        message: "You don't have permission to view this client" 
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to view this client"
       });
     }
-    
-    res.status(200).json({
+
+    // ------------------------------------------------
+    // 🔥 PROFILE IMAGE FIX (CRITICAL)
+    // ------------------------------------------------
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
+
+    const normalizeUser = (user) => {
+      if (!user) return null;
+
+      // ✅ S3 URL → DO NOT TOUCH
+      if (user.profileImage?.url) return user;
+
+      // ⚠ legacy local image
+      if (user.profileImage?.path && BASE) {
+        user.profileImage.url =
+          `${BASE}/${user.profileImage.path.replace(/\\/g, "/")}`;
+      }
+
+      return user;
+    };
+
+    if (client.leadInfo) {
+      client.leadInfo.consultantAdminId =
+        normalizeUser(client.leadInfo.consultantAdminId);
+
+      client.leadInfo.assignedConsultantId =
+        normalizeUser(client.leadInfo.assignedConsultantId);
+    }
+
+    if (client.workflowTracking) {
+      client.workflowTracking.assignedConsultantId =
+        normalizeUser(client.workflowTracking.assignedConsultantId);
+    }
+
+    if (Array.isArray(client.timeline)) {
+      client.timeline = client.timeline.map(t => ({
+        ...t,
+        performedBy: normalizeUser(t.performedBy)
+      }));
+    }
+
+    // ------------------------------------------------
+    // RESPONSE
+    // ------------------------------------------------
+    return res.status(200).json({
+      success: true,
       message: "Client details fetched successfully",
       client
     });
-    
+
   } catch (error) {
     console.error("Get client by ID error:", error);
-    res.status(500).json({ 
-      message: "Failed to fetch client details", 
-      error: error.message 
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch client details",
+      error: error.message
     });
   }
 };
+
 
 // Update client assignment
 // Update client assignment
