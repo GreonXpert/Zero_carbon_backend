@@ -680,99 +680,122 @@ async function canAccessReductions(user, clientId) {
 
 /** Get list for a client */
 /** Get list for a client */
+// ===============================
+// GET SINGLE REDUCTION (FIXED)
+// ===============================
 exports.getReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
-    // -------- Permission Check --------
+    // -------------------------------------------------
+    // 1️⃣ Permission Check
+    // -------------------------------------------------
     const access = await canAccessReductions(req.user, clientId);
     if (!access.allowed) {
       return res.status(403).json({
         success: false,
         message: "Permission denied",
-        reason: access.reason,
+        reason: access.reason
       });
     }
 
-    // -------- Fetch Project --------
-    const doc = await Reduction.findOne(
-      { clientId, projectId, isDeleted: false }
-    ).lean(); // lean = plain JSON
+    // -------------------------------------------------
+    // 2️⃣ Fetch Reduction
+    // -------------------------------------------------
+    const doc = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    }).lean(); // lean → plain JSON
 
     if (!doc) {
       return res.status(404).json({
         success: false,
-        message: "Reduction project not found",
+        message: "Reduction project not found"
       });
     }
 
-    // --------------------------------------------------------------
-    //  FIX: Guarantee methodology3 object is always returned
-    // --------------------------------------------------------------
-    if (doc.calculationMethodology === "methodology3") {
-      doc.methodology3 = doc.methodology3 || {};
+    // -------------------------------------------------
+    // 3️⃣ Methodology Safety Fixes
+    // -------------------------------------------------
 
-      doc.methodology3.baseline = doc.methodology3.baseline || [];
-      doc.methodology3.project  = doc.methodology3.project  || [];
-      doc.methodology3.leakage  = doc.methodology3.leakage  || [];
-
-      doc.methodology3.totals = doc.methodology3.totals || {
-        BE_total: 0,
-        PE_total: 0,
-        LE_total: 0,
-        buffer: 0,
-        final: 0,
-      };
-    }
-
-    // --------------------------------------------------------------
-    //  FIX: Ensure M2 return shape is clean
-    // --------------------------------------------------------------
-    if (doc.calculationMethodology === "methodology2") {
-      if (!doc.m2) doc.m2 = {};
-      if (!doc.m2.formulaRef) doc.m2.formulaRef = {};
-    }
-
-    // --------------------------------------------------------------
-    //  FIX: Ensure M1 return values exist
-    // --------------------------------------------------------------
+    // --- M1 ---
     if (doc.calculationMethodology === "methodology1") {
-      if (!doc.m1) doc.m1 = {};
-      doc.m1.emissionReductionRate = doc.m1.emissionReductionRate || 0;
+      doc.m1 = doc.m1 || {};
+      doc.m1.emissionReductionRate =
+        doc.m1.emissionReductionRate ?? 0;
     }
 
-    // --------------------------------------------------------------------
-    //  🔥 FIX: APPEND PUBLIC URL TO IMAGES BEFORE SENDING RESPONSE
-    // --------------------------------------------------------------------
-    const BASE = process.env.SERVER_BASE_URL || "";
+    // --- M2 ---
+    if (doc.calculationMethodology === "methodology2") {
+      doc.m2 = doc.m2 || {};
+      doc.m2.formulaRef = doc.m2.formulaRef || {};
+    }
+
+    // --- M3 ---
+    if (doc.calculationMethodology === "methodology3") {
+      doc.m3 = doc.m3 || {};
+      doc.m3.baselineEmissions = Array.isArray(doc.m3.baselineEmissions)
+        ? doc.m3.baselineEmissions
+        : [];
+      doc.m3.projectEmissions = Array.isArray(doc.m3.projectEmissions)
+        ? doc.m3.projectEmissions
+        : [];
+      doc.m3.leakageEmissions = Array.isArray(doc.m3.leakageEmissions)
+        ? doc.m3.leakageEmissions
+        : [];
+      doc.m3.buffer = doc.m3.buffer ?? 0;
+    }
+
+    // -------------------------------------------------
+    // 4️⃣ 🔥 IMAGE URL FIX (CRITICAL)
+    // -------------------------------------------------
+    // RULE:
+    // - If S3 url exists → USE AS IS
+    // - Only build server URL if url is missing but path exists
+
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
 
     // ---- Cover Image ----
-    if (doc.coverImage?.path) {
-      doc.coverImage.url = BASE + "/" + doc.coverImage.path.replace(/\\/g, "/");
+    if (doc.coverImage) {
+      if (!doc.coverImage.url && doc.coverImage.path && BASE) {
+        doc.coverImage.url =
+          `${BASE}/${doc.coverImage.path.replace(/\\/g, "/")}`;
+      }
     }
 
     // ---- Gallery Images ----
     if (Array.isArray(doc.images)) {
-      doc.images = doc.images.map(img => ({
-        ...img,
-        url: BASE + "/" + img.path.replace(/\\/g, "/")
-      }));
+      doc.images = doc.images.map(img => {
+        // ✅ Keep S3 URL untouched
+        if (img.url) return img;
+
+        // ⚠ Legacy local image support
+        if (!img.url && img.path && BASE) {
+          return {
+            ...img,
+            url: `${BASE}/${img.path.replace(/\\/g, "/")}`
+          };
+        }
+
+        return img;
+      });
     }
 
-    // --------------------------------------------------------------
-    //  SEND BACK CLEAN RESPONSE
-    // --------------------------------------------------------------
+    // -------------------------------------------------
+    // 5️⃣ Send Clean Response
+    // -------------------------------------------------
     return res.status(200).json({
       success: true,
-      data: doc,
+      data: doc
     });
 
   } catch (err) {
     console.error("getReduction error:", err);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch reduction",
-      error: err.message,
+      error: err.message
     });
   }
 };

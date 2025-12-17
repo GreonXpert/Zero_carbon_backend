@@ -529,105 +529,180 @@ const updateProcessFlowchartStatus = async (req, res) => {
 };
 
 // Sync data input points from flowchart
+// Sync data input points from flowchart + processflowchart
 const syncDataInputPoints = async (req, res) => {
   const startTime = Date.now();
+
   try {
     const { clientId } = req.params;
+
+    // ---------------------------------------------
+    // 1️⃣ PERMISSION CHECK
+    // ---------------------------------------------
     if (!['consultant', 'consultant_admin'].includes(req.user.userType)) {
-      return res.status(403).json({ success: false, message: "Only consultants can sync data input points", timestamp: new Date().toISOString() });
+      return res.status(403).json({
+        success: false,
+        message: "Only consultants can sync data input points",
+        timestamp: new Date().toISOString()
+      });
     }
 
-    // Fetch client + active flowchart
-    const [client, flowchart] = await Promise.all([
+    // ---------------------------------------------
+    // 2️⃣ LOAD CLIENT + FLOWCHARTS
+    // ---------------------------------------------
+    const [client, flowchart, processFlowchart] = await Promise.all([
       Client.findOne({ clientId }),
-      Flowchart.findOne({ clientId, isActive: true })
+      Flowchart.findOne({ clientId, isActive: true }).lean(),
+      ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean()
     ]);
-    if (!client) return res.status(404).json({ success: false, message: "Client not found", timestamp: new Date().toISOString() });
-    if (!flowchart) return res.status(404).json({ success: false, message: "Active flowchart not found. Please create a flowchart first.", timestamp: new Date().toISOString() });
 
-    // Helper to merge points for a given type
-    const mergePoints = (existing, nodes, inputType) => {
-      // Build a map of existing by pointId
-      const existingMap = new Map(existing.map(p => [p.pointId, p]));
-      // Generate new list in flowchart order
-      const newList = [];
-      nodes.forEach(node => {
-        if (node.details?.scopeDetails) {
-          node.details.scopeDetails.forEach(scope => {
-            if (scope.inputType.toLowerCase() === inputType) {
-              const pointId = `${node.id}_${scope.scopeIdentifier}_${inputType}`;
-              const base = {
-                pointId,
-                nodeId: node.id,
-                scopeIdentifier: scope.scopeIdentifier,
-                lastUpdatedBy: req.user.id,
-                lastUpdatedAt: new Date()
-              };
-              // If existed, preserve all fields; otherwise create fresh
-              if (existingMap.has(pointId)) {
-                newList.push({ 
-                  ...existingMap.get(pointId),
-                  ...base,
-                  // keep trainingCompletedFor, status, etc.
-                });
-              } else {
-                // fresh entry defaults
-                if (inputType === 'manual') {
-                  newList.push({
-                    ...base,
-                    pointName: `${node.label} - ${scope.scopeName || scope.scopeIdentifier}`,
-                    status: 'not_started'
-                  });
-                } else if (inputType === 'api') {
-                  newList.push({
-                    ...base,
-                    endpoint: scope.apiEndpoint || '',
-                    connectionStatus: scope.apiStatus ? 'connected' : 'not_connected',
-                    status: 'not_started'
-                  });
-                } else { // iot
-                  newList.push({
-                    ...base,
-                    deviceName: scope.iotDeviceName || `Device_${scope.scopeIdentifier}`,
-                    deviceId: scope.iotDeviceId || '',
-                    connectionStatus: scope.iotStatus ? 'connected' : 'not_connected',
-                    status: 'not_started'
-                  });
-                }
-              }
-            }
-          });
-        }
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: "Client not found",
+        timestamp: new Date().toISOString()
       });
+    }
+
+    if (!flowchart) {
+      return res.status(404).json({
+        success: false,
+        message: "Active flowchart not found. Please create a flowchart first.",
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // ---------------------------------------------
+    // 3️⃣ BUILD MERGED NODES (WITH fromOtherChart RULE)
+    // ---------------------------------------------
+    const mergedNodes = [];
+
+    // 3A️⃣ ORGANIZATION FLOWCHART → ALWAYS INCLUDED
+    for (const node of flowchart.nodes || []) {
+      if (!node?.details?.scopeDetails?.length) continue;
+
+      mergedNodes.push({
+        ...node,
+        __source: 'organization'
+      });
+    }
+
+    // 3B️⃣ PROCESS FLOWCHART → ONLY fromOtherChart === false
+    if (processFlowchart?.nodes?.length) {
+      for (const node of processFlowchart.nodes) {
+        const validScopes = (node.details?.scopeDetails || []).filter(
+          scope => scope.fromOtherChart === false && !scope.isDeleted
+        );
+
+        if (validScopes.length === 0) continue;
+
+        mergedNodes.push({
+          ...node,
+          details: {
+            ...node.details,
+            scopeDetails: validScopes
+          },
+          __source: 'process'
+        });
+      }
+    }
+
+    // ---------------------------------------------
+    // 4️⃣ HELPER: MERGE INPUT POINTS
+    // ---------------------------------------------
+    const mergePoints = (existing = [], nodes, inputType) => {
+      const existingMap = new Map(existing.map(p => [p.pointId, p]));
+      const newList = [];
+
+      for (const node of nodes) {
+        const scopes = node.details?.scopeDetails || [];
+
+        for (const scope of scopes) {
+          if (scope.inputType?.toLowerCase() !== inputType) continue;
+
+          const pointId = `${node.id}_${scope.scopeIdentifier}_${inputType}`;
+
+          const base = {
+            pointId,
+            nodeId: node.id,
+            scopeIdentifier: scope.scopeIdentifier,
+            lastUpdatedBy: req.user.id,
+            lastUpdatedAt: new Date()
+          };
+
+          if (existingMap.has(pointId)) {
+            newList.push({
+              ...existingMap.get(pointId),
+              ...base
+            });
+          } else {
+            // -------- CREATE NEW POINT ----------
+            if (inputType === 'manual') {
+              newList.push({
+                ...base,
+                pointName: `${node.label} - ${scope.scopeIdentifier}`,
+                status: 'not_started'
+              });
+            }
+
+            if (inputType === 'api') {
+              newList.push({
+                ...base,
+                endpoint: scope.apiEndpoint || '',
+                connectionStatus: scope.apiStatus ? 'connected' : 'not_connected',
+                status: 'not_started'
+              });
+            }
+
+            if (inputType === 'iot') {
+              newList.push({
+                ...base,
+                deviceName: scope.iotDeviceName || `Device_${scope.scopeIdentifier}`,
+                deviceId: scope.iotDeviceId || '',
+                connectionStatus: scope.iotStatus ? 'connected' : 'not_connected',
+                status: 'not_started'
+              });
+            }
+          }
+        }
+      }
+
       return newList;
     };
 
-        // Merge each type from BOTH charts depending on assessmentLevel
-    const mergedNodes = await getMergedNodesForAssessment(clientId);
-
+    // ---------------------------------------------
+    // 5️⃣ MERGE INPUT POINTS BY TYPE
+    // ---------------------------------------------
     client.workflowTracking.dataInputPoints.manual.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.manual.inputs,
       mergedNodes,
       'manual'
     );
+
     client.workflowTracking.dataInputPoints.api.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.api.inputs,
       mergedNodes,
       'api'
     );
+
     client.workflowTracking.dataInputPoints.iot.inputs = mergePoints(
       client.workflowTracking.dataInputPoints.iot.inputs,
       mergedNodes,
       'iot'
     );
 
-    // Recalculate counts
+    // ---------------------------------------------
+    // 6️⃣ RECALCULATE COUNTS
+    // ---------------------------------------------
     client.updateInputPointCounts('manual');
     client.updateInputPointCounts('api');
     client.updateInputPointCounts('iot');
+
     client.workflowTracking.dataInputPoints.lastSyncedWithFlowchart = new Date();
 
-    // Timeline entry
+    // ---------------------------------------------
+    // 7️⃣ TIMELINE ENTRY
+    // ---------------------------------------------
     client.timeline.push({
       stage: client.stage,
       status: client.status,
@@ -638,23 +713,37 @@ const syncDataInputPoints = async (req, res) => {
 
     await client.save();
 
+    // ---------------------------------------------
+    // 8️⃣ RESPONSE
+    // ---------------------------------------------
     const responseTime = Date.now() - startTime;
+
     return res.status(200).json({
       success: true,
       message: "Data input points synced successfully",
       data: {
         clientId: client.clientId,
         dataInputPoints: {
-          manual: { total: client.workflowTracking.dataInputPoints.manual.totalCount, points: client.workflowTracking.dataInputPoints.manual.inputs },
-          api:    { total: client.workflowTracking.dataInputPoints.api.totalCount,    points: client.workflowTracking.dataInputPoints.api.inputs },
-          iot:    { total: client.workflowTracking.dataInputPoints.iot.totalCount,    points: client.workflowTracking.dataInputPoints.iot.inputs },
+          manual: {
+            total: client.workflowTracking.dataInputPoints.manual.totalCount,
+            points: client.workflowTracking.dataInputPoints.manual.inputs
+          },
+          api: {
+            total: client.workflowTracking.dataInputPoints.api.totalCount,
+            points: client.workflowTracking.dataInputPoints.api.inputs
+          },
+          iot: {
+            total: client.workflowTracking.dataInputPoints.iot.totalCount,
+            points: client.workflowTracking.dataInputPoints.iot.inputs
+          },
           totalDataPoints: client.workflowTracking.dataInputPoints.totalDataPoints,
-          lastSyncedAt:    client.workflowTracking.dataInputPoints.lastSyncedWithFlowchart
+          lastSyncedAt: client.workflowTracking.dataInputPoints.lastSyncedWithFlowchart
         }
       },
       responseTime: `${responseTime}ms`,
       timestamp: new Date().toISOString()
     });
+
   } catch (error) {
     console.error("Sync data input points error:", error);
     return res.status(500).json({
@@ -665,6 +754,7 @@ const syncDataInputPoints = async (req, res) => {
     });
   }
 };
+
 // Update manual input point status
 const updateManualInputStatus = async (req, res) => {
   const startTime = Date.now();
