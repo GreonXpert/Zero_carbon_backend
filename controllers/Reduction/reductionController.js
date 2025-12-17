@@ -878,69 +878,124 @@ exports.updateReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
+    // ---------------- Permission ----------------
     const perm = await canCreateOrEdit(req.user, clientId);
     if (!perm.ok) {
-      return res.status(403).json({ success:false, message: perm.reason });
+      return res.status(403).json({
+        success: false,
+        message: perm.reason
+      });
     }
 
+    // ---------------- Fetch doc ----------------
     const doc = await Reduction.findOne({
       clientId,
       projectId,
-      isDeleted:false
+      isDeleted: false
     });
 
     if (!doc) {
-      return res.status(404).json({ success:false, message:'Not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Reduction not found'
+      });
     }
 
-    const body = req.body;
+    const body = req.body || {};
 
-    Object.assign(doc, {
-      projectName: body.projectName ?? doc.projectName,
-      projectActivity: body.projectActivity ?? doc.projectActivity,
-      scope: body.scope ?? doc.scope,
-      category: body.category ?? doc.category,
-      description: body.description ?? doc.description,
-      baselineMethod: body.baselineMethod ?? doc.baselineMethod,
-      baselineJustification: body.baselineJustification ?? doc.baselineJustification
-    });
+    // ---------------- Safe base update ----------------
+    doc.projectName = body.projectName ?? doc.projectName;
+    doc.projectActivity = body.projectActivity ?? doc.projectActivity;
+    doc.scope = body.scope ?? doc.scope;
+    doc.category = body.category ?? doc.category;
+    doc.description = body.description ?? doc.description;
+    doc.baselineMethod = body.baselineMethod ?? doc.baselineMethod;
+    doc.baselineJustification =
+      body.baselineJustification ?? doc.baselineJustification;
 
-    if (body.location) {
-      doc.location.latitude = body.location.latitude ?? doc.location.latitude;
-      doc.location.longitude = body.location.longitude ?? doc.location.longitude;
-      doc.location.place = body.location.place ?? doc.location.place;
-      doc.location.address = body.location.address ?? doc.location.address;
-    }
-
-    if (body.commissioningDate)
-      doc.commissioningDate = new Date(body.commissioningDate);
-    if (body.endDate)
-      doc.endDate = new Date(body.endDate);
-
-    if (doc.calculationMethodology === 'methodology1' && body.m1) {
-      doc.m1 = {
-        ABD: (body.m1.ABD || []).map(normalizeUnitItem('B')),
-        APD: (body.m1.APD || []).map(normalizeUnitItem('P')),
-        ALD: (body.m1.ALD || []).map(normalizeUnitItem('L')),
-        bufferPercent: Number(body.m1.bufferPercent ?? 0)
+    // ---------------- SAFE LOCATION INIT ----------------
+    if (!doc.location) {
+      doc.location = {
+        latitude: null,
+        longitude: null,
+        place: '',
+        address: ''
       };
     }
 
-    if (doc.calculationMethodology === 'methodology2' && body.m2) {
+    if (body.location) {
+      doc.location.latitude =
+        body.location.latitude ?? doc.location.latitude;
+      doc.location.longitude =
+        body.location.longitude ?? doc.location.longitude;
+      doc.location.place =
+        body.location.place ?? doc.location.place;
+      doc.location.address =
+        body.location.address ?? doc.location.address;
+    }
+
+    // ---------------- Dates ----------------
+    if (body.commissioningDate) {
+      doc.commissioningDate = new Date(body.commissioningDate);
+    }
+
+    if (body.endDate) {
+      doc.endDate = new Date(body.endDate);
+    }
+
+    // ---------------- Methodology Updates ----------------
+
+    if (
+      doc.calculationMethodology === 'methodology1' &&
+      body.m1
+    ) {
+      doc.m1 = {
+        ABD: Array.isArray(body.m1.ABD)
+          ? body.m1.ABD.map(normalizeUnitItem('B'))
+          : doc.m1?.ABD || [],
+        APD: Array.isArray(body.m1.APD)
+          ? body.m1.APD.map(normalizeUnitItem('P'))
+          : doc.m1?.APD || [],
+        ALD: Array.isArray(body.m1.ALD)
+          ? body.m1.ALD.map(normalizeUnitItem('L'))
+          : doc.m1?.ALD || [],
+        bufferPercent: Number(
+          body.m1.bufferPercent ?? doc.m1?.bufferPercent ?? 0
+        )
+      };
+    }
+
+    if (
+      doc.calculationMethodology === 'methodology2' &&
+      body.m2
+    ) {
       doc.m2 = normalizeM2FromBody(body.m2);
     }
 
-    if (doc.calculationMethodology === 'methodology3' && body.m3) {
+    if (
+      doc.calculationMethodology === 'methodology3' &&
+      body.m3
+    ) {
       validateM3Input(body);
       doc.m3 = normalizeM3Body(body.m3);
     }
 
-    // 🔥 MEDIA UPDATE
-    await replaceReductionMedia(req, doc);
+    // ---------------- Media (OPTIONAL) ----------------
+    // This MUST NOT throw if no files are sent
+    try {
+      await replaceReductionMedia(req, doc);
+    } catch (mediaErr) {
+      console.warn(
+        '[updateReduction] Media update skipped:',
+        mediaErr.message
+      );
+    }
 
+    // ---------------- Save ----------------
     await doc.validate();
     await doc.save();
 
+    // ---------------- Notifications ----------------
     notifyReductionEvent({
       actor: req.user,
       clientId,
@@ -949,21 +1004,23 @@ exports.updateReduction = async (req, res) => {
     }).catch(() => {});
 
     return res.status(200).json({
-      success:true,
-      message:'Updated',
+      success: true,
+      message: 'Reduction updated successfully',
       data: doc
     });
 
   } catch (err) {
     console.error('updateReduction error:', err);
+
     return res.status(500).json({
-      success:false,
-      message:'Failed to update reduction',
+      success: false,
+      message: 'Failed to update reduction',
       error: err.message
     });
   }
 };
-;
+
+
 
 
 
