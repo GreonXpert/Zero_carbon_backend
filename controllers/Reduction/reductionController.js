@@ -881,140 +881,184 @@ exports.updateReduction = async (req, res) => {
     // ---------------- Permission ----------------
     const perm = await canCreateOrEdit(req.user, clientId);
     if (!perm.ok) {
-      return res.status(403).json({
-        success: false,
-        message: perm.reason
-      });
+      return res.status(403).json({ success: false, message: perm.reason });
     }
 
     // ---------------- Fetch doc ----------------
-    const doc = await Reduction.findOne({
-      clientId,
-      projectId,
-      isDeleted: false
-    });
-
+    const doc = await Reduction.findOne({ clientId, projectId, isDeleted: false });
     if (!doc) {
-      return res.status(404).json({
-        success: false,
-        message: 'Reduction not found'
-      });
+      return res.status(404).json({ success: false, message: "Reduction not found" });
     }
 
+    // ---------------- Helpers ----------------
+    const asObject = (val, fieldName) => {
+      if (val == null) return undefined;
+      if (typeof val === "object") return val;
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        if (!trimmed) return undefined;
+        try {
+          return JSON.parse(trimmed);
+        } catch (e) {
+          throw new Error(`Invalid JSON in "${fieldName}". Send valid JSON or object.`);
+        }
+      }
+      throw new Error(`Invalid type for "${fieldName}". Expected object/JSON string.`);
+    };
+
+    const asString = (v) => (v == null ? undefined : String(v));
+
+    // IMPORTANT: with multipart/form-data, req.body exists but values can be strings
     const body = req.body || {};
 
-    // ---------------- Safe base update ----------------
-    doc.projectName = body.projectName ?? doc.projectName;
-    doc.projectActivity = body.projectActivity ?? doc.projectActivity;
-    doc.scope = body.scope ?? doc.scope;
-    doc.category = body.category ?? doc.category;
-    doc.description = body.description ?? doc.description;
-    doc.baselineMethod = body.baselineMethod ?? doc.baselineMethod;
-    doc.baselineJustification =
-      body.baselineJustification ?? doc.baselineJustification;
+    // Parse nested objects safely (supports JSON string or real object)
+    const locationIn = asObject(body.location, "location");
+    const m1In = asObject(body.m1, "m1");
+    const m2In = asObject(body.m2, "m2");
+    const m3In = asObject(body.m3, "m3");
+    const processFlowIn = asObject(body.processFlow, "processFlow");
+    const reductionEntryIn =
+      asObject(body.reductionDataEntry, "reductionDataEntry") ||
+      asObject(body.reductionDateEntry, "reductionDateEntry");
 
-    // ---------------- SAFE LOCATION INIT ----------------
+    // ---------------- Base field patches ----------------
+    if (body.projectName != null) doc.projectName = asString(body.projectName);
+    if (body.projectActivity != null) doc.projectActivity = asString(body.projectActivity);
+    if (body.scope != null) doc.scope = asString(body.scope);
+    if (body.category != null) doc.category = asString(body.category);
+
+    if (body.description != null) doc.description = asString(body.description);
+    if (body.baselineMethod != null) doc.baselineMethod = asString(body.baselineMethod);
+    if (body.baselineJustification != null) doc.baselineJustification = asString(body.baselineJustification);
+
+    // Ensure location object exists
     if (!doc.location) {
-      doc.location = {
-        latitude: null,
-        longitude: null,
-        place: '',
-        address: ''
-      };
+      doc.location = { latitude: null, longitude: null, place: "", address: "" };
+    }
+    if (locationIn) {
+      if ("latitude" in locationIn) doc.location.latitude = locationIn.latitude ?? doc.location.latitude;
+      if ("longitude" in locationIn) doc.location.longitude = locationIn.longitude ?? doc.location.longitude;
+      if ("place" in locationIn) doc.location.place = locationIn.place ?? doc.location.place;
+      if ("address" in locationIn) doc.location.address = locationIn.address ?? doc.location.address;
     }
 
-    if (body.location) {
-      doc.location.latitude =
-        body.location.latitude ?? doc.location.latitude;
-      doc.location.longitude =
-        body.location.longitude ?? doc.location.longitude;
-      doc.location.place =
-        body.location.place ?? doc.location.place;
-      doc.location.address =
-        body.location.address ?? doc.location.address;
+    if (body.commissioningDate) doc.commissioningDate = new Date(body.commissioningDate);
+    if (body.endDate) doc.endDate = new Date(body.endDate);
+
+    // ---------------- Methodology switching ----------------
+    const requestedMethod = body.calculationMethodology ? asString(body.calculationMethodology) : undefined;
+    const targetMethod = requestedMethod || doc.calculationMethodology;
+
+    if (requestedMethod && requestedMethod !== doc.calculationMethodology) {
+      // Switch the doc first (so validation/recompute runs for the correct method)
+      doc.calculationMethodology = requestedMethod;
+
+      // When switching, require payload for the new method (prevents silent 500s later)
+      if (requestedMethod === "methodology1" && !m1In) {
+        return res.status(400).json({
+          success: false,
+          message: "Switching to methodology1 requires body.m1"
+        });
+      }
+      if (requestedMethod === "methodology2" && !m2In) {
+        return res.status(400).json({
+          success: false,
+          message: "Switching to methodology2 requires body.m2"
+        });
+      }
+      if (requestedMethod === "methodology3" && !m3In) {
+        return res.status(400).json({
+          success: false,
+          message: "Switching to methodology3 requires body.m3"
+        });
+      }
     }
 
-    // ---------------- Dates ----------------
-    if (body.commissioningDate) {
-      doc.commissioningDate = new Date(body.commissioningDate);
-    }
+    // ---------------- Apply methodology payload (for current/target method) ----------------
+    if (targetMethod === "methodology1" && m1In) {
+      // NOTE: in form-data, ABD/APD/ALD might still be stringified inside m1; handle it:
+      const ABD = asObject(m1In.ABD, "m1.ABD");
+      const APD = asObject(m1In.APD, "m1.APD");
+      const ALD = asObject(m1In.ALD, "m1.ALD");
 
-    if (body.endDate) {
-      doc.endDate = new Date(body.endDate);
-    }
-
-    // ---------------- Methodology Updates ----------------
-
-    if (
-      doc.calculationMethodology === 'methodology1' &&
-      body.m1
-    ) {
       doc.m1 = {
-        ABD: Array.isArray(body.m1.ABD)
-          ? body.m1.ABD.map(normalizeUnitItem('B'))
-          : doc.m1?.ABD || [],
-        APD: Array.isArray(body.m1.APD)
-          ? body.m1.APD.map(normalizeUnitItem('P'))
-          : doc.m1?.APD || [],
-        ALD: Array.isArray(body.m1.ALD)
-          ? body.m1.ALD.map(normalizeUnitItem('L'))
-          : doc.m1?.ALD || [],
-        bufferPercent: Number(
-          body.m1.bufferPercent ?? doc.m1?.bufferPercent ?? 0
-        )
+        ABD: Array.isArray(ABD) ? ABD.map(normalizeUnitItem("B")) : (doc.m1?.ABD || []),
+        APD: Array.isArray(APD) ? APD.map(normalizeUnitItem("P")) : (doc.m1?.APD || []),
+        ALD: Array.isArray(ALD) ? ALD.map(normalizeUnitItem("L")) : (doc.m1?.ALD || []),
+        bufferPercent: Number(m1In.bufferPercent ?? doc.m1?.bufferPercent ?? 0)
       };
     }
 
-    if (
-      doc.calculationMethodology === 'methodology2' &&
-      body.m2
-    ) {
-      doc.m2 = normalizeM2FromBody(body.m2);
+    if (targetMethod === "methodology2" && m2In) {
+      doc.m2 = normalizeM2FromBody(m2In);
     }
 
-    if (
-      doc.calculationMethodology === 'methodology3' &&
-      body.m3
-    ) {
-      validateM3Input(body);
-      doc.m3 = normalizeM3Body(body.m3);
+    if (targetMethod === "methodology3" && m3In) {
+      // validateM3Input expects the full body sometimes; ensure projectActivity exists
+      const fullForValidation = { ...body, m3: m3In, projectActivity: doc.projectActivity };
+      validateM3Input(fullForValidation);
+      doc.m3 = normalizeM3Body(m3In);
+
+      // Safety: your M3 schema often needs projectActivity
+      if (doc.m3 && !doc.m3.projectActivity) {
+        doc.m3.projectActivity = doc.projectActivity;
+      }
     }
 
-    // ---------------- Media (OPTIONAL) ----------------
-    // This MUST NOT throw if no files are sent
+    // ---------------- Data Entry ----------------
+    if (reductionEntryIn) {
+      const entry = normalizeReductionDataEntry(reductionEntryIn);
+      doc.reductionDataEntry = {
+        ...(doc.reductionDataEntry?.toObject?.() ?? {}),
+        ...entry
+      };
+    }
+
+    // ---------------- ProcessFlow ----------------
+    if (processFlowIn) {
+      const pf = normalizeProcessFlow(processFlowIn, req.user);
+      doc.processFlow = { ...(doc.processFlow || {}), ...pf };
+    }
+
+    // ---------------- Media replace (S3 delete + upload) ----------------
+    // Uses your helper which deletes old cover/gallery keys and uploads new ones :contentReference[oaicite:2]{index=2}
     try {
       await replaceReductionMedia(req, doc);
     } catch (mediaErr) {
-      console.warn(
-        '[updateReduction] Media update skipped:',
-        mediaErr.message
-      );
+      return res.status(500).json({
+        success: false,
+        message: "Media upload failed",
+        error: mediaErr.message
+      });
     }
 
-    // ---------------- Save ----------------
-    await doc.validate();
+    // ---------------- Validate & Save ----------------
+    try {
+      await doc.validate();
+    } catch (ve) {
+      // Convert validation to 400 so frontend can show proper message
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        error: ve.message
+      });
+    }
+
     await doc.save();
 
     // ---------------- Notifications ----------------
-    notifyReductionEvent({
-      actor: req.user,
-      clientId,
-      action: 'updated',
-      doc
-    }).catch(() => {});
+    notifyReductionEvent({ actor: req.user, clientId, action: "updated", doc }).catch(() => {});
+    Promise.all([
+      syncReductionWorkflow(clientId, req.user?.id).catch(() => {}),
+      syncClientReductionProjects(clientId).catch(() => {})
+    ]);
 
-    return res.status(200).json({
-      success: true,
-      message: 'Reduction updated successfully',
-      data: doc
-    });
-
+    return res.status(200).json({ success: true, message: "Updated", data: doc });
   } catch (err) {
-    console.error('updateReduction error:', err);
-
+    console.error("updateReduction error:", err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to update reduction',
+      message: "Failed to update reduction",
       error: err.message
     });
   }
