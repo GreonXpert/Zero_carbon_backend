@@ -11,6 +11,10 @@
 // controllers/Reduction/netReductionController.js
 const { recomputeClientNetReductionSummary } = require('./netReductionSummaryController');
 
+const fs = require('fs');
+const { uploadReductionCSVCreate } = require('../../utils/uploads/Reduction/csv/create');
+
+
 // --- Socket wiring (copy the pattern from dataCollectionController) ---
 let io;
 exports.setSocketIO = (socketIO) => { io = socketIO; };
@@ -1784,109 +1788,117 @@ function parseM3CsvRow(row) {
  * Always saved as MANUAL input type.
  */
 exports.uploadCsvNetReduction = async (req, res) => {
+  let tempPath = null;
+
   try {
     const { clientId, projectId, calculationMethodology } = req.params;
 
-    // Permission (CSV = manual input)
+    // Permission
     const can = await canWriteReductionData(req.user, clientId);
     if (!can.ok) {
       return res.status(403).json({ success: false, message: can.reason });
     }
 
-    // Ensure manual channel allowed
+    // Context
     let ctx;
     try {
       ctx = await requireReductionForEntry(
         clientId,
         projectId,
         calculationMethodology,
-        "manual"
+        'manual'
       );
     } catch (e) {
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    // CSV must exist
-    if (!req.file) {
+    if (!req.file?.path) {
       return res.status(400).json({
         success: false,
-        message: "No CSV file uploaded"
+        message: 'No CSV file uploaded'
       });
     }
 
+    tempPath = req.file.path;
+
+    // Read file → S3
+    const buffer = fs.readFileSync(req.file.path);
+    const s3Upload = await uploadReductionCSVCreate({
+      clientId,
+      projectId,
+      calculationMethodology,
+      fileName: req.file.originalname,
+      buffer
+    });
+
+    // Parse CSV
     const rows = await csvtojson().fromFile(req.file.path);
-    if (!rows?.length) {
-      return res.status(400).json({ success: false, message: "CSV empty" });
+    if (!rows.length) {
+      return res.status(400).json({ success: false, message: 'CSV empty' });
     }
 
-    const fs = require("fs");
     const saved = [];
     const errors = [];
 
-    // ======================================================
-    // 🟦 M1 PATH
-    // ======================================================
-    if (ctx.mode === "m1") {
+    // ============================
+    // M1
+    // ============================
+    if (ctx.mode === 'm1') {
       for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
+        try {
+          const r = rows[i];
+          const value = Number(r.value);
+          if (!isFinite(value)) throw new Error('value must be numeric');
 
-        const value = Number(r.value);
-        if (!isFinite(value)) {
-          errors.push({ row: i + 1, error: "value must be numeric" });
-          continue;
+          const when = parseDateTimeOrNowIST(r.date, r.time);
+
+          const entry = await NetReductionEntry.create({
+            clientId,
+            projectId,
+            calculationMethodology,
+            inputType: 'CSV',
+            sourceDetails: {
+              uploadedBy: req.user._id || req.user.id,
+              dataSource: 'CSV',
+              fileName: req.file.originalname,
+              s3: s3Upload
+            },
+            date: when.date,
+            time: when.time,
+            timestamp: when.timestamp,
+            inputValue: value,
+            emissionReductionRate: ctx.rate,
+            netReduction: round6(value * ctx.rate)
+          });
+
+          saved.push(entry);
+        } catch (e) {
+          errors.push({ row: i + 1, error: e.message });
         }
-
-        const when = parseDateTimeOrNowIST(r.date, r.time);
-
-        const entry = await NetReductionEntry.create({
-          clientId,
-          projectId,
-          calculationMethodology,
-          inputType: "CSV",
-          sourceDetails: {
-            uploadedBy: req.user._id || req.user.id,
-            dataSource: "CSV",
-            fileName: req.file.originalname
-          },
-
-          date: when.date,
-          time: when.time,
-          timestamp: when.timestamp,
-
-          inputValue: value,
-          emissionReductionRate: ctx.rate,
-          netReduction: round6(value * ctx.rate)
-        });
-
-        saved.push(entry);
       }
     }
 
-    // ======================================================
-    // 🟪 M2 PATH
-    // ======================================================
-    else if (ctx.mode === "m2") {
+    // ============================
+    // M2
+    // ============================
+    else if (ctx.mode === 'm2') {
       const expr = new Parser().parse(ctx.formula.expression);
-      const neededVars = expr.variables();
+      const vars = expr.variables();
 
       for (let i = 0; i < rows.length; i++) {
         try {
           const r = rows[i];
           let incoming = {};
 
-          // JSON column?
           if (r.variables) {
-            try {
-              incoming = JSON.parse(r.variables);
-            } catch {}
+            incoming = JSON.parse(r.variables);
           }
 
-          // Or direct columns
-          for (const vn of neededVars) {
-            if (r[vn] != null && r[vn] !== "") {
-              incoming[vn] = Number(r[vn]);
+          vars.forEach(v => {
+            if (r[v] !== undefined && r[v] !== '') {
+              incoming[v] = Number(r[v]);
             }
-          }
+          });
 
           const when = parseDateTimeOrNowIST(r.date, r.time);
           const { netInFormula, finalNet } = evaluateM2WithPolicy(
@@ -1904,14 +1916,13 @@ exports.uploadCsvNetReduction = async (req, res) => {
             variables: incoming,
             netReductionInFormula: netInFormula,
             netReduction: finalNet,
-            inputType: "CSV",
+            inputType: 'CSV',
             sourceDetails: {
               uploadedBy: req.user._id || req.user.id,
-              dataSource: "CSV",
-              fileName: req.file.originalname
+              dataSource: 'CSV',
+              fileName: req.file.originalname,
+              s3: s3Upload
             },
-            inputValue: 0,
-            emissionReductionRate: 0,
             date: when.date,
             time: when.time,
             timestamp: when.timestamp
@@ -1924,52 +1935,31 @@ exports.uploadCsvNetReduction = async (req, res) => {
       }
     }
 
-    // ======================================================
-    // 🟧 M3 PATH (NEW)
-    // ======================================================
-    else if (ctx.mode === "m3") {
-      // Load all M3 formulas
-      const m3 = ctx.doc.m3 || {};
-      const allItems = [
-        ...(m3.baselineEmissions || []),
-        ...(m3.projectEmissions || []),
-        ...(m3.leakageEmissions || [])
-      ];
-
-      const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
-      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
-
-      const formulasById = {};
-      formulas.forEach(f => (formulasById[f._id.toString()] = f));
-
-      // Process each CSV row
+    // ============================
+    // M3
+    // ============================
+    else if (ctx.mode === 'm3') {
       for (let i = 0; i < rows.length; i++) {
         try {
-          const r = rows[i];
+          const payload = parseM3CsvRow(rows[i]);
+          const when = parseDateTimeOrNowIST(rows[i].date, rows[i].time);
 
-          // Build the payload like:
-          // { B1: {A:100}, P1:{A:80}, L1:{A:15} }
-          const entryPayload = parseM3CsvRow(r);
-
-          const when = parseDateTimeOrNowIST(r.date, r.time);
-
-          const result = await evaluateM3(ctx.doc, formulasById, entryPayload);
+          const result = await evaluateM3(ctx.doc, ctx.formulasById, payload);
 
           const entry = await NetReductionEntry.create({
             clientId,
             projectId,
             calculationMethodology,
-            inputType: "CSV",
+            inputType: 'CSV',
             sourceDetails: {
               uploadedBy: req.user._id || req.user.id,
-              dataSource: "CSV",
-              fileName: req.file.originalname
+              dataSource: 'CSV',
+              fileName: req.file.originalname,
+              s3: s3Upload
             },
-
             date: when.date,
             time: when.time,
             timestamp: when.timestamp,
-
             m3: result,
             netReduction: result.netWithUncertainty
           });
@@ -1981,21 +1971,12 @@ exports.uploadCsvNetReduction = async (req, res) => {
       }
     }
 
-    // Remove uploaded file
+    // Cleanup
     try { fs.unlinkSync(req.file.path); } catch {}
 
-    // Recompute
-    try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-    try { await recomputeClientNetReductionSummary(clientId); } catch {}
-
-    emitNR("net-reduction:csv-processed", {
-      clientId,
-      projectId,
-      calculationMethodology,
-      saved: saved.length,
-      errors,
-      lastSaved: saved[saved.length - 1] || null
-    });
+    // Recompute summaries
+    await recomputeProjectCumulative(clientId, projectId, calculationMethodology);
+    await recomputeClientNetReductionSummary(clientId);
 
     if (global.broadcastNetReductionCompletionUpdate) {
       global.broadcastNetReductionCompletionUpdate(clientId);
@@ -2003,19 +1984,21 @@ exports.uploadCsvNetReduction = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "CSV processed",
+      message: 'CSV processed',
       saved: saved.length,
       errors,
+      s3: s3Upload,
       lastSaved: saved[saved.length - 1] || null
     });
   } catch (err) {
     return res.status(500).json({
       success: false,
-      message: "Failed to upload CSV net reduction",
+      message: 'Failed to upload CSV net reduction',
       error: err.message
     });
   }
 };
+
 
 
 
