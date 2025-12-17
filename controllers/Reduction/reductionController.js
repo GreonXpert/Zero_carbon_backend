@@ -397,244 +397,97 @@ function normalizeProcessFlow(raw = {}, user) {
 
 
 
-/** Create Reduction (Methodology-agnostic; we implement M1 math now) */
+const { replaceReductionMedia } = require(
+  '../../utils/uploads/update/replaceReductionMedia'
+);
+
 exports.createReduction = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // --- Permission ---
     const perm = await canCreateOrEdit(req.user, clientId);
     if (!perm.ok) {
-      return res.status(403).json({ success:false, message: perm.reason });
+      return res.status(403).json({ success: false, message: perm.reason });
     }
 
-    // --- Extract body ---
-    const {
-      projectName, projectActivity, scope, location,
-      category, commissioningDate, endDate, description,
-      baselineMethod, baselineJustification,
-      calculationMethodology, m1, m2
-    } = req.body;
+    const body = req.body;
 
-    // --- Process Flow (optional) ---
-    let processFlowPayload;
-    if (req.body.processFlow) {
-      processFlowPayload = normalizeProcessFlow(req.body.processFlow, req.user);
+    if (!body.projectName)
+      return res.status(400).json({ success:false, message:'projectName is required' });
+    if (!body.projectActivity)
+      return res.status(400).json({ success:false, message:'projectActivity is required' });
+    if (!body.commissioningDate || !body.endDate)
+      return res.status(400).json({ success:false, message:'Dates required' });
+
+    if (body.calculationMethodology === 'methodology3') {
+      validateM3Input(body);
     }
 
-    // --- Basic validation ---
-    if (!projectName) return res.status(400).json({ success:false, message:'projectName is required' });
-    if (!projectActivity) return res.status(400).json({ success:false, message:'projectActivity is required' });
-    if (!commissioningDate || !endDate) return res.status(400).json({ success:false, message:'commissioningDate & endDate required' });
-
-    if (!calculationMethodology)
-      return res.status(400).json({ success:false, message:'calculationMethodology is required' });
-
-    if (!category)
-      return res.status(400).json({ success:false, message:'category is required' });
-
-    if (calculationMethodology === 'methodology3') {
-      validateM3Input(req.body); // ensures buffer for “Removal”
-    }
-
-    // --- reductionDataEntry normalize ---
-    let reductionEntryPayload = null;
-    const hasEntry =
-      Object.prototype.hasOwnProperty.call(req.body, 'reductionDataEntry') ||
-      Object.prototype.hasOwnProperty.call(req.body, 'reductionDateEntry');
-
-    if (hasEntry) {
-      try {
-        const incomingEntry = readReductionEntryFromBody(req.body);
-        reductionEntryPayload = normalizeReductionDataEntry(incomingEntry);
-      } catch (e) {
-        return res.status(400).json({ success:false, message: e.message });
-      }
-    }
-
-    // ============================================================
-    //        UPSERT LOGIC — If same projectName already exists
-    // ============================================================
-    const existing = await Reduction.findOne({
-      clientId,
-      isDeleted: false,
-      projectName: { $regex: new RegExp(`^${escapeRegex(projectName)}$`, 'i') }
-    });
-
-    if (existing) {
-      // ===== UPDATE PATH =====
-      existing.projectName = projectName;
-      existing.projectActivity = projectActivity;
-      existing.scope = scope ?? existing.scope;
-
-      if (location) {
-        existing.location.latitude = location.latitude ?? existing.location.latitude;
-        existing.location.longitude = location.longitude ?? existing.location.longitude;
-        existing.location.place = location.place || existing.location.place;
-        existing.location.address = location.address || existing.location.address;
-      }
-
-      existing.commissioningDate = new Date(commissioningDate);
-      existing.endDate = new Date(endDate);
-      existing.description = description ?? existing.description;
-
-      if (baselineMethod != null) existing.baselineMethod = baselineMethod;
-      if (baselineJustification != null) existing.baselineJustification = baselineJustification;
-      if (calculationMethodology) existing.calculationMethodology = calculationMethodology;
-
-      // M1 update
-      if (existing.calculationMethodology === 'methodology1') {
-        existing.m1 = {
-          ABD: (m1?.ABD || []).map(normalizeUnitItem('B')),
-          APD: (m1?.APD || []).map(normalizeUnitItem('P')),
-          ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
-          bufferPercent: Number(m1?.bufferPercent ?? existing.m1?.bufferPercent ?? 0)
-        };
-      }
-
-      // M2 update
-      if (existing.calculationMethodology === 'methodology2' && req.body.m2) {
-        existing.m2 = normalizeM2FromBody(req.body.m2);
-      }
-
-      // M3 update
-      if (existing.calculationMethodology === 'methodology3' && req.body.m3) {
-        validateM3Input(req.body);
-        existing.m3 = normalizeM3Body(req.body.m3);
-      }
-
-      // Data entry
-      if (reductionEntryPayload) {
-        existing.reductionDataEntry = {
-          ...(existing.reductionDataEntry?.toObject?.() ?? {}),
-          ...reductionEntryPayload
-        };
-      }
-
-      // Process flow
-      if (processFlowPayload) {
-        if (!existing.processFlow) existing.processFlow = {};
-        if (processFlowPayload.mode) existing.processFlow.mode = processFlowPayload.mode;
-        if ('flowchartId' in processFlowPayload) existing.processFlow.flowchartId = processFlowPayload.flowchartId;
-        if (processFlowPayload.mapping) existing.processFlow.mapping = processFlowPayload.mapping;
-
-        if (processFlowPayload.snapshot) {
-          const prevVer = Number(existing.processFlow.snapshot?.metadata?.version || 0);
-          const nextVer = prevVer > 0 ? prevVer + 1 : (processFlowPayload.snapshot.metadata?.version || 1);
-
-          processFlowPayload.snapshot.metadata = processFlowPayload.snapshot.metadata || {};
-          processFlowPayload.snapshot.metadata.version = nextVer;
-
-          existing.processFlow.snapshot = processFlowPayload.snapshot;
-          existing.processFlow.snapshotCreatedAt = new Date();
-          existing.processFlow.snapshotCreatedBy = req.user?.id;
-        }
-      }
-
-      await existing.validate();
-      await existing.save();
-
-      return res.status(200).json({
-        success:true,
-        message:'Reduction project updated (upsert on create)',
-        data: existing
-      });
-    }
-
-    // ============================================================
-    //        CREATE NEW DOCUMENT
-    // ============================================================
     const doc = await Reduction.create({
       clientId,
       createdBy: req.user.id,
       createdByType: req.user.userType,
-      projectName,
-      projectActivity,
-      category,
-      scope: scope || '',
+      projectName: body.projectName,
+      projectActivity: body.projectActivity,
+      category: body.category,
+      scope: body.scope || '',
       location: {
-        latitude:  location?.latitude ?? null,
-        longitude: location?.longitude ?? null,
-        place: location?.place || '',
-        address: location?.address || ''
+        latitude: body.location?.latitude ?? null,
+        longitude: body.location?.longitude ?? null,
+        place: body.location?.place || '',
+        address: body.location?.address || ''
       },
-      commissioningDate: new Date(commissioningDate),
-      endDate:           new Date(endDate),
-      description: description || '',
-      baselineMethod: baselineMethod || undefined,
-      baselineJustification: baselineJustification || '',
-      calculationMethodology,
+      commissioningDate: new Date(body.commissioningDate),
+      endDate: new Date(body.endDate),
+      description: body.description || '',
+      baselineMethod: body.baselineMethod,
+      baselineJustification: body.baselineJustification || '',
+      calculationMethodology: body.calculationMethodology,
 
-      ...(reductionEntryPayload ? { reductionDataEntry: reductionEntryPayload } : {}),
-
-      // M1
-      m1: calculationMethodology === 'methodology1'
-        ? {
-            ABD: (m1?.ABD || []).map(normalizeUnitItem('B')),
-            APD: (m1?.APD || []).map(normalizeUnitItem('P')),
-            ALD: (m1?.ALD || []).map(normalizeUnitItem('L')),
-            bufferPercent: Number(m1?.bufferPercent ?? 0)
-          }
-        : undefined,
-
-      // M2
-      ...(calculationMethodology === 'methodology2'
-        ? { m2: normalizeM2FromBody(m2 || {}) }
+      ...(body.calculationMethodology === 'methodology1'
+        ? { m1: {
+            ABD: (body.m1?.ABD || []).map(normalizeUnitItem('B')),
+            APD: (body.m1?.APD || []).map(normalizeUnitItem('P')),
+            ALD: (body.m1?.ALD || []).map(normalizeUnitItem('L')),
+            bufferPercent: Number(body.m1?.bufferPercent ?? 0)
+          }}
         : {}),
 
-      // M3  **FIXED**
-      ...(calculationMethodology === 'methodology3'
-        ? { m3: normalizeM3Body(req.body.m3) }
+      ...(body.calculationMethodology === 'methodology2'
+        ? { m2: normalizeM2FromBody(body.m2 || {}) }
         : {}),
 
-      ...(processFlowPayload ? { processFlow: processFlowPayload } : {})
+      ...(body.calculationMethodology === 'methodology3'
+        ? { m3: normalizeM3Body(body.m3) }
+        : {})
     });
 
-    // Save media files (images / cover)
-    try {
-      await saveReductionFiles(req, doc);
-      await doc.save();
-    } catch (moveErr) {
-      console.warn("⚠ saveReductionFiles(create) warning:", moveErr.message);
-    }
+    // 🔥 UPLOAD MEDIA HERE
+    await replaceReductionMedia(req, doc);
 
-    // Notifications (async)
+    await doc.validate();
+    await doc.save();
+
     notifyReductionEvent({
       actor: req.user,
       clientId,
       action: 'created',
       doc
     }).catch(() => {});
-    Promise.all([
-  syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
-  syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
-]);
 
     return res.status(201).json({
       success: true,
       message: 'Reduction project created',
-      data: {
-        clientId: doc.clientId,
-        projectId: doc.projectId,
-        reductionId: doc.reductionId,
-        projectName: doc.projectName,
-        projectActivity: doc.projectActivity,
-        category: doc.category,
-        scope: doc.scope,
-        commissioningDate: doc.commissioningDate,
-        endDate: doc.endDate,
-        projectPeriodDays: doc.projectPeriodDays,
-        projectPeriodFormatted: doc.projectPeriodFormatted,
-        calculationMethodology: doc.calculationMethodology,
-        ...(doc.reductionDataEntry ? { reductionDataEntry: doc.reductionDataEntry } : {}),
-        ...(doc.m1 ? { m1: doc.m1 } : {}),
-        ...(doc.m2 ? { m2: doc.m2 } : {}),
-        ...(doc.m3 ? { m3: doc.m3 } : {})
-      }
+      data: doc
     });
+
   } catch (err) {
     console.error('createReduction error:', err);
-    return res.status(500).json({ success:false, message:'Failed to create reduction', error: err.message });
+    return res.status(500).json({
+      success:false,
+      message:'Failed to create reduction',
+      error: err.message
+    });
   }
 };
 
@@ -1019,143 +872,98 @@ exports.getAllReductions = async (req, res) => {
 
 
 
-const { replaceReductionMedia } = require(
-  '../../utils/uploads/update/replaceReductionMedia'
-);
+
 
 exports.updateReduction = async (req, res) => {
   try {
     const { clientId, projectId } = req.params;
 
-    // ---------------- Permission ----------------
     const perm = await canCreateOrEdit(req.user, clientId);
     if (!perm.ok) {
-      return res.status(403).json({ success: false, message: perm.reason });
+      return res.status(403).json({ success:false, message: perm.reason });
     }
 
     const doc = await Reduction.findOne({
       clientId,
       projectId,
-      isDeleted: false
+      isDeleted:false
     });
 
     if (!doc) {
-      return res.status(404).json({ success: false, message: "Not found" });
+      return res.status(404).json({ success:false, message:'Not found' });
     }
 
-    const body = req.body || {};
-    const {
-      projectName,
-      projectActivity,
-      scope,
-      location,
-      category,
-      commissioningDate,
-      endDate,
-      description,
-      baselineMethod,
-      baselineJustification,
-      calculationMethodology,
-      m1,
-      m2
-    } = body;
+    const body = req.body;
 
-    // ---------------- Patch fields ----------------
-    if (projectName != null) doc.projectName = projectName;
-    if (projectActivity != null) doc.projectActivity = projectActivity;
-    if (scope != null) doc.scope = scope;
-    if (category != null) doc.category = category;
+    Object.assign(doc, {
+      projectName: body.projectName ?? doc.projectName,
+      projectActivity: body.projectActivity ?? doc.projectActivity,
+      scope: body.scope ?? doc.scope,
+      category: body.category ?? doc.category,
+      description: body.description ?? doc.description,
+      baselineMethod: body.baselineMethod ?? doc.baselineMethod,
+      baselineJustification: body.baselineJustification ?? doc.baselineJustification
+    });
 
-    if (location) {
-      doc.location.latitude = location.latitude ?? doc.location.latitude;
-      doc.location.longitude = location.longitude ?? doc.location.longitude;
-      if ("place" in location) doc.location.place = location.place;
-      if ("address" in location) doc.location.address = location.address;
+    if (body.location) {
+      doc.location.latitude = body.location.latitude ?? doc.location.latitude;
+      doc.location.longitude = body.location.longitude ?? doc.location.longitude;
+      doc.location.place = body.location.place ?? doc.location.place;
+      doc.location.address = body.location.address ?? doc.location.address;
     }
 
-    if (commissioningDate) doc.commissioningDate = new Date(commissioningDate);
-    if (endDate) doc.endDate = new Date(endDate);
-    if (description != null) doc.description = description;
-    if (baselineMethod != null) doc.baselineMethod = baselineMethod;
-    if (baselineJustification != null)
-      doc.baselineJustification = baselineJustification;
-    if (calculationMethodology)
-      doc.calculationMethodology = calculationMethodology;
+    if (body.commissioningDate)
+      doc.commissioningDate = new Date(body.commissioningDate);
+    if (body.endDate)
+      doc.endDate = new Date(body.endDate);
 
-    // ---------------- M1 ----------------
-    if (doc.calculationMethodology === "methodology1" && m1) {
-      if (Array.isArray(m1.ABD)) doc.m1.ABD = m1.ABD.map(normalizeUnitItem("B"));
-      if (Array.isArray(m1.APD)) doc.m1.APD = m1.APD.map(normalizeUnitItem("P"));
-      if (Array.isArray(m1.ALD)) doc.m1.ALD = m1.ALD.map(normalizeUnitItem("L"));
-      if (m1.bufferPercent != null)
-        doc.m1.bufferPercent = Number(m1.bufferPercent);
+    if (doc.calculationMethodology === 'methodology1' && body.m1) {
+      doc.m1 = {
+        ABD: (body.m1.ABD || []).map(normalizeUnitItem('B')),
+        APD: (body.m1.APD || []).map(normalizeUnitItem('P')),
+        ALD: (body.m1.ALD || []).map(normalizeUnitItem('L')),
+        bufferPercent: Number(body.m1.bufferPercent ?? 0)
+      };
     }
 
-    // ---------------- M2 ----------------
-    if (doc.calculationMethodology === "methodology2" && m2) {
-      doc.m2 = normalizeM2FromBody(m2);
+    if (doc.calculationMethodology === 'methodology2' && body.m2) {
+      doc.m2 = normalizeM2FromBody(body.m2);
     }
 
-    // ---------------- M3 ----------------
-    if (doc.calculationMethodology === "methodology3" && body.m3) {
+    if (doc.calculationMethodology === 'methodology3' && body.m3) {
       validateM3Input(body);
       doc.m3 = normalizeM3Body(body.m3);
     }
 
-    // ---------------- Data Entry ----------------
-    if (body.reductionDataEntry) {
-      const entry = normalizeReductionDataEntry(
-        readReductionEntryFromBody(body)
-      );
-      doc.reductionDataEntry = {
-        ...(doc.reductionDataEntry?.toObject?.() ?? {}),
-        ...entry
-      };
-    }
-
-    // ---------------- ProcessFlow ----------------
-    if (body.processFlow) {
-      const pf = normalizeProcessFlow(body.processFlow, req.user);
-      doc.processFlow = { ...doc.processFlow, ...pf };
-    }
-
-    // ------------------------------------------------
-    // 🔥 MEDIA REPLACEMENT (DELETE + UPLOAD)
-    // ------------------------------------------------
+    // 🔥 MEDIA UPDATE
     await replaceReductionMedia(req, doc);
 
-    // ---------------- Validate & Save ----------------
     await doc.validate();
     await doc.save();
 
-    // ---------------- Notifications ----------------
     notifyReductionEvent({
       actor: req.user,
       clientId,
-      action: "updated",
+      action: 'updated',
       doc
     }).catch(() => {});
 
-    Promise.all([
-      syncReductionWorkflow(clientId, req.user?.id),
-      syncClientReductionProjects(clientId)
-    ]).catch(() => {});
-
     return res.status(200).json({
-      success: true,
-      message: "Updated",
+      success:true,
+      message:'Updated',
       data: doc
     });
 
   } catch (err) {
-    console.error("updateReduction error:", err);
+    console.error('updateReduction error:', err);
     return res.status(500).json({
-      success: false,
-      message: "Failed to update reduction",
+      success:false,
+      message:'Failed to update reduction',
       error: err.message
     });
   }
 };
+;
 
 
 

@@ -615,13 +615,18 @@ const SandboxCounter = mongoose.model("SandboxCounter", sandboxCounterSchema);
 
 // 🔹 Get next sequence number for client IDs (001, 002, 003, ...)
 clientSchema.statics.getNextClientSequence = async function () {
-  const counter = await Counter.findByIdAndUpdate(
-    { _id: "clientId" },
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
-  );
-  return counter.seq; // 1, 2, 3, ...
+  const lastClient = await this.findOne(
+    { isDeleted: false },                  // ✅ CRITICAL FIX
+    { clientSequenceNumber: 1 }
+  )
+    .sort({ clientSequenceNumber: -1 })
+    .lean();
+
+  return lastClient?.clientSequenceNumber
+    ? lastClient.clientSequenceNumber + 1
+    : 1;
 };
+
 
 // 🔹 Build clientId text based on stage + sequence number
 clientSchema.statics.buildClientIdForStage = function (sequenceNumber, stage) {
@@ -776,56 +781,45 @@ clientSchema.methods.updateWorkflowBasedOnAssessment = function() {
  */
 clientSchema.statics.hardResetClientSystem = async function (actorUser) {
   if (!actorUser || actorUser.userType !== 'super_admin') {
-    throw new Error('Only super admin can reset client system');
+    throw new Error('Only super admin can reset');
   }
 
   const mongoose = require('mongoose');
   const session = await mongoose.startSession();
-
   session.startTransaction();
 
   try {
-    const db = mongoose.connection.db;
-
-    // 1️⃣ Delete ALL clients (this resets sequence naturally)
+    // ✅ HARD DELETE (NOT SOFT)
     await this.deleteMany({}, { session });
 
-    // 2️⃣ Delete related collections that depend on clientId
-    const collectionsToClear = [
-   
+    // OPTIONAL: delete dependent collections
+    const db = mongoose.connection.db;
+    const collections = [
+      
       'flowcharts',
       'processflowcharts',
       'reductions',
       'emissionsummaries',
       'netreductionentries',
-      'notifications',
-      'decarbonizations'
+      'decarbonizations',
     ];
 
-    for (const name of collectionsToClear) {
-      const exists = await db
-        .listCollections({ name })
-        .toArray();
-
-      if (exists.length > 0) {
+    for (const name of collections) {
+      const exists = await db.listCollections({ name }).toArray();
+      if (exists.length) {
         await db.collection(name).deleteMany({}, { session });
       }
     }
 
     await session.commitTransaction();
     session.endSession();
-
-    return {
-      success: true,
-      message:
-        'All clients deleted. Client ID sequence will restart from beginning.'
-    };
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     throw err;
   }
 };
+
 
 
 
