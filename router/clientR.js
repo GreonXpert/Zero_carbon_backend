@@ -31,7 +31,8 @@ const {
   getConsultantHistory,
   changeConsultant,
   removeConsultant,
-  updateAssessmentLevelOnly
+  updateAssessmentLevelOnly,
+  hardResetClientSystem
    
 } = require("../controllers/clientController");
 
@@ -102,6 +103,10 @@ router.get("/dashboard/metrics", getDashboardMetrics); // Get dashboard metrics
 router.get("/:clientId/consultant-history", getConsultantHistory); // Get consultant assignment history
 
 router.patch("/:clientId/assessment-level", updateAssessmentLevelOnly);
+
+router.post(
+  '/system/hard-reset', hardResetClientSystem
+);
 
 
 

@@ -5018,6 +5018,57 @@ const updateAssessmentLevelOnly = async (req, res) => {
 
 
 
+/**
+ * 🚨 HARD RESET CLIENT SYSTEM
+ * Deletes ALL clients and resets ID counter
+ */
+/**
+ * 🚨 HARD RESET CLIENT SYSTEM
+ * Deletes ALL clients so next clientId starts from beginning
+ */
+const hardResetClientSystem = async (req, res) => {
+  try {
+    if (!req.user || req.user.userType !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin can perform this action'
+      });
+    }
+
+    const { confirm } = req.body;
+
+    if (confirm !== 'DELETE_ALL_CLIENTS_AND_RESET') {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Confirmation required. Pass confirm = 'DELETE_ALL_CLIENTS_AND_RESET'"
+      });
+    }
+
+    const Client = require('../models/Client');
+
+    await Client.hardResetClientSystem(req.user);
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'Client system reset complete. Next client will start from beginning.',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Hard reset error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reset client system',
+      error:
+        process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+
+
+
 
 module.exports = {
   createLead,
@@ -5050,5 +5101,6 @@ module.exports = {
   getConsultantHistory,
   changeConsultant,
   removeConsultant,
-  updateAssessmentLevelOnly
+  updateAssessmentLevelOnly,
+  hardResetClientSystem
 };

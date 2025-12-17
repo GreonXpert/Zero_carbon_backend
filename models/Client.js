@@ -768,4 +768,65 @@ clientSchema.methods.updateWorkflowBasedOnAssessment = function() {
 };
 
 
+
+/**
+ * 🚨 HARD RESET CLIENT SYSTEM
+ * Deletes ALL clients so clientSequenceNumber restarts from 1
+ * Only for test → production reset
+ */
+clientSchema.statics.hardResetClientSystem = async function (actorUser) {
+  if (!actorUser || actorUser.userType !== 'super_admin') {
+    throw new Error('Only super admin can reset client system');
+  }
+
+  const mongoose = require('mongoose');
+  const session = await mongoose.startSession();
+
+  session.startTransaction();
+
+  try {
+    const db = mongoose.connection.db;
+
+    // 1️⃣ Delete ALL clients (this resets sequence naturally)
+    await this.deleteMany({}, { session });
+
+    // 2️⃣ Delete related collections that depend on clientId
+    const collectionsToClear = [
+   
+      'flowcharts',
+      'processflowcharts',
+      'reductions',
+      'emissionsummaries',
+      'netreductionentries',
+      'notifications',
+      'decarbonizations'
+    ];
+
+    for (const name of collectionsToClear) {
+      const exists = await db
+        .listCollections({ name })
+        .toArray();
+
+      if (exists.length > 0) {
+        await db.collection(name).deleteMany({}, { session });
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return {
+      success: true,
+      message:
+        'All clients deleted. Client ID sequence will restart from beginning.'
+    };
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    throw err;
+  }
+};
+
+
+
 module.exports = mongoose.model("Client", clientSchema);
