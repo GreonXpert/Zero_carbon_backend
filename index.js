@@ -122,6 +122,7 @@ app.use(cors({
     "http://localhost:3002",
     "http://localhost:5174",
     'https://zerocarbon.greonxpert.com',
+    'https://www.zerocarbon.greonxpert.com'
   ],
   credentials: true,
 }));
@@ -171,7 +172,7 @@ app.use('/api', apiKeyRoutes);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3002", "https://zerocarbon.greonxpert.com", "http://localhost:5174"],
+    origin: ["http://localhost:3000", "http://localhost:3002", "https://zerocarbon.greonxpert.com","https://www.zerocarbon.greonxpert.com", "http://localhost:5174"],
     credentials: true
   }
 });
