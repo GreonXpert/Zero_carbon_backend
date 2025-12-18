@@ -1,6 +1,6 @@
 // utils/notifications/reductionNotifications.js
-const Notification = require('../../models/Notification');
-const Client = require('../../models/Client');
+const Notification = require('../../models/Notification/Notification');
+const Client = require('../../models/CMS/Client');
 const User = require('../../models/User');
 
 /**

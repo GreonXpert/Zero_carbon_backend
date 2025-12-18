@@ -1,5 +1,5 @@
 const ApiKey = require('../models/ApiKey');
-const Client = require('../models/Client');
+const Client = require('../models/CMS/Client');
 const User = require('../models/User');
 const Reduction = require('../models/Reduction/Reduction');
 const { generateKeyPackage, calculateExpiryDate } = require('../utils/ApiKey/keyGenerator');

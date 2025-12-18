@@ -1,9 +1,9 @@
 // controllers/processflowController.js
-const ProcessFlowchart = require('../models/ProcessFlowchart');
-const Client = require('../models/Client');
-const User = require('../models/User');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const Client = require('../../models/CMS/Client');
+const User = require('../../models/User');
 const mongoose = require('mongoose');
-const Notification = require('../models/Notification')
+const Notification = require('../../models/Notification/Notification')
 
 const { v4: uuidv4 } = require('uuid');
 
@@ -18,12 +18,12 @@ const {
   addCEFCommentsToNodes,
    ensureCEFComments,
     numOrNull
-} = require('../utils/chart/chartHelpers');
+} = require('../../utils/chart/chartHelpers');
 
 
 // Import existing permission and workflow functions
-const {autoUpdateProcessFlowchartStatus}  = require('../utils/Workflow/workflow');
-const {canManageProcessFlowchart, canAssignHeadToNode, getNormalizedLevels, canAccessProcess} = require('../utils/Permissions/permissions');
+const {autoUpdateProcessFlowchartStatus}  = require('../../utils/Workflow/workflow');
+const {canManageProcessFlowchart, canAssignHeadToNode, getNormalizedLevels, canAccessProcess} = require('../../utils/Permissions/permissions');
 
 
 

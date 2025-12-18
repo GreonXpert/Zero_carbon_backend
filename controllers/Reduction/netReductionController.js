@@ -5,7 +5,7 @@
   const Reduction = require('../../models/Reduction/Reduction');
   const ReductionFormula = require('../../models/Reduction/Formula');
   const { Parser } = require('expr-eval'); 
-  const Client = require('../../models/Client');
+  const Client = require('../../models/CMS/Client');
   const User = require('../../models/User');
 
 // controllers/Reduction/netReductionController.js

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { auth } = require("../middleware/auth");
+const { auth } = require("../../middleware/auth");
 
 const {
   createNotification,
@@ -12,7 +12,7 @@ const {
   getNotificationStats,
   markAllReadHandler,
   
-} = require("../controllers/notificationControllers");
+} = require("../../controllers/Notification/notificationControllers");
 
 // Apply auth middleware to all routes
 router.use(auth);
@@ -39,7 +39,7 @@ router.get("/stats", getNotificationStats); // Get notification statistics (Admi
 // ==============================
 router.get("/unread-count", async (req, res) => {
   try {
-    const Notification = require("../models/Notification");
+    const Notification = require("../../models/Notification/Notification");
 
     // ✅ USER ID NORMALIZATION (MANDATORY)
     const userId = (
@@ -114,7 +114,7 @@ router.get("/unread-count", async (req, res) => {
 // Get notifications created by current user
 router.get("/my-notifications", async (req, res) => {
   try {
-    const Notification = require("../models/Notification");
+    const Notification = require("../../models/Notification/Notification");
     
     const { limit = 50, skip = 0, status } = req.query;
     
@@ -176,8 +176,8 @@ router.get("/pending-approvals", async (req, res) => {
       });
     }
     
-    const Notification = require("../models/Notification");
-    const User = require("../models/User");
+    const Notification = require("../../models/Notification/Notification");
+    const User = require("../../models/User");
     
     // Get all consultants under this consultant admin
     const consultants = await User.find({
@@ -226,7 +226,7 @@ router.get("/scheduled", async (req, res) => {
       });
     }
     
-    const Notification = require("../models/Notification");
+    const Notification = require("../../models/Notification/Notification");
     
     let query = {
       status: "scheduled",
@@ -235,7 +235,7 @@ router.get("/scheduled", async (req, res) => {
     
     // Consultant admin can only see their team's scheduled notifications
     if (req.user.userType === "consultant_admin") {
-      const User = require("../models/User");
+      const User = require("../../models/User");
       const teamMembers = await User.find({
         $or: [
           { _id: req.user.id },
@@ -281,7 +281,7 @@ router.get("/scheduled", async (req, res) => {
 router.get("/:notificationId", async (req, res) => {
   try {
     const { notificationId } = req.params;
-    const Notification = require("../models/Notification");
+    const Notification = require("../../models/Notification/Notification");
     
     const notification = await Notification.findById(notificationId)
       .populate('createdBy', 'userName email userType')

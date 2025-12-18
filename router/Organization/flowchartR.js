@@ -13,9 +13,9 @@ const {
  
   hardDeleteScopeDetail
  
-} = require('../controllers/flowchartController');
+} = require('../../controllers/Organization/flowchartController');
 // CHANGED: Use the same auth middleware as other routes
-const { auth, checkRole } = require('../middleware/auth');
+const { auth, checkRole } = require('../../middleware/auth');
 
 const router = express.Router();
 

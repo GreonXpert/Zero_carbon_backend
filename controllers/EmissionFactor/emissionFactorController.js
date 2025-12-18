@@ -3,7 +3,7 @@ const IPCCData = require('../../models/EmissionFactor/IPCCData');
 const DefraData = require('../../models/EmissionFactor/DefraData');
 // Make sure you create & export your CountryEmissionFactor model at models/EmissionFactor/CountryEmissionFactor.js
 const CountryEF = require('../../models/EmissionFactor/contryEmissionFactorModel');
-const GWP  =require('../../models/GWP');
+const GWP  =require('../../models/EmissionFactor/GWP');
 
 // Enhanced helper function with better matching and fallback options
 async function getLatestGWPValue(chemicalUnit) {

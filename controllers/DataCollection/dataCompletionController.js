@@ -1,13 +1,13 @@
 // controllers/DataCollection/dataCompletionController.js
 
 const moment = require('moment');
-const Client = require('../../models/Client');
-const Flowchart = require('../../models/Flowchart');
-const ProcessFlowchart = require('../../models/ProcessFlowchart');
-const DataEntry = require('../../models/DataEntry');
+const Client = require('../../models/CMS/Client');
+const Flowchart = require('../../models/Organization/Flowchart');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const DataEntry = require('../../models/Organization/DataEntry');
 const NetReductionEntry = require('../../models/Reduction/NetReductionEntry');
 const Reduction = require('../../models/Reduction/Reduction');
-const Notification = require('../../models/Notification');
+const Notification = require('../../models/Notification/Notification');
 
 const {
   getCurrentWindowForFrequency,

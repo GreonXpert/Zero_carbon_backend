@@ -2,8 +2,8 @@
 
 const { calculateEmissions } = require('./emissionCalculationController');
 const { updateSummariesOnDataChange } = require('./CalculationSummary');
-const DataEntry = require('../../models/DataEntry');
-const Flowchart = require('../../models/Flowchart');
+const DataEntry = require('../../models/Organization/DataEntry');
+const Flowchart = require('../../models/Organization/Flowchart');
 
 const {getActiveFlowchart}= require ('../../utils/DataCollection/dataCollection');
 

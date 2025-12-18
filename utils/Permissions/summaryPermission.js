@@ -1,6 +1,6 @@
 // utils/Permissions/summaryPermission.js
 
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 const User = require('../../models/User');
 const { getActiveFlowchart } = require('../DataCollection/dataCollection');
 

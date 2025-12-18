@@ -1,6 +1,6 @@
 // router/processflowR.js
 const express = require('express');
-const { auth, checkRole } = require('../middleware/auth');
+const { auth, checkRole } = require('../../middleware/auth');
 
 const {
   saveProcessFlowchart,
@@ -16,7 +16,7 @@ const {
   removeAssignmentProcess,  
  
   hardDeleteProcessScopeDetail
-} = require('../controllers/processflowController');
+} = require('../../controllers/Organization/processflowController');
 
 const router = express.Router();
 

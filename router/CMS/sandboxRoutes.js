@@ -1,13 +1,13 @@
 // routes/sandboxRoutes.js
 const express = require('express');
 const router = express.Router();
-const { auth, checkRole } = require('../middleware/auth');
-const { attachSandboxStatus } = require('../middleware/sandboxAuth');
+const { auth, checkRole } = require('../../middleware/auth');
+const { attachSandboxStatus } = require('../../middleware/sandboxAuth');
 const {
   approveSandboxClient,
   rejectSandboxClient,
   resetSandboxClient,
-} = require('../controllers/sandboxController');
+} = require('../../controllers/CMS/sandboxController');
 
 // All routes require authentication
 router.use(auth);

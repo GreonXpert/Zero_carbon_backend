@@ -13,7 +13,7 @@ const moment = require("moment");
 const EmissionSummary = require("../../models/CalculationEmission/EmissionSummary");
 const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
 const Reduction = require("../../models/Reduction/Reduction");
-const Client = require("../../models/Client");
+const Client = require("../../models/CMS/Client");
 
 // -------- SOCKET EMIT SETUP ----------
 let io;

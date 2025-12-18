@@ -10,21 +10,21 @@ const jwt = require("jsonwebtoken");
 
 // Import Routes
 const userR = require("./router/userR");
-const clientR = require("./router/clientR");
-const flowchartR = require("./router/flowchartR");
+const clientR = require("./router/CMS/clientR");
+const flowchartR = require("./router/Organization/flowchartR");
 const defraDataR = require("./router/EmissionFactor/defraData");
-const gwpRoutes = require("./router/gwpRoutes");
+const gwpRoutes = require("./router/EmissionFactor/gwpRoutes");
 const fuelCombustionRoutes = require("./router/EmissionFactor/fuelCombustionRoutes");
 const CountryemissionFactorRouter = require("./router/EmissionFactor/countryemissionFactorRouter");
 
-const processFlowR = require("./router/processflowR");
+const processFlowR = require("./router/Organization/processflowR");
 // const dataEntryRoutes = require('./router/dataEntryRoutes');
 const EmissionFactorHub = require('./router/EmissionFactor/EmissionFactorHubRoutes');
 const ipccDataRoutes = require('./router/EmissionFactor/ipccDataRoutes');
 const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
 const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
 const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverstionCalculation');
-const summaryRoutes = require('./router/summaryRoutes'); // 🆕 Corrected path
+const summaryRoutes = require('./router/Organization/summaryRoutes'); // 🆕 Corrected path
 const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Corrected path
 const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
 const FormulaR = require('./router/Reduction/FormulaR'); // 🆕 Corrected path
@@ -34,34 +34,34 @@ const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes'); //
 
 
 // Import notification routes
-const notificationRoutes = require('./router/notificationRoutes');
-const { dataCollectionRouter, iotRouter } = require('./router/dataCollectionRoutes');
+const notificationRoutes = require('./router/Notification/notificationRoutes');
+const { dataCollectionRouter, iotRouter } = require('./router/Organization/dataCollectionRoutes');
 
 // Import IoT routes and MQTT subscriber
 const iotRoutes = require('./router/iotRoutes');
 // const MQTTSubscriber = require('./mqtt/mqttSubscriber');
 
 // Import controllers
-const { checkExpiredSubscriptions } = require("./controllers/clientController");
+const { checkExpiredSubscriptions } = require("./controllers/CMS/clientController");
 const { initializeSuperAdmin } = require("./controllers/userController");
-const { publishScheduledNotifications } = require('./controllers/notificationControllers');
+const { publishScheduledNotifications } = require('./controllers/Notification/notificationControllers');
 const { scheduleMonthlySummary, checkAndCreateMissedSummaries } = require('./controllers/DataCollection/monthlyDataSummaryController');
 
 // 🆕 Import summary controller
 const calculationSummaryController = require('./controllers/Calculation/CalculationSummary');
-const dataCollectionController = require('./controllers/dataCollectionController');
+const dataCollectionController = require('./controllers/Organization/dataCollectionController');
 const netReductionController = require('./controllers/Reduction/netReductionController');
 const netReductionSummaryController = require('./controllers/Reduction/netReductionSummaryController');
 const sbtiController = require('./controllers/Decabonization/sbtiController');
-const transportFlowRouter = require('./router/transportFlowR');
-const sandboxRoutes = require('./router/sandboxRoutes');
+const transportFlowRouter = require('./router/Organization/transportFlowR');
+const sandboxRoutes = require('./router/CMS/sandboxRoutes');
    const apiKeyRoutes = require('./router/apiKeyRoutes');
    const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
 
 
 // Import models for real-time features
 const User = require('./models/User');
-const Notification = require('./models/Notification');
+const Notification = require('./models/Notification/Notification');
 const {
   setSocketIO,
   broadcastDataCompletionUpdate,
@@ -434,7 +434,7 @@ io.on('connection', (socket) => {
                 getDashboardMetrics, 
                 getWorkflowTrackingDashboard, 
                 getOrganizationOverviewDashboard 
-            } = require('./controllers/clientController');
+            } = require('./controllers/CMS/clientController');
             
             // Create a mock request/response object for the controller
             const mockReq = {
@@ -513,7 +513,7 @@ io.on('connection', (socket) => {
     // 🔄 Handle real-time client list requests
     socket.on('requestClients', async (filters = {}) => {
         try {
-            const { getClients } = require('./controllers/clientController');
+            const { getClients } = require('./controllers/CMS/clientController');
             
             // Create mock request/response objects
             const mockReq = {
@@ -599,7 +599,7 @@ io.on('connection', (socket) => {
     // 🔍 Handle client search
     socket.on('searchClients', async (searchQuery) => {
         try {
-            const Client = require('./models/Client');
+            const Client = require('./models/CMS/Client');
             
             let query = { isDeleted: false };
             
@@ -681,7 +681,7 @@ io.on('connection', (socket) => {
     // 📊 Get client statistics
     socket.on('requestClientStats', async () => {
         try {
-            const Client = require('./models/Client');
+            const Client = require('./models/CMS/Client');
             let query = { isDeleted: false };
             
             // Apply user-based filtering similar to above...
@@ -780,7 +780,7 @@ io.on('connection', (socket) => {
     socket.on('request-data-status', async (clientId) => {
         try {
             // Get real-time data collection status
-            const DataCollectionConfig = require('./models/DataCollectionConfig');
+            const DataCollectionConfig = require('./models/Organization/DataCollectionConfig');
             const configs = await DataCollectionConfig.find({ clientId }).lean();
             
             socket.emit('data-status-update', {
@@ -1064,7 +1064,7 @@ setInterval(async () => {
     const now = new Date();
     
     // Check for clients that need summary updates
-    const DataEntry = require('./models/DataEntry');
+    const DataEntry = require('./models/Organization/DataEntry');
     const recentEntries = await DataEntry.find({
       timestamp: { $gte: new Date(now.getTime() - 60 * 60 * 1000) }, // Last hour
       calculatedEmissions: { $exists: true },

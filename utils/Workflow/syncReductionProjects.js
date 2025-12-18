@@ -5,7 +5,7 @@
 // ============================================================
 
 const Reduction = require('../../models/Reduction/Reduction');
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 
 /**
  * Automatically determine the overall workflow status based on project statuses

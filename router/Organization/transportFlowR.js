@@ -1,6 +1,6 @@
 // router/transportFlowR.js
 const express = require('express');
-const { auth } = require('../middleware/auth');
+const { auth } = require('../../middleware/auth');
 
 const {
   getTransportTemplate,
@@ -9,7 +9,7 @@ const {
   deleteTransportFlowchart,
   hardDeleteTransportFlowchart,
   restoreTransportFlowchart
-} = require('../controllers/transportFlowController');
+} = require('../../controllers/Organization/transportFlowController');
 
 const router = express.Router();
 

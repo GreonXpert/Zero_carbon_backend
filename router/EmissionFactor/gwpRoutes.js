@@ -1,6 +1,6 @@
 // routes/gwpRoutes.js
 const express = require('express');
-const gwpController = require('../controllers/gwpController');
+const gwpController = require('../../controllers/EmissionFactor/gwpController');
 
 const router = express.Router();
 

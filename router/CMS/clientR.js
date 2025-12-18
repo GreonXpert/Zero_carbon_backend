@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { auth } = require("../middleware/auth");
+const { auth } = require("../../middleware/auth");
 const {
   createLead,
   updateLead,
@@ -34,7 +34,7 @@ const {
   updateAssessmentLevelOnly,
   hardResetClientSystem
    
-} = require("../controllers/clientController");
+} = require("../../controllers/CMS/clientController");
 
 // Apply auth middleware to all routes
 router.use(auth);

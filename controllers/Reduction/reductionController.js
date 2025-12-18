@@ -1,6 +1,6 @@
 // controllers/reductionController.js
 const Reduction = require('../../models/Reduction/Reduction');
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 const User = require('../../models/User');
 const { canManageFlowchart } = require("../../utils/Permissions/permissions");
 const { notifyReductionEvent } = require('../../utils/notifications/reductionNotifications');

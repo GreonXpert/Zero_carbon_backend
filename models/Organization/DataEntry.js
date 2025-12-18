@@ -425,7 +425,7 @@ DataEntrySchema.post('save', async function(doc) {
       console.log(`🔄 Found ${laterEntriesCount} data entries after this timestamp. Triggering recalculation...`);
       
       // Import the recalculation helper
-      const { recalculateDataEntriesAfter } = require('../utils/Calculation/recalculateHelpers');
+      const { recalculateDataEntriesAfter } = require('../../utils/Calculation/recalculateHelpers');
       
       // Trigger recalculation in background (don't await to avoid blocking)
       setImmediate(async () => {
@@ -435,7 +435,7 @@ DataEntrySchema.post('save', async function(doc) {
           // 🔹 After recalculation, trigger summary updates
           console.log(`📊 Triggering emission summary recalculation for client: ${doc.clientId}`);
           try {
-            const { updateSummariesOnDataChange } = require('../controllers/Calculation/CalculationSummary');
+            const { updateSummariesOnDataChange } = require('../../controllers/Calculation/CalculationSummary');
             await updateSummariesOnDataChange(doc);
             console.log(`📊 ✅ Emission summary recalculation completed`);
           } catch (summaryError) {
@@ -450,7 +450,7 @@ DataEntrySchema.post('save', async function(doc) {
       console.log(`📊 No later entries. Triggering emission summary update for client: ${doc.clientId}`);
       setImmediate(async () => {
         try {
-          const { updateSummariesOnDataChange } = require('../controllers/Calculation/CalculationSummary');
+          const { updateSummariesOnDataChange } = require('../../controllers/Calculation/CalculationSummary');
           await updateSummariesOnDataChange(doc);
           console.log(`📊 ✅ Emission summary update completed`);
         } catch (summaryError) {

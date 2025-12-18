@@ -1,9 +1,9 @@
 const cron = require('node-cron');
-const DataEntry = require('../../models/DataEntry');
-const Client = require('../../models/Client');
-const Flowchart = require('../../models/Flowchart');
+const DataEntry = require('../../models/Organization/DataEntry');
+const Client = require('../../models/CMS/Client');
+const Flowchart = require('../../models/Organization/Flowchart');
 const moment = require('moment');
-const DataCollectionConfig = require('../../models/DataCollectionConfig');
+const DataCollectionConfig = require('../../models/Organization/DataCollectionConfig');
 
 // Function to create summaries for all manual scopes
 const createMonthlySummaries = async () => {

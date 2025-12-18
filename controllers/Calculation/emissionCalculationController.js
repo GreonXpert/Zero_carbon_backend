@@ -1,9 +1,9 @@
 // controllers/Calculation/emissionCalculationController.js
 
-const DataEntry = require('../../models/DataEntry');
-const Flowchart = require('../../models/Flowchart');
-const ProcessFlowchart = require('../../models/ProcessFlowchart');
-const Client = require('../../models/Client'); 
+const DataEntry = require('../../models/Organization/DataEntry');
+const Flowchart = require('../../models/Organization/Flowchart');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const Client = require('../../models/CMS/Client'); 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 const {calculateUncertainty} = require('../../utils/Calculation/CalculateUncertainity');
 

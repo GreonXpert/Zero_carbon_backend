@@ -1,6 +1,6 @@
 // utils/dashboardEmitter.js
 const User = require("../models/User");
-const Client = require("../models/Client");
+const Client = require("../models/CMS/Client");
 
 
 // Helper functions to emit real-time dashboard updates

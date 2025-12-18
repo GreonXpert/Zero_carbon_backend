@@ -1,5 +1,5 @@
 // controllers/gwpController.js
-const GWP = require('../models/GWP');
+const GWP = require('../../models/EmissionFactor/GWP');
 
 
 // Safe regex escape

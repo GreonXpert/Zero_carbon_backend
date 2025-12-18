@@ -107,7 +107,7 @@ const attachSandboxStatus = async (req, res, next) => {
       
       // If user has clientId, check if client is sandbox
       if (req.user.clientId) {
-        const Client = require('../models/Client');
+        const Client = require('../models/CMS/Client');
         const client = await Client.findOne({ 
           clientId: req.user.clientId 
         }).select('sandbox isActive');

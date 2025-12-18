@@ -2,13 +2,13 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
-const Client = require("../models/Client");
+const Client = require("../models/CMS/Client");
 const { sendMail } = require("../utils/mail");
 const moment = require("moment");
-const Notification = require("../models/Notification");
+const Notification = require("../models/Notification/Notification");
 // Import the notification controller
-const { createUserStatusNotification } = require("./notificationControllers");
-const Flowchart = require('../models/Flowchart');
+const { createUserStatusNotification } = require("../controllers/Notification/notificationControllers");
+const Flowchart = require('../models/Organization/Flowchart');
 const { saveUserProfileImage } = require('../utils/uploads/userImageUploadS3');
 
 const { getNormalizedLevels } = require("../utils/Permissions/permissions");
@@ -1701,7 +1701,7 @@ const toggleUserStatus = async (req, res) => {
           canToggle = user.consultantAdminId?.toString() === req.user.id;
         } else if (user.userType === "client_admin") {
           // Check if this client admin belongs to a client managed by this consultant admin
-          const Client = require("../models/Client");
+          const Client = require("../models/CMS/Client");
           const client = await Client.findOne({ 
             clientId: user.clientId,
             $or: [

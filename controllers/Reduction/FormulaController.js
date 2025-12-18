@@ -2,7 +2,7 @@
 const { Parser } = require('expr-eval');
 const ReductionFormula = require('../../models/Reduction/Formula');
 const Reduction = require('../../models/Reduction/Reduction');
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 const DeleteRequest = require('../../models/Reduction/DeleteRequest');
 const User = require('../../models/User');   
 

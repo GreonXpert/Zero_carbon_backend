@@ -1,7 +1,7 @@
 // utils/ApiKey/apiKeyNotifications.js
-const Notification = require('../../models/Notification');
+const Notification = require('../../models/Notification/Notification');
 const User = require('../../models/User');
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 
 /**
  * ✅ HELPER: Safely extract user ID from user object

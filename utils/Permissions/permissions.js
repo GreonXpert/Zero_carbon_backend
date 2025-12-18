@@ -1,4 +1,4 @@
-const Client = require('../../models/Client');
+const Client = require('../../models/CMS/Client');
 const User = require('../../models/User')
 
 

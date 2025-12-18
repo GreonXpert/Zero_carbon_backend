@@ -2,12 +2,12 @@
 // Simplified Sandbox controller – only approve, reject, and reset,
 // operating directly on Client and User collections.
 
-const Client = require('../models/Client');
-const User = require('../models/User');
-const Flowchart = require('../models/Flowchart');
-const ProcessFlowchart = require('../models/ProcessFlowchart');
-const Reduction = require('../models/Reduction/Reduction');
-const SbtiTarget = require('../models/Decarbonization/SbtiTarget');
+const Client = require('../../models/CMS/Client');
+const User = require('../../models/User');
+const Flowchart = require('../../models/Organization/Flowchart');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const Reduction = require('../../models/Reduction/Reduction');
+const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
 
 /**
  * Helper to find a client by clientId (string).

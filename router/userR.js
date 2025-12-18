@@ -194,7 +194,7 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       });
     }
 
-    const Flowchart = require('../models/Flowchart');
+    const Flowchart = require('../models/Organization/Flowchart');
     const flowchart = await Flowchart.findOne(
       { clientId, 'nodes.id': nodeId },
       { 'nodes.$': 1 }

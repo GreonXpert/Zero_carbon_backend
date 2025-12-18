@@ -1,11 +1,11 @@
 // controllers/Calculation/CalculationSummary.js
 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
-const DataEntry = require('../../models/DataEntry');
-const Flowchart = require('../../models/Flowchart');
-const Client = require('../../models/Client');
+const DataEntry = require('../../models/Organization/DataEntry');
+const Flowchart = require('../../models/Organization/Flowchart');
+const Client = require('../../models/CMS/Client');
 const moment = require('moment');
-const ProcessFlowchart = require('../../models/ProcessFlowchart'); 
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart'); 
 const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
 const Reduction = require("../../models/Reduction/Reduction");
 const netReductionSummaryController = require('../Reduction/netReductionSummaryController');

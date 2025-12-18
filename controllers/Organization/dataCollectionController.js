@@ -1,23 +1,23 @@
-const DataEntry = require('../models/DataEntry');
-const DataCollectionConfig = require('../models/DataCollectionConfig');
-const Flowchart = require('../models/Flowchart');
-const Client = require('../models/Client');
-const User = require('../models/User');
+const DataEntry = require('../../models/Organization/DataEntry');
+const DataCollectionConfig = require('../../models/Organization/DataCollectionConfig');
+const Flowchart = require('../../models/Organization/Flowchart');
+const Client = require('../../models/CMS/Client');
+const User = require('../../models/User');
 const csvtojson = require('csvtojson');
 const moment = require('moment');
 const fs = require('fs');
 
-const ProcessFlowchart = require('../models/ProcessFlowchart');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
 
 
 const {
   triggerEmissionCalculation,
   validateEmissionPrerequisites
-} = require('./Calculation/emissionIntegration');
+} = require('../Calculation/emissionIntegration');
 
-const {getActiveFlowchart} = require ('../utils/DataCollection/dataCollection');
+const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
 
-const { uploadOrganisationCSVCreate } = require('../utils/uploads/organisation/csv/create');
+const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
 
 
 /**

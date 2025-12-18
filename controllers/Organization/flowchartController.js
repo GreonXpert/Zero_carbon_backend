@@ -1,9 +1,9 @@
-const Flowchart = require('../models/Flowchart');
-const Client = require('../models/Client');
-const User = require('../models/User');
+const Flowchart = require('../../models/Organization/Flowchart');
+const Client = require('../../models/CMS/Client');
+const User = require('../../models/User');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-const Notification   = require('../models/Notification');
+const Notification   = require('../../models/Notification/Notification');
 
 // Import helper functions
 const {
@@ -16,13 +16,13 @@ const {
   addCEFCommentsToNodes,
   ensureCEFComments,
   numOrNull
-} = require('../utils/chart/chartHelpers');
+} = require('../../utils/chart/chartHelpers');
 
 
 
 // Add this import at the top of flowchartController.js:
-const { autoUpdateFlowchartStatus } = require('../utils/Workflow/workflow');
-const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode, canAccessModule, getNormalizedLevels} = require('../utils/Permissions/permissions')
+const { autoUpdateFlowchartStatus } = require('../../utils/Workflow/workflow');
+const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode, canAccessModule, getNormalizedLevels} = require('../../utils/Permissions/permissions')
  
 // ============================================================================
 // PERMISSION HELPERS

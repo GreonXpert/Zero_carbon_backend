@@ -1,11 +1,11 @@
 // controllers/transportFlowController.js
 const { v4: uuidv4 } = require('uuid');
-const TransportFlowchart = require('../models/TransportFlowchart');
-const Flowchart = require('../models/Flowchart');
-const ProcessFlowchart = require('../models/ProcessFlowchart');
-const { getNormalizedAssessmentLevels } = require('../utils/DataCollection/dataCollection');
-const { canManageFlowchart, canViewFlowchart } = require('../utils/Permissions/permissions');
-const { normalizeEdges } = require('../utils/chart/chartHelpers');
+const TransportFlowchart = require('../../models/Organization/TransportFlowchart');
+const Flowchart = require('../../models/Organization/Flowchart');
+const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const { getNormalizedAssessmentLevels } = require('../../utils/DataCollection/dataCollection');
+const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
+const { normalizeEdges } = require('../../utils/chart/chartHelpers');
 
 /**
  * Internal helper: extract upstream / downstream transportation scopes

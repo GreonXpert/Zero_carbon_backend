@@ -1,31 +1,31 @@
-const Client = require("../models/Client");
-const User = require("../models/User");
-const { sendMail } = require("../utils/mail");
-const { createClientAdmin } = require("./userController");
-const Notification = require("../models/Notification");
+const Client = require("../../models/CMS/Client");
+const User = require("../../models/User");
+const { sendMail } = require("../../utils/mail");
+const { createClientAdmin } = require("../userController");
+const Notification = require("../../models/Notification/Notification");
 const moment = require("moment");
-const { emailQueue } = require("../utils/emailQueue");
-const { withTimeout } = require('../utils/queueUtils');
+const { emailQueue } = require("../../utils/emailQueue");
+const { withTimeout } = require('../../utils/queueUtils');
 const mongoose = require("mongoose"); 
 // Add these imports at the top of your clientController.js file
-const Flowchart = require("../models/Flowchart");
-const ProcessFlowchart = require("../models/ProcessFlowchart");
+const Flowchart = require("../../models/Organization/Flowchart");
+const ProcessFlowchart = require("../../models/Organization/ProcessFlowchart");
 
 // ⬇️ NEW imports for reductions + sandbox audit + (optional) SBTi
-const Reduction = require("../models/Reduction/Reduction");        // adjust path if needed
-const SbtiTarget = require("../models/Decarbonization/SbtiTarget"); // adjust path if needed
+const Reduction = require("../../models/Reduction/Reduction");        // adjust path if needed
+const SbtiTarget = require("../../models/Decarbonization/SbtiTarget"); // adjust path if needed
 
 const {
   createLeadActionNotification,
   createDataSubmissionNotification,
   createProposalActionNotification,
   createConsultantAssignmentNotification
-} = require("../utils/notifications/notificationHelper");
+} = require("../../utils/notifications/notificationHelper");
 
 const {
   sendLeadCreatedEmail,
   sendConsultantAssignedEmail
-} = require('../utils/emailHelper');
+} = require('../../utils/emailHelper');
 
 const {
  emitFlowchartStatusUpdate,
@@ -37,7 +37,7 @@ const {
   emitBatchClientUpdate,
   emitFilteredClientListUpdate,
   emitTargetedClientUpdate  // <-- ADD THIS LINE
-} = require('../utils/dashboardEmitter');
+} = require('../../utils/dashboardEmitter');
 
 
 const {
@@ -45,16 +45,16 @@ const {
   sendClientDataUpdatedEmail,
   sendProposalCreatedEmail,
   sendProposalUpdatedEmail
-} = require('../utils/emailServiceClient');
+} = require('../../utils/emailServiceClient');
 
 
-const { renderClientDataHTML, renderProposalHTML } = require('../utils/pdfTemplates');
-const { htmlToPdfBuffer } = require('../utils/pdfService');
+const { renderClientDataHTML, renderProposalHTML } = require('../../utils/pdfTemplates');
+const { htmlToPdfBuffer } = require('../../utils/pdfService');
 
 const {
   normalizeAssessmentLevels,
   validateSubmissionForLevels
-} = require('../utils/assessmentLevel');
+} = require('../../utils/assessmentLevel');
 
 
 
@@ -5045,7 +5045,7 @@ const hardResetClientSystem = async (req, res) => {
       });
     }
 
-    const Client = require('../models/Client');
+    const Client = require('../models/CMS/Client');
 
     await Client.hardResetClientSystem(req.user);
 

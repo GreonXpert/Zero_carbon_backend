@@ -13,9 +13,9 @@ const {
      getSbtiProgress
   
   
-} = require('../controllers/Calculation/CalculationSummary');
-const { auth } = require('../middleware/auth');
-const { checkSummaryPermission } = require('../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
+} = require('../../controllers/Calculation/CalculationSummary');
+const { auth } = require('../../middleware/auth');
+const { checkSummaryPermission } = require('../../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
 
 
 

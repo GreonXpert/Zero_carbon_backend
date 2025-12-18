@@ -1,7 +1,7 @@
-const Notification = require("../models/Notification");
-const User = require("../models/User");
-const Client = require("../models/Client");
-const { sendMail } = require("../utils/mail");
+const Notification = require("../../models/Notification/Notification");
+const User = require("../../models/User");
+const Client = require("../../models/CMS/Client");
+const { sendMail } = require("../../utils/mail");
 
 // Create notification with proper business logic
 const createNotification = async (req, res) => {

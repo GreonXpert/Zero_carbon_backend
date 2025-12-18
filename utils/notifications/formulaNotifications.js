@@ -1,4 +1,4 @@
-const Notification = require("../../models/Notification");
+const Notification = require("../../models/Notification/Notification");
 const User = require("../../models/User");
 
 async function notifyFormulaDeleteRequested({ actor, formula, approverIds }) {

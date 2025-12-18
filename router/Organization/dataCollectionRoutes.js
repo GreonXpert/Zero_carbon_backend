@@ -3,8 +3,8 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { auth, checkRole, checkPermission } = require("../middleware/auth");
-const { apiKeyMiddleware, apiKeyRateLimit } = require('../middleware/apiKeyAuth');
+const { auth, checkRole, checkPermission } = require("../../middleware/auth");
+const { apiKeyMiddleware, apiKeyRateLimit } = require('../../middleware/apiKeyAuth');
 const {
   saveAPIData,
   saveIoTData,
@@ -20,11 +20,11 @@ const {
   createMonthlySummaryManual,
   getMonthlySummaries,
   getCurrentCumulative
-} = require('../controllers/dataCollectionController');
+} = require('../../controllers/Organization/dataCollectionController');
 
 const {
   getDataCompletionStats,
-} = require('../controllers/DataCollection/dataCompletionController');
+} = require('../../controllers/DataCollection/dataCompletionController');
 
 // ============== PROTECTED API/IoT ENDPOINTS ==============
 // These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
