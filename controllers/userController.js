@@ -353,6 +353,7 @@ const createConsultant = async (req, res) => {
       teamName,
       createdBy: req.user.id,
       consultantAdminId: req.user.id,
+      isActive: true,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
