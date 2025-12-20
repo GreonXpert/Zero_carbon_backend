@@ -20,6 +20,7 @@ const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection
 const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
 
 
+
 /**
  * Normalizes a data payload from any source (API, IOT, Manual, CSV)
  * into a standardized format for emission calculation.
@@ -1488,24 +1489,28 @@ return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
   }
 };
 
+
 /**
  * POST /api/data-collection/csv/:clientId/:nodeId/:scopeIdentifier
- * Accepts either:
- *  - multipart CSV file at req.file.path  (multer)
- *  - raw CSV text at req.body.csvText
- *  - parsed JSON rows at req.body.rows
  *
- * ✅ NEW:
- *  - Uploads the ORIGINAL payload to S3 bucket (S3_ORGANISATION_CLIENT_CSV_BUCKET)
- *    path: clientId/nodeId/scopeIdentifier/{timestamp}_{fileName}
+ * ACCEPTS:
+ *  - multipart CSV (memory multer → req.file.buffer)
+ *  - raw CSV text (req.body.csvText)
+ *  - parsed JSON rows (req.body.rows)
+ *
+ * ✅ Uploads ORIGINAL payload to S3:
+ *    clientId/nodeId/scopeIdentifier/{timestamp}_{fileName}
+ *
+ * ❌ No local disk usage
+ * ❌ No temp files
  */
 const uploadCSVData = async (req, res) => {
-  let tempFilePath = null;
-
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
 
-    // 1) Locate chart/node/scope
+    /* -------------------------------------------------- */
+    /* 1) Locate node + scope                              */
+    /* -------------------------------------------------- */
     const located = await findNodeAndScope(clientId, nodeId, scopeIdentifier);
     if (!located) {
       return res.status(404).json({
@@ -1513,9 +1518,12 @@ const uploadCSVData = async (req, res) => {
         message: 'Node/scope not found in flowchart or process flowchart'
       });
     }
+
     const { node, scope } = located;
 
-    // 2) Permission
+    /* -------------------------------------------------- */
+    /* 2) Permission                                      */
+    /* -------------------------------------------------- */
     const perm = await canWriteManualOrCSV(req.user, clientId, node, scope);
     if (!perm.allowed) {
       return res.status(403).json({
@@ -1525,8 +1533,15 @@ const uploadCSVData = async (req, res) => {
       });
     }
 
-    // 3) Validate prerequisites (don’t accept data if EF/GWP/etc not set)
-    const validation = await validateEmissionPrerequisites(clientId, nodeId, scopeIdentifier);
+    /* -------------------------------------------------- */
+    /* 3) Emission prerequisite validation                */
+    /* -------------------------------------------------- */
+    const validation = await validateEmissionPrerequisites(
+      clientId,
+      nodeId,
+      scopeIdentifier
+    );
+
     if (!validation?.isValid) {
       return res.status(400).json({
         success: false,
@@ -1535,32 +1550,39 @@ const uploadCSVData = async (req, res) => {
       });
     }
 
-    // 4) Parse input + build a "raw upload buffer" for S3
+    /* -------------------------------------------------- */
+    /* 4) Parse input & prepare ORIGINAL payload           */
+    /* -------------------------------------------------- */
     let rows = [];
-    let fileName = '';
+    let fileName = 'uploaded.csv';
     let rawBuffer = null;
     let rawContentType = 'text/csv';
 
-    if (req.file?.path) {
-      // Multipart CSV
-      tempFilePath = req.file.path;
-      fileName = req.file.originalname || req.file.filename || 'uploaded.csv';
+    /* ---------- CASE A: Multipart CSV (memory) ---------- */
+    if (req.file?.buffer) {
+      fileName = req.file.originalname || 'uploaded.csv';
+      rawBuffer = req.file.buffer;
 
-      rawBuffer = fs.readFileSync(req.file.path);
-      rows = await csvtojson().fromFile(req.file.path);
+      rows = await csvtojson().fromString(
+        req.file.buffer.toString('utf8')
+      );
+
+    /* ---------- CASE B: Raw CSV text ---------- */
     } else if (req.body?.csvText) {
-      // Raw CSV text
       fileName = req.body.fileName || 'uploaded.csv';
-
       rawBuffer = Buffer.from(String(req.body.csvText), 'utf8');
-      rows = await csvtojson().fromString(req.body.csvText);
-    } else if (Array.isArray(req.body?.rows)) {
-      // Parsed JSON rows
-      fileName = req.body.fileName || 'rows.json';
 
-      // Store original rows as JSON in S3 (since input is JSON, not CSV)
+      rows = await csvtojson().fromString(req.body.csvText);
+
+    /* ---------- CASE C: JSON rows ---------- */
+    } else if (Array.isArray(req.body?.rows)) {
+      fileName = req.body.fileName || 'rows.json';
       rawContentType = 'application/json';
-      rawBuffer = Buffer.from(JSON.stringify(req.body.rows, null, 2), 'utf8');
+
+      rawBuffer = Buffer.from(
+        JSON.stringify(req.body.rows, null, 2),
+        'utf8'
+      );
 
       rows = req.body.rows;
     } else {
@@ -1570,7 +1592,9 @@ const uploadCSVData = async (req, res) => {
       });
     }
 
-    // 5) Upload ORIGINAL file payload to S3 under client/node/scope folder
+    /* -------------------------------------------------- */
+    /* 5) Upload ORIGINAL payload to S3                    */
+    /* -------------------------------------------------- */
     const s3Upload = await uploadOrganisationCSVCreate({
       clientId,
       nodeId,
@@ -1580,7 +1604,9 @@ const uploadCSVData = async (req, res) => {
       contentType: rawContentType
     });
 
-    // 6) Save rows -> DataEntry + trigger calculator (your existing saveOneEntry logic)
+    /* -------------------------------------------------- */
+    /* 6) Save rows → DataEntry + calculation              */
+    /* -------------------------------------------------- */
     const saved = [];
     const errors = [];
 
@@ -1597,7 +1623,7 @@ const uploadCSVData = async (req, res) => {
           row: rows[i],
           csvMeta: {
             fileName,
-            s3: s3Upload // ✅ keep a record of where the source file lives
+            s3: s3Upload
           }
         });
 
@@ -1609,25 +1635,30 @@ const uploadCSVData = async (req, res) => {
           calculationResponse: calcResult?.data || null
         });
       } catch (err) {
-        errors.push({ row: i + 1, error: err.message });
+        errors.push({
+          row: i + 1,
+          error: err.message
+        });
       }
     }
 
-    // 7) broadcast completion if any rows saved
+    /* -------------------------------------------------- */
+    /* 7) Broadcast completion                             */
+    /* -------------------------------------------------- */
     if (saved.length > 0 && global.broadcastDataCompletionUpdate) {
       global.broadcastDataCompletionUpdate(clientId);
     }
 
     const ok = errors.length === 0;
 
-    return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
+    return res.status(ok ? 201 : saved.length ? 207 : 400).json({
       success: ok,
       message: ok
         ? `CSV processed: ${saved.length} rows saved`
         : `CSV partially processed: ${saved.length} saved, ${errors.length} errors`,
       fileName,
 
-      // ✅ NEW: return S3 location details
+      /* ✅ S3 info returned */
       s3: {
         bucket: s3Upload.bucket,
         key: s3Upload.key,
@@ -1639,6 +1670,7 @@ const uploadCSVData = async (req, res) => {
       results: saved,
       errors
     });
+
   } catch (error) {
     console.error('uploadCSVData error:', error);
     return res.status(500).json({
@@ -1646,17 +1678,8 @@ const uploadCSVData = async (req, res) => {
       message: 'Server error',
       error: error.message
     });
-  } finally {
-    // ✅ cleanup multer temp file
-    try {
-      if (tempFilePath && fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-      }
-    } catch (_) {}
   }
 };
-
-
 
 
 // // Save Manual Data Entry (with support for multiple entries with different dates)

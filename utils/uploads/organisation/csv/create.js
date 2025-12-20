@@ -20,16 +20,13 @@ async function uploadOrganisationCSVCreate({
   const Key = buildCsvS3Key({ clientId, nodeId, scopeIdentifier, fileName });
 
   const s3 = getS3();
-  const putRes = await s3
-    .putObject({
-      Bucket,
-      Key,
-      Body: buffer,
-      ContentType: contentType,
-      // Optional (nice for downloads):
-      ContentDisposition: `attachment; filename="${fileName}"`
-    })
-    .promise();
+  const putRes = await s3.putObject({
+    Bucket,
+    Key,
+    Body: buffer,
+    ContentType: contentType,
+    ContentDisposition: `attachment; filename="${fileName}"`
+  }).promise();
 
   return {
     bucket: Bucket,
