@@ -26,6 +26,9 @@ const {
   getDataCompletionStats,
 } = require('../../controllers/DataCollection/dataCompletionController');
 
+const uploadCsv = require('../../utils/uploads/organisation/csv/uploadCsvMulter');
+
+
 // ============== PROTECTED API/IoT ENDPOINTS ==============
 // These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
 
@@ -73,7 +76,6 @@ router.post(
 // Apply authentication to all remaining routes
 router.use(auth);
 
-// Configure multer for CSV uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, 'uploads/temp/');
@@ -94,7 +96,7 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
+    fileSize: 50 * 1024 * 1024
   }
 });
 
@@ -112,9 +114,10 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-dat
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv',
-  upload.single('csvFile'),
+  uploadCsv.single('csvFile'),   // ✅ MEMORY STORAGE
   uploadCSVData
 );
+
 
 // ============== Data Management Routes ==============
 
