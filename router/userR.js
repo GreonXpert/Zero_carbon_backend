@@ -181,66 +181,303 @@ router.get("/available-employees/:clientId", checkRole('client_employee_head'), 
 /**
  * Get scope details for a specific node
  * GET /api/users/node-scopes/:clientId/:nodeId
- * Returns scope details for assignment
+ * Returns scope details for assignment by Employee Head
+ * 
+ * Access: client_employee_head only
  */
 router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
 
-    // Additional validation - ensure employee head is accessing their own organization
-    if (req.user.clientId !== clientId) {
-      return res.status(403).json({ 
-        message: 'You can only view scopes in your own organization' 
+    console.log(`\n📋 Get Node Scopes Request`);
+    console.log(`   Client ID: ${clientId}`);
+    console.log(`   Node ID: ${nodeId}`);
+    console.log(`   Requested by: ${req.user?.userName} (${req.user?.userType})`);
+
+    // ==========================================
+    // 1. VALIDATE REQUEST USER
+    // ==========================================
+    if (!req.user) {
+      console.error('❌ No authenticated user found');
+      return res.status(401).json({ 
+        message: 'Authentication required' 
       });
     }
 
-    const Flowchart = require('../models/Organization/Flowchart');
-    const flowchart = await Flowchart.findOne(
-      { clientId, 'nodes.id': nodeId },
-      { 'nodes.$': 1 }
-    ).populate('nodes.details.scopeDetails.assignedEmployees', 'userName email');
+    if (!req.user._id) {
+      console.error('❌ User ID not found in request');
+      return res.status(500).json({ 
+        message: 'Invalid user data' 
+      });
+    }
 
-    if (!flowchart || !flowchart.nodes[0]) {
-      return res.status(404).json({ message: 'Node not found' });
+    if (!req.user.clientId) {
+      console.error('❌ User has no clientId');
+      return res.status(403).json({ 
+        message: 'User is not associated with any client organization' 
+      });
+    }
+
+    // ==========================================
+    // 2. VALIDATE INPUT PARAMETERS
+    // ==========================================
+    if (!clientId || !nodeId) {
+      return res.status(400).json({ 
+        message: 'clientId and nodeId are required',
+        provided: { clientId: !!clientId, nodeId: !!nodeId }
+      });
+    }
+
+    // ==========================================
+    // 3. CHECK CLIENTID AUTHORIZATION
+    // ==========================================
+    if (req.user.clientId !== clientId) {
+      console.error(`❌ Authorization failed: User clientId (${req.user.clientId}) !== Requested clientId (${clientId})`);
+      return res.status(403).json({ 
+        message: 'You can only view scopes in your own organization',
+        userClientId: req.user.clientId,
+        requestedClientId: clientId
+      });
+    }
+
+    console.log('✅ Authorization check passed');
+
+    // ==========================================
+    // 4. FETCH FLOWCHART AND NODE
+    // ==========================================
+    const Flowchart = require('../models/Organization/Flowchart');
+    
+    console.log('🔍 Querying flowchart...');
+    
+    const flowchart = await Flowchart.findOne(
+      { 
+        clientId: clientId, 
+        'nodes.id': nodeId 
+      },
+      { 
+        'nodes.$': 1,
+        clientId: 1 
+      }
+    ).lean(); // Use lean() for better performance
+
+    // Check if flowchart exists
+    if (!flowchart) {
+      console.error(`❌ Flowchart not found for clientId: ${clientId}`);
+      return res.status(404).json({ 
+        message: 'Flowchart not found for this organization',
+        clientId: clientId
+      });
+    }
+
+    console.log('✅ Flowchart found');
+
+    // Check if nodes array exists
+    if (!flowchart.nodes || !Array.isArray(flowchart.nodes) || flowchart.nodes.length === 0) {
+      console.error(`❌ Node not found with ID: ${nodeId}`);
+      return res.status(404).json({ 
+        message: 'Node not found in flowchart',
+        nodeId: nodeId
+      });
     }
 
     const node = flowchart.nodes[0];
+    console.log(`✅ Node found: ${node.label || node.id}`);
 
-    // Verify this Employee Head is assigned to this node
-    if (!node.details.employeeHeadId || 
-        node.details.employeeHeadId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ 
-        message: 'You are not assigned to manage this node' 
+    // ==========================================
+    // 5. VALIDATE NODE STRUCTURE
+    // ==========================================
+    if (!node.details) {
+      console.error('❌ Node details not found');
+      return res.status(500).json({ 
+        message: 'Invalid node structure: missing details',
+        nodeId: nodeId
       });
     }
 
-    const scopes = node.details.scopeDetails.map(scope => ({
-      scopeIdentifier: scope.scopeIdentifier,
-      scopeType: scope.scopeType,
-      inputType: scope.inputType,
-      description: scope.description,
-      collectionFrequency: scope.collectionFrequency,
-      assignedEmployees: scope.assignedEmployees || [],
-      assignedEmployeeCount: scope.assignedEmployees?.length || 0
-    }));
+    // ==========================================
+    // 6. CHECK EMPLOYEE HEAD ASSIGNMENT
+    // ==========================================
+    // The node should have an employeeHeadId assigned to it
+    // This verifies that the current user is the assigned Employee Head
+    
+    const nodeEmployeeHeadId = node.details.employeeHeadId;
+    const currentUserId = req.user._id.toString();
+
+    console.log(`🔍 Checking Employee Head assignment:`);
+    console.log(`   Node employeeHeadId: ${nodeEmployeeHeadId}`);
+    console.log(`   Current user ID: ${currentUserId}`);
+
+    // If no employee head is assigned to this node
+    if (!nodeEmployeeHeadId) {
+      console.warn('⚠️ No Employee Head assigned to this node');
+      return res.status(403).json({ 
+        message: 'No Employee Head is assigned to manage this node yet',
+        nodeId: nodeId,
+        nodeName: node.label
+      });
+    }
+
+    // Convert employeeHeadId to string for comparison
+    const nodeEmployeeHeadIdStr = nodeEmployeeHeadId.toString();
+
+    // Check if the current user is the assigned Employee Head
+    if (nodeEmployeeHeadIdStr !== currentUserId) {
+      console.error(`❌ Access denied: User is not the assigned Employee Head for this node`);
+      console.error(`   Expected: ${nodeEmployeeHeadIdStr}`);
+      console.error(`   Got: ${currentUserId}`);
+      
+      return res.status(403).json({ 
+        message: 'You are not assigned to manage this node',
+        nodeId: nodeId,
+        nodeName: node.label,
+        hint: 'Only the assigned Employee Head can view and manage scopes for this node'
+      });
+    }
+
+    console.log('✅ Employee Head assignment verified');
+
+    // ==========================================
+    // 7. EXTRACT AND FORMAT SCOPE DETAILS
+    // ==========================================
+    const scopeDetails = node.details.scopeDetails || [];
+    
+    console.log(`📊 Processing ${scopeDetails.length} scope(s)`);
+
+    // If we need to populate assigned employees, we need to fetch them separately
+    // since we used lean() which doesn't support populate
+    const employeeIds = [];
+    scopeDetails.forEach(scope => {
+      if (scope.assignedEmployees && Array.isArray(scope.assignedEmployees)) {
+        employeeIds.push(...scope.assignedEmployees);
+      }
+    });
+
+    // Fetch employee details if there are any assigned
+    let employeeMap = {};
+    if (employeeIds.length > 0) {
+      console.log(`👥 Fetching ${employeeIds.length} assigned employee(s)...`);
+      
+      const User = require('../models/User');
+      const employees = await User.find(
+        { 
+          _id: { $in: employeeIds },
+          clientId: clientId, // Security: Only fetch employees from same organization
+          isActive: true
+        },
+        { 
+          _id: 1, 
+          userName: 1, 
+          email: 1, 
+          department: 1,
+          contactNumber: 1 
+        }
+      ).lean();
+
+      // Create a map for quick lookup
+      employees.forEach(emp => {
+        employeeMap[emp._id.toString()] = {
+          id: emp._id,
+          userName: emp.userName,
+          email: emp.email,
+          department: emp.department,
+          contactNumber: emp.contactNumber
+        };
+      });
+
+      console.log(`✅ Fetched ${employees.length} employee(s)`);
+    }
+
+    // Format scopes with employee details
+    const scopes = scopeDetails.map((scope, index) => {
+      const assignedEmployeeIds = scope.assignedEmployees || [];
+      const assignedEmployeeDetails = assignedEmployeeIds
+        .map(empId => {
+          const empIdStr = empId.toString();
+          return employeeMap[empIdStr] || null;
+        })
+        .filter(emp => emp !== null); // Remove any not found employees
+
+      return {
+        scopeIdentifier: scope.scopeIdentifier || `Scope-${index + 1}`,
+        scopeType: scope.scopeType || 'Not specified',
+        inputType: scope.inputType || 'manual',
+        description: scope.description || '',
+        collectionFrequency: scope.collectionFrequency || 'monthly',
+        assignedEmployees: assignedEmployeeDetails,
+        assignedEmployeeCount: assignedEmployeeDetails.length,
+        assignedEmployeeIds: assignedEmployeeIds.map(id => id.toString()),
+        emissionFactorSource: scope.emissionFactorSource || null,
+        unit: scope.unit || null,
+        calculationMethod: scope.calculationMethod || null
+      };
+    });
+
+    // ==========================================
+    // 8. FORMAT NODE INFORMATION
+    // ==========================================
+    const nodeInfo = {
+      id: node.id,
+      label: node.label || 'Unnamed Node',
+      nodeType: node.details.nodeType || 'process',
+      department: node.details.department || req.user.department,
+      location: node.details.location || req.user.location,
+      description: node.details.description || '',
+      employeeHeadId: nodeEmployeeHeadIdStr,
+      totalScopes: scopes.length,
+      assignedScopes: scopes.filter(s => s.assignedEmployeeCount > 0).length,
+      unassignedScopes: scopes.filter(s => s.assignedEmployeeCount === 0).length
+    };
+
+    // ==========================================
+    // 9. SEND SUCCESS RESPONSE
+    // ==========================================
+    console.log('✅ Node scopes retrieved successfully');
+    console.log(`   Total scopes: ${nodeInfo.totalScopes}`);
+    console.log(`   Assigned: ${nodeInfo.assignedScopes}`);
+    console.log(`   Unassigned: ${nodeInfo.unassignedScopes}`);
 
     res.status(200).json({
       message: 'Node scopes retrieved successfully',
-      node: {
-        id: node.id,
-        label: node.label,
-        nodeType: node.details.nodeType,
-        department: node.details.department,
-        location: node.details.location
-      },
-      scopes
+      node: nodeInfo,
+      scopes: scopes,
+      statistics: {
+        totalScopes: nodeInfo.totalScopes,
+        assignedScopes: nodeInfo.assignedScopes,
+        unassignedScopes: nodeInfo.unassignedScopes,
+        totalAssignedEmployees: scopes.reduce((sum, s) => sum + s.assignedEmployeeCount, 0)
+      }
     });
 
   } catch (error) {
-    console.error('Error getting node scopes:', error);
+    // ==========================================
+    // 10. ERROR HANDLING
+    // ==========================================
+    console.error('\n❌ Error getting node scopes:', error);
+    console.error('   Error name:', error.name);
+    console.error('   Error message:', error.message);
+    console.error('   Stack trace:', error.stack);
+
+    // Handle specific error types
+    if (error.name === 'CastError') {
+      return res.status(400).json({ 
+        message: 'Invalid ID format',
+        error: 'The provided nodeId or clientId is not valid',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        message: 'Validation error',
+        error: error.message 
+      });
+    }
+
+    // Generic error response
     res.status(500).json({ 
       message: 'Error retrieving node scopes', 
-      error: error.message 
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
+      errorType: error.name
     });
   }
 });
