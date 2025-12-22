@@ -305,15 +305,21 @@ const createConsultantAdmin = async (req, res) => {
 };
 
 
-// Create Consultant (Consultant Admin only)
+// Enhanced Create Consultant Function (Consultant Admin only)
 const createConsultant = async (req, res) => {
   try {
+    // ==========================================
+    // 1. AUTHORIZATION CHECK
+    // ==========================================
     if (!req.user || req.user.userType !== "consultant_admin") {
       return res.status(403).json({ 
         message: "Only Consultant Admin can create Consultants" 
       });
     }
     
+    // ==========================================
+    // 2. EXTRACT REQUEST DATA
+    // ==========================================
     const {
       email,
       password,
@@ -326,34 +332,170 @@ const createConsultant = async (req, res) => {
       teamName
     } = req.body;
     
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
-    });
+    // ==========================================
+    // 3. INPUT VALIDATION - Required Fields
+    // ==========================================
     
-    if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
+    // Basic required fields
+    if (!email) {
+      return res.status(400).json({ 
+        message: "Email is required",
+        field: "email"
       });
     }
     
+    if (!password) {
+      return res.status(400).json({ 
+        message: "Password is required",
+        field: "password"
+      });
+    }
+    
+    if (!contactNumber) {
+      return res.status(400).json({ 
+        message: "Contact number is required",
+        field: "contactNumber"
+      });
+    }
+    
+    if (!userName) {
+      return res.status(400).json({ 
+        message: "Username is required",
+        field: "userName"
+      });
+    }
+    
+    if (!address) {
+      return res.status(400).json({ 
+        message: "Address is required",
+        field: "address"
+      });
+    }
+    
+    // ⚠️ CONSULTANT-SPECIFIC REQUIRED FIELDS
+    
+    if (!employeeId) {
+      return res.status(400).json({ 
+        message: "Employee ID is required for Consultant creation",
+        field: "employeeId",
+        details: "Employee ID is a mandatory field to create a Consultant account"
+      });
+    }
+    
+    if (!jobRole) {
+      return res.status(400).json({ 
+        message: "Job Role is required for Consultant creation",
+        field: "jobRole",
+        details: "Please specify the consultant's job role (e.g., Junior Consultant, Senior Consultant)"
+      });
+    }
+    
+    if (!branch) {
+      return res.status(400).json({ 
+        message: "Branch is required for Consultant creation",
+        field: "branch",
+        details: "Please specify the branch/location for this consultant"
+      });
+    }
+    
+    // ==========================================
+    // 4. INPUT VALIDATION - Format & Business Rules
+    // ==========================================
+    
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        message: "Invalid email format",
+        field: "email"
+      });
+    }
+    
+    // Password strength validation
+    if (password.length < 8) {
+      return res.status(400).json({ 
+        message: "Password must be at least 8 characters long",
+        field: "password"
+      });
+    }
+    
+    // Contact number validation (basic)
+    if (contactNumber.length < 10) {
+      return res.status(400).json({ 
+        message: "Contact number must be at least 10 digits",
+        field: "contactNumber"
+      });
+    }
+    
+    // Employee ID validation (alphanumeric, 3-20 characters)
+    const employeeIdRegex = /^[a-zA-Z0-9]{3,20}$/;
+    if (!employeeIdRegex.test(employeeId)) {
+      return res.status(400).json({ 
+        message: "Employee ID must be 3-20 alphanumeric characters",
+        field: "employeeId",
+        example: "EMP001, CONS123, etc."
+      });
+    }
+    
+    // ==========================================
+    // 5. CHECK FOR DUPLICATE USER
+    // ==========================================
+    const existingUser = await User.findOne({
+      $or: [
+        { email: email.toLowerCase() },
+        { userName: userName.toLowerCase() },
+        { employeeId: employeeId.toUpperCase() } // Also check for duplicate employeeId
+      ]
+    });
+    
+    if (existingUser) {
+      let conflictField = "";
+      let conflictMessage = "";
+      
+      if (existingUser.email === email.toLowerCase()) {
+        conflictField = "email";
+        conflictMessage = "Email already exists";
+      } else if (existingUser.userName === userName.toLowerCase()) {
+        conflictField = "userName";
+        conflictMessage = "Username already exists";
+      } else if (existingUser.employeeId === employeeId.toUpperCase()) {
+        conflictField = "employeeId";
+        conflictMessage = "Employee ID already exists";
+      }
+      
+      return res.status(409).json({ 
+        message: conflictMessage,
+        field: conflictField,
+        existingUser: {
+          email: existingUser.email,
+          userName: existingUser.userName,
+          employeeId: existingUser.employeeId
+        }
+      });
+    }
+    
+    // ==========================================
+    // 6. CREATE CONSULTANT USER
+    // ==========================================
     const hashedPassword = bcrypt.hashSync(password, 10);
     
     const consultant = new User({
-      email,
+      email: email.toLowerCase(),
       password: hashedPassword,
       contactNumber,
-      userName,
+      userName: userName.toLowerCase(),
       userType: "consultant",
       address,
-      companyName: "ZeroCarbon Consultancy",
-      employeeId,
+      companyName: teamName || "ZeroCarbon Consultancy",
+      employeeId: employeeId.toUpperCase(), // Store in uppercase for consistency
       jobRole,
       branch,
-      teamName,
+      teamName: teamName || req.user.teamName, // Inherit team name from Consultant Admin if not provided
       createdBy: req.user.id,
       consultantAdminId: req.user.id,
+      parentUser: req.user.id, // Set parent user relationship
       isActive: true,
+      isFirstLogin: true, // Force password change on first login
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -366,45 +508,145 @@ const createConsultant = async (req, res) => {
     });
     
     await consultant.save();
-
-        try { await saveUserProfileImage(req, consultant); } catch (e) {
-      console.warn('profile image save skipped:', e.message);
+    
+    console.log(`✅ Consultant created: ${consultant.userName} (ID: ${consultant.employeeId})`);
+    
+    // ==========================================
+    // 7. HANDLE PROFILE IMAGE (Optional)
+    // ==========================================
+    try { 
+      await saveUserProfileImage(req, consultant); 
+      console.log(`✅ Profile image saved for: ${consultant.userName}`);
+    } catch (e) {
+      console.warn(`⚠️ Profile image save skipped for ${consultant.userName}:`, e.message);
     }
+    
+    // ==========================================
+    // 8. SEND WELCOME EMAIL
+    // ==========================================
+    const emailSubject = "Welcome to ZeroCarbon - Consultant Account Created";
+    const emailMessage = `Dear ${userName},
 
-    // Send welcome email
-    const emailSubject = "Welcome to ZeroCarbon - Consultant Account";
-    const emailMessage = `
-      Your Consultant account has been created successfully.
-      
-      Login Credentials:
-      Username: ${userName}
-      Email: ${email}
-      Password: ${password}
-      
-      Please change your password after first login.
-    `;
+Your Consultant account has been created successfully by ${req.user.userName}.
 
-    await sendMail(email, emailSubject, emailMessage);
+Login Credentials:
+==================
+Username: ${userName}
+Email: ${email}
+Temporary Password: ${password}
+Employee ID: ${employeeId.toUpperCase()}
+Job Role: ${jobRole}
+Branch: ${branch}
 
+Portal URL: ${process.env.FRONTEND_URL || 'https://zerocarbon.greonxpert.com'}
+
+IMPORTANT SECURITY NOTICE:
+=========================
+⚠️ Please change your password immediately after first login for security reasons.
+⚠️ Do not share your login credentials with anyone.
+
+Your Account Details:
+====================
+- User Type: Consultant
+- Team: ${teamName || req.user.teamName || 'ZeroCarbon Consultancy'}
+- Created By: ${req.user.userName}
+- Created On: ${new Date().toLocaleString()}
+
+If you did not expect this account creation, please contact your administrator immediately.
+
+Best regards,
+ZeroCarbon Team`;
+
+    try {
+      const emailSent = await sendMail(email, emailSubject, emailMessage);
+      if (emailSent) {
+        console.log(`✅ Welcome email sent to: ${email}`);
+      } else {
+        console.warn(`⚠️ Failed to send welcome email to: ${email}`);
+      }
+    } catch (emailError) {
+      console.error(`❌ Error sending welcome email to ${email}:`, emailError.message);
+      // Don't fail the user creation if email fails
+    }
+    
+    // ==========================================
+    // 9. CREATE NOTIFICATION (Optional - if notification system is implemented)
+    // ==========================================
+    try {
+      await Notification.create({
+        userId: consultant._id,
+        type: "account_created",
+        title: "Welcome to ZeroCarbon",
+        message: `Your Consultant account has been created. Please login and change your password.`,
+        priority: "high",
+        isRead: false
+      });
+      console.log(`✅ Notification created for: ${consultant.userName}`);
+    } catch (notifError) {
+      console.warn(`⚠️ Notification creation failed:`, notifError.message);
+      // Don't fail the user creation if notification fails
+    }
+    
+    // ==========================================
+    // 10. SEND SUCCESS RESPONSE
+    // ==========================================
     res.status(201).json({
       message: "Consultant created successfully",
       consultant: {
         id: consultant._id,
         email: consultant.email,
         userName: consultant.userName,
-        employeeId: consultant.employeeId
+        employeeId: consultant.employeeId,
+        jobRole: consultant.jobRole,
+        branch: consultant.branch,
+        teamName: consultant.teamName,
+        userType: consultant.userType,
+        createdBy: req.user.userName,
+        createdAt: consultant.createdAt,
+        profileImage: consultant.profileImage?.url || null
+      },
+      instructions: {
+        nextSteps: [
+          "Login credentials have been sent to the consultant's email",
+          "Consultant should change password on first login",
+          "Consultant can now access the platform and manage clients"
+        ]
       }
     });
     
   } catch (error) {
-    console.error("Create consultant error:", error);
+    console.error("❌ Create consultant error:", error);
+    
+    // Handle mongoose validation errors
+    if (error.name === "ValidationError") {
+      const validationErrors = Object.values(error.errors).map(err => ({
+        field: err.path,
+        message: err.message
+      }));
+      
+      return res.status(400).json({ 
+        message: "Validation failed", 
+        errors: validationErrors
+      });
+    }
+    
+    // Handle duplicate key errors (MongoDB unique constraint)
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({ 
+        message: `${field} already exists`,
+        field: field
+      });
+    }
+    
     res.status(500).json({ 
       message: "Failed to create Consultant", 
-      error: error.message 
+      error: process.env.NODE_ENV === "development" ? error.message : "Internal server error"
     });
   }
 };
 
+module.exports = { createConsultant };
 // Create Client Admin (Automatic on proposal acceptance)
 const createClientAdmin = async (clientId, clientData = {}) => {
   try {
