@@ -184,6 +184,8 @@ router.get("/available-employees/:clientId", checkRole('client_employee_head'), 
  * Returns scope details for assignment by Employee Head
  * 
  * Access: client_employee_head only
+ * 
+ * FIXED: Handles both req.user.id and req.user._id
  */
 router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), async (req, res) => {
   try {
@@ -204,12 +206,32 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       });
     }
 
-    if (!req.user._id) {
+    // DEBUG: Log what properties req.user has
+    console.log('🔍 Debugging req.user properties:');
+    console.log(`   Has _id: ${!!req.user._id}`);
+    console.log(`   Has id: ${!!req.user.id}`);
+    console.log(`   _id value: ${req.user._id}`);
+    console.log(`   id value: ${req.user.id}`);
+
+    // CRITICAL FIX: Handle both _id and id
+    // Some auth middlewares use 'id', others use '_id'
+    const currentUserId = req.user._id || req.user.id;
+
+    if (!currentUserId) {
       console.error('❌ User ID not found in request');
+      console.error('   req.user object:', JSON.stringify(req.user, null, 2));
       return res.status(500).json({ 
-        message: 'Invalid user data' 
+        message: 'Invalid user data: User ID not found',
+        debug: process.env.NODE_ENV === 'development' ? {
+          hasUser: !!req.user,
+          has_id: !!req.user._id,
+          hasId: !!req.user.id,
+          userProperties: Object.keys(req.user)
+        } : undefined
       });
     }
+
+    console.log(`✅ Current User ID: ${currentUserId}`);
 
     if (!req.user.clientId) {
       console.error('❌ User has no clientId');
@@ -258,9 +280,8 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
         'nodes.$': 1,
         clientId: 1 
       }
-    ).lean(); // Use lean() for better performance
+    ).lean();
 
-    // Check if flowchart exists
     if (!flowchart) {
       console.error(`❌ Flowchart not found for clientId: ${clientId}`);
       return res.status(404).json({ 
@@ -271,7 +292,6 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
 
     console.log('✅ Flowchart found');
 
-    // Check if nodes array exists
     if (!flowchart.nodes || !Array.isArray(flowchart.nodes) || flowchart.nodes.length === 0) {
       console.error(`❌ Node not found with ID: ${nodeId}`);
       return res.status(404).json({ 
@@ -297,17 +317,12 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
     // ==========================================
     // 6. CHECK EMPLOYEE HEAD ASSIGNMENT
     // ==========================================
-    // The node should have an employeeHeadId assigned to it
-    // This verifies that the current user is the assigned Employee Head
-    
     const nodeEmployeeHeadId = node.details.employeeHeadId;
-    const currentUserId = req.user._id.toString();
 
     console.log(`🔍 Checking Employee Head assignment:`);
     console.log(`   Node employeeHeadId: ${nodeEmployeeHeadId}`);
     console.log(`   Current user ID: ${currentUserId}`);
 
-    // If no employee head is assigned to this node
     if (!nodeEmployeeHeadId) {
       console.warn('⚠️ No Employee Head assigned to this node');
       return res.status(403).json({ 
@@ -317,14 +332,16 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       });
     }
 
-    // Convert employeeHeadId to string for comparison
+    // Convert both IDs to strings for comparison
     const nodeEmployeeHeadIdStr = nodeEmployeeHeadId.toString();
+    const currentUserIdStr = currentUserId.toString();
 
-    // Check if the current user is the assigned Employee Head
-    if (nodeEmployeeHeadIdStr !== currentUserId) {
+    console.log(`   Comparing: ${nodeEmployeeHeadIdStr} === ${currentUserIdStr}`);
+
+    if (nodeEmployeeHeadIdStr !== currentUserIdStr) {
       console.error(`❌ Access denied: User is not the assigned Employee Head for this node`);
       console.error(`   Expected: ${nodeEmployeeHeadIdStr}`);
-      console.error(`   Got: ${currentUserId}`);
+      console.error(`   Got: ${currentUserIdStr}`);
       
       return res.status(403).json({ 
         message: 'You are not assigned to manage this node',
@@ -343,8 +360,6 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
     
     console.log(`📊 Processing ${scopeDetails.length} scope(s)`);
 
-    // If we need to populate assigned employees, we need to fetch them separately
-    // since we used lean() which doesn't support populate
     const employeeIds = [];
     scopeDetails.forEach(scope => {
       if (scope.assignedEmployees && Array.isArray(scope.assignedEmployees)) {
@@ -352,7 +367,7 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       }
     });
 
-    // Fetch employee details if there are any assigned
+    // Fetch employee details
     let employeeMap = {};
     if (employeeIds.length > 0) {
       console.log(`👥 Fetching ${employeeIds.length} assigned employee(s)...`);
@@ -361,7 +376,7 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       const employees = await User.find(
         { 
           _id: { $in: employeeIds },
-          clientId: clientId, // Security: Only fetch employees from same organization
+          clientId: clientId,
           isActive: true
         },
         { 
@@ -373,7 +388,6 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
         }
       ).lean();
 
-      // Create a map for quick lookup
       employees.forEach(emp => {
         employeeMap[emp._id.toString()] = {
           id: emp._id,
@@ -387,7 +401,7 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       console.log(`✅ Fetched ${employees.length} employee(s)`);
     }
 
-    // Format scopes with employee details
+    // Format scopes
     const scopes = scopeDetails.map((scope, index) => {
       const assignedEmployeeIds = scope.assignedEmployees || [];
       const assignedEmployeeDetails = assignedEmployeeIds
@@ -395,7 +409,7 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
           const empIdStr = empId.toString();
           return employeeMap[empIdStr] || null;
         })
-        .filter(emp => emp !== null); // Remove any not found employees
+        .filter(emp => emp !== null);
 
       return {
         scopeIdentifier: scope.scopeIdentifier || `Scope-${index + 1}`,
@@ -457,7 +471,6 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
     console.error('   Error message:', error.message);
     console.error('   Stack trace:', error.stack);
 
-    // Handle specific error types
     if (error.name === 'CastError') {
       return res.status(400).json({ 
         message: 'Invalid ID format',
@@ -473,7 +486,6 @@ router.get("/node-scopes/:clientId/:nodeId", checkRole('client_employee_head'), 
       });
     }
 
-    // Generic error response
     res.status(500).json({ 
       message: 'Error retrieving node scopes', 
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
