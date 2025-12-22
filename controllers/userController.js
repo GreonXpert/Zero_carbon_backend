@@ -841,45 +841,166 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 };
 
 
+// Enhanced Create Employee Head Function (Client Admin only)
+// Supports both single and bulk creation
+
 const createEmployeeHead = async (req, res) => {
   try {
+    // ==========================================
+    // 1. AUTHORIZATION CHECK
+    // ==========================================
     if (!req.user || req.user.userType !== "client_admin") {
       return res.status(403).json({ 
         message: "Only Client Admin can create Employee Heads" 
       });
     }
 
-    // Allow bulk or single
+    console.log(`\n👤 Employee Head creation requested by: ${req.user.userName}`);
+
+    // ==========================================
+    // 2. HANDLE BULK OR SINGLE CREATION
+    // ==========================================
     const payloads = Array.isArray(req.body.employeeHeads)
       ? req.body.employeeHeads
       : [req.body];
 
-    const results = { created: [], errors: [] };
+    console.log(`📊 Processing ${payloads.length} Employee Head(s)`);
 
-    for (const data of payloads) {
-      const { email, password, contactNumber, userName, address, department, location } = data;
+    const results = { 
+      created: [], 
+      errors: [],
+      summary: {
+        total: payloads.length,
+        successful: 0,
+        failed: 0
+      }
+    };
+
+    // ==========================================
+    // 3. PROCESS EACH EMPLOYEE HEAD
+    // ==========================================
+    for (let i = 0; i < payloads.length; i++) {
+      const data = payloads[i];
+      const itemNumber = i + 1;
+      
+      console.log(`\n📝 Processing Employee Head ${itemNumber}/${payloads.length}`);
+      
       try {
-        // Check required fields
-        if (!email || !password || !userName) {
-          throw new Error('Missing required fields: email, password, or userName');
-        }
-        // Check uniqueness
-        const exists = await User.findOne({ $or: [{ email }, { userName }] });
-        if (exists) throw new Error('Email or Username already exists');
-
-        const hashed = bcrypt.hashSync(password, 10);
-        const head = new User({
+        const {
           email,
-          password: hashed,
+          password,
           contactNumber,
           userName,
+          address,
+          department,
+          location
+        } = data;
+
+        // ==========================================
+        // 4. INPUT VALIDATION - Required Fields
+        // ==========================================
+        
+        // Basic required fields
+        if (!email) {
+          throw new Error('Email is required');
+        }
+
+        if (!password) {
+          throw new Error('Password is required');
+        }
+
+        if (!userName) {
+          throw new Error('Username is required');
+        }
+
+        if (!contactNumber) {
+          throw new Error('Contact number is required');
+        }
+
+        if (!address) {
+          throw new Error('Address is required');
+        }
+
+        // ⚠️ EMPLOYEE HEAD SPECIFIC REQUIRED FIELDS
+        
+        if (!department) {
+          throw new Error('Department is required for Employee Head creation. Please specify the department (e.g., Operations, Finance, HR, IT)');
+        }
+
+        if (!location) {
+          throw new Error('Location is required for Employee Head creation. Please specify the location/branch (e.g., Mumbai, Delhi, Bangalore)');
+        }
+
+        // ==========================================
+        // 5. INPUT VALIDATION - Format & Business Rules
+        // ==========================================
+
+        // Email format validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          throw new Error('Invalid email format');
+        }
+
+        // Password strength validation
+        if (password.length < 8) {
+          throw new Error('Password must be at least 8 characters long');
+        }
+
+        // Contact number validation
+        if (contactNumber.length < 10) {
+          throw new Error('Contact number must be at least 10 digits');
+        }
+
+        // Department validation (2-50 characters, alphanumeric with spaces)
+        const departmentRegex = /^[a-zA-Z0-9\s&-]{2,50}$/;
+        if (!departmentRegex.test(department)) {
+          throw new Error('Department must be 2-50 characters (letters, numbers, spaces, & and - allowed). Example: "Operations", "HR & Admin", "IT-Support"');
+        }
+
+        // Location validation (2-50 characters, alphanumeric with spaces and commas)
+        const locationRegex = /^[a-zA-Z0-9\s,.-]{2,50}$/;
+        if (!locationRegex.test(location)) {
+          throw new Error('Location must be 2-50 characters (letters, numbers, spaces, commas allowed). Example: "Mumbai", "New York, USA"');
+        }
+
+        // ==========================================
+        // 6. CHECK FOR DUPLICATE USER
+        // ==========================================
+        const existingUser = await User.findOne({
+          $or: [
+            { email: email.toLowerCase() },
+            { userName: userName.toLowerCase() }
+          ]
+        });
+
+        if (existingUser) {
+          let conflictMessage = '';
+          if (existingUser.email === email.toLowerCase()) {
+            conflictMessage = `Email "${email}" already exists`;
+          } else if (existingUser.userName === userName.toLowerCase()) {
+            conflictMessage = `Username "${userName}" already exists`;
+          }
+          throw new Error(conflictMessage);
+        }
+
+        // ==========================================
+        // 7. CREATE EMPLOYEE HEAD
+        // ==========================================
+        const hashedPassword = bcrypt.hashSync(password, 10);
+
+        const head = new User({
+          email: email.toLowerCase(),
+          password: hashedPassword,
+          contactNumber,
+          userName: userName.toLowerCase(),
           userType: "client_employee_head",
           address,
           isActive: true,
+          isFirstLogin: true, // Force password change on first login
           companyName: req.user.companyName,
           clientId: req.user.clientId,
-          department,
-          location,
+          department: department.trim(), // Trim whitespace
+          location: location.trim(), // Trim whitespace
           createdBy: req.user.id,
           parentUser: req.user.id,
           permissions: {
@@ -892,31 +1013,237 @@ const createEmployeeHead = async (req, res) => {
             canAudit: false
           }
         });
-        await head.save();
-         
-        try { await saveUserProfileImage(req, head); } catch (e) {
-         console.warn('profile image save skipped:', e.message);
-       }
 
-        results.created.push({ id: head._id, email: head.email, userName: head.userName, department: head.department, location: head.location });
+        await head.save();
+
+        console.log(`✅ Employee Head created: ${head.userName} | Department: ${head.department} | Location: ${head.location}`);
+
+        // ==========================================
+        // 8. HANDLE PROFILE IMAGE (Optional)
+        // ==========================================
+        try {
+          await saveUserProfileImage(req, head);
+          console.log(`✅ Profile image saved for: ${head.userName}`);
+        } catch (e) {
+          console.warn(`⚠️ Profile image save skipped for ${head.userName}:`, e.message);
+        }
+
+        // ==========================================
+        // 9. SEND WELCOME EMAIL
+        // ==========================================
+        const emailSubject = "Welcome to ZeroCarbon - Employee Head Account Created";
+        const emailMessage = `Dear ${userName},
+
+Your Employee Head account has been created successfully by ${req.user.userName}.
+
+Login Credentials:
+==================
+Username: ${userName}
+Email: ${email}
+Temporary Password: ${password}
+User Type: Employee Head
+
+Your Department & Location:
+===========================
+Department: ${department}
+Location: ${location}
+Organization: ${req.user.companyName}
+Client ID: ${req.user.clientId}
+
+Portal URL: ${process.env.FRONTEND_URL || 'https://zerocarbon.greonxpert.com'}
+
+IMPORTANT SECURITY NOTICE:
+=========================
+⚠️ Please change your password immediately after first login for security reasons.
+⚠️ Do not share your login credentials with anyone.
+
+Your Responsibilities:
+=====================
+As an Employee Head, you can:
+- Manage employees within your department
+- Assign employees to data collection scopes
+- Monitor data submission for your department
+- View department-specific reports
+
+Account Details:
+===============
+- Created By: ${req.user.userName}
+- Created On: ${new Date().toLocaleString()}
+- Organization: ${req.user.companyName}
+
+If you did not expect this account creation, please contact your administrator immediately.
+
+Best regards,
+ZeroCarbon Team`;
+
+        try {
+          const emailSent = await sendMail(email, emailSubject, emailMessage);
+          if (emailSent) {
+            console.log(`✅ Welcome email sent to: ${email}`);
+          } else {
+            console.warn(`⚠️ Failed to send welcome email to: ${email}`);
+          }
+        } catch (emailError) {
+          console.error(`❌ Error sending welcome email to ${email}:`, emailError.message);
+          // Don't fail the creation if email fails
+        }
+
+        // ==========================================
+        // 10. CREATE NOTIFICATION (Optional)
+        // ==========================================
+        try {
+          await Notification.create({
+            userId: head._id,
+            type: "account_created",
+            title: "Welcome to ZeroCarbon",
+            message: `Your Employee Head account has been created for ${department} department at ${location}. Please login and change your password.`,
+            priority: "high",
+            isRead: false
+          });
+          console.log(`✅ Notification created for: ${head.userName}`);
+        } catch (notifError) {
+          console.warn(`⚠️ Notification creation failed:`, notifError.message);
+          // Don't fail the creation if notification fails
+        }
+
+        // ==========================================
+        // 11. ADD TO SUCCESS RESULTS
+        // ==========================================
+        results.created.push({
+          id: head._id,
+          email: head.email,
+          userName: head.userName,
+          department: head.department,
+          location: head.location,
+          clientId: head.clientId,
+          userType: head.userType,
+          createdAt: head.createdAt,
+          profileImage: head.profileImage?.url || null
+        });
+
+        results.summary.successful++;
+        console.log(`✅ Employee Head ${itemNumber}/${payloads.length} created successfully`);
+
       } catch (err) {
-        results.errors.push({ input: data, error: err.message });
+        // ==========================================
+        // 12. HANDLE INDIVIDUAL CREATION ERRORS
+        // ==========================================
+        console.error(`❌ Failed to create Employee Head ${itemNumber}/${payloads.length}:`, err.message);
+        
+        results.errors.push({
+          itemNumber: itemNumber,
+          input: {
+            email: data.email,
+            userName: data.userName,
+            department: data.department,
+            location: data.location
+          },
+          error: err.message,
+          field: this.extractFieldFromError(err.message)
+        });
+
+        results.summary.failed++;
       }
     }
 
-    const statusCode = results.created.length > 0 ? 201 : 400;
+    // ==========================================
+    // 13. DETERMINE RESPONSE STATUS CODE
+    // ==========================================
+    let statusCode;
+    let message;
+
+    if (results.created.length > 0 && results.errors.length === 0) {
+      // All successful
+      statusCode = 201;
+      message = `Successfully created ${results.created.length} Employee Head(s)`;
+    } else if (results.created.length > 0 && results.errors.length > 0) {
+      // Partial success
+      statusCode = 207; // Multi-Status
+      message = `Partially completed: ${results.created.length} created, ${results.errors.length} failed`;
+    } else if (results.created.length === 0 && results.errors.length > 0) {
+      // All failed
+      statusCode = 400;
+      message = `Failed to create any Employee Heads: ${results.errors.length} error(s)`;
+    } else {
+      // No data provided
+      statusCode = 400;
+      message = "No Employee Head data provided";
+    }
+
+    console.log(`\n📊 Summary: ${results.summary.successful} created, ${results.summary.failed} failed`);
+
+    // ==========================================
+    // 14. SEND RESPONSE
+    // ==========================================
     return res.status(statusCode).json({
-      message: `Employee Head creation completed`,
-      ...results
+      message: message,
+      summary: results.summary,
+      created: results.created,
+      errors: results.errors,
+      instructions: results.created.length > 0 ? {
+        nextSteps: [
+          "Login credentials have been sent to each Employee Head's email",
+          "Employee Heads should change password on first login",
+          "Employee Heads can now manage employees in their departments"
+        ]
+      } : undefined
     });
+
   } catch (error) {
-    console.error("Create employee head error:", error);
-    return res.status(500).json({ 
-      message: "Failed to create Employee Head", 
-      error: error.message 
+    // ==========================================
+    // 15. HANDLE UNEXPECTED ERRORS
+    // ==========================================
+    console.error("\n❌ Unexpected error in createEmployeeHead:", error);
+    
+    // Handle mongoose validation errors
+    if (error.name === "ValidationError") {
+      const validationErrors = Object.values(error.errors).map(err => ({
+        field: err.path,
+        message: err.message
+      }));
+
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: validationErrors
+      });
+    }
+
+    // Handle duplicate key errors (MongoDB unique constraint)
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({
+        message: `${field} already exists`,
+        field: field
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to create Employee Head",
+      error: process.env.NODE_ENV === "development" ? error.message : "Internal server error"
     });
   }
 };
+
+// ==========================================
+// HELPER FUNCTION - Extract field from error message
+// ==========================================
+function extractFieldFromError(errorMessage) {
+  if (!errorMessage) return null;
+  
+  const lowerMessage = errorMessage.toLowerCase();
+  
+  if (lowerMessage.includes('email')) return 'email';
+  if (lowerMessage.includes('password')) return 'password';
+  if (lowerMessage.includes('username')) return 'userName';
+  if (lowerMessage.includes('contact')) return 'contactNumber';
+  if (lowerMessage.includes('address')) return 'address';
+  if (lowerMessage.includes('department')) return 'department';
+  if (lowerMessage.includes('location')) return 'location';
+  
+  return null;
+}
+
+module.exports = { createEmployeeHead };
 
 
 // Create Employee (Employee Head only)
