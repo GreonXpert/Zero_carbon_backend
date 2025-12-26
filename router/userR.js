@@ -4,6 +4,8 @@ const { auth, checkRole, checkPermission } = require("../middleware/auth"); // U
 const { uploadUserImage } = require('../utils/uploads/userImageUploadS3');
 const {
   login,
+  verifyLoginOTP,          // ← NEW: OTP verification
+  resendLoginOTP,          // ← NEW: Resend OTP
   createConsultantAdmin,
   createConsultant,
   createEmployeeHead,
@@ -30,6 +32,8 @@ const User = require("../models/User");
 
 // Public routes
 router.post("/login", login);
+router.post("/verify-otp", verifyLoginOTP);      // Step 2: Verify OTP, returns JWT token
+router.post("/resend-otp", resendLoginOTP);      // Optional: Resend OTP if needed
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
 router.post("/verify-reset-token", verifyResetToken); // Optional endpoint

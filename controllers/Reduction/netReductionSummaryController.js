@@ -15,6 +15,11 @@ const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
 const Reduction = require("../../models/Reduction/Reduction");
 const Client = require("../../models/CMS/Client");
 
+// ✅ NEW: calculationSummary builder (adds advanced analytics)
+const {
+  buildReductionCalculationSummary,
+} = require("./reductionSummaryCalculationService");
+
 // -------- SOCKET EMIT SETUP ----------
 let io;
 exports.setSocketIO = (socketIO) => { io = socketIO; };
@@ -174,10 +179,19 @@ async function calculatePeriodSummary(clientId, periodType, year, month, week, d
   }).lean();
 
   if (!entries.length) {
+    // Still return calculationSummary with safe defaults
+    const calculationSummary = await buildReductionCalculationSummary({
+      clientId,
+      periodType,
+      from,
+      to,
+    });
+
     return {
       reductionSummary: {
         totalNetReduction: 0,
         entriesCount: 0,
+        calculationSummary,
         byProject: [],
         byCategory: {},
         byScope: {},
@@ -202,8 +216,18 @@ async function calculatePeriodSummary(clientId, periodType, year, month, week, d
   const projectMeta = new Map();
   projects.forEach((p) => projectMeta.set(p.projectId, p));
 
+  const base = computeSummary(entries, projectMeta);
+
+  // ✅ Attach new calculationSummary (extra dashboard analytics)
+  base.calculationSummary = await buildReductionCalculationSummary({
+    clientId,
+    periodType,
+    from,
+    to,
+  });
+
   return {
-    reductionSummary: computeSummary(entries, projectMeta),
+    reductionSummary: base,
   };
 }
 

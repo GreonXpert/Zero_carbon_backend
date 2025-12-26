@@ -308,6 +308,175 @@ const emissionSummarySchema = new mongoose.Schema(
       totalNetReduction: { type: Number, default: 0 },   // tCO2e
       entriesCount: { type: Number, default: 0 },
 
+      /**
+       * ✅ NEW (Backward Compatible)
+       * Additional analytics for the Reduction Dashboard.
+       *
+       * This is OPTIONAL. If it is not present in old documents,
+       * existing code continues to work.
+       */
+      calculationSummary: {
+        // 1) Core KPIs
+        totalNetReduction: { type: Number, default: 0 },
+        totalTargetEmissionReduction: { type: Number, default: 0 },
+        achievementPercentage: { type: Number, default: 0 },
+        dataCompletenessPercentage: { type: Number, default: 0 },
+
+        // 2) Trend Chart Data
+        trendChart: {
+          monthly: {
+            type: [
+              new mongoose.Schema(
+                {
+                  projectId: String,
+                  projectName: String,
+                  periodKey: String, // YYYY-MM
+                  emissionReductionValue: { type: Number, default: 0 },
+                  trendPercent: { type: Number, default: null },
+                  trendDirection: { type: String, default: null } // up | down | flat
+                },
+                { _id: false }
+              )
+            ],
+            default: []
+          },
+          quarterly: {
+            type: [
+              new mongoose.Schema(
+                {
+                  projectId: String,
+                  projectName: String,
+                  periodKey: String, // YYYY-Q#
+                  emissionReductionValue: { type: Number, default: 0 },
+                  trendPercent: { type: Number, default: null },
+                  trendDirection: { type: String, default: null }
+                },
+                { _id: false }
+              )
+            ],
+            default: []
+          },
+          yearly: {
+            type: [
+              new mongoose.Schema(
+                {
+                  projectId: String,
+                  projectName: String,
+                  periodKey: String, // YYYY
+                  emissionReductionValue: { type: Number, default: 0 },
+                  trendPercent: { type: Number, default: null },
+                  trendDirection: { type: String, default: null }
+                },
+                { _id: false }
+              )
+            ],
+            default: []
+          }
+        },
+
+        // 3) GHG Mechanism Split
+        ghgMechanismSplit: {
+          totalReduction: { type: Number, default: 0 },
+          totalRemoval: { type: Number, default: 0 },
+          reductionPercent: { type: Number, default: 0 },
+          removalPercent: { type: Number, default: 0 }
+        },
+
+        // 4) Top Source Table
+        topSources: {
+          type: [
+            new mongoose.Schema(
+              {
+                source: { type: String, default: 'Unknown' },
+                type: { type: String, default: 'unknown' }, // Removal | Reduction | unknown
+                category: { type: String, default: 'Unknown' },
+                emissionReduction: { type: Number, default: 0 },
+                trend: { type: Number, default: null } // percent change vs previous period
+              },
+              { _id: false }
+            )
+          ],
+          default: []
+        },
+
+        // 5) Process & Product Analysis Table
+        processProductAnalysis: {
+          type: [
+            new mongoose.Schema(
+              {
+                project: { type: String, default: '' },
+                projectId: { type: String, default: '' },
+                processName: { type: String, default: null },
+                unit: { type: String, default: null },
+                emissionReduction: { type: Number, default: 0 },
+                intensity: { type: Number, default: null },
+                trend: { type: Number, default: null },
+                status: { type: String, default: 'unknown' }
+              },
+              { _id: false }
+            )
+          ],
+          default: []
+        },
+
+        // 6) Period Comparison
+        periodComparison: {
+          type: [
+            new mongoose.Schema(
+              {
+                project: { type: String, default: '' },
+                projectId: { type: String, default: '' },
+                emissionReduction: { type: Number, default: 0 },
+                previousEmissionReduction: { type: Number, default: 0 },
+                delta: { type: Number, default: 0 },
+                deltaPercent: { type: Number, default: null }
+              },
+              { _id: false }
+            )
+          ],
+          default: []
+        },
+
+        // 7) Data Completeness Per Project
+        dataCompletenessByProject: {
+          type: [
+            new mongoose.Schema(
+              {
+                projectName: { type: String, default: '' },
+                projectId: { type: String, default: '' },
+                percentage: { type: Number, default: 0 }
+              },
+              { _id: false }
+            )
+          ],
+          default: []
+        },
+
+        // 8) Category Priorities
+        categoryPriorities: {
+          type: [
+            new mongoose.Schema(
+              {
+                category: { type: String, default: 'Unknown' },
+                totalEmissionReduction: { type: Number, default: 0 },
+                sharePercent: { type: Number, default: 0 },
+                trend: { type: Number, default: null }
+              },
+              { _id: false }
+            )
+          ],
+          default: []
+        },
+
+        // Meta (optional)
+        meta: {
+          periodType: { type: String, default: '' },
+          from: { type: Date, default: null },
+          to: { type: Date, default: null },
+          computedAt: { type: Date, default: null }
+        }
+      },
+
       // Array so frontend can list all projects
       byProject: [{
         projectId: { type: String },

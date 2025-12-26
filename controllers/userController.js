@@ -13,6 +13,18 @@ const { saveUserProfileImage } = require('../utils/uploads/userImageUploadS3');
 
 const { getNormalizedLevels } = require("../utils/Permissions/permissions");
 
+// Import OTP Helper for 2FA
+const {
+  generateOTP,
+  storeOTP,
+  verifyOTP,
+  sendOTPEmail,
+  canResendOTP,
+  updateResendTimestamp,
+  OTP_CONFIG
+} = require('../utils/otpHelper');
+
+
 
 
 
@@ -63,6 +75,11 @@ const initializeSuperAdmin = async () => {
 // Universal Login for all user types
 
 
+// ==========================================================
+// REPLACE THE EXISTING login FUNCTION (lines 66-175) WITH THIS:
+// ==========================================================
+
+// Universal Login with 2FA - Step 1: Verify Credentials & Send OTP
 const login = async (req, res) => {
   try {
     const { login: loginIdentifier, password } = req.body;
@@ -72,6 +89,8 @@ const login = async (req, res) => {
         message: "Please provide login credentials"
       });
     }
+
+    console.log(`[LOGIN STEP 1] Attempting login for: ${loginIdentifier}`);
 
     // ==========================================================
     // 1. FIND USER (email or userName) + allow sandbox or active
@@ -84,6 +103,7 @@ const login = async (req, res) => {
     }).populate("createdBy", "userName email");
 
     if (!user) {
+      console.log(`[LOGIN STEP 1] User not found: ${loginIdentifier}`);
       return res.status(404).json({ message: "User not found" });
     }
 
@@ -92,6 +112,7 @@ const login = async (req, res) => {
     // ==========================================================
     const isMatch = bcrypt.compareSync(password, user.password);
     if (!isMatch) {
+      console.log(`[LOGIN STEP 1] Invalid password for: ${user.email}`);
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
@@ -105,6 +126,7 @@ const login = async (req, res) => {
       });
 
       if (!client) {
+        console.log(`[LOGIN STEP 1] Inactive client: ${user.clientId}`);
         return res.status(403).json({
           message: "Your organization's subscription is not active"
         });
@@ -112,7 +134,126 @@ const login = async (req, res) => {
     }
 
     // ==========================================================
-    // 4. First login flag update
+    // 4. GENERATE AND SEND OTP
+    // ==========================================================
+    const otp = generateOTP();
+    storeOTP(user.email, otp, user._id.toString());
+
+    console.log(`[LOGIN STEP 1] Generated OTP for ${user.email}`);
+
+    // Send OTP via email
+    const emailSent = await sendOTPEmail(user.email, otp, user.userName);
+
+    if (!emailSent) {
+      console.error(`[LOGIN STEP 1] Failed to send OTP email to ${user.email}`);
+      return res.status(500).json({
+        message: "Failed to send OTP. Please try again later.",
+        code: "EMAIL_SEND_FAILED"
+      });
+    }
+
+    console.log(`[LOGIN STEP 1] OTP sent successfully to ${user.email}`);
+
+    // ==========================================================
+    // 5. CREATE TEMPORARY SESSION TOKEN (NOT A FULL LOGIN TOKEN)
+    // ==========================================================
+    // This token is only for identifying the user during OTP verification
+    // It does NOT grant access to protected routes
+    const tempToken = jwt.sign(
+      {
+        userId: user._id,
+        email: user.email,
+        stage: 'otp_pending',
+        purpose: '2fa_verification'
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: `${OTP_CONFIG.EXPIRY_MINUTES}m` }
+    );
+
+    // ==========================================================
+    // 6. RESPONSE - OTP SENT
+    // ==========================================================
+    res.status(200).json({
+      message: "OTP sent to your registered email",
+      tempToken,
+      email: user.email.replace(/(.{2})(.*)(?=@)/, '$1***'), // Masked email
+      expiresIn: OTP_CONFIG.EXPIRY_MINUTES,
+      maxAttempts: OTP_CONFIG.MAX_ATTEMPTS,
+      requiresOTP: true
+    });
+
+  } catch (error) {
+    console.error("[LOGIN STEP 1] Error:", error);
+    res.status(500).json({
+      message: "Login failed",
+      error: error.message
+    });
+  }
+};
+
+// ==========================================================
+// ADD THESE TWO NEW FUNCTIONS AFTER THE login FUNCTION IN userController.js
+// ==========================================================
+
+// Login Step 2: Verify OTP and Issue Final Token
+const verifyLoginOTP = async (req, res) => {
+  try {
+    const { otp, tempToken } = req.body;
+
+    if (!otp || !tempToken) {
+      return res.status(400).json({
+        message: "OTP and temporary token are required"
+      });
+    }
+
+    console.log(`[LOGIN STEP 2] Verifying OTP`);
+
+    // ==========================================================
+    // 1. VERIFY TEMPORARY TOKEN
+    // ==========================================================
+    let decoded;
+    try {
+      decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
+      
+      if (decoded.stage !== 'otp_pending' || decoded.purpose !== '2fa_verification') {
+        return res.status(401).json({
+          message: "Invalid temporary token"
+        });
+      }
+    } catch (err) {
+      console.log(`[LOGIN STEP 2] Invalid or expired temp token`);
+      return res.status(401).json({
+        message: "Session expired. Please login again."
+      });
+    }
+
+    // ==========================================================
+    // 2. FIND USER
+    // ==========================================================
+    const user = await User.findById(decoded.userId).populate("createdBy", "userName email");
+    
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // ==========================================================
+    // 3. VERIFY OTP
+    // ==========================================================
+    const otpResult = verifyOTP(user.email, otp);
+
+    if (!otpResult.success) {
+      console.log(`[LOGIN STEP 2] OTP verification failed: ${otpResult.code}`);
+      return res.status(400).json({
+        message: otpResult.message,
+        code: otpResult.code,
+        remainingAttempts: otpResult.remainingAttempts
+      });
+    }
+
+    console.log(`[LOGIN STEP 2] OTP verified successfully for ${user.email}`);
+
+    // ==========================================================
+    // 4. UPDATE FIRST LOGIN FLAG
     // ==========================================================
     if (user.isFirstLogin) {
       user.isFirstLogin = false;
@@ -120,7 +261,7 @@ const login = async (req, res) => {
     }
 
     // ==========================================================
-    // 5. TOKEN PAYLOAD (UPDATED: includes assessmentLevel)
+    // 5. CREATE FINAL JWT TOKEN
     // ==========================================================
     const tokenPayload = {
       id: user._id,
@@ -130,7 +271,7 @@ const login = async (req, res) => {
       clientId: user.clientId,
       permissions: user.permissions,
       sandbox: user.sandbox === true,
-      assessmentLevel: user.assessmentLevel || []   // <<-- ADDED HERE
+      assessmentLevel: user.assessmentLevel || []
     };
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
@@ -138,7 +279,7 @@ const login = async (req, res) => {
     });
 
     // ==========================================================
-    // 6. RESPONSE USER DATA (UPDATED: includes assessmentLevel)
+    // 6. PREPARE USER DATA
     // ==========================================================
     const userData = {
       id: user._id,
@@ -153,12 +294,14 @@ const login = async (req, res) => {
       isFirstLogin: user.isFirstLogin,
       profileImage: user.profileImage || null,
       sandbox: user.sandbox === true,
-      assessmentLevel: user.assessmentLevel || []   // <<-- ADDED HERE
+      assessmentLevel: user.assessmentLevel || []
     };
 
     // ==========================================================
     // 7. SUCCESS RESPONSE
     // ==========================================================
+    console.log(`[LOGIN STEP 2] Login successful for ${user.email}`);
+    
     res.status(200).json({
       user: userData,
       token,
@@ -166,15 +309,106 @@ const login = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Login error:", error);
+    console.error("[LOGIN STEP 2] Error:", error);
     res.status(500).json({
-      message: "Login failed",
+      message: "OTP verification failed",
       error: error.message
     });
   }
 };
 
+// Resend OTP
+const resendLoginOTP = async (req, res) => {
+  try {
+    const { tempToken } = req.body;
 
+    if (!tempToken) {
+      return res.status(400).json({
+        message: "Temporary token is required"
+      });
+    }
+
+    console.log(`[RESEND OTP] Request received`);
+
+    // ==========================================================
+    // 1. VERIFY TEMPORARY TOKEN
+    // ==========================================================
+    let decoded;
+    try {
+      decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
+      
+      if (decoded.stage !== 'otp_pending' || decoded.purpose !== '2fa_verification') {
+        return res.status(401).json({
+          message: "Invalid temporary token"
+        });
+      }
+    } catch (err) {
+      console.log(`[RESEND OTP] Invalid or expired temp token`);
+      return res.status(401).json({
+        message: "Session expired. Please login again."
+      });
+    }
+
+    // ==========================================================
+    // 2. FIND USER
+    // ==========================================================
+    const user = await User.findById(decoded.userId);
+    
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // ==========================================================
+    // 3. CHECK RESEND COOLDOWN
+    // ==========================================================
+    const canResend = canResendOTP(user.email);
+    
+    if (!canResend.canResend) {
+      console.log(`[RESEND OTP] Cooldown active for ${user.email}`);
+      return res.status(429).json({
+        message: canResend.message,
+        waitTime: canResend.waitTime
+      });
+    }
+
+    // ==========================================================
+    // 4. GENERATE AND SEND NEW OTP
+    // ==========================================================
+    const otp = generateOTP();
+    storeOTP(user.email, otp, user._id.toString());
+    updateResendTimestamp(user.email);
+
+    console.log(`[RESEND OTP] Generated new OTP for ${user.email}`);
+
+    const emailSent = await sendOTPEmail(user.email, otp, user.userName);
+
+    if (!emailSent) {
+      console.error(`[RESEND OTP] Failed to send OTP email to ${user.email}`);
+      return res.status(500).json({
+        message: "Failed to send OTP. Please try again later."
+      });
+    }
+
+    console.log(`[RESEND OTP] New OTP sent successfully to ${user.email}`);
+
+    // ==========================================================
+    // 5. SUCCESS RESPONSE
+    // ==========================================================
+    res.status(200).json({
+      message: "New OTP sent to your registered email",
+      email: user.email.replace(/(.{2})(.*)(?=@)/, '$1***'),
+      expiresIn: OTP_CONFIG.EXPIRY_MINUTES,
+      cooldownSeconds: OTP_CONFIG.RESEND_COOLDOWN_SECONDS
+    });
+
+  } catch (error) {
+    console.error("[RESEND OTP] Error:", error);
+    res.status(500).json({
+      message: "Failed to resend OTP",
+      error: error.message
+    });
+  }
+};
 
 // ==========================================
 // Create Consultant Admin (Super Admin only)
@@ -3290,5 +3524,7 @@ module.exports = {
   assignScope,
   getNodeAssignments,
   getMyAssignments,
-  removeAssignment
+  removeAssignment,
+    verifyLoginOTP,          // ← NEW: OTP verification
+  resendLoginOTP,          // ← NEW: Resend OTP
 };
