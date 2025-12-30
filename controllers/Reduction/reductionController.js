@@ -462,8 +462,11 @@ exports.createReduction = async (req, res) => {
         : {}),
       ...(body.processFlow
         ? { processFlow: normalizeProcessFlow(body.processFlow, req.user) }
-        : {})  
-
+        : {}),
+        
+      reductionDataEntry: normalizeReductionDataEntry(
+          body.reductionDataEntry || body.reductionDateEntry
+        )
     });
 
     // 🔥 UPLOAD MEDIA HERE
