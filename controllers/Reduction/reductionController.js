@@ -459,7 +459,11 @@ exports.createReduction = async (req, res) => {
 
       ...(body.calculationMethodology === 'methodology3'
         ? { m3: normalizeM3Body(body.m3) }
-        : {})
+        : {}),
+      ...(body.processFlow
+        ? { processFlow: normalizeProcessFlow(body.processFlow, req.user) }
+        : {})  
+
     });
 
     // 🔥 UPLOAD MEDIA HERE
