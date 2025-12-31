@@ -64,13 +64,15 @@ router.post("/auditor", uploadUserImage, checkRole('client_admin'), createAudito
  */
 router.delete("/remove-assignment", removeAssignment);
 
-// User management routes
-router.get("/", getUsers); // Get users based on hierarchy
 // Profile
 router.get("/me", getMyProfile);
 
 // Single user
 router.get("/:userId", getUserById);
+
+// User management routes
+router.get("/", getUsers); // Get users based on hierarchy
+
 
 router.put("/:userId", uploadUserImage, updateUser);
 router.delete("/:userId", deleteUser); // Delete user with hierarchy control and notifications
