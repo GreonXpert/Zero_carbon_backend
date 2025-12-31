@@ -2824,72 +2824,91 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
  */
 exports.switchNetReductionInputType = async (req, res) => {
   try {
-    const { clientId, projectId } = req.params;
-    const { inputType: newInputType, connectionDetails } = req.body;
+    const { clientId, projectId, calculationMethodology } = req.params;
+    const { inputType, apiKey, deviceId } = req.body;
 
-    // ✅ Only client_admin of the SAME client
-    if (
-      !req.user ||
-      req.user.userType !== 'client_admin' ||
-      req.user.clientId !== clientId
-    ) {
-      return res.status(403).json({
-        message: 'Permission denied. Only Client Admin can switch reduction input types.'
+    if (!["manual", "API", "IOT", "CSV"].includes(inputType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid inputType. Must be manual, API, IOT or CSV"
       });
     }
 
-    // ✅ Validate input type
-    if (!newInputType || !['manual', 'API', 'IOT'].includes(newInputType)) {
-      return res.status(400).json({ message: 'Invalid input type' });
-    }
-
-    // Load reduction project
     const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
     if (!reduction) {
-      return res.status(404).json({ message: 'Reduction project not found' });
+      return res.status(404).json({ success:false, message:"Reduction project not found" });
     }
 
-    const r = reduction.reductionDataEntry || {};
-    const oldType = r.inputType || 'manual';
+    // 🔐 permissions
+    const can = await canWriteReductionData(req.user, clientId);
+    if (!can.ok) return res.status(403).json({ success:false, message:can.reason });
 
-    // 1) Update types
-    r.originalInputType = newInputType;
-    r.inputType = newInputType;
+    // ================================================
+    // 🔑 Build endpoints (ALWAYS generated)
+    // ================================================
+    const apiEndpoint = `${process.env.API_BASE_URL}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey || reduction.reductionDataEntry?.apiKey || ""}/api`;
+    const iotEndpoint = `${process.env.API_BASE_URL}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey || reduction.reductionDataEntry?.apiKey || ""}/iot`;
 
-    // 2) Reset connection fields
-    r.apiEndpoint = '';
-    r.iotDeviceId = '';
-
-    // 3) Apply new connection details
-    if (newInputType === 'API' && connectionDetails?.apiEndpoint) {
-      r.apiEndpoint = connectionDetails.apiEndpoint;
-    } else if (newInputType === 'IOT' && connectionDetails?.deviceId) {
-      r.iotDeviceId = connectionDetails.deviceId;
+    // Ensure reductionDataEntry exists
+    if (!reduction.reductionDataEntry) {
+      reduction.reductionDataEntry = {};
     }
 
-    reduction.reductionDataEntry = r;
-    reduction.markModified('reductionDataEntry');
+    // Persist endpoints ALWAYS
+    reduction.reductionDataEntry.apiEndpoint = apiEndpoint;
+    reduction.reductionDataEntry.iotEndpoint = iotEndpoint;
+
+    // Persist IoT device id if provided
+    if (deviceId) {
+      reduction.reductionDataEntry.iotDeviceId = deviceId;
+    }
+
+    // ================================================
+    // 🔄 Switch logic
+    // ================================================
+    reduction.reductionDataEntry.originalInputType =
+      reduction.reductionDataEntry.originalInputType || reduction.reductionDataEntry.inputType || "manual";
+
+    reduction.reductionDataEntry.inputType = inputType;
+
+    reduction.reductionDataEntry.apiStatus = inputType === "API";
+    reduction.reductionDataEntry.iotStatus = inputType === "IOT";
+
+    // Save
     await reduction.save();
 
-    return res.status(200).json({
-      message: `Reduction input type switched from ${oldType} to ${newInputType} successfully`,
+    // Socket notify
+    emitNR("net-reduction:input-switched", {
       clientId,
       projectId,
-      previousType: oldType,
-      newType: newInputType,
-      connectionDetails: {
-        apiEndpoint: r.apiEndpoint,
-        deviceId: r.iotDeviceId
+      calculationMethodology,
+      inputType,
+      apiEndpoint,
+      iotEndpoint,
+      iotDeviceId: reduction.reductionDataEntry.iotDeviceId || null
+    });
+
+    return res.json({
+      success: true,
+      message: "Net Reduction input type switched",
+      data: {
+        inputType,
+        apiEndpoint,
+        iotEndpoint,
+        iotDeviceId: reduction.reductionDataEntry.iotDeviceId || null
       }
     });
-  } catch (error) {
-    console.error('switchNetReductionInputType error:', error);
+
+  } catch (err) {
+    console.error("switchNetReductionInputType error:", err);
     return res.status(500).json({
-      message: 'Failed to switch reduction input type',
-      error: error.message
+      success:false,
+      message:"Failed to switch input type",
+      error: err.message
     });
   }
 };
+
 
 // ===============================================
 // 5) NEW: DISCONNECT / RECONNECT SOURCE for NET REDUCTION
