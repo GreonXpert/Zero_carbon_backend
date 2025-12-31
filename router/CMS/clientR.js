@@ -32,7 +32,8 @@ const {
   changeConsultant,
   removeConsultant,
   updateAssessmentLevelOnly,
-  hardResetClientSystem
+  hardResetClientSystem,
+  purgeClientCompletely
    
 } = require("../../controllers/CMS/clientController");
 
@@ -104,9 +105,13 @@ router.get("/:clientId/consultant-history", getConsultantHistory); // Get consul
 
 router.patch("/:clientId/assessment-level", updateAssessmentLevelOnly);
 
+
+router.post("/system/purge-client/:clientId", purgeClientCompletely);
+
 router.post(
   '/system/hard-reset', hardResetClientSystem
 );
+
 
 
 

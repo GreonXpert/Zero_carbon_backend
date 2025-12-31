@@ -773,51 +773,101 @@ clientSchema.methods.updateWorkflowBasedOnAssessment = function() {
 
 /**
  * 🚨 HARD RESET CLIENT SYSTEM
- * Deletes ALL clients so clientSequenceNumber restarts from 1
- * Only for test → production reset
+ * Deletes ALL clients and all related collections data
+ * Works on standalone MongoDB (no transactions required)
  */
 clientSchema.statics.hardResetClientSystem = async function (actorUser) {
-  if (!actorUser || actorUser.userType !== 'super_admin') {
-    throw new Error('Only super admin can reset');
+  if (!actorUser || actorUser.userType !== "super_admin") {
+    throw new Error("Only super admin can reset");
   }
 
-  const mongoose = require('mongoose');
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const mongoose = require("mongoose");
+  const db = mongoose.connection.db;
 
-  try {
-    // ✅ HARD DELETE (NOT SOFT)
-    await this.deleteMany({}, { session });
+  const result = {};
 
-    // OPTIONAL: delete dependent collections
-    const db = mongoose.connection.db;
-    const collections = [
-      
-      'flowcharts',
-      'processflowcharts',
-      'reductions',
-      'emissionsummaries',
-      'netreductionentries',
-      'decarbonizations',
-    ];
+  // 1) Delete clients (main collection)
+  const clientsRes = await this.deleteMany({});
+  result.clients = clientsRes?.deletedCount ?? 0;
 
-    for (const name of collections) {
-      const exists = await db.listCollections({ name }).toArray();
-      if (exists.length) {
-        await db.collection(name).deleteMany({}, { session });
-      }
-    }
+  // 2) Delete dependent collections (hard delete)
+  // NOTE: deleteMany on a non-existing collection returns deletedCount=0 (safe)
+  const collectionsToWipe = [
+    "flowcharts",
+    "processflowcharts",
+    "reductions",
+    "reductioncounters",
+    "emissionsummaries",
+    "netreductionentries",
+    "decarbonizations",
+    "sbtitargets",
 
-    await session.commitTransaction();
-    session.endSession();
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    throw err;
+    // If you are using Counter/SandboxCounter for IDs anywhere:
+    "counters",
+    "sandboxcounters",
+  ];
+
+  for (const name of collectionsToWipe) {
+    const r = await db.collection(name).deleteMany({});
+    result[name] = r?.deletedCount ?? 0;
   }
+
+  return result;
 };
 
 
+
+/**
+ * 🚨 PURGE ONE CLIENT COMPLETELY
+ * Deletes the client document + all related documents in other collections by clientId
+ */
+clientSchema.statics.purgeClientCompletely = async function (clientId, actorUser) {
+  if (!actorUser || actorUser.userType !== "super_admin") {
+    throw new Error("Only super admin can purge a client");
+  }
+  if (!clientId) throw new Error("clientId is required");
+
+  const mongoose = require("mongoose");
+  const db = mongoose.connection.db;
+
+  // Ensure client exists first (optional but safer)
+  const exists = await this.findOne({ clientId }).select("_id clientId").lean();
+  if (!exists) {
+    return { clientDeleted: 0, message: "Client not found", clientId };
+  }
+
+  const out = {};
+
+  // 1) Delete main client doc
+  const cRes = await this.deleteOne({ clientId });
+  out.clientDeleted = cRes?.deletedCount ?? 0;
+
+  // 2) Delete linked docs (they all store clientId)
+  const collectionsByClientId = [
+    "flowcharts",
+    "processflowcharts",
+    "reductions",
+    "emissionsummaries",
+    "netreductionentries",
+    "decarbonizations",
+    "sbtitargets",
+  ];
+
+  for (const name of collectionsByClientId) {
+    const r = await db.collection(name).deleteMany({ clientId });
+    out[name] = r?.deletedCount ?? 0;
+  }
+
+  // 3) Delete per-client counters (example: reductioncounters uses string _id like `${clientId}_reduction`)
+  // Safe even if not present
+  const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const prefix = `^${escapeRegex(clientId)}_`;
+  const counterRes = await db.collection("reductioncounters").deleteMany({ _id: { $regex: prefix } });
+  out.reductioncounters_deletedByPrefix = counterRes?.deletedCount ?? 0;
+
+  out.clientId = clientId;
+  return out;
+};
 
 
 module.exports = mongoose.model("Client", clientSchema);

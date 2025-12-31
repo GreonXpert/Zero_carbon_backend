@@ -5045,23 +5045,77 @@ const hardResetClientSystem = async (req, res) => {
       });
     }
 
-    const Client = require('../models/CMS/Client');
+    const Client = require('../../models/CMS/Client');
 
-    await Client.hardResetClientSystem(req.user);
+    const deleted = await Client.hardResetClientSystem(req.user);
+
 
     return res.status(200).json({
-      success: true,
-      message:
-        'Client system reset complete. Next client will start from beginning.',
-      timestamp: new Date().toISOString()
-    });
+  success: true,
+  message: "Client system reset complete. Next client will start from beginning.",
+  deleted,
+  timestamp: new Date().toISOString()
+});
   } catch (error) {
     console.error('Hard reset error:', error);
     return res.status(500).json({
+  success: false,
+  message: "Failed to reset client system",
+  error: error.message,
+  timestamp: new Date().toISOString()
+});
+  }
+};
+
+
+/**
+ * 🚨 PURGE ONE CLIENT COMPLETELY (super_admin only)
+ * POST /clients/system/purge-client/:clientId
+ * Body: { confirm: "DELETE_CLIENT_AND_ALL_DATA", confirmClientId: "<same clientId>" }
+ */
+const purgeClientCompletely = async (req, res) => {
+  try {
+    if (!req.user || req.user.userType !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can perform this action",
+      });
+    }
+
+    const { clientId } = req.params;
+    const { confirm, confirmClientId } = req.body;
+
+    if (confirm !== "DELETE_CLIENT_AND_ALL_DATA") {
+      return res.status(400).json({
+        success: false,
+        message: "Confirmation required. Pass confirm = 'DELETE_CLIENT_AND_ALL_DATA'",
+      });
+    }
+
+    // extra safety: require typing the clientId again
+    if (!confirmClientId || confirmClientId !== clientId) {
+      return res.status(400).json({
+        success: false,
+        message: "confirmClientId must match the clientId in URL",
+      });
+    }
+
+    const Client = require('../../models/CMS/Client');
+    const deleted = await Client.purgeClientCompletely(clientId, req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: `Client ${clientId} purged completely`,
+      deleted,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Purge client error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Failed to reset client system',
-      error:
-        process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Failed to purge client",
+      error: error.message,
+      timestamp: new Date().toISOString(),
     });
   }
 };
@@ -5102,5 +5156,6 @@ module.exports = {
   changeConsultant,
   removeConsultant,
   updateAssessmentLevelOnly,
-  hardResetClientSystem
+  hardResetClientSystem,
+  purgeClientCompletely
 };
