@@ -265,10 +265,11 @@ const getApiKeyRecipients = async (client, creator) => {
 /**
  * Create new API key
  * ✅ INTEGRATED: Automatically generates PDF and sends email
+ * ✅ NEW: If NET_API / NET_IOT -> updates Reduction.reductionDataEntry.apiEndpoint + notifies client users
  */
 const createKey = async (req, res) => {
   let pdfPath = null; // Track PDF path for cleanup
-  
+
   try {
     const { clientId } = req.params;
     const {
@@ -410,8 +411,84 @@ const createKey = async (req, res) => {
     await apiKeyDoc.save();
     console.log('[API Key] ✅ Key created in database:', prefix);
 
-    // Send notification
+    // Send notification (your existing behaviour)
     await createApiKeyNotification('created', apiKeyDoc, req.user, client);
+
+    // =========================================================
+    // ✅ NEW: If NET_API / NET_IOT -> Update Reduction endpoint
+    //       + Send client notification immediately
+    // =========================================================
+    let updatedReduction = null;
+    let finalEndpoint = null;
+
+    if (keyType === 'NET_API' || keyType === 'NET_IOT') {
+      updatedReduction = await Reduction.findOne({
+        clientId,
+        projectId,
+        calculationMethodology
+      });
+
+      if (updatedReduction) {
+        if (!updatedReduction.reductionDataEntry) {
+          updatedReduction.reductionDataEntry = {};
+        }
+
+        // IMPORTANT: Your requirement is "save endpoint always in apiEndpoint"
+        // Also set correct status flags
+        const base = `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}`;
+
+        if (keyType === 'NET_API') {
+          finalEndpoint = `${base}/${key}/api`;
+          updatedReduction.reductionDataEntry.apiEndpoint = finalEndpoint;
+          updatedReduction.reductionDataEntry.apiStatus = true;
+          updatedReduction.reductionDataEntry.iotStatus = false;
+        } else {
+          finalEndpoint = `${base}/${key}/iot`;
+          updatedReduction.reductionDataEntry.apiEndpoint = finalEndpoint;
+          updatedReduction.reductionDataEntry.iotStatus = true;
+          updatedReduction.reductionDataEntry.apiStatus = false;
+        }
+
+        await updatedReduction.save();
+
+        // ✅ Client-facing notification (in-app)
+        // Use Notification model same style as notificationControllers (published immediately) :contentReference[oaicite:1]{index=1}
+        const clientUsers = await User.find({
+          clientId,
+          userType: { $in: ['client_admin', 'client_employee_head'] },
+          isDeleted: false
+        }).select('_id email userName');
+
+        const targetUsers = clientUsers.map(u => u._id);
+
+        if (targetUsers.length > 0) {
+          const notif = new Notification({
+            title: `API Key Generated (${keyType}) - ${updatedReduction.projectName}`,
+            message:
+              `API key is ready for your Net Reduction ingestion.\n\n` +
+              `Project: ${updatedReduction.projectName}\n` +
+              `Client: ${clientId}\n` +
+              `Endpoint: ${finalEndpoint}\n\n` +
+              `IMPORTANT: API key is shared via email/PDF. Keep it secure.`,
+            priority: 'high',
+            createdBy: userId,
+            creatorType: req.user.userType,
+            targetUsers,
+            targetClients: [clientId],
+            status: 'published',
+            publishedAt: new Date(),
+            isSystemNotification: true,
+            systemAction: 'api_key_generated',
+            relatedEntity: {
+              type: 'reduction',
+              id: updatedReduction._id
+            }
+          });
+
+          await notif.save();
+        }
+      }
+    }
 
     // Calculate days until expiry
     const daysUntilExpiry = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
@@ -421,7 +498,7 @@ const createKey = async (req, res) => {
 
     try {
       console.log('[API Key] Generating PDF...');
-      
+
       const tempDir = path.join(__dirname, '../temp');
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
@@ -434,7 +511,8 @@ const createKey = async (req, res) => {
         apiKey: key, // Include full key for PDF
         keyId: apiKeyDoc._id,
         daysUntilExpiry,
-        metadata
+        metadata,
+        finalEndpoint // ✅ NEW: include endpoint in PDF if you want
       };
 
       const clientDataForPDF = {
@@ -453,24 +531,25 @@ const createKey = async (req, res) => {
     }
 
     // ========== SEND EMAIL AUTOMATICALLY ==========
-// ========== SEND EMAIL AUTOMATICALLY ==========
-let emailSent = false;
-let emailResults = null;
-let recipients = []; // ✅ MOVE THIS OUTSIDE
+    let emailSent = false;
+    let emailResults = null;
+    let recipients = [];
 
-if (pdfGenerated && pdfPath) {
-  try {
-    console.log('[API Key] Sending email...');
-    
-    // Get recipients: client admins, consultant admin (creator), assigned consultant
-    recipients = await getApiKeyRecipients(client, req.user); // ✅ REMOVE 'const'
+    if (pdfGenerated && pdfPath) {
+      try {
+        console.log('[API Key] Sending email...');
+
+        // Get recipients: client admins, consultant admin (creator), assigned consultant
+        recipients = await getApiKeyRecipients(client, req.user);
+
         if (recipients.length > 0) {
           const apiKeyDataForEmail = {
             ...apiKeyDoc.toObject(),
             apiKey: key, // Include full key for email
             keyId: apiKeyDoc._id,
             daysUntilExpiry,
-            metadata
+            metadata,
+            finalEndpoint // ✅ NEW: include endpoint in email template too
           };
 
           const clientDataForEmail = {
@@ -494,13 +573,13 @@ if (pdfGenerated && pdfPath) {
           });
 
           emailSent = emailResults.success;
-          
+
           if (emailSent) {
             console.log('[API Key] ✅ Email sent to', emailResults.totalSent, 'recipients');
           } else {
             console.log('[API Key] ⚠️ Email sending had failures');
           }
-          
+
         } else {
           console.log('[API Key] ⚠️ No recipients found for email');
         }
@@ -523,7 +602,7 @@ if (pdfGenerated && pdfPath) {
     }
 
     // ========== RETURN RESPONSE ==========
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'API key created successfully',
       warning: 'IMPORTANT: This is the only time the full API key will be displayed. Save it securely.',
@@ -542,6 +621,11 @@ if (pdfGenerated && pdfPath) {
         description,
         ipWhitelist,
         createdAt: apiKeyDoc.createdAt,
+
+        // ✅ NEW: reflect endpoint update result to caller
+        reductionEndpointUpdated: !!updatedReduction,
+        finalEndpoint: finalEndpoint || null,
+
         // PDF and email status
         pdfGenerated,
         emailSent,
@@ -559,7 +643,7 @@ if (pdfGenerated && pdfPath) {
 
   } catch (error) {
     console.error('[API Key] Create error:', error);
-    
+
     // Clean up PDF file if it exists
     if (pdfPath && fs.existsSync(pdfPath)) {
       try {
@@ -569,8 +653,8 @@ if (pdfGenerated && pdfPath) {
         console.error('[API Key] Failed to cleanup PDF:', cleanupError);
       }
     }
-    
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       error: 'Failed to create API key',
       message: error.message
@@ -882,6 +966,77 @@ const revokeKey = async (req, res) => {
     });
   }
 };
+
+
+// ✅ Update reduction endpoint automatically when consultant creates key
+async function applyKeyToNetReductionProject({ clientId, projectId, calculationMethodology, keyType, keyValue }) {
+  const project = await Reduction.findOne({ clientId, projectId, calculationMethodology });
+  if (!project) return null;
+
+  const base = `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}`;
+
+  if (!project.reductionDataEntry) project.reductionDataEntry = {};
+
+  if (keyType === "NET_API") {
+    project.reductionDataEntry.apiEndpoint = `${base}/${keyValue}/api`;
+    project.reductionDataEntry.apiStatus = true;
+  }
+
+  if (keyType === "NET_IOT") {
+    project.reductionDataEntry.apiEndpoint = `${base}/${keyValue}/iot`;
+    project.reductionDataEntry.iotStatus = true;
+  }
+
+  await project.save();
+  return project;
+}
+
+// ✅ Notify + email ALL client admins (and optional employee_head)
+async function notifyClientApiKeyReady({ clientId, projectName, keyType, apiEndpoint, apiKey }) {
+  const clientUsers = await User.find({
+    clientId,
+    userType: { $in: ["client_admin", "client_employee_head"] },
+    isDeleted: false
+  }).select("_id email userName");
+
+  const targetUserIds = clientUsers.map(u => u._id);
+
+  // Notification
+  const notif = new Notification({
+    title: `API Key Generated (${keyType}) - ${projectName}`,
+    message:
+      `API Key has been generated for client ${clientId}.\n\n` +
+      `Endpoint:\n${apiEndpoint}\n\n` +
+      `API Key:\n${apiKey}\n\n` +
+      `Please store this securely.`,
+    priority: "high",
+    createdBy: null,
+    creatorType: "system",
+    targetUsers: targetUserIds,
+    targetClients: [clientId],
+    status: "published",
+    publishedAt: new Date(),
+    isSystemNotification: true,
+    systemAction: "api_key_generated"
+  });
+  await notif.save();
+
+  // Email
+  for (const u of clientUsers) {
+    if (!u.email) continue;
+    await sendMail(
+      u.email,
+      `ZeroCarbon API Key Generated (${keyType})`,
+      `Hello ${u.userName || ""},\n\n` +
+        `API key has been generated for ${clientId} - ${projectName}.\n\n` +
+        `Endpoint:\n${apiEndpoint}\n\n` +
+        `API Key:\n${apiKey}\n\n` +
+        `Keep this key confidential.\n\n` +
+        `Thanks,\nZeroCarbon Team`
+    );
+  }
+}
+
 
 module.exports = {
   createKey,

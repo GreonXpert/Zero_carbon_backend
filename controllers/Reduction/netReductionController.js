@@ -2822,117 +2822,216 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
  *    apiEndpoint, iotDeviceId.
  *  - NO effect on NetReductionEntry, just config for how future data should come in.
  */
+// ✅ helper: normalize userId
+function getUserId(user) {
+  return (user?._id || user?.id || user?.userId || "").toString();
+}
+
+// ✅ helper: find consultant(s) responsible for this client
+async function resolveClientConsultantTargets(clientId) {
+  const client = await Client.findOne({ clientId }).select("leadInfo");
+  if (!client) return [];
+
+  const targets = [];
+  const ca = client.leadInfo?.consultantAdminId || client.leadInfo?.createdBy; // depends on your schema
+  const c = client.leadInfo?.assignedConsultantId;
+
+  if (ca) targets.push(ca.toString());
+  if (c) targets.push(c.toString());
+
+  // de-dup
+  return [...new Set(targets)];
+}
+
+// ✅ helper: create a system notification (published immediately)
+async function createSystemNotification({ title, message, targetUsers = [], targetClients = [], systemAction, relatedEntity }) {
+  if (!title || !message) return;
+
+  const notif = new Notification({
+    title,
+    message,
+    priority: "high",
+    createdBy: null,                 // system
+    creatorType: "system",
+    targetUsers,
+    targetClients,
+    targetUserTypes: [],
+    status: "published",
+    publishedAt: new Date(),
+    isSystemNotification: true,
+    systemAction: systemAction || "net_reduction_input_switch",
+    relatedEntity: relatedEntity || null,
+  });
+
+  await notif.save();
+}
+
+// ✅ helper: base endpoints (NO API KEY)
+function buildBaseEndpoints({ clientId, projectId, calculationMethodology }) {
+  // IMPORTANT: must match your netReductionR.js routes
+  return {
+    manual: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/manual`,
+    csv: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/csv`,
+    apiWithKey: (apiKey) => `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/api`,
+    iotWithKey: (apiKey) => `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/iot`,
+    pendingApi: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/PENDING/api`,
+    pendingIot: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/PENDING/iot`,
+  };
+}
+
+// ✅ helper: find active api key (NET_API / NET_IOT)
+async function findActiveKey({ clientId, projectId, calculationMethodology, keyType }) {
+  return await ApiKey.findOne({
+    clientId,
+    projectId,
+    calculationMethodology,
+    keyType,
+    status: "ACTIVE"
+  }).sort({ createdAt: -1 });
+}
+
+/**
+ * ✅ FULL REQUIREMENT IMPLEMENTATION
+ * - Always save apiEndpoint based on selected inputType (manual/api/iot/csv)
+ * - Switching to API/IOT triggers notification to consultant to generate key (if missing)
+ * - If key exists, endpoint is saved immediately
+ */
 exports.switchNetReductionInputType = async (req, res) => {
   try {
     const { clientId, projectId, calculationMethodology } = req.params;
-    const { inputType, apiKey, deviceId } = req.body;
 
-    if (!["manual", "API", "IOT", "CSV"].includes(inputType)) {
+    const userId = getUserId(req.user);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Invalid session" });
+    }
+
+    // ✅ inputType accepted: manual | API | IOT | CSV
+    let { inputType } = req.body;
+    inputType = (inputType || "").toString().trim().toUpperCase();
+
+    const allowed = ["MANUAL", "API", "IOT", "CSV"];
+    if (!allowed.includes(inputType)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid inputType. Must be manual, API, IOT or CSV"
+        message: `Invalid inputType. Allowed: ${allowed.join(", ")}`
       });
     }
 
-    const reduction = await Reduction.findOne({
-      clientId,
-      projectId,
-      isDeleted: false
-    });
-
-    if (!reduction) {
-      return res.status(404).json({ success:false, message:"Reduction project not found" });
+    // ✅ Fetch project
+    const project = await Reduction.findOne({ clientId, projectId, calculationMethodology });
+    if (!project) {
+      return res.status(404).json({ success: false, message: "Reduction project not found" });
     }
 
-    const can = await canWriteReductionData(req.user, clientId);
-    if (!can.ok) return res.status(403).json({ success:false, message:can.reason });
-
-    // Ensure container exists
-    if (!reduction.reductionDataEntry) {
-      reduction.reductionDataEntry = {};
+    // ✅ Ensure object exists
+    if (!project.reductionDataEntry) {
+      project.reductionDataEntry = {
+        inputType: "manual",
+        originalInputType: "manual",
+        apiEndpoint: "",
+        iotDeviceId: "",
+        apiStatus: false,
+        iotStatus: false
+      };
     }
 
-    // Store original
-    if (!reduction.reductionDataEntry.originalInputType) {
-      reduction.reductionDataEntry.originalInputType =
-        reduction.reductionDataEntry.inputType || "manual";
+    const endpoints = buildBaseEndpoints({ clientId, projectId, calculationMethodology });
+
+    // ✅ always save originalInputType too
+    project.reductionDataEntry.originalInputType = inputType;
+
+    // ✅ RULE: manual also must store endpoint in apiEndpoint
+    if (inputType === "MANUAL") {
+      project.reductionDataEntry.inputType = "manual";
+      project.reductionDataEntry.apiEndpoint = endpoints.manual; // ✅ always save
+      project.reductionDataEntry.apiStatus = false;
+      project.reductionDataEntry.iotStatus = false;
+
+      await project.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Switched to Manual input (apiEndpoint saved)",
+        data: project.reductionDataEntry
+      });
     }
 
-    // ====================================================
-    // 🔥 CHANNEL-SPECIFIC ENDPOINT GENERATION
-    // ====================================================
+    if (inputType === "CSV") {
+      project.reductionDataEntry.inputType = "manual"; // your system maps CSV → manual mode
+      project.reductionDataEntry.apiEndpoint = endpoints.csv; // ✅ always save
+      project.reductionDataEntry.apiStatus = false;
+      project.reductionDataEntry.iotStatus = false;
 
-    const base = process.env.API_BASE_URL || "";
+      await project.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Switched to CSV input (apiEndpoint saved)",
+        data: project.reductionDataEntry
+      });
+    }
+
+    // ✅ API / IOT path: must save endpoint into apiEndpoint always
+    const keyType = (inputType === "API") ? "NET_API" : "NET_IOT";
+    const existingKey = await findActiveKey({ clientId, projectId, calculationMethodology, keyType });
 
     if (inputType === "API") {
-      if (!apiKey) {
-        return res.status(400).json({
-          success:false,
-          message:"apiKey is required when switching to API"
-        });
-      }
+      project.reductionDataEntry.inputType = "API";
+      project.reductionDataEntry.apiEndpoint = existingKey
+        ? endpoints.apiWithKey(existingKey.key)
+        : endpoints.pendingApi;
 
-      reduction.reductionDataEntry.apiEndpoint =
-        `${base}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/api`;
+      project.reductionDataEntry.apiStatus = !!existingKey;
+      project.reductionDataEntry.iotStatus = false;
+    } else {
+      // IOT
+      project.reductionDataEntry.inputType = "IOT";
+      project.reductionDataEntry.apiEndpoint = existingKey
+        ? endpoints.iotWithKey(existingKey.key)
+        : endpoints.pendingIot;
 
-      reduction.reductionDataEntry.apiStatus = true;
-      reduction.reductionDataEntry.iotStatus = false;
+      project.reductionDataEntry.iotStatus = !!existingKey;
+      project.reductionDataEntry.apiStatus = false;
     }
 
-    if (inputType === "IOT") {
-      if (!apiKey) {
-        return res.status(400).json({
-          success:false,
-          message:"apiKey is required when switching to IOT"
+    await project.save();
+
+    // ✅ If key missing → notify consultant/consultant_admin to generate key
+    if (!existingKey) {
+      const consultantTargets = await resolveClientConsultantTargets(clientId);
+
+      if (consultantTargets.length > 0) {
+        await createSystemNotification({
+          title: `API Key Request (${inputType}) - ${project.projectName}`,
+          message:
+            `Client ${clientId} switched Net Reduction input type to ${inputType}.\n` +
+            `Please generate an API key for:\n` +
+            `ProjectId: ${projectId}\n` +
+            `Methodology: ${calculationMethodology}\n` +
+            `KeyType: ${keyType}\n\n` +
+            `After key creation, the endpoint will auto-update for the client.`,
+          targetUsers: consultantTargets,
+          targetClients: [clientId],
+          systemAction: "api_key_requested",
+          relatedEntity: { type: "reduction", id: project._id }
         });
       }
-      if (!deviceId) {
-        return res.status(400).json({
-          success:false,
-          message:"deviceId is required when switching to IOT"
-        });
-      }
-
-      reduction.reductionDataEntry.apiEndpoint =
-        `${base}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/iot`;
-
-      reduction.reductionDataEntry.iotDeviceId = deviceId;
-      reduction.reductionDataEntry.iotStatus = true;
-      reduction.reductionDataEntry.apiStatus = false;
     }
 
-    // manual or csv → do NOT erase endpoints
-    if (inputType === "manual" || inputType === "CSV") {
-      reduction.reductionDataEntry.apiStatus = false;
-      reduction.reductionDataEntry.iotStatus = false;
-    }
-
-    // Always update inputType
-    reduction.reductionDataEntry.inputType = inputType;
-
-    await reduction.save();
-
-    emitNR("net-reduction:input-switched", {
-      clientId,
-      projectId,
-      calculationMethodology,
-      inputType,
-      apiEndpoint: reduction.reductionDataEntry.apiEndpoint || null,
-      iotDeviceId: reduction.reductionDataEntry.iotDeviceId || null
-    });
-
-    return res.json({
+    return res.status(200).json({
       success: true,
-      message: "Net Reduction input type switched",
-      data: reduction.reductionDataEntry
+      message: existingKey
+        ? `Switched to ${inputType} (key exists, endpoint saved)`
+        : `Switched to ${inputType} (key missing, consultant notified)`,
+      data: project.reductionDataEntry
     });
 
-  } catch (err) {
-    console.error("switchNetReductionInputType error:", err);
+  } catch (error) {
+    console.error("switchNetReductionInputType error:", error);
     return res.status(500).json({
-      success:false,
-      message:"Failed to switch input type",
-      error: err.message
+      success: false,
+      message: "Failed to switch input type",
+      error: error.message
     });
   }
 };
