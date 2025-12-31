@@ -438,6 +438,7 @@ const createConsultantAdmin = async (req, res) => {
     const address = req.body.address;
     const teamName = req.body.teamName;
     const employeeId = req.body.employeeId;
+    const companyName = req.body.companyName;
 
     if (!email || !password || !userName) {
       return res.status(400).json({ 
@@ -465,7 +466,7 @@ const createConsultantAdmin = async (req, res) => {
       address,
       teamName,
       employeeId,
-      userType,
+      userType: "consultant_admin",
       companyName,
       createdBy: req.user.id,
       isActive: true,

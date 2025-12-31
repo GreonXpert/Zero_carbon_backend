@@ -616,17 +616,14 @@ const SandboxCounter = mongoose.model("SandboxCounter", sandboxCounterSchema);
 // 🔹 Get next sequence number for client IDs (001, 002, 003, ...)
 clientSchema.statics.getNextClientSequence = async function () {
   const lastClient = await this.findOne(
-    { isDeleted: false },                  // ✅ CRITICAL FIX
+    { isDeleted: { $ne: true } },   // matches false OR missing
     { clientSequenceNumber: 1 }
-  )
-    .sort({ clientSequenceNumber: -1 })
-    .lean();
+  ).sort({ clientSequenceNumber: -1 }).lean();
 
   return lastClient?.clientSequenceNumber
     ? lastClient.clientSequenceNumber + 1
     : 1;
 };
-
 
 // 🔹 Build clientId text based on stage + sequence number
 clientSchema.statics.buildClientIdForStage = function (sequenceNumber, stage) {
