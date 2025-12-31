@@ -1240,9 +1240,9 @@ const createLead = async (req, res) => {
       .map(([key]) => key);
 
     //Conditional Validation 
-    if(leadSource === 'sales Team'){
-      if(!salesPersonName || !salesPersonEmployeeId) missingFields.push("salesPersonName or salesPersonEmployeeId")
-    }
+    // if(leadSource === 'sales Team'){
+    //   if(!salesPersonName || !salesPersonEmployeeId) missingFields.push("salesPersonName or salesPersonEmployeeId")
+    // }
     if(leadSource === 'reference'){
       if (!referenceName || !referenceContactNumber) missingFields.push("referenceName or referenceContactNumber")
     }

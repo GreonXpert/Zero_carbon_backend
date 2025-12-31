@@ -465,8 +465,8 @@ const createConsultantAdmin = async (req, res) => {
       address,
       teamName,
       employeeId,
-      userType: "consultant_admin",
-      companyName: "ZeroCarbon Consultancy",
+      userType,
+      companyName,
       createdBy: req.user.id,
       isActive: true,
       sandbox: false
