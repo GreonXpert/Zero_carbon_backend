@@ -677,7 +677,7 @@ const createConsultant = async (req, res) => {
     const existingUser = await User.findOne({
       $or: [
         { email: email.toLowerCase() },
-        { userName: userName.toLowerCase() },
+        { userName: userName},
         { employeeId: employeeId.toUpperCase() } // Also check for duplicate employeeId
       ]
     });
@@ -717,7 +717,7 @@ const createConsultant = async (req, res) => {
       email: email.toLowerCase(),
       password: hashedPassword,
       contactNumber,
-      userName: userName.toLowerCase(),
+      userName: userName,
       userType: "consultant",
       address,
       companyName: teamName || "ZeroCarbon Consultancy",
