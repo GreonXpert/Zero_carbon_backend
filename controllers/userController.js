@@ -1722,6 +1722,153 @@ const createViewer = async (req, res) => {
   }
 };
 
+// ===============================================
+// PROFILE IMAGE NORMALIZER (S3 + Legacy Safe)
+// ===============================================
+const normalizeUserProfile = (u) => {
+  if (!u) return null;
+
+  const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, '');
+
+  // If S3 url exists → keep it
+  if (u.profileImage?.url) return u;
+
+  // If legacy local path exists → convert to URL
+  if (u.profileImage?.path && BASE) {
+    u.profileImage.url = `${BASE}/${u.profileImage.path.replace(/\\/g, '/')}`;
+  }
+
+  return u;
+};
+
+// ===============================================
+// GET MY PROFILE (Logged in user)
+// GET /api/users/me
+// ===============================================
+const getMyProfile = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const user = await User.findById(userId)
+      .select("-password")
+      .populate("createdBy", "userName email profileImage")
+      .populate("parentUser", "userName email profileImage")
+      .populate("consultantAdminId", "userName email profileImage")
+      .populate("employeeHeadId", "userName email profileImage")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Normalize all profile images
+    user.createdBy = normalizeUserProfile(user.createdBy);
+    user.parentUser = normalizeUserProfile(user.parentUser);
+    user.consultantAdminId = normalizeUserProfile(user.consultantAdminId);
+    user.employeeHeadId = normalizeUserProfile(user.employeeHeadId);
+    normalizeUserProfile(user);
+
+    res.status(200).json({
+      success: true,
+      user
+    });
+
+  } catch (error) {
+    console.error("Get my profile error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch profile",
+      error: error.message
+    });
+  }
+};
+
+
+// ===============================================
+// GET USER BY ID (Hierarchy enforced)
+// GET /api/users/:userId
+// ===============================================
+const getUserById = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    let baseQuery = {};
+
+    switch (req.user.userType) {
+      case "super_admin":
+        break;
+
+      case "consultant_admin":
+        baseQuery = {
+          $or: [
+            { createdBy: req.user.id },
+            { consultantAdminId: req.user.id }
+          ]
+        };
+        break;
+
+      case "consultant": {
+        const assignedClients = await Client.find({
+          "leadInfo.assignedConsultantId": req.user.id
+        }).select("clientId");
+
+        const clientIds = assignedClients.map(c => c.clientId);
+        baseQuery = { clientId: { $in: clientIds } };
+        break;
+      }
+
+      case "client_admin":
+        baseQuery = { clientId: req.user.clientId };
+        break;
+
+      case "client_employee_head":
+        baseQuery = { createdBy: req.user.id };
+        break;
+
+      default:
+        return res.status(403).json({
+          message: "You don't have permission to view this user"
+        });
+    }
+
+    const user = await User.findOne({ _id: userId, ...baseQuery })
+      .select("-password")
+      .populate("createdBy", "userName email profileImage")
+      .populate("parentUser", "userName email profileImage")
+      .populate("consultantAdminId", "userName email profileImage")
+      .populate("employeeHeadId", "userName email profileImage")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found or not accessible"
+      });
+    }
+
+    // Normalize images
+    user.createdBy = normalizeUserProfile(user.createdBy);
+    user.parentUser = normalizeUserProfile(user.parentUser);
+    user.consultantAdminId = normalizeUserProfile(user.consultantAdminId);
+    user.employeeHeadId = normalizeUserProfile(user.employeeHeadId);
+    normalizeUserProfile(user);
+
+    res.status(200).json({
+      success: true,
+      user
+    });
+
+  } catch (error) {
+    console.error("Get user by id error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch user",
+      error: error.message
+    });
+  }
+};
+
+
+
 // Get users based on hierarchy
 // ===============================================
 // FIXED getUsers (S3 PROFILE IMAGE SAFE)
@@ -3513,6 +3660,8 @@ module.exports = {
   createEmployee,
   createAuditor,
   createViewer,
+  getMyProfile,
+  getUserById,
   getUsers,
   updateUser,
   deleteUser,

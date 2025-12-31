@@ -12,6 +12,8 @@ const {
   createEmployee,
   createAuditor,
   createViewer,
+  getMyProfile,
+  getUserById,
   getUsers,
   updateUser,
   toggleUserStatus,
@@ -64,6 +66,12 @@ router.delete("/remove-assignment", removeAssignment);
 
 // User management routes
 router.get("/", getUsers); // Get users based on hierarchy
+// Profile
+router.get("/me", getMyProfile);
+
+// Single user
+router.get("/:userId", getUserById);
+
 router.put("/:userId", uploadUserImage, updateUser);
 router.delete("/:userId", deleteUser); // Delete user with hierarchy control and notifications
 router.patch("/:userId/toggle-status", toggleUserStatus); // Activate/Deactivate user
