@@ -2834,69 +2834,97 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    const reduction = await Reduction.findOne({ clientId, projectId, isDeleted: false });
+    const reduction = await Reduction.findOne({
+      clientId,
+      projectId,
+      isDeleted: false
+    });
+
     if (!reduction) {
       return res.status(404).json({ success:false, message:"Reduction project not found" });
     }
 
-    // 🔐 permissions
     const can = await canWriteReductionData(req.user, clientId);
     if (!can.ok) return res.status(403).json({ success:false, message:can.reason });
 
-    // ================================================
-    // 🔑 Build endpoints (ALWAYS generated)
-    // ================================================
-    const apiEndpoint = `${process.env.API_BASE_URL}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey || reduction.reductionDataEntry?.apiKey || ""}/api`;
-    const iotEndpoint = `${process.env.API_BASE_URL}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey || reduction.reductionDataEntry?.apiKey || ""}/iot`;
-
-    // Ensure reductionDataEntry exists
+    // Ensure container exists
     if (!reduction.reductionDataEntry) {
       reduction.reductionDataEntry = {};
     }
 
-    // Persist endpoints ALWAYS
-    reduction.reductionDataEntry.apiEndpoint = apiEndpoint;
-    reduction.reductionDataEntry.iotEndpoint = iotEndpoint;
-
-    // Persist IoT device id if provided
-    if (deviceId) {
-      reduction.reductionDataEntry.iotDeviceId = deviceId;
+    // Store original
+    if (!reduction.reductionDataEntry.originalInputType) {
+      reduction.reductionDataEntry.originalInputType =
+        reduction.reductionDataEntry.inputType || "manual";
     }
 
-    // ================================================
-    // 🔄 Switch logic
-    // ================================================
-    reduction.reductionDataEntry.originalInputType =
-      reduction.reductionDataEntry.originalInputType || reduction.reductionDataEntry.inputType || "manual";
+    // ====================================================
+    // 🔥 CHANNEL-SPECIFIC ENDPOINT GENERATION
+    // ====================================================
 
+    const base = process.env.API_BASE_URL || "";
+
+    if (inputType === "API") {
+      if (!apiKey) {
+        return res.status(400).json({
+          success:false,
+          message:"apiKey is required when switching to API"
+        });
+      }
+
+      reduction.reductionDataEntry.apiEndpoint =
+        `${base}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/api`;
+
+      reduction.reductionDataEntry.apiStatus = true;
+      reduction.reductionDataEntry.iotStatus = false;
+    }
+
+    if (inputType === "IOT") {
+      if (!apiKey) {
+        return res.status(400).json({
+          success:false,
+          message:"apiKey is required when switching to IOT"
+        });
+      }
+      if (!deviceId) {
+        return res.status(400).json({
+          success:false,
+          message:"deviceId is required when switching to IOT"
+        });
+      }
+
+      reduction.reductionDataEntry.apiEndpoint =
+        `${base}/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/iot`;
+
+      reduction.reductionDataEntry.iotDeviceId = deviceId;
+      reduction.reductionDataEntry.iotStatus = true;
+      reduction.reductionDataEntry.apiStatus = false;
+    }
+
+    // manual or csv → do NOT erase endpoints
+    if (inputType === "manual" || inputType === "CSV") {
+      reduction.reductionDataEntry.apiStatus = false;
+      reduction.reductionDataEntry.iotStatus = false;
+    }
+
+    // Always update inputType
     reduction.reductionDataEntry.inputType = inputType;
 
-    reduction.reductionDataEntry.apiStatus = inputType === "API";
-    reduction.reductionDataEntry.iotStatus = inputType === "IOT";
-
-    // Save
     await reduction.save();
 
-    // Socket notify
     emitNR("net-reduction:input-switched", {
       clientId,
       projectId,
       calculationMethodology,
       inputType,
-      apiEndpoint,
-      iotEndpoint,
+      apiEndpoint: reduction.reductionDataEntry.apiEndpoint || null,
       iotDeviceId: reduction.reductionDataEntry.iotDeviceId || null
     });
 
     return res.json({
       success: true,
       message: "Net Reduction input type switched",
-      data: {
-        inputType,
-        apiEndpoint,
-        iotEndpoint,
-        iotDeviceId: reduction.reductionDataEntry.iotDeviceId || null
-      }
+      data: reduction.reductionDataEntry
     });
 
   } catch (err) {
