@@ -10,11 +10,18 @@ const {
   listKeys,
   getKeyDetails,
   downloadKeyPDF,     // ✅ NEW
-  sendKeyEmail        // ✅ NEW
+  sendKeyEmail,
+  getApiKeyRequests,        // ✅ NEW
+  approveApiKeyRequest,
+  rejectApiKeyRequest,
+  getApiKeyRequestStats,
+
 } = require('../controllers/apiKeyController');
 const { manualExpiryCheck, getApiKeyStats } = require('../utils/jobs/apiKeyExpiryChecker');
 
 // ============== API Key Management Routes ==============
+
+
 
 /**
  * All routes require authentication
@@ -59,6 +66,34 @@ router.get(
   checkRole('super_admin', 'consultant_admin', 'consultant'),
   listKeys
 );
+
+router.get(
+  "/api-key-requests",
+  checkRole("consultant_admin","consultant"),
+  getApiKeyRequests
+);
+
+
+router.get(
+  "/api-key-requests/stats",
+  checkRole("consultant_admin", "consultant"),
+  getApiKeyRequestStats
+);
+
+
+
+router.post(
+  "/api-key-requests/:requestId/approve",
+  checkRole("consultant_admin","consultant"),
+  approveApiKeyRequest
+);
+
+router.post(
+  "/api-key-requests/:requestId/reject",
+  checkRole("consultant_admin","consultant"),
+  rejectApiKeyRequest
+);
+
 
 /**
  * GET API KEY DETAILS
@@ -152,5 +187,8 @@ router.post(
     }
   }
 );
+
+
+
 
 module.exports = router;

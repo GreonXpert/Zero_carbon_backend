@@ -2558,131 +2558,163 @@ const deleteManualData = async (req, res) => {
   }
 };
 
+const ApiKeyRequest = require('../../models/ApiKeyRequest');
+const ApiKey = require('../../models/ApiKey');
+const Notification = require('../../models/Notification/Notification');
 
 
-// Switch Input Type
-// Switch Input Type
+
+async function getDataCollectionEndpoint({ clientId, nodeId, scopeIdentifier, type }) {
+  const keyType = type === 'API' ? 'DC_API' : 'DC_IOT';
+
+  const key = await ApiKey.findOne({
+    clientId,
+    keyType,
+    nodeId,
+    scopeIdentifier,
+    status: 'ACTIVE'
+  });
+
+  if (!key) return null;
+
+  const base = `/api/data-collection/clients/${clientId}/nodes/${nodeId}/scopes/${scopeIdentifier}/${key.keyPrefix}`;
+  return type === 'API' ? `${base}/api-data` : `${base}/iot-data`;
+}
+
 const switchInputType = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
-    const { inputType: newInputType, connectionDetails } = req.body;
+    const { inputType } = req.body;
 
-    // ✅ Only client_admin of the SAME client
-    if (req.user.userType !== 'client_admin' || req.user.clientId !== clientId) {
-      return res.status(403).json({
-        message: 'Permission denied. Only Client Admin can switch input types.'
+    const actorId = req.user?._id || req.user?.id;
+    const actorType = req.user?.userType;
+
+    if (!actorId || !actorType) {
+      return res.status(401).json({ message: 'Authentication missing' });
+    }
+
+    if (actorType !== 'client_admin' || req.user.clientId !== clientId) {
+      return res.status(403).json({ message: 'Only Client Admin allowed' });
+    }
+
+    if (!['manual','API','IOT'].includes(inputType)) {
+      return res.status(400).json({ message:'Invalid inputType' });
+    }
+
+    const flowchart = await Flowchart.findOne({ clientId, isActive:true });
+    if (!flowchart) return res.status(404).json({ message:'Flowchart not found' });
+
+    const node = flowchart.nodes.find(n => n.id === nodeId);
+    const scope = node?.details?.scopeDetails?.find(s => s.scopeIdentifier === scopeIdentifier);
+    if (!scope) return res.status(404).json({ message:'Scope not found' });
+
+    const previousType = scope.inputType;
+
+    /* ---------------- MANUAL ---------------- */
+    if (inputType === 'manual') {
+      scope.inputType = 'manual';
+      scope.apiEndpoint = '';
+      scope.apiStatus = false;
+      scope.iotStatus = false;
+
+      flowchart.markModified('nodes');
+      await flowchart.save();
+
+      await reflectSwitchInputTypeInClient({
+        clientId,
+        previousType,
+        newType:'manual',
+        nodeId,
+        scopeIdentifier,
+        connectionDetails:{},
+        userId:actorId
+      });
+
+      return res.json({ success:true, inputType:'manual' });
+    }
+
+    /* ---------------- API / IOT ---------------- */
+    const endpoint = await getDataCollectionEndpoint({
+      clientId, nodeId, scopeIdentifier, type: inputType
+    });
+
+    /* --------- No key → create request ---------- */
+    if (!endpoint) {
+      const keyType = inputType === 'API' ? 'DC_API' : 'DC_IOT';
+
+      await ApiKeyRequest.create({
+        clientId,
+        keyType,
+        nodeId,
+        scopeIdentifier,
+        requestedBy: actorId,
+        status:'pending'
+      });
+
+      const consultants = await User.find({
+        userType:{ $in:['consultant','consultant_admin'] }
+      }).select('_id');
+
+      const targetUsers = consultants.map(u => u._id);
+
+      await Notification.create({
+        title: 'API Key Request',
+        message: `Client ${clientId} requested ${keyType} for scope ${scopeIdentifier}`,
+        targetUsers,
+        targetClients: [clientId],
+        priority: 'high',
+
+        // 🔑 REQUIRED FIELDS
+        createdBy: actorId,
+        creatorType: actorType,
+
+        systemAction: 'api_key_request',
+        isSystemNotification: true,
+        status: 'published',
+        publishedAt: new Date()
+      });
+
+      return res.status(202).json({
+        status:'waiting_for_key',
+        message:'API key requested. Consultant must generate it.'
       });
     }
 
-    // ✅ Validate input type
-    if (!newInputType || !['manual', 'API', 'IOT'].includes(newInputType)) {
-      return res.status(400).json({ message: 'Invalid input type' });
-    }
+    /* --------- Key exists → switch now ---------- */
+    scope.inputType = inputType;
+    scope.apiEndpoint = endpoint;
+    scope.apiStatus = inputType === 'API';
+    scope.iotStatus = inputType === 'IOT';
 
-    // ✅ Load the active Flowchart as a real Mongoose document
-    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
-    if (!flowchart) {
-      return res.status(404).json({ message: 'No active flowchart found' });
-    }
-
-    let updated = false;
-    let previousType = null;
-    let updatedScopeState = null; // to send to Client.workflowTracking
-
-    // 🔍 Find node + scope and update them
-    for (const node of flowchart.nodes) {
-      if (node.id !== nodeId) continue;
-
-      const scopes = Array.isArray(node.details?.scopeDetails)
-        ? node.details.scopeDetails
-        : [];
-
-      const scope = scopes.find(s => s.scopeIdentifier === scopeIdentifier);
-      if (!scope) break;
-
-      previousType = scope.inputType;
-
-      // 1) Update input type
-      scope.inputType = newInputType;
-
-      // 2) Reset previous connection flags
-      scope.apiStatus = false;
-      scope.apiEndpoint = '';
-      scope.iotStatus = false;
-      scope.iotDeviceId = '';
-
-      // 3) Apply new connection details (if any)
-      if (newInputType === 'API' && connectionDetails?.apiEndpoint) {
-        scope.apiEndpoint = connectionDetails.apiEndpoint;
-        scope.apiStatus = true;
-      } else if (newInputType === 'IOT' && connectionDetails?.deviceId) {
-        scope.iotDeviceId = connectionDetails.deviceId;
-        scope.iotStatus = true;
-      }
-
-      updatedScopeState = {
-        apiEndpoint: scope.apiEndpoint,
-        iotDeviceId: scope.iotDeviceId,
-        apiStatus: scope.apiStatus,
-        iotStatus: scope.iotStatus
-      };
-
-      // mark the nested path as modified
-      flowchart.markModified('nodes');
-
-      // 4) Upsert DataCollectionConfig
-      await DataCollectionConfig.findOneAndUpdate(
-        { clientId, nodeId, scopeIdentifier },
-        {
-          inputType: newInputType,
-          connectionDetails: newInputType === 'manual' ? {} : (connectionDetails || {}),
-          lastModifiedBy: req.user._id
-        },
-        { upsert: true, new: true }
-      );
-
-      updated = true;
-      break;
-    }
-
-    if (!updated) {
-      return res.status(404).json({ message: 'Scope not found' });
-    }
-
-    // ✅ Persist flowchart changes
+    flowchart.markModified('nodes');
     await flowchart.save();
 
-    // 🔁 Mirror change into Client.workflowTracking.dataInputPoints
     await reflectSwitchInputTypeInClient({
       clientId,
       previousType,
-      newType: newInputType,
+      newType: inputType,
       nodeId,
       scopeIdentifier,
-      connectionDetails: {
-        apiEndpoint: updatedScopeState?.apiEndpoint || connectionDetails?.apiEndpoint,
-        deviceId: updatedScopeState?.iotDeviceId || connectionDetails?.deviceId,
-        apiStatus: updatedScopeState?.apiStatus,
-        iotStatus: updatedScopeState?.iotStatus,
-        isActive: true
+      connectionDetails:{
+        apiEndpoint:endpoint,
+        apiStatus:inputType==='API',
+        iotStatus:inputType==='IOT',
+        isActive:true
       },
-      userId: req.user?._id
+      userId:actorId
     });
 
-    return res.status(200).json({
-      message: `Input type switched to ${newInputType} successfully`,
-      scopeIdentifier,
-      newInputType
+    return res.json({
+      success:true,
+      inputType,
+      apiEndpoint:endpoint
     });
-  } catch (error) {
-    console.error('Switch input type error:', error);
-    return res.status(500).json({
-      message: 'Failed to switch input type',
-      error: error.message
-    });
+
+  } catch(e) {
+    console.error('switchInputType error:',e);
+    res.status(500).json({ error:e.message });
   }
 };
-
 
 
 // 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)

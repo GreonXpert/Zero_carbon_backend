@@ -1,4 +1,5 @@
 const ApiKey = require('../models/ApiKey');
+const ApiKeyRequest = require('../models/ApiKeyRequest');
 const Client = require('../models/CMS/Client');
 const User = require('../models/User');
 const Reduction = require('../models/Reduction/Reduction');
@@ -9,6 +10,24 @@ const { sendApiKeyEmail } = require('../utils/ApiKey/apiKeyEmailService');
 const { getActiveFlowchart } = require('../utils/DataCollection/dataCollection');
 const path = require('path');
 const fs = require('fs');
+
+const {
+  applyKeyToNetReductionProject,
+  notifyClientApiKeyReady,
+  notifyClientApiKeyRejected
+} = require('../services/apiKeyLinker');
+
+
+
+const mongoose = require("mongoose");
+
+const SYSTEM_USER_ID_RAW = process.env.SYSTEM_USER_ID || "000000000000000000000001";
+
+const SYSTEM_USER_ID = mongoose.Types.ObjectId.isValid(SYSTEM_USER_ID_RAW)
+  ? SYSTEM_USER_ID_RAW
+  : new mongoose.Types.ObjectId("000000000000000000000001");
+
+
 
 // ============== HELPER FUNCTIONS ==============
 
@@ -267,8 +286,15 @@ const getApiKeyRecipients = async (client, creator) => {
  * ✅ INTEGRATED: Automatically generates PDF and sends email
  * ✅ NEW: If NET_API / NET_IOT -> updates Reduction.reductionDataEntry.apiEndpoint + notifies client users
  */
+/**
+ * Create new API key
+ * FULLY INTEGRATED:
+ * - Updates Reduction / Flowchart / workflowTracking
+ * - Approves pending ApiKeyRequest
+ * - Sends notifications + PDF + email
+ */
 const createKey = async (req, res) => {
-  let pdfPath = null; // Track PDF path for cleanup
+  let pdfPath = null;
 
   try {
     const { clientId } = req.params;
@@ -283,92 +309,33 @@ const createKey = async (req, res) => {
       ipWhitelist = []
     } = req.body;
 
-    console.log('[API Key] Create request:', {
-      clientId,
-      keyType,
-      user: req.user?.userName
-    });
-
-    // ========== VALIDATION ==========
     if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required',
-        message: 'No user found in request'
-      });
+      return res.status(401).json({ success:false, message:'Authentication required' });
     }
 
     const userId = getUserId(req.user);
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid user session',
-        message: 'User ID not found'
-      });
-    }
 
-    // Validate key type
-    const validKeyTypes = ['NET_API', 'NET_IOT', 'DC_API', 'DC_IOT'];
+    // ---------------- VALIDATION ----------------
+    const validKeyTypes = ['NET_API','NET_IOT','DC_API','DC_IOT'];
     if (!validKeyTypes.includes(keyType)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid key type',
-        message: `Key type must be one of: ${validKeyTypes.join(', ')}`
-      });
+      return res.status(400).json({ success:false, message:'Invalid key type' });
     }
 
-    // Validate required fields
-    if (keyType === 'NET_API' || keyType === 'NET_IOT') {
-      if (!projectId || !calculationMethodology) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields',
-          message: 'NET keys require projectId and calculationMethodology'
-        });
-      }
-    } else if (keyType === 'DC_API' || keyType === 'DC_IOT') {
-      if (!nodeId || !scopeIdentifier) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields',
-          message: 'DC keys require nodeId and scopeIdentifier'
-        });
-      }
+    if (keyType.startsWith('NET') && (!projectId || !calculationMethodology)) {
+      return res.status(400).json({ success:false, message:'projectId and calculationMethodology required' });
     }
 
-    // Check permission
-    const hasPermission = await canManageApiKeys(req.user, clientId);
-    if (!hasPermission) {
-      return res.status(403).json({
-        success: false,
-        error: 'Permission denied',
-        message: 'You do not have permission to manage API keys for this client'
-      });
+    if (keyType.startsWith('DC') && (!nodeId || !scopeIdentifier)) {
+      return res.status(400).json({ success:false, message:'nodeId and scopeIdentifier required' });
     }
 
-    // Get client
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({
-        success: false,
-        error: 'Client not found',
-        message: `Client ${clientId} not found`
-      });
-    }
+    if (!client) return res.status(404).json({ success:false, message:'Client not found' });
 
-    // Validate client status
-    const isSandboxKey = client.sandbox && [10, 30].includes(durationDays);
-    validateClientStatus(client, isSandboxKey, durationDays);
-
-    // Prepare metadata
     const metadata = keyType.startsWith('NET')
       ? { projectId, calculationMethodology }
       : { nodeId, scopeIdentifier };
 
-    // Validate target exists
-    await validateKeyTarget(keyType, clientId, metadata);
-
-    // Check for existing active key
     const existingKey = await ApiKey.findOne({
       clientId,
       keyType,
@@ -377,20 +344,13 @@ const createKey = async (req, res) => {
     });
 
     if (existingKey) {
-      return res.status(409).json({
-        success: false,
-        error: 'Key already exists',
-        message: `An active ${keyType} key already exists for this endpoint`,
-        existingKeyId: existingKey._id,
-        existingKeyPrefix: existingKey.keyPrefix
-      });
+      return res.status(409).json({ success:false, message:'Active key already exists' });
     }
 
-    // ========== GENERATE KEY ==========
+    // ---------------- GENERATE KEY ----------------
     const { key, hash, prefix } = await generateKeyPackage(keyType, metadata);
-    const expiresAt = calculateExpiryDate(isSandboxKey, durationDays);
+    const expiresAt = calculateExpiryDate(client.sandbox, durationDays);
 
-    // Create API key document
     const apiKeyDoc = new ApiKey({
       clientId,
       keyType,
@@ -400,8 +360,6 @@ const createKey = async (req, res) => {
       ...(keyType.startsWith('DC') && { nodeId, scopeIdentifier }),
       status: 'ACTIVE',
       expiresAt,
-      isSandboxKey,
-      sandboxDuration: isSandboxKey ? durationDays : undefined,
       description,
       ipWhitelist,
       createdBy: userId,
@@ -409,258 +367,87 @@ const createKey = async (req, res) => {
     });
 
     await apiKeyDoc.save();
-    console.log('[API Key] ✅ Key created in database:', prefix);
 
-    // Send notification (your existing behaviour)
     await createApiKeyNotification('created', apiKeyDoc, req.user, client);
 
-    // =========================================================
-    // ✅ NEW: If NET_API / NET_IOT -> Update Reduction endpoint
-    //       + Send client notification immediately
-    // =========================================================
-    let updatedReduction = null;
-    let finalEndpoint = null;
+    // =====================================================
+    // 🔥 SINGLE SOURCE OF TRUTH — APPLY KEY
+    // =====================================================
+    await applyKeyToNetReductionProject({
+      clientId,
+      projectId,
+      nodeId,
+      scopeIdentifier,
+      calculationMethodology,
+      keyType,
+      keyValue: key
+    });
 
-    if (keyType === 'NET_API' || keyType === 'NET_IOT') {
-      updatedReduction = await Reduction.findOne({
+    // Approve any pending request
+    await ApiKeyRequest.updateMany(
+      {
         clientId,
-        projectId,
-        calculationMethodology
-      });
-
-      if (updatedReduction) {
-        if (!updatedReduction.reductionDataEntry) {
-          updatedReduction.reductionDataEntry = {};
-        }
-
-        // IMPORTANT: Your requirement is "save endpoint always in apiEndpoint"
-        // Also set correct status flags
-        const base = `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}`;
-
-        if (keyType === 'NET_API') {
-          finalEndpoint = `${base}/${key}/api`;
-          updatedReduction.reductionDataEntry.apiEndpoint = finalEndpoint;
-          updatedReduction.reductionDataEntry.apiStatus = true;
-          updatedReduction.reductionDataEntry.iotStatus = false;
-        } else {
-          finalEndpoint = `${base}/${key}/iot`;
-          updatedReduction.reductionDataEntry.apiEndpoint = finalEndpoint;
-          updatedReduction.reductionDataEntry.iotStatus = true;
-          updatedReduction.reductionDataEntry.apiStatus = false;
-        }
-
-        await updatedReduction.save();
-
-        // ✅ Client-facing notification (in-app)
-        // Use Notification model same style as notificationControllers (published immediately) :contentReference[oaicite:1]{index=1}
-        const clientUsers = await User.find({
-          clientId,
-          userType: { $in: ['client_admin', 'client_employee_head'] },
-          isDeleted: false
-        }).select('_id email userName');
-
-        const targetUsers = clientUsers.map(u => u._id);
-
-        if (targetUsers.length > 0) {
-          const notif = new Notification({
-            title: `API Key Generated (${keyType}) - ${updatedReduction.projectName}`,
-            message:
-              `API key is ready for your Net Reduction ingestion.\n\n` +
-              `Project: ${updatedReduction.projectName}\n` +
-              `Client: ${clientId}\n` +
-              `Endpoint: ${finalEndpoint}\n\n` +
-              `IMPORTANT: API key is shared via email/PDF. Keep it secure.`,
-            priority: 'high',
-            createdBy: userId,
-            creatorType: req.user.userType,
-            targetUsers,
-            targetClients: [clientId],
-            status: 'published',
-            publishedAt: new Date(),
-            isSystemNotification: true,
-            systemAction: 'api_key_generated',
-            relatedEntity: {
-              type: 'reduction',
-              id: updatedReduction._id
-            }
-          });
-
-          await notif.save();
-        }
-      }
-    }
-
-    // Calculate days until expiry
-    const daysUntilExpiry = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
-
-    // ========== GENERATE PDF AUTOMATICALLY ==========
-    let pdfGenerated = false;
-
-    try {
-      console.log('[API Key] Generating PDF...');
-
-      const tempDir = path.join(__dirname, '../temp');
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-
-      pdfPath = path.join(tempDir, `API_Key_${keyType}_${clientId}_${Date.now()}.pdf`);
-
-      const apiKeyDataForPDF = {
-        ...apiKeyDoc.toObject(),
-        apiKey: key, // Include full key for PDF
-        keyId: apiKeyDoc._id,
-        daysUntilExpiry,
-        metadata,
-        finalEndpoint // ✅ NEW: include endpoint in PDF if you want
-      };
-
-      const clientDataForPDF = {
-        clientId: client.clientId,
-        clientName: client.clientName,
-        companyName: client.companyName || client.organizationalOverview?.companyName
-      };
-
-      await generateApiKeyPDF(apiKeyDataForPDF, clientDataForPDF, pdfPath);
-      pdfGenerated = true;
-      console.log('[API Key] ✅ PDF generated successfully');
-
-    } catch (error) {
-      console.error('[API Key] ❌ PDF generation failed:', error);
-      // Don't fail the request if PDF fails
-    }
-
-    // ========== SEND EMAIL AUTOMATICALLY ==========
-    let emailSent = false;
-    let emailResults = null;
-    let recipients = [];
-
-    if (pdfGenerated && pdfPath) {
-      try {
-        console.log('[API Key] Sending email...');
-
-        // Get recipients: client admins, consultant admin (creator), assigned consultant
-        recipients = await getApiKeyRecipients(client, req.user);
-
-        if (recipients.length > 0) {
-          const apiKeyDataForEmail = {
-            ...apiKeyDoc.toObject(),
-            apiKey: key, // Include full key for email
-            keyId: apiKeyDoc._id,
-            daysUntilExpiry,
-            metadata,
-            finalEndpoint // ✅ NEW: include endpoint in email template too
-          };
-
-          const clientDataForEmail = {
-            clientId: client.clientId,
-            clientName: client.clientName,
-            companyName: client.companyName
-          };
-
-          const creatorDataForEmail = {
-            userName: req.user.userName,
-            email: req.user.email,
-            userType: req.user.userType
-          };
-
-          emailResults = await sendApiKeyEmail({
-            recipients,
-            pdfPath,
-            apiKeyData: apiKeyDataForEmail,
-            clientData: clientDataForEmail,
-            creatorData: creatorDataForEmail
-          });
-
-          emailSent = emailResults.success;
-
-          if (emailSent) {
-            console.log('[API Key] ✅ Email sent to', emailResults.totalSent, 'recipients');
-          } else {
-            console.log('[API Key] ⚠️ Email sending had failures');
-          }
-
-        } else {
-          console.log('[API Key] ⚠️ No recipients found for email');
-        }
-
-      } catch (error) {
-        console.error('[API Key] ❌ Email sending failed:', error);
-        // Don't fail the request if email fails
-      } finally {
-        // ✅ CLEANUP: Delete temp PDF file after email
-        if (pdfPath && fs.existsSync(pdfPath)) {
-          try {
-            fs.unlinkSync(pdfPath);
-            console.log('[API Key] ✅ Temp PDF file cleaned up');
-            pdfPath = null;
-          } catch (cleanupError) {
-            console.error('[API Key] Failed to cleanup PDF:', cleanupError);
-          }
-        }
-      }
-    }
-
-    // ========== RETURN RESPONSE ==========
-    return res.status(201).json({
-      success: true,
-      message: 'API key created successfully',
-      warning: 'IMPORTANT: This is the only time the full API key will be displayed. Save it securely.',
-      data: {
-        apiKey: key,
-        keyId: apiKeyDoc._id,
-        keyPrefix: prefix,
         keyType,
-        clientId,
-        metadata: keyType.startsWith('NET')
-          ? { projectId, calculationMethodology }
-          : { nodeId, scopeIdentifier },
-        isSandbox: isSandboxKey,
-        expiresAt,
-        daysUntilExpiry,
-        description,
-        ipWhitelist,
-        createdAt: apiKeyDoc.createdAt,
+        ...(keyType.startsWith('NET') ? { projectId, calculationMethodology } : { nodeId, scopeIdentifier }),
+        status:'pending'
+      },
+      { status:'approved' }
+    );
 
-        // ✅ NEW: reflect endpoint update result to caller
-        reductionEndpointUpdated: !!updatedReduction,
-        finalEndpoint: finalEndpoint || null,
+    // Notify client users
+    await notifyClientApiKeyReady({
+  clientId,
+  keyType,
+  projectId,
+  nodeId,
+  scopeIdentifier,
+  apiKey: key,
 
-        // PDF and email status
-        pdfGenerated,
-        emailSent,
-        emailResults: emailSent ? {
-          totalSent: emailResults.totalSent,
-          totalFailed: emailResults.totalFailed,
-          recipients: emailResults.results.map(r => ({
-            email: r.recipient,
-            role: recipients.find(rec => rec.email === r.recipient)?.role,
-            success: r.success
-          }))
-        } : null
-      }
+  actorId: userId,
+  actorType: req.user.userType
+});
+
+    // ---------------- PDF ----------------
+    const tempDir = path.join(__dirname, '../temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive:true });
+
+    pdfPath = path.join(tempDir, `API_KEY_${Date.now()}.pdf`);
+
+    await generateApiKeyPDF(
+      { ...apiKeyDoc.toObject(), apiKey:key },
+      { clientId:client.clientId, clientName:client.clientName, companyName:client.companyName },
+      pdfPath
+    );
+
+    // ---------------- EMAIL ----------------
+    const recipients = await getApiKeyRecipients(client, req.user);
+
+    await sendApiKeyEmail({
+      recipients,
+      pdfPath,
+      apiKeyData: { ...apiKeyDoc.toObject(), apiKey:key },
+      clientData: { clientId:client.clientId, clientName:client.clientName },
+      creatorData: { userName:req.user.userName, email:req.user.email }
+    });
+
+    if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
+
+    return res.status(201).json({
+      success:true,
+      apiKey:key,
+      keyType,
+      clientId,
+      keyPrefix: prefix,
+      expiresAt
     });
 
   } catch (error) {
-    console.error('[API Key] Create error:', error);
-
-    // Clean up PDF file if it exists
-    if (pdfPath && fs.existsSync(pdfPath)) {
-      try {
-        fs.unlinkSync(pdfPath);
-        console.log('[API Key] Cleaned up PDF after error');
-      } catch (cleanupError) {
-        console.error('[API Key] Failed to cleanup PDF:', cleanupError);
-      }
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to create API key',
-      message: error.message
-    });
+    console.error(error);
+    if (pdfPath && fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
+    return res.status(500).json({ success:false, message:error.message });
   }
 };
+
 
 /**
  * List API keys for a client
@@ -967,75 +754,269 @@ const revokeKey = async (req, res) => {
   }
 };
 
+async function resolveAllowedClientIds(user) {
+  let allowedClientIds = null;
 
-// ✅ Update reduction endpoint automatically when consultant creates key
-async function applyKeyToNetReductionProject({ clientId, projectId, calculationMethodology, keyType, keyValue }) {
-  const project = await Reduction.findOne({ clientId, projectId, calculationMethodology });
-  if (!project) return null;
+  if (user.userType === "consultant") {
+    const assigned = await Client.find({
+      "leadInfo.assignedConsultantId": user.id
+    }).select("clientId");
 
-  const base = `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}`;
-
-  if (!project.reductionDataEntry) project.reductionDataEntry = {};
-
-  if (keyType === "NET_API") {
-    project.reductionDataEntry.apiEndpoint = `${base}/${keyValue}/api`;
-    project.reductionDataEntry.apiStatus = true;
+    allowedClientIds = assigned.map(c => c.clientId);
   }
 
-  if (keyType === "NET_IOT") {
-    project.reductionDataEntry.apiEndpoint = `${base}/${keyValue}/iot`;
-    project.reductionDataEntry.iotStatus = true;
+  if (user.userType === "consultant_admin") {
+    const consultants = await User.find({ consultantAdminId: user.id }).select("_id");
+    const consultantIds = consultants.map(c => c._id.toString());
+    consultantIds.push(user.id);
+
+    const clients = await Client.find({
+      $or: [
+        { "leadInfo.consultantAdminId": user.id },
+        { "leadInfo.assignedConsultantId": { $in: consultantIds } }
+      ]
+    }).select("clientId");
+
+    allowedClientIds = clients.map(c => c.clientId);
   }
 
-  await project.save();
-  return project;
+  return allowedClientIds;
 }
 
-// ✅ Notify + email ALL client admins (and optional employee_head)
-async function notifyClientApiKeyReady({ clientId, projectName, keyType, apiEndpoint, apiKey }) {
-  const clientUsers = await User.find({
-    clientId,
-    userType: { $in: ["client_admin", "client_employee_head"] },
-    isDeleted: false
-  }).select("_id email userName");
 
-  const targetUserIds = clientUsers.map(u => u._id);
+const getApiKeyRequests = async (req, res) => {
+  try {
+    const { status = "pending", clientId } = req.query;
 
-  // Notification
-  const notif = new Notification({
-    title: `API Key Generated (${keyType}) - ${projectName}`,
-    message:
-      `API Key has been generated for client ${clientId}.\n\n` +
-      `Endpoint:\n${apiEndpoint}\n\n` +
-      `API Key:\n${apiKey}\n\n` +
-      `Please store this securely.`,
-    priority: "high",
-    createdBy: null,
-    creatorType: "system",
-    targetUsers: targetUserIds,
-    targetClients: [clientId],
-    status: "published",
-    publishedAt: new Date(),
-    isSystemNotification: true,
-    systemAction: "api_key_generated"
-  });
-  await notif.save();
+    const allowedClientIds = await resolveAllowedClientIds(req.user);
 
-  // Email
-  for (const u of clientUsers) {
-    if (!u.email) continue;
-    await sendMail(
-      u.email,
-      `ZeroCarbon API Key Generated (${keyType})`,
-      `Hello ${u.userName || ""},\n\n` +
-        `API key has been generated for ${clientId} - ${projectName}.\n\n` +
-        `Endpoint:\n${apiEndpoint}\n\n` +
-        `API Key:\n${apiKey}\n\n` +
-        `Keep this key confidential.\n\n` +
-        `Thanks,\nZeroCarbon Team`
-    );
+    const filter = { status };
+
+    // Enforce consultant permission
+    if (allowedClientIds) {
+      filter.clientId = { $in: allowedClientIds };
+    }
+
+    // Optional UI filter
+    if (clientId) {
+      if (allowedClientIds && !allowedClientIds.includes(clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Permission denied for this client"
+        });
+      }
+      filter.clientId = clientId;
+    }
+
+    const requests = await ApiKeyRequest.find(filter)
+      .populate("requestedBy", "userName email userType")
+      .sort({ createdAt: -1 });
+
+    return res.json({ success: true, data: requests });
+
+  } catch (err) {
+    console.error("getApiKeyRequests", err);
+    res.status(500).json({ success: false, message: err.message });
   }
-}
+};
+
+
+
+const approveApiKeyRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const userId = getUserId(req.user);
+
+    if (!userId) {
+      return res.status(401).json({ success:false, message:"Invalid session" });
+    }
+
+    const request = await ApiKeyRequest.findById(requestId);
+    if (!request || request.status !== "pending") {
+      return res.status(404).json({
+        success:false,
+        message:"Invalid or already processed request"
+      });
+    }
+
+    // Permission check
+    const allowedClientIds = await resolveAllowedClientIds(req.user);
+    if (allowedClientIds && !allowedClientIds.includes(request.clientId)) {
+      return res.status(403).json({
+        success:false,
+        message:"You do not manage this client"
+      });
+    }
+
+    // 🔥 Reuse existing createKey()
+    const fakeReq = {
+      params: { clientId: request.clientId },
+      body: {
+        keyType: request.keyType,
+        projectId: request.projectId,
+        calculationMethodology: request.calculationMethodology,
+        nodeId: request.nodeId,
+        scopeIdentifier: request.scopeIdentifier
+      },
+      user: req.user
+    };
+
+    let responsePayload = null;
+
+    const fakeRes = {
+      status: (code) => ({
+        json: (data) => {
+          if (code >= 400) throw new Error(data.message);
+          responsePayload = data;
+        }
+      }),
+      json: (data) => {
+        responsePayload = data;
+      }
+    };
+
+    // 👉 this will:
+    // - create ApiKey
+    // - apply to reduction / flowchart
+    // - send PDF + email
+    // - create notifications
+    await createKey(fakeReq, fakeRes);
+
+    // Mark request approved
+    request.status = "approved";
+    request.approvedBy = userId;
+    request.approvedAt = new Date();
+    await request.save();
+
+    return res.json({
+      success:true,
+      message:"API key generated & connected",
+      data: responsePayload
+    });
+
+  } catch (err) {
+    console.error("approveApiKeyRequest:", err);
+    return res.status(500).json({
+      success:false,
+      message: err.message
+    });
+  }
+};
+
+
+
+const rejectApiKeyRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const userId = getUserId(req.user);
+
+    const request = await ApiKeyRequest.findById(requestId);
+    if (!request) {
+      return res.status(404).json({ success:false, message:"Request not found" });
+    }
+
+    const allowedClientIds = await resolveAllowedClientIds(req.user);
+    if (allowedClientIds && !allowedClientIds.includes(request.clientId)) {
+      return res.status(403).json({ success:false, message:"No access to this client" });
+    }
+
+    request.status = "rejected";
+    request.rejectedBy = userId;
+    request.rejectedAt = new Date();
+    await request.save();
+
+    await notifyClientApiKeyRejected({
+  clientId: request.clientId,
+  keyType: request.keyType,
+  projectId: request.projectId,
+  nodeId: request.nodeId,
+  scopeIdentifier: request.scopeIdentifier,
+
+  actorId: userId,
+  actorType: req.user.userType
+});
+
+    res.json({ success:true, message:"Request rejected" });
+
+  } catch (err) {
+    res.status(500).json({ success:false, message: err.message });
+  }
+};
+
+
+const getApiKeyRequestStats = async (req, res) => {
+  try {
+    const { clientId } = req.query;
+
+    const allowedClientIds = await resolveAllowedClientIds(req.user);
+
+    const baseFilter = {};
+
+    // Consultant restriction
+    if (allowedClientIds) {
+      baseFilter.clientId = { $in: allowedClientIds };
+    }
+
+    // Optional client filter
+    if (clientId) {
+      if (allowedClientIds && !allowedClientIds.includes(clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Permission denied for this client"
+        });
+      }
+      baseFilter.clientId = clientId;
+    }
+
+    const [
+      total,
+      pending,
+      approved,
+      rejected,
+      byKeyType
+    ] = await Promise.all([
+      ApiKeyRequest.countDocuments(baseFilter),
+      ApiKeyRequest.countDocuments({ ...baseFilter, status: "pending" }),
+      ApiKeyRequest.countDocuments({ ...baseFilter, status: "approved" }),
+      ApiKeyRequest.countDocuments({ ...baseFilter, status: "rejected" }),
+
+      ApiKeyRequest.aggregate([
+        { $match: baseFilter },
+        { $group: { _id: "$keyType", count: { $sum: 1 } } }
+      ])
+    ]);
+
+    const recentRequests = await ApiKeyRequest.find(baseFilter)
+      .populate("requestedBy", "userName email")
+      .sort({ createdAt: -1 })
+      .limit(10);
+
+    const keyTypeMap = {};
+    byKeyType.forEach(k => {
+      keyTypeMap[k._id] = k.count;
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        total,
+        pending,
+        approved,
+        rejected,
+        byKeyType: keyTypeMap,
+        recentRequests
+      }
+    });
+
+  } catch (err) {
+    console.error("getApiKeyRequestStats:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
 
 
 module.exports = {
@@ -1043,5 +1024,9 @@ module.exports = {
   listKeys,
   getKeyDetails,
   renewKey,
-  revokeKey
+  revokeKey,
+  getApiKeyRequests,
+  getApiKeyRequestStats,
+  approveApiKeyRequest,
+  rejectApiKeyRequest
 };

@@ -1,4 +1,5 @@
   // controllers/netReductionController.js
+  const mongoose = require("mongoose");
   const moment = require('moment');
   const csvtojson = require('csvtojson');
   const NetReductionEntry = require('../../models/Reduction/NetReductionEntry');
@@ -7,6 +8,9 @@
   const { Parser } = require('expr-eval'); 
   const Client = require('../../models/CMS/Client');
   const User = require('../../models/User');
+  const ApiKey = require('../../models/ApiKey');
+  const Notification = require('../../models/Notification/Notification');
+  const ApiKeyRequest = require("../../models/ApiKeyRequest");
 
 // controllers/Reduction/netReductionController.js
 const { recomputeClientNetReductionSummary } = require('./netReductionSummaryController');
@@ -2823,59 +2827,18 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
  *  - NO effect on NetReductionEntry, just config for how future data should come in.
  */
 // ✅ helper: normalize userId
+// ✅ helper: normalize userId
 function getUserId(user) {
   return (user?._id || user?.id || user?.userId || "").toString();
 }
 
-// ✅ helper: find consultant(s) responsible for this client
-async function resolveClientConsultantTargets(clientId) {
-  const client = await Client.findOne({ clientId }).select("leadInfo");
-  if (!client) return [];
-
-  const targets = [];
-  const ca = client.leadInfo?.consultantAdminId || client.leadInfo?.createdBy; // depends on your schema
-  const c = client.leadInfo?.assignedConsultantId;
-
-  if (ca) targets.push(ca.toString());
-  if (c) targets.push(c.toString());
-
-  // de-dup
-  return [...new Set(targets)];
-}
-
-// ✅ helper: create a system notification (published immediately)
-async function createSystemNotification({ title, message, targetUsers = [], targetClients = [], systemAction, relatedEntity }) {
-  if (!title || !message) return;
-
-  const notif = new Notification({
-    title,
-    message,
-    priority: "high",
-    createdBy: null,                 // system
-    creatorType: "system",
-    targetUsers,
-    targetClients,
-    targetUserTypes: [],
-    status: "published",
-    publishedAt: new Date(),
-    isSystemNotification: true,
-    systemAction: systemAction || "net_reduction_input_switch",
-    relatedEntity: relatedEntity || null,
-  });
-
-  await notif.save();
-}
-
-// ✅ helper: base endpoints (NO API KEY)
+// ✅ helper: base endpoints (must match your netReductionR.js routes)
 function buildBaseEndpoints({ clientId, projectId, calculationMethodology }) {
-  // IMPORTANT: must match your netReductionR.js routes
   return {
     manual: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/manual`,
     csv: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/csv`,
     apiWithKey: (apiKey) => `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/api`,
     iotWithKey: (apiKey) => `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/${apiKey}/iot`,
-    pendingApi: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/PENDING/api`,
-    pendingIot: `/api/net-reduction/${clientId}/${projectId}/${calculationMethodology}/PENDING/iot`,
   };
 }
 
@@ -2890,11 +2853,69 @@ async function findActiveKey({ clientId, projectId, calculationMethodology, keyT
   }).sort({ createdAt: -1 });
 }
 
+// ✅ helper: resolve consultant targets (consultant_admin + assigned consultant)
+async function resolveClientConsultantTargets(clientId) {
+  const client = await Client.findOne({ clientId }).select("leadInfo createdBy createdByType");
+  if (!client) return [];
+
+  const targets = [];
+
+  // adjust these fields if your schema differs
+  const consultantAdminId = client.leadInfo?.consultantAdminId || client.leadInfo?.createdBy;
+  const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+
+  if (consultantAdminId) targets.push(consultantAdminId.toString());
+  if (assignedConsultantId) targets.push(assignedConsultantId.toString());
+
+  return [...new Set(targets)].filter(Boolean);
+}
+
+// ✅ IMPORTANT: Notification.createdBy is REQUIRED in your schema
+// Set a real ObjectId (recommended: create a system user in DB and put its _id in env)
+const SYSTEM_USER_ID_RAW = process.env.SYSTEM_USER_ID || "000000000000000000000001";
+const SYSTEM_USER_ID = mongoose.Types.ObjectId.isValid(SYSTEM_USER_ID_RAW)
+  ? new mongoose.Types.ObjectId(SYSTEM_USER_ID_RAW)
+  : new mongoose.Types.ObjectId("000000000000000000000001");
+
+// ✅ helper: create notification safely
+async function createSystemNotification({
+  title,
+  message,
+  targetUsers = [],
+  targetClients = [],
+  systemAction,
+  relatedEntity
+}) {
+  if (!title || !message) return;
+
+  const notif = new Notification({
+    title,
+    message,
+    priority: "high",
+
+    // ✅ required fields
+    createdBy: SYSTEM_USER_ID,
+    creatorType: "system",
+
+    targetUsers,
+    targetClients,
+
+    status: "published",
+    publishedAt: new Date(),
+
+    isSystemNotification: true,
+    systemAction: systemAction || "api_key_requested",
+    relatedEntity: relatedEntity || null
+  });
+
+  await notif.save();
+}
+
 /**
- * ✅ FULL REQUIREMENT IMPLEMENTATION
- * - Always save apiEndpoint based on selected inputType (manual/api/iot/csv)
- * - Switching to API/IOT triggers notification to consultant to generate key (if missing)
- * - If key exists, endpoint is saved immediately
+ * ✅ FINAL IMPLEMENTATION
+ * - manual/csv switches immediately (also saves endpoint in apiEndpoint)
+ * - API/IOT: ONLY switches if key exists
+ * - if key missing: create ApiKeyRequest + notify consultant, DO NOT change inputType
  */
 exports.switchNetReductionInputType = async (req, res) => {
   try {
@@ -2935,12 +2956,15 @@ exports.switchNetReductionInputType = async (req, res) => {
       };
     }
 
+    const previousInputType = project.reductionDataEntry.inputType;
     const endpoints = buildBaseEndpoints({ clientId, projectId, calculationMethodology });
 
     // ✅ always save originalInputType too
     project.reductionDataEntry.originalInputType = inputType;
 
-    // ✅ RULE: manual also must store endpoint in apiEndpoint
+    // -------------------------
+    // ✅ MANUAL
+    // -------------------------
     if (inputType === "MANUAL") {
       project.reductionDataEntry.inputType = "manual";
       project.reductionDataEntry.apiEndpoint = endpoints.manual; // ✅ always save
@@ -2956,8 +2980,11 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
+    // -------------------------
+    // ✅ CSV  (mapped to manual)
+    // -------------------------
     if (inputType === "CSV") {
-      project.reductionDataEntry.inputType = "manual"; // your system maps CSV → manual mode
+      project.reductionDataEntry.inputType = "manual";
       project.reductionDataEntry.apiEndpoint = endpoints.csv; // ✅ always save
       project.reductionDataEntry.apiStatus = false;
       project.reductionDataEntry.iotStatus = false;
@@ -2971,58 +2998,76 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    // ✅ API / IOT path: must save endpoint into apiEndpoint always
-    const keyType = (inputType === "API") ? "NET_API" : "NET_IOT";
+    // -------------------------
+    // ✅ API / IOT (STRICT)
+    // -------------------------
+    const keyType = inputType === "API" ? "NET_API" : "NET_IOT";
     const existingKey = await findActiveKey({ clientId, projectId, calculationMethodology, keyType });
 
-    if (inputType === "API") {
-      project.reductionDataEntry.inputType = "API";
-      project.reductionDataEntry.apiEndpoint = existingKey
-        ? endpoints.apiWithKey(existingKey.key)
-        : endpoints.pendingApi;
-
-      project.reductionDataEntry.apiStatus = !!existingKey;
-      project.reductionDataEntry.iotStatus = false;
-    } else {
-      // IOT
-      project.reductionDataEntry.inputType = "IOT";
-      project.reductionDataEntry.apiEndpoint = existingKey
-        ? endpoints.iotWithKey(existingKey.key)
-        : endpoints.pendingIot;
-
-      project.reductionDataEntry.iotStatus = !!existingKey;
-      project.reductionDataEntry.apiStatus = false;
-    }
-
-    await project.save();
-
-    // ✅ If key missing → notify consultant/consultant_admin to generate key
+    // 🔴 If key missing → create request + notify consultant, DO NOT SWITCH
     if (!existingKey) {
+      await ApiKeyRequest.findOneAndUpdate(
+        { clientId, projectId, calculationMethodology, keyType },
+        {
+          clientId,
+          projectId,
+          calculationMethodology,
+          keyType,
+          status: "pending",
+          requestedBy: userId,
+          requestedAt: new Date()
+        },
+        { upsert: true, new: true }
+      );
+
       const consultantTargets = await resolveClientConsultantTargets(clientId);
 
       if (consultantTargets.length > 0) {
         await createSystemNotification({
           title: `API Key Request (${inputType}) - ${project.projectName}`,
           message:
-            `Client ${clientId} switched Net Reduction input type to ${inputType}.\n` +
-            `Please generate an API key for:\n` +
+            `Client ${clientId} requested ${inputType} connection.\n\n` +
+            `Project: ${project.projectName}\n` +
             `ProjectId: ${projectId}\n` +
             `Methodology: ${calculationMethodology}\n` +
             `KeyType: ${keyType}\n\n` +
-            `After key creation, the endpoint will auto-update for the client.`,
+            `Action: Please generate an API key. After creation, the endpoint will be auto-connected.`,
           targetUsers: consultantTargets,
           targetClients: [clientId],
           systemAction: "api_key_requested",
           relatedEntity: { type: "reduction", id: project._id }
         });
       }
+
+      // ✅ Do NOT change anything
+      return res.status(202).json({
+        success: true,
+        status: "waiting_for_key",
+        message: "API key not created yet. Consultant has been notified.",
+        previousInputType,
+        currentInputType: previousInputType,
+        requestedInputType: inputType
+      });
     }
+
+    // 🟢 KEY EXISTS → SWITCH NOW
+    if (inputType === "API") {
+      project.reductionDataEntry.inputType = "API";
+      project.reductionDataEntry.apiEndpoint = endpoints.apiWithKey(existingKey.keyPrefix || existingKey.key);
+      project.reductionDataEntry.apiStatus = true;
+      project.reductionDataEntry.iotStatus = false;
+    } else {
+      project.reductionDataEntry.inputType = "IOT";
+      project.reductionDataEntry.apiEndpoint = endpoints.iotWithKey(existingKey.keyPrefix || existingKey.key);
+      project.reductionDataEntry.iotStatus = true;
+      project.reductionDataEntry.apiStatus = false;
+    }
+
+    await project.save();
 
     return res.status(200).json({
       success: true,
-      message: existingKey
-        ? `Switched to ${inputType} (key exists, endpoint saved)`
-        : `Switched to ${inputType} (key missing, consultant notified)`,
+      message: `Switched to ${inputType} (key exists, endpoint saved)`,
       data: project.reductionDataEntry
     });
 
@@ -3035,6 +3080,7 @@ exports.switchNetReductionInputType = async (req, res) => {
     });
   }
 };
+
 
 
 // ===============================================
