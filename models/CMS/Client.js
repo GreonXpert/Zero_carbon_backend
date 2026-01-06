@@ -551,8 +551,34 @@ clientSchema.pre('save', function(next) {
 // --- Normalize assessmentLevel on every save (handles legacy values) ---
 const ALLOWED_LEVELS = ['reduction', 'decarbonization', 'organization', 'process'];
 
+
+
 clientSchema.pre('validate', function (next) {
-  // Handle missing submissionData gracefully
+  /**
+   * ✅ IMPORTANT GUARD:
+   * If this document was queried with a projection that did NOT include submissionData,
+   * then this.submissionData will be undefined and this hook would overwrite DB values.
+   *
+   * Example: disconnectSource / reconnectSource / switchInputType often load only
+   * workflowTracking.* and then save. That would wipe submissionData.assessmentLevel.
+   */
+  const selected = this.$__.selected; // mongoose internal: selected paths in projection
+  const isProjectionUsed = selected && Object.keys(selected).length > 0;
+
+  // If projection is used and submissionData is NOT selected, do nothing.
+  if (isProjectionUsed) {
+    const submissionSelected =
+      selected.submissionData === 1 ||
+      selected['submissionData'] === 1 ||
+      selected['submissionData.assessmentLevel'] === 1 ||
+      selected['submissionData.assessmentLevel'] === true;
+
+    if (!submissionSelected && !this.isModified('submissionData')) {
+      return next();
+    }
+  }
+
+  // --- Existing logic (unchanged) ---
   const raw = this?.submissionData?.assessmentLevel;
 
   // Convert to array
@@ -567,7 +593,6 @@ clientSchema.pre('validate', function (next) {
       if (v === 'both') return ['organization', 'process']; // legacy fix
       return [v];
     })
-    // Keep only allowed values and dedupe
     .filter(v => ALLOWED_LEVELS.includes(v))
     .filter((v, i, a) => a.indexOf(v) === i);
 
@@ -577,6 +602,7 @@ clientSchema.pre('validate', function (next) {
 
   return next();
 });
+
 
 // ✅ Normalize legacy single-string -> array on nested path
 clientSchema.path('submissionData.assessmentLevel').set((v) => {
@@ -596,6 +622,16 @@ clientSchema.index({ "workflowTracking.flowchartStatus": 1 });
 clientSchema.index({ "workflowTracking.processFlowchartStatus": 1 });
 clientSchema.index({ sandbox: 1 }); // NEW INDEX
 
+
+clientSchema.statics.getNextClientSequenceAtomic = async function () {
+  const counter = await Counter.findByIdAndUpdate(
+    { _id: "clientSequenceNumber" },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  ).lean();
+
+  return counter.seq; // 1,2,3...
+};
 
 // Counter Schema for ClientID generation
 const counterSchema = new mongoose.Schema({

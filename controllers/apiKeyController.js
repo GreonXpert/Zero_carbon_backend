@@ -10,13 +10,16 @@ const { sendApiKeyEmail } = require('../utils/ApiKey/apiKeyEmailService');
 const { getActiveFlowchart } = require('../utils/DataCollection/dataCollection');
 const path = require('path');
 const fs = require('fs');
-
+const Flowchart = require('../models/Organization/Flowchart');
+const ProcessFlowchart = require('../models/Organization/ProcessFlowchart');
 const {
   applyKeyToNetReductionProject,
   notifyClientApiKeyReady,
   notifyClientApiKeyRejected
 } = require('../services/apiKeyLinker');
-
+const {
+  reflectSwitchInputTypeInClient
+} = require('../controllers/Organization/dataCollectionController');
 
 
 const mongoose = require("mongoose");
@@ -380,7 +383,9 @@ const createKey = async (req, res) => {
       scopeIdentifier,
       calculationMethodology,
       keyType,
-      keyValue: key
+      keyValue: prefix, // ✅ use keyPrefix in URLs
+      apiKeyId: apiKeyDoc._id,
+      approvedAt: new Date()
     });
 
     // Approve any pending request
@@ -389,9 +394,16 @@ const createKey = async (req, res) => {
         clientId,
         keyType,
         ...(keyType.startsWith('NET') ? { projectId, calculationMethodology } : { nodeId, scopeIdentifier }),
-        status:'pending'
+        status: 'pending'
       },
-      { status:'approved' }
+      {
+        $set: {
+          status: 'approved',
+          processedBy: userId,
+          processedAt: new Date(),
+          // keep intendedInputType as provided by the requester (if any)
+        }
+      }
     );
 
     // Notify client users
@@ -822,83 +834,237 @@ const getApiKeyRequests = async (req, res) => {
 
 
 
+
+
 const approveApiKeyRequest = async (req, res) => {
   try {
     const { requestId } = req.params;
     const userId = getUserId(req.user);
 
     if (!userId) {
-      return res.status(401).json({ success:false, message:"Invalid session" });
+      return res.status(401).json({ success: false, message: "Invalid session" });
     }
 
     const request = await ApiKeyRequest.findById(requestId);
     if (!request || request.status !== "pending") {
       return res.status(404).json({
-        success:false,
-        message:"Invalid or already processed request"
+        success: false,
+        message: "Invalid or already processed request",
       });
     }
 
-    // Permission check
-    const allowedClientIds = await resolveAllowedClientIds(req.user);
-    if (allowedClientIds && !allowedClientIds.includes(request.clientId)) {
+    // ✅ Permission check (consistent with your other API key routes)
+    const hasPermission = await canManageApiKeys(req.user, request.clientId);
+    if (!hasPermission) {
       return res.status(403).json({
-        success:false,
-        message:"You do not manage this client"
+        success: false,
+        message: "Permission denied for this client",
       });
     }
 
-    // 🔥 Reuse existing createKey()
-    const fakeReq = {
-      params: { clientId: request.clientId },
-      body: {
-        keyType: request.keyType,
-        projectId: request.projectId,
-        calculationMethodology: request.calculationMethodology,
-        nodeId: request.nodeId,
-        scopeIdentifier: request.scopeIdentifier
-      },
-      user: req.user
-    };
+    // ✅ Validate request payload based on key type
+    const isNet = request.keyType && request.keyType.startsWith("NET");
+    const isDc = request.keyType && request.keyType.startsWith("DC");
 
-    let responsePayload = null;
+    if (!request.keyType || (!isNet && !isDc)) {
+      return res.status(400).json({ success: false, message: "Invalid request.keyType" });
+    }
 
-    const fakeRes = {
-      status: (code) => ({
-        json: (data) => {
-          if (code >= 400) throw new Error(data.message);
-          responsePayload = data;
-        }
-      }),
-      json: (data) => {
-        responsePayload = data;
+    if (isNet) {
+      if (!request.projectId || !request.calculationMethodology) {
+        return res.status(400).json({
+          success: false,
+          message: "NET request missing projectId or calculationMethodology",
+        });
       }
+    }
+
+    if (isDc) {
+      if (!request.nodeId || !request.scopeIdentifier) {
+        return res.status(400).json({
+          success: false,
+          message: "DC request missing nodeId or scopeIdentifier",
+        });
+      }
+    }
+
+    // ✅ Intended switch type (robust even if request schema does not store intendedInputType)
+    const intendedInputType =
+      request.keyType.endsWith("_API") ? "API" : "IOT";
+
+    // ==========================================================
+    // 1) Find existing ACTIVE key (avoid duplicates)
+    // ==========================================================
+    const keyFilter = {
+      clientId: request.clientId,
+      keyType: request.keyType,
+      status: "ACTIVE",
+      ...(isNet
+        ? {
+            projectId: request.projectId,
+            calculationMethodology: request.calculationMethodology,
+          }
+        : {
+            nodeId: request.nodeId,
+            scopeIdentifier: request.scopeIdentifier,
+          }),
     };
 
-    // 👉 this will:
-    // - create ApiKey
-    // - apply to reduction / flowchart
-    // - send PDF + email
-    // - create notifications
-    await createKey(fakeReq, fakeRes);
+    let apiKeyDoc = await ApiKey.findOne(keyFilter).sort({ createdAt: -1 });
 
-    // Mark request approved
+    // ==========================================================
+    // 2) If no key exists, generate one using createKey(...)
+    // ==========================================================
+    let createKeyPayload = null;
+
+    if (!apiKeyDoc) {
+      const fakeReq = {
+        params: { clientId: request.clientId },
+        body: {
+          keyType: request.keyType,
+          projectId: request.projectId,
+          calculationMethodology: request.calculationMethodology,
+          nodeId: request.nodeId,
+          scopeIdentifier: request.scopeIdentifier,
+        },
+        user: req.user,
+      };
+
+      const fakeRes = {
+        status: (code) => ({
+          json: (data) => {
+            if (code >= 400) throw new Error(data.message || "createKey failed");
+            createKeyPayload = data;
+          },
+        }),
+        json: (data) => {
+          createKeyPayload = data;
+        },
+      };
+
+      await createKey(fakeReq, fakeRes);
+
+      // Re-fetch saved key doc (source of truth)
+      apiKeyDoc = await ApiKey.findOne(keyFilter).sort({ createdAt: -1 });
+    }
+
+    if (!apiKeyDoc) {
+      return res.status(500).json({
+        success: false,
+        message: "Key creation succeeded but ApiKey document not found",
+      });
+    }
+
+    // ✅ IMPORTANT: Use keyPrefix in endpoints (not plaintext apiKey)
+    const keyPrefix = apiKeyDoc.keyPrefix;
+
+    // ==========================================================
+    // 3) Mark request approved
+    // ==========================================================
+    const processedAt = new Date();
     request.status = "approved";
-    request.approvedBy = userId;
-    request.approvedAt = new Date();
+    request.processedBy = userId;
+    request.processedAt = processedAt;
+    request.intendedInputType = intendedInputType;
     await request.save();
 
-    return res.json({
-      success:true,
-      message:"API key generated & connected",
-      data: responsePayload
+    // ==========================================================
+    // 4) 🔥 APPLY KEY (THIS DOES THE ACTUAL SWITCH + SAVES ENDPOINT)
+    //    Works for BOTH NET and DC
+    // ==========================================================
+    await applyKeyToNetReductionProject({
+      clientId: request.clientId,
+      projectId: request.projectId,
+      calculationMethodology: request.calculationMethodology,
+      nodeId: request.nodeId,
+      scopeIdentifier: request.scopeIdentifier,
+      keyType: request.keyType,
+      keyValue: keyPrefix,
+      apiKeyId: apiKeyDoc._id,
+      requestId: request._id,
+      approvedAt: processedAt,
     });
 
-  } catch (err) {
-    console.error("approveApiKeyRequest:", err);
+// ==========================================================
+// 5) Return updated endpoint + inputType from DB (truth)
+// ==========================================================
+let updatedInputType = intendedInputType;
+let updatedEndpoint = "";
+
+if (isNet) {
+  const reduction = await Reduction.findOne({
+    clientId: request.clientId,
+    projectId: request.projectId,
+    calculationMethodology: request.calculationMethodology,
+  }).lean();
+
+  updatedInputType = reduction?.reductionDataEntry?.inputType || intendedInputType;
+  updatedEndpoint  = reduction?.reductionDataEntry?.apiEndpoint || "";
+} else {
+  // ✅ Determine which DB contains the active chart
+  const activeChart = await getActiveFlowchart(request.clientId); // returns chartType + merged chart
+  if (!activeChart || !activeChart.chart) {
+    // if applyKey worked but no active chart exists, still return safe values
+    updatedInputType = intendedInputType;
+    updatedEndpoint = "";
+  } else {
+    const { chartType } = activeChart;
+
+    // Helper to extract scope from a chart doc
+    const pickScopeFromChartDoc = (chartDoc) => {
+      const node = chartDoc?.nodes?.find((n) => n.id === request.nodeId);
+      return node?.details?.scopeDetails?.find(
+        (s) => s.scopeIdentifier === request.scopeIdentifier
+      );
+    };
+
+    let scope = null;
+
+    // If assessmentLevel is "both", getActiveFlowchart() returns chartType="merged".
+    // In that case, we must re-check real DB docs to read the persisted endpoint/inputType.
+    if (chartType === "flowchart") {
+      const org = await Flowchart.findOne({ clientId: request.clientId, isActive: true }).lean();
+      scope = pickScopeFromChartDoc(org);
+    } else if (chartType === "processflowchart") {
+      const proc = await ProcessFlowchart.findOne({ clientId: request.clientId, isActive: true, isDeleted: { $ne: true } }).lean();
+      scope = pickScopeFromChartDoc(proc);
+    } else {
+      // chartType === "merged" -> read BOTH DBs, prefer the one where the scope exists with apiEndpoint
+      const org = await Flowchart.findOne({ clientId: request.clientId, isActive: true }).lean();
+      const proc = await ProcessFlowchart.findOne({ clientId: request.clientId, isActive: true, isDeleted: { $ne: true } }).lean();
+
+      const s1 = pickScopeFromChartDoc(org);
+      const s2 = pickScopeFromChartDoc(proc);
+
+      // Prefer whichever has endpoint saved (post-approval), otherwise fallback
+      scope = (s1?.apiEndpoint ? s1 : null) || (s2?.apiEndpoint ? s2 : null) || s1 || s2;
+    }
+
+    updatedInputType = scope?.inputType || intendedInputType;
+    updatedEndpoint  = scope?.apiEndpoint || "";
+  }
+}
+
+    return res.json({
+      success: true,
+      message: `Approved. Input switched to ${updatedInputType} and endpoint saved.`,
+      data: {
+        requestId: request._id,
+        clientId: request.clientId,
+        keyType: request.keyType,
+        keyPrefix,
+        inputType: updatedInputType,
+        apiEndpoint: updatedEndpoint,
+        // if createKey returned plaintext apiKey it will be here:
+        apiKey: createKeyPayload?.data?.apiKey || null,
+      },
+    });
+  } catch (error) {
+    console.error("approveApiKeyRequest error:", error);
     return res.status(500).json({
-      success:false,
-      message: err.message
+      success: false,
+      message: "Failed to approve API key request",
+      error: error.message,
     });
   }
 };

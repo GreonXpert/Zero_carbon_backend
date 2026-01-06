@@ -47,6 +47,50 @@ const ScopeDetailSchema = new mongoose.Schema({
     type: String, 
     default: '' 
   },
+  // ✅ NEW: API Key Request Tracking (ADD THIS AFTER iotDeviceId)
+  apiKeyRequest: {
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected'],
+      default: 'none',
+      description: 'Current status of API key request'
+    },
+    requestedInputType: {
+      type: String,
+      enum: ['API', 'IOT'],
+      default: null,
+      description: 'The input type that was requested (API or IOT)'
+    },
+    requestedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key was requested'
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key request was approved'
+    },
+    rejectedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key request was rejected'
+    },
+    apiKeyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ApiKey',
+      default: null,
+      description: 'Reference to the approved API key'
+    },
+    requestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ApiKeyRequest',
+      default: null,
+      description: 'Reference to the ApiKeyRequest document'
+    }
+  },
+
+
   calculationModel:{
     type: String,
     enum:['tier 1', 'tier 2', 'tier 3'],

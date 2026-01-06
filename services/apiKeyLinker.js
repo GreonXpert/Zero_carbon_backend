@@ -1,6 +1,6 @@
 const Reduction = require('../models/Reduction/Reduction');
 const Flowchart = require('../models/Organization/Flowchart');
-const processflowchart = require('../models/Organization/ProcessFlowchart')
+const ProcessFlowchart = require('../models/Organization/ProcessFlowchart');
 const Client = require('../models/CMS/Client');
 const Notification = require('../models/Notification/Notification');
 
@@ -27,6 +27,8 @@ function buildNetEndpoint({ clientId, projectId, calculationMethodology, key, ty
 /**
  * 🔥 Single source of truth
  * Applies API key everywhere it must exist
+ * ✅ FIXED: Properly updates both Flowchart and ProcessFlowchart for DC types
+ * ✅ FIXED: Removed duplicate dead code
  */
 async function applyKeyToNetReductionProject({
   clientId,
@@ -35,8 +37,13 @@ async function applyKeyToNetReductionProject({
   scopeIdentifier,
   calculationMethodology,
   keyType,
-  keyValue
+  keyValue,
+  apiKeyId = null,
+  requestId = null,
+  approvedAt = null
 }) {
+  const now = approvedAt || new Date();
+
   // =====================================================
   // NET REDUCTION
   // =====================================================
@@ -47,7 +54,10 @@ async function applyKeyToNetReductionProject({
       calculationMethodology
     });
 
-    if (!reduction) return null;
+    if (!reduction) {
+      console.log(`[applyKeyToNetReductionProject] Reduction not found for clientId: ${clientId}, projectId: ${projectId}, methodology: ${calculationMethodology}`);
+      return null;
+    }
 
     const endpoint = buildNetEndpoint({
       clientId,
@@ -64,27 +74,30 @@ async function applyKeyToNetReductionProject({
     reduction.reductionDataEntry.apiStatus = keyType === 'NET_API';
     reduction.reductionDataEntry.iotStatus = keyType === 'NET_IOT';
 
+    // ✅ Update request status in Reduction.reductionDataEntry
+    reduction.reductionDataEntry.apiKeyRequest = {
+      ...(reduction.reductionDataEntry.apiKeyRequest || {}),
+      status: 'approved',
+      requestedInputType: reduction.reductionDataEntry.inputType,
+      requestedAt: reduction.reductionDataEntry.apiKeyRequest?.requestedAt || now,
+      approvedAt: now,
+      rejectedAt: null,
+      apiKeyId: apiKeyId || reduction.reductionDataEntry.apiKeyRequest?.apiKeyId || null,
+      requestId: requestId || reduction.reductionDataEntry.apiKeyRequest?.requestId || null
+    };
+
+    reduction.markModified('reductionDataEntry');
     await reduction.save();
+    
+    console.log(`[applyKeyToNetReductionProject] ✅ Updated NET reduction: inputType=${reduction.reductionDataEntry.inputType}, endpoint=${endpoint}`);
     return reduction;
   }
 
   // =====================================================
-  // DATA COLLECTION (ORG / PROCESS FLOWCHART)
+  // DATA COLLECTION (ORG + PROCESS FLOWCHART)
+  // ✅ FIXED: Combined both flowchart updates into single block
   // =====================================================
   if (keyType === 'DC_API' || keyType === 'DC_IOT') {
-    const flowchart = await Flowchart.findOne({ clientId, isActive:true });
-    if (!flowchart) return null;
-
-    let scope;
-
-    for (const node of flowchart.nodes) {
-      if (node.id !== nodeId) continue;
-      scope = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
-      if (scope) break;
-    }
-
-    if (!scope) return null;
-
     const endpoint = buildDCEndpoint({
       clientId,
       nodeId,
@@ -93,34 +106,132 @@ async function applyKeyToNetReductionProject({
       type: keyType
     });
 
-    scope.inputType = keyType === 'DC_API' ? 'API' : 'IOT';
-    scope.apiEndpoint = endpoint;
-    scope.apiStatus = keyType === 'DC_API';
-    scope.iotStatus = keyType === 'DC_IOT';
+    const inputType = keyType === 'DC_API' ? 'API' : 'IOT';
+    const apiStatus = keyType === 'DC_API';
+    const iotStatus = keyType === 'DC_IOT';
 
-    flowchart.markModified('nodes');
-    await flowchart.save();
+    let updatedFlowchart = null;
+    let updatedProcessFlow = null;
 
-    // 🔁 Also update Client.workflowTracking
+    // ================= ORG FLOWCHART =================
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (flowchart) {
+      let scopeFound = false;
+      
+      for (const node of flowchart.nodes) {
+        if (node.id !== nodeId) continue;
+        const scope = node.details?.scopeDetails?.find(s => s.scopeIdentifier === scopeIdentifier);
+        if (!scope) continue;
+
+        scope.inputType = inputType;
+        scope.apiEndpoint = endpoint;
+        scope.apiStatus = apiStatus;
+        scope.iotStatus = iotStatus;
+
+        // ✅ Mark request as approved (Flowchart)
+        scope.apiKeyRequest = {
+          ...(scope.apiKeyRequest || {}),
+          status: 'approved',
+          requestedInputType: inputType,
+          requestedAt: scope.apiKeyRequest?.requestedAt || now,
+          approvedAt: now,
+          rejectedAt: null,
+          apiKeyId: apiKeyId || scope.apiKeyRequest?.apiKeyId || null,
+          requestId: requestId || scope.apiKeyRequest?.requestId || null
+        };
+
+        scopeFound = true;
+        break;
+      }
+
+      if (scopeFound) {
+        flowchart.markModified('nodes');
+        await flowchart.save();
+        updatedFlowchart = flowchart;
+        console.log(`[applyKeyToNetReductionProject] ✅ Updated Org Flowchart: inputType=${inputType}, endpoint=${endpoint}`);
+      } else {
+        console.log(`[applyKeyToNetReductionProject] ⚠️ Scope not found in Org Flowchart for nodeId: ${nodeId}, scopeIdentifier: ${scopeIdentifier}`);
+      }
+    } else {
+      console.log(`[applyKeyToNetReductionProject] ⚠️ No active Org Flowchart found for clientId: ${clientId}`);
+    }
+
+    // ================= PROCESS FLOWCHART =================
+    const processFlow = await ProcessFlowchart.findOne({ clientId, isActive: true });
+    if (processFlow) {
+      let scopeFound = false;
+      
+      for (const node of processFlow.nodes) {
+        if (nodeId && node.id !== nodeId) continue;
+
+        const scope = node.details?.scopeDetails?.find(
+          (s) => s.scopeIdentifier === scopeIdentifier
+        );
+        if (!scope) continue;
+
+        scope.inputType = inputType;
+        scope.apiEndpoint = endpoint;
+        scope.apiStatus = apiStatus;
+        scope.iotStatus = iotStatus;
+
+        // ✅ Mark request as approved (ProcessFlowchart)
+        scope.apiKeyRequest = {
+          ...(scope.apiKeyRequest || {}),
+          status: 'approved',
+          requestedInputType: inputType,
+          requestedAt: scope.apiKeyRequest?.requestedAt || now,
+          approvedAt: now,
+          rejectedAt: null,
+          apiKeyId: apiKeyId || scope.apiKeyRequest?.apiKeyId || null,
+          requestId: requestId || scope.apiKeyRequest?.requestId || null
+        };
+
+        scopeFound = true;
+        break;
+      }
+
+      if (scopeFound) {
+        processFlow.markModified('nodes');
+        await processFlow.save();
+        updatedProcessFlow = processFlow;
+        console.log(`[applyKeyToNetReductionProject] ✅ Updated Process Flowchart: inputType=${inputType}, endpoint=${endpoint}`);
+      } else {
+        console.log(`[applyKeyToNetReductionProject] ⚠️ Scope not found in Process Flowchart for scopeIdentifier: ${scopeIdentifier}`);
+      }
+    } else {
+      console.log(`[applyKeyToNetReductionProject] ⚠️ No active Process Flowchart found for clientId: ${clientId}`);
+    }
+
+    // ================= CLIENT.workflowTracking =================
     const client = await Client.findOne({ clientId });
-    if (!client) return null;
+    if (!client) {
+      console.log(`[applyKeyToNetReductionProject] ⚠️ Client not found: ${clientId}`);
+      return updatedProcessFlow || updatedFlowchart;
+    }
 
     const pointId = `${nodeId}_${scopeIdentifier}`;
 
-    // Remove old inputs
+    // Initialize if not exists
+    if (!client.workflowTracking) client.workflowTracking = {};
+    if (!client.workflowTracking.dataInputPoints) client.workflowTracking.dataInputPoints = {};
+    if (!client.workflowTracking.dataInputPoints.api) client.workflowTracking.dataInputPoints.api = { inputs: [] };
+    if (!client.workflowTracking.dataInputPoints.iot) client.workflowTracking.dataInputPoints.iot = { inputs: [] };
+
+    // Remove old inputs for this point
     client.workflowTracking.dataInputPoints.api.inputs =
       client.workflowTracking.dataInputPoints.api.inputs.filter(i => i.pointId !== pointId);
 
     client.workflowTracking.dataInputPoints.iot.inputs =
       client.workflowTracking.dataInputPoints.iot.inputs.filter(i => i.pointId !== pointId);
 
+    // Add new input based on type
     if (keyType === 'DC_API') {
       client.workflowTracking.dataInputPoints.api.inputs.push({
         pointId,
         nodeId,
         scopeIdentifier,
         endpoint,
-        status: 'active',
+        status: 'pending',
         connectionStatus: 'connected'
       });
     }
@@ -131,106 +242,24 @@ async function applyKeyToNetReductionProject({
         nodeId,
         scopeIdentifier,
         endpoint,
-        status: 'active',
+        status: 'pending ',
         connectionStatus: 'connected'
       });
     }
 
+    client.markModified('workflowTracking');
     await client.save();
-    return flowchart;
-  }
-  // =====================================================
-// DATA COLLECTION (ORG + PROCESS FLOWCHART)
-// =====================================================
-if (keyType === 'DC_API' || keyType === 'DC_IOT') {
+    console.log(`[applyKeyToNetReductionProject] ✅ Updated Client.workflowTracking for ${keyType}`);
 
-  const endpoint = buildDCEndpoint({
-    clientId,
-    nodeId,
-    scopeIdentifier,
-    key: keyValue,
-    type: keyType
-  });
-
-  // ================= ORG FLOWCHART =================
-  const flowchart = await Flowchart.findOne({ clientId, isActive:true });
-  if (flowchart) {
-    for (const node of flowchart.nodes) {
-      if (node.id !== nodeId) continue;
-      const scope = node.details.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
-      if (!scope) continue;
-
-      scope.inputType = keyType === 'DC_API' ? 'API' : 'IOT';
-      scope.apiEndpoint = endpoint;
-      scope.apiStatus = keyType === 'DC_API';
-      scope.iotStatus = keyType === 'DC_IOT';
-    }
-
-    flowchart.markModified('nodes');
-    await flowchart.save();
+    return updatedProcessFlow || updatedFlowchart;
   }
 
-  // ================= PROCESS FLOWCHART =================
-  const processFlow = await ProcessFlowchart.findOne({ clientId, isActive:true });
-  if (processFlow) {
-    for (const node of processFlow.nodes) {
-      const scope = node.scopeDetails?.find(s => s.scopeIdentifier === scopeIdentifier);
-      if (!scope) continue;
-
-      scope.inputType = keyType === 'DC_API' ? 'API' : 'IOT';
-      scope.apiEndpoint = endpoint;
-      scope.apiStatus = keyType === 'DC_API';
-      scope.iotStatus = keyType === 'DC_IOT';
-    }
-
-    processFlow.markModified('nodes');
-    await processFlow.save();
-  }
-
-  // ================= CLIENT.workflowTracking =================
-  const client = await Client.findOne({ clientId });
-  if (!client) return null;
-
-  const pointId = `${nodeId}_${scopeIdentifier}`;
-
-  client.workflowTracking.dataInputPoints.api.inputs =
-    client.workflowTracking.dataInputPoints.api.inputs.filter(i => i.pointId !== pointId);
-
-  client.workflowTracking.dataInputPoints.iot.inputs =
-    client.workflowTracking.dataInputPoints.iot.inputs.filter(i => i.pointId !== pointId);
-
-  if (keyType === 'DC_API') {
-    client.workflowTracking.dataInputPoints.api.inputs.push({
-      pointId,
-      nodeId,
-      scopeIdentifier,
-      endpoint,
-      status: 'active',
-      connectionStatus: 'connected'
-    });
-  }
-
-  if (keyType === 'DC_IOT') {
-    client.workflowTracking.dataInputPoints.iot.inputs.push({
-      pointId,
-      nodeId,
-      scopeIdentifier,
-      endpoint,
-      status: 'active',
-      connectionStatus: 'connected'
-    });
-  }
-
-  await client.save();
-  return processFlow || flowchart;
-}
   return null;
 }
 
 /**
  * Sends client-side notification after API key is ready
  */
-// services/apiKeyLinker.js
 async function notifyClientApiKeyReady({
   clientId,
   keyType,
@@ -238,8 +267,8 @@ async function notifyClientApiKeyReady({
   nodeId,
   scopeIdentifier,
   apiKey,
-  actorId,          // ✅ add
-  actorType         // ✅ add
+  actorId,
+  actorType
 }) {
   let title = 'API Key Ready';
   let message = '';
@@ -262,11 +291,8 @@ async function notifyClientApiKeyReady({
   await Notification.create({
     title,
     message,
-
-    // ✅ REQUIRED by schema
     createdBy: actorId,
     creatorType: actorType,
-
     targetClients: [clientId],
     isSystemNotification: true,
     systemAction: 'api_key_ready',
@@ -274,6 +300,7 @@ async function notifyClientApiKeyReady({
     publishedAt: new Date()
   });
 }
+
 async function notifyClientApiKeyRejected({
   clientId,
   keyType,
@@ -294,10 +321,8 @@ async function notifyClientApiKeyRejected({
   await Notification.create({
     title: 'API Key Request Rejected',
     message,
-
     createdBy: actorId,
     creatorType: actorType,
-
     targetClients: [clientId],
     isSystemNotification: true,
     systemAction: 'api_key_rejected',
@@ -306,9 +331,8 @@ async function notifyClientApiKeyRejected({
   });
 }
 
-
 module.exports = {
   applyKeyToNetReductionProject,
   notifyClientApiKeyReady,
-    notifyClientApiKeyRejected
+  notifyClientApiKeyRejected
 };

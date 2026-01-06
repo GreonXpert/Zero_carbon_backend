@@ -274,6 +274,14 @@ const Methodology3Schema = new mongoose.Schema({
   timestamps: false
 });
 
+// ===============================================================================
+// CHANGES TO Reduction.js MODEL
+// ===============================================================================
+// 
+// Add this to the ReductionEntrySchema (around line 277)
+// Replace lines 277-295 with this updated schema:
+// ===============================================================================
+
 const ReductionEntrySchema = new mongoose.Schema({
   // normalized type stored in the document
   inputType: { type: String, enum: ['manual', 'API', 'IOT'], default: 'manual' },
@@ -291,7 +299,50 @@ const ReductionEntrySchema = new mongoose.Schema({
 
   // NEW: connection status flags (true = connected, false = disconnected)
   apiStatus: { type: Boolean, default: true },  // relevant for API
-  iotStatus: { type: Boolean, default: true }   // relevant for IOT
+  iotStatus: { type: Boolean, default: true },  // relevant for IOT
+
+  // ✅ NEW: API Key Request Tracking
+  apiKeyRequest: {
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected'],
+      default: 'none',
+      description: 'Current status of API key request'
+    },
+    requestedInputType: {
+      type: String,
+      enum: ['API', 'IOT'],
+      default: null,
+      description: 'The input type that was requested (API or IOT)'
+    },
+    requestedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key was requested'
+    },
+    approvedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key request was approved'
+    },
+    rejectedAt: {
+      type: Date,
+      default: null,
+      description: 'When the API key request was rejected'
+    },
+    apiKeyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ApiKey',
+      default: null,
+      description: 'Reference to the approved API key'
+    },
+    requestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ApiKeyRequest',
+      default: null,
+      description: 'Reference to the ApiKeyRequest document'
+    }
+  }
 }, { _id: false });
 
 
@@ -528,53 +579,107 @@ reductionSchema.pre('validate', async function(next) {
 
 if (this.reductionDataEntry) {
   const r = this.reductionDataEntry;
-  const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
-
-  // Make sure status flags exist (for old documents)
-  if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
-  if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
-
-  if (rawType === 'csv') {
-    r.originalInputType = 'CSV';
-    r.inputType = 'manual';
-    r.apiEndpoint = '';
-    r.iotDeviceId = '';
-    // manual path – both statuses not really used
-    r.apiStatus = false;
-    r.iotStatus = false;
-  } else if (rawType === 'api') {
-    r.originalInputType = 'API';
-    r.inputType = 'API';
-    r.iotDeviceId = '';
-    // By default, an existing API config is considered active
-    if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
-    r.iotStatus = false;
-  } else if (rawType === 'iot') {
-    r.originalInputType = 'IOT';
-    r.inputType = 'IOT';
-    r.apiEndpoint = '';
-    if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
-    r.apiStatus = false;
-  } else {
-    r.originalInputType = 'manual';
-    r.inputType = 'manual';
-    r.apiEndpoint = '';
-    r.iotDeviceId = '';
-    r.apiStatus = false;
-    r.iotStatus = false;
+  
+  // ✅ Initialize apiKeyRequest if it doesn't exist (backward compatibility)
+  if (!r.apiKeyRequest) {
+    r.apiKeyRequest = {
+      status: 'none',
+      requestedInputType: null,
+      requestedAt: null,
+      approvedAt: null,
+      rejectedAt: null,
+      apiKeyId: null,
+      requestId: null
+    };
   }
+  
+  // ✅ FIX: If inputType is already API/IOT AND status is approved, respect it
+  // This prevents the hook from overwriting approved API/IOT connections
+  if (['API', 'IOT'].includes(r.inputType) && r.apiKeyRequest.status === 'approved') {
+    // Keep existing values, just ensure status flags match
+    if (typeof r.apiStatus !== 'boolean') r.apiStatus = r.inputType === 'API';
+    if (typeof r.iotStatus !== 'boolean') r.iotStatus = r.inputType === 'IOT';
+    
+    // Don't overwrite the endpoint if it has an API key
+    const hasApiKey = r.apiEndpoint && r.apiEndpoint.length > 50;
+    if (hasApiKey) {
+      // Keep the existing endpoint with the key
+      // Skip the auto-generation below
+    } else if (this.clientId && this.projectId) {
+      // Only generate if no endpoint exists
+      const ioKind = r.inputType;
+      const meth = this.calculationMethodology || 'methodology1';
+      r.apiEndpoint = buildAutoEndpoint(
+        process.env.SERVER_BASE_URL,
+        this.clientId,
+        this.projectId,
+        meth,
+        ioKind
+      );
+    }
+  }
+  // ✅ If request is pending, keep current state (don't change inputType)
+  else if (r.apiKeyRequest.status === 'pending') {
+    // Keep inputType as is (probably still 'manual')
+    // The requestedInputType field shows what they want
+    // Status flags should reflect current (not requested) state
+    if (r.inputType === 'manual') {
+      r.apiStatus = false;
+      r.iotStatus = false;
+    }
+  }
+  // ✅ Normal processing for non-API/IOT or when not approved
+  else {
+    const rawType = (r.originalInputType || r.inputType || 'manual').toString().toLowerCase();
 
-  // after projectId is set (above), auto-compose endpoint when API/IOT
-  if (['API', 'IOT'].includes(r.inputType) && this.clientId && this.projectId) {
-    const ioKind = r.inputType; // 'API' or 'IOT'
-    const meth = this.calculationMethodology || 'methodology1';
-    r.apiEndpoint = buildAutoEndpoint(
-      process.env.SERVER_BASE_URL,
-      this.clientId,
-      this.projectId,
-      meth,
-      ioKind
-    );
+    // Make sure status flags exist (for old documents)
+    if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
+    if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
+
+    if (rawType === 'csv') {
+      r.originalInputType = 'CSV';
+      r.inputType = 'manual';
+      r.apiEndpoint = '';
+      r.iotDeviceId = '';
+      r.apiStatus = false;
+      r.iotStatus = false;
+    } else if (rawType === 'api') {
+      r.originalInputType = 'API';
+      r.inputType = 'API';
+      r.iotDeviceId = '';
+      if (typeof r.apiStatus !== 'boolean') r.apiStatus = true;
+      r.iotStatus = false;
+    } else if (rawType === 'iot') {
+      r.originalInputType = 'IOT';
+      r.inputType = 'IOT';
+      r.apiEndpoint = '';
+      if (typeof r.iotStatus !== 'boolean') r.iotStatus = true;
+      r.apiStatus = false;
+    } else {
+      r.originalInputType = 'manual';
+      r.inputType = 'manual';
+      r.apiEndpoint = '';
+      r.iotDeviceId = '';
+      r.apiStatus = false;
+      r.iotStatus = false;
+    }
+
+    // Auto-compose endpoint when API/IOT (if not already set with key)
+    if (['API', 'IOT'].includes(r.inputType) && this.clientId && this.projectId) {
+      const hasApiKey = r.apiEndpoint && r.apiEndpoint.length > 50;
+      
+      if (!r.apiEndpoint || !hasApiKey) {
+        const ioKind = r.inputType;
+        const meth = this.calculationMethodology || 'methodology1';
+        r.apiEndpoint = buildAutoEndpoint(
+          process.env.SERVER_BASE_URL,
+          this.clientId,
+          this.projectId,
+          meth,
+          ioKind
+        );
+      }
+    }
   }
 }
 

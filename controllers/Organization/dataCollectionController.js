@@ -2564,7 +2564,7 @@ const Notification = require('../../models/Notification/Notification');
 
 
 
-async function getDataCollectionEndpoint({ clientId, nodeId, scopeIdentifier, type }) {
+async function getDataCollectionConnection({ clientId, nodeId, scopeIdentifier, type }) {
   const keyType = type === 'API' ? 'DC_API' : 'DC_IOT';
 
   const key = await ApiKey.findOne({
@@ -2578,116 +2578,221 @@ async function getDataCollectionEndpoint({ clientId, nodeId, scopeIdentifier, ty
   if (!key) return null;
 
   const base = `/api/data-collection/clients/${clientId}/nodes/${nodeId}/scopes/${scopeIdentifier}/${key.keyPrefix}`;
-  return type === 'API' ? `${base}/api-data` : `${base}/iot-data`;
+  const endpoint = type === 'API' ? `${base}/api-data` : `${base}/iot-data`;
+
+  return {
+    endpoint,
+    apiKeyId: key._id,
+    keyPrefix: key.keyPrefix
+  };
 }
 
 const switchInputType = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
-    const { inputType } = req.body;
+
+    // ✅ normalize inputType to avoid case issues
+    let { inputType } = req.body;
+    inputType = (inputType || "").toString().trim();
+
+    if (inputType.toLowerCase() === "manual") inputType = "manual";
+    else inputType = inputType.toUpperCase();
 
     const actorId = req.user?._id || req.user?.id;
     const actorType = req.user?.userType;
 
     if (!actorId || !actorType) {
-      return res.status(401).json({ message: 'Authentication missing' });
+      return res.status(401).json({ message: "Authentication missing" });
     }
 
-    if (actorType !== 'client_admin' || req.user.clientId !== clientId) {
-      return res.status(403).json({ message: 'Only Client Admin allowed' });
+    if (actorType !== "client_admin" || req.user.clientId !== clientId) {
+      return res.status(403).json({ message: "Only Client Admin allowed" });
     }
 
-    if (!['manual','API','IOT'].includes(inputType)) {
-      return res.status(400).json({ message:'Invalid inputType' });
+    if (!["manual", "API", "IOT"].includes(inputType)) {
+      return res.status(400).json({ message: "Invalid inputType" });
     }
 
-    const flowchart = await Flowchart.findOne({ clientId, isActive:true });
-    if (!flowchart) return res.status(404).json({ message:'Flowchart not found' });
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) return res.status(404).json({ message: "Flowchart not found" });
 
-    const node = flowchart.nodes.find(n => n.id === nodeId);
-    const scope = node?.details?.scopeDetails?.find(s => s.scopeIdentifier === scopeIdentifier);
-    if (!scope) return res.status(404).json({ message:'Scope not found' });
+    const node = flowchart.nodes.find((n) => n.id === nodeId);
+    const scope = node?.details?.scopeDetails?.find((s) => s.scopeIdentifier === scopeIdentifier);
+    if (!scope) return res.status(404).json({ message: "Scope not found" });
 
     const previousType = scope.inputType;
 
     /* ---------------- MANUAL ---------------- */
-    if (inputType === 'manual') {
-      scope.inputType = 'manual';
-      scope.apiEndpoint = '';
+    if (inputType === "manual") {
+      scope.inputType = "manual";
+      scope.apiEndpoint = "";
       scope.apiStatus = false;
       scope.iotStatus = false;
 
-      flowchart.markModified('nodes');
+      flowchart.markModified("nodes");
       await flowchart.save();
 
       await reflectSwitchInputTypeInClient({
         clientId,
         previousType,
-        newType:'manual',
+        newType: "manual",
         nodeId,
         scopeIdentifier,
-        connectionDetails:{},
-        userId:actorId
+        connectionDetails: {},
+        userId: actorId,
       });
 
-      return res.json({ success:true, inputType:'manual' });
+      return res.json({ success: true, inputType: "manual" });
     }
 
     /* ---------------- API / IOT ---------------- */
-    const endpoint = await getDataCollectionEndpoint({
-      clientId, nodeId, scopeIdentifier, type: inputType
+    const connection = await getDataCollectionConnection({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      type: inputType,
     });
 
-    /* --------- No key → create request ---------- */
-    if (!endpoint) {
-      const keyType = inputType === 'API' ? 'DC_API' : 'DC_IOT';
+    /* --------- No key → create request (UPSERT) ---------- */
+    if (!connection) {
+      const keyType = inputType === "API" ? "DC_API" : "DC_IOT";
 
-      await ApiKeyRequest.create({
-        clientId,
-        keyType,
-        nodeId,
-        scopeIdentifier,
-        requestedBy: actorId,
-        status:'pending'
-      });
+      // ✅ Prevent duplicate pending requests (upsert)
+      const requestDoc = await ApiKeyRequest.findOneAndUpdate(
+        { clientId, keyType, nodeId, scopeIdentifier, status: "pending" },
+        {
+          clientId,
+          keyType,
+          nodeId,
+          scopeIdentifier,
+          requestedBy: actorId,
+          status: "pending",
+          intendedInputType: inputType,
+          requestedAt: new Date(),
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      // ✅ Persist pending request state inside Flowchart/ProcessFlowchart
+      scope.apiKeyRequest = {
+        ...(scope.apiKeyRequest || {}),
+        status: "pending",
+        requestedInputType: inputType,
+        requestedAt: requestDoc?.requestedAt || new Date(),
+        approvedAt: null,
+        rejectedAt: null,
+        apiKeyId: null,
+        requestId: requestDoc?._id || null,
+      };
+
+      flowchart.markModified("nodes");
+      await flowchart.save();
+
+      const processFlow = await ProcessFlowchart.findOne({ clientId, isActive: true });
+      if (processFlow) {
+        const pfNode = processFlow.nodes.find((n) => n.id === nodeId);
+        const pfScope = pfNode?.details?.scopeDetails?.find((s) => s.scopeIdentifier === scopeIdentifier);
+        if (pfScope) {
+          pfScope.apiKeyRequest = {
+            ...(pfScope.apiKeyRequest || {}),
+            status: "pending",
+            requestedInputType: inputType,
+            requestedAt: requestDoc?.requestedAt || new Date(),
+            approvedAt: null,
+            rejectedAt: null,
+            apiKeyId: null,
+            requestId: requestDoc?._id || null,
+          };
+          processFlow.markModified("nodes");
+          await processFlow.save();
+        }
+      }
 
       const consultants = await User.find({
-        userType:{ $in:['consultant','consultant_admin'] }
-      }).select('_id');
+        userType: { $in: ["consultant", "consultant_admin"] },
+      }).select("_id");
 
-      const targetUsers = consultants.map(u => u._id);
+      const targetUsers = consultants.map((u) => u._id);
 
       await Notification.create({
-        title: 'API Key Request',
+        title: "API Key Request",
         message: `Client ${clientId} requested ${keyType} for scope ${scopeIdentifier}`,
         targetUsers,
         targetClients: [clientId],
-        priority: 'high',
+        priority: "high",
 
         // 🔑 REQUIRED FIELDS
         createdBy: actorId,
         creatorType: actorType,
 
-        systemAction: 'api_key_request',
+        systemAction: "api_key_request",
         isSystemNotification: true,
-        status: 'published',
-        publishedAt: new Date()
+        status: "published",
+        publishedAt: new Date(),
       });
 
       return res.status(202).json({
-        status:'waiting_for_key',
-        message:'API key requested. Consultant must generate it.'
+        status: "waiting_for_key",
+        message: "API key requested. Consultant must generate it.",
+        previousInputType: previousType,
+        currentInputType: previousType,
+        requestedInputType: inputType,
       });
     }
+
+    const endpoint = connection.endpoint;
 
     /* --------- Key exists → switch now ---------- */
     scope.inputType = inputType;
     scope.apiEndpoint = endpoint;
-    scope.apiStatus = inputType === 'API';
-    scope.iotStatus = inputType === 'IOT';
+    scope.apiStatus = inputType === "API";
+    scope.iotStatus = inputType === "IOT";
 
-    flowchart.markModified('nodes');
+    // ✅ If a request was pending, mark it approved in Flowchart scope
+    if (scope.apiKeyRequest?.status === "pending" || scope.apiKeyRequest?.requestId) {
+      scope.apiKeyRequest = {
+        ...(scope.apiKeyRequest || {}),
+        status: "approved",
+        requestedInputType: inputType,
+        requestedAt: scope.apiKeyRequest?.requestedAt || new Date(),
+        approvedAt: new Date(),
+        rejectedAt: null,
+        apiKeyId: connection.apiKeyId || scope.apiKeyRequest?.apiKeyId || null,
+        requestId: scope.apiKeyRequest?.requestId || null,
+      };
+    }
+
+    flowchart.markModified("nodes");
     await flowchart.save();
+
+    // ✅ Mirror switch + request status into ProcessFlowchart (if present)
+    const processFlow = await ProcessFlowchart.findOne({ clientId, isActive: true });
+    if (processFlow) {
+      const pfNode = processFlow.nodes.find((n) => n.id === nodeId);
+      const pfScope = pfNode?.details?.scopeDetails?.find((s) => s.scopeIdentifier === scopeIdentifier);
+      if (pfScope) {
+        pfScope.inputType = inputType;
+        pfScope.apiEndpoint = endpoint;
+        pfScope.apiStatus = inputType === "API";
+        pfScope.iotStatus = inputType === "IOT";
+
+        if (pfScope.apiKeyRequest?.status === "pending" || pfScope.apiKeyRequest?.requestId) {
+          pfScope.apiKeyRequest = {
+            ...(pfScope.apiKeyRequest || {}),
+            status: "approved",
+            requestedInputType: inputType,
+            requestedAt: pfScope.apiKeyRequest?.requestedAt || new Date(),
+            approvedAt: new Date(),
+            rejectedAt: null,
+            apiKeyId: connection.apiKeyId || pfScope.apiKeyRequest?.apiKeyId || null,
+            requestId: pfScope.apiKeyRequest?.requestId || null,
+          };
+        }
+
+        processFlow.markModified("nodes");
+        await processFlow.save();
+      }
+    }
 
     await reflectSwitchInputTypeInClient({
       clientId,
@@ -2695,26 +2800,26 @@ const switchInputType = async (req, res) => {
       newType: inputType,
       nodeId,
       scopeIdentifier,
-      connectionDetails:{
-        apiEndpoint:endpoint,
-        apiStatus:inputType==='API',
-        iotStatus:inputType==='IOT',
-        isActive:true
+      connectionDetails: {
+        apiEndpoint: endpoint,
+        apiStatus: inputType === "API",
+        iotStatus: inputType === "IOT",
+        isActive: true,
       },
-      userId:actorId
+      userId: actorId,
     });
 
     return res.json({
-      success:true,
+      success: true,
       inputType,
-      apiEndpoint:endpoint
+      apiEndpoint: endpoint,
     });
-
-  } catch(e) {
-    console.error('switchInputType error:',e);
-    res.status(500).json({ error:e.message });
+  } catch (e) {
+    console.error("switchInputType error:", e);
+    return res.status(500).json({ error: e.message });
   }
 };
+
 
 
 // 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)

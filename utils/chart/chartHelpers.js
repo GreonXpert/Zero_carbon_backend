@@ -38,11 +38,21 @@ const normalizeScopeDetail = (scope) => {
     scopeType:            scope.scopeType,
     projectActivityType:  scope.projectActivityType || 'null',
     inputType:            scope.inputType          || 'manual',
+    
     apiStatus:            scope.apiStatus          || false,
     fromOtherChart:       scope.fromOtherChart     || false,
     apiEndpoint:          scope.apiEndpoint        || '',
     iotStatus:            scope.iotStatus          || false,
     iotDeviceId:          scope.iotDeviceId        || '',
+    apiKeyRequest: {
+    status: scope?.apiKeyRequest?.status || 'none', // 'none' | 'pending' | 'approved' | 'rejected'
+    requestedInputType: scope?.apiKeyRequest?.requestedInputType ?? null, // 'API' | 'IOT' | null
+    requestedAt: scope?.apiKeyRequest?.requestedAt ?? null,
+    approvedAt: scope?.apiKeyRequest?.approvedAt ?? null,
+    rejectedAt: scope?.apiKeyRequest?.rejectedAt ?? null,
+    apiKeyId: scope?.apiKeyRequest?.apiKeyId ?? null,
+    requestId: scope?.apiKeyRequest?.requestId ?? null
+    },
     emissionFactor:       scope.emissionFactor     || '',
     categoryName:         scope.categoryName       || '',
     activity:             scope.activity           || '',

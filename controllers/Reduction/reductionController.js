@@ -46,45 +46,30 @@ function readReductionEntryFromBody(body) {
   return body?.reductionDataEntry ?? body?.reductionDateEntry ?? {};
 }
 
-function normalizeReductionDataEntry(raw = {}) {
+function normalizeReductionDataEntry(raw = {}, existing = {}) {
   const typeRaw = (raw.inputType || raw.originalInputType || raw.type || 'manual').toString().toLowerCase();
   const apiEndpoint = raw.apiEndpoint || raw.api || raw.endpoint || '';
   const iotDeviceId = raw.iotDeviceId || raw.deviceId || '';
 
-  if (typeRaw === 'csv') {
-    return {
-      originalInputType: 'CSV',
-      inputType: 'manual',
-      apiEndpoint: '',
-      iotDeviceId: ''
-    };
-  }
-  if (typeRaw === 'api') {
-    // No validation error here; model will auto-fill correct endpoint
-    return {
-      originalInputType: 'API',
-      inputType: 'API',
-      apiEndpoint, // may be '', will be overwritten in model pre('validate')
-      iotDeviceId: ''
-    };
-  }
-  if (typeRaw === 'iot') {
-    // No validation error here; model will auto-fill correct endpoint
-    return {
-      originalInputType: 'IOT',
-      inputType: 'IOT',
-      apiEndpoint, // will be overwritten in model pre('validate') with .../iot
-      iotDeviceId
-    };
-  }
-  // manual (default)
-  return {
+  const base = {
     originalInputType: 'manual',
     inputType: 'manual',
     apiEndpoint: '',
-    iotDeviceId: ''
+    iotDeviceId: '',
+    // ⚡ preserve apiKeyRequest if incoming doesn't include it
+    apiKeyRequest:
+      raw.apiKeyRequest !== undefined
+        ? raw.apiKeyRequest
+        : existing?.apiKeyRequest
   };
+
+  if (typeRaw === 'csv') return { ...base, originalInputType: 'CSV' };
+  if (typeRaw === 'api') return { ...base, originalInputType: 'API', inputType: 'API', apiEndpoint };
+  if (typeRaw === 'iot') return { ...base, originalInputType: 'IOT', inputType: 'IOT', apiEndpoint, iotDeviceId };
+
+  return base;
 }
+
 
 
 
@@ -401,6 +386,23 @@ const { replaceReductionMedia } = require(
   '../../utils/uploads/update/replaceReductionMedia'
 );
 
+// Put this helper near createReduction (same style you used in updateReduction)
+// ✅ Put this helper near createReduction (same style you used in updateReduction)
+const asObject = (val, fieldName) => {
+  if (val == null) return undefined;
+  if (typeof val === "object") return val;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (!trimmed) return undefined;
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      throw new Error(`Invalid JSON in "${fieldName}". Send valid JSON or object.`);
+    }
+  }
+  throw new Error(`Invalid type for "${fieldName}". Expected object/JSON string.`);
+};
+
 exports.createReduction = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -410,66 +412,93 @@ exports.createReduction = async (req, res) => {
       return res.status(403).json({ success: false, message: perm.reason });
     }
 
-    const body = req.body;
+    const body = req.body || {};
 
-    if (!body.projectName)
-      return res.status(400).json({ success:false, message:'projectName is required' });
-    if (!body.projectActivity)
-      return res.status(400).json({ success:false, message:'projectActivity is required' });
-    if (!body.commissioningDate || !body.endDate)
-      return res.status(400).json({ success:false, message:'Dates required' });
+    // ✅ Parse nested JSON safely (multipart/form-data safe)
+    const locationIn = asObject(body.location, "location") || {};
 
-    if (body.calculationMethodology === 'methodology3') {
-      validateM3Input(body);
+    const m1In = asObject(body.m1, "m1") || {};
+    const m2In = asObject(body.m2, "m2") || {};
+    const m3In = asObject(body.m3, "m3") || {};
+    const processFlowIn = asObject(body.processFlow, "processFlow");
+
+    // ✅ reductionDataEntry can be JSON-string or object
+    const reductionEntryIn =
+      asObject(body.reductionDataEntry, "reductionDataEntry") ||
+      asObject(body.reductionDateEntry, "reductionDateEntry") ||
+      {};
+
+    // ✅ Required fields validation (keep current functionality)
+    if (!body.projectName) {
+      return res.status(400).json({ success: false, message: "projectName is required" });
+    }
+    if (!body.projectActivity) {
+      return res.status(400).json({ success: false, message: "projectActivity is required" });
+    }
+    if (!body.commissioningDate || !body.endDate) {
+      return res.status(400).json({ success: false, message: "Dates required" });
+    }
+
+    // ✅ Keep your existing M3 validation (but ensure it receives parsed object shape)
+    if (body.calculationMethodology === "methodology3") {
+      // if validateM3Input expects body.m3 etc, make sure body.m3 is object
+      // (we don't mutate req.body; we validate using a safe copy)
+      const validateBody = { ...body, m3: m3In };
+      validateM3Input(validateBody);
     }
 
     const doc = await Reduction.create({
       clientId,
       createdBy: req.user.id,
       createdByType: req.user.userType,
+
       projectName: body.projectName,
       projectActivity: body.projectActivity,
       category: body.category,
-      scope: body.scope || '',
+      scope: body.scope || "",
+
       location: {
-        latitude: body.location?.latitude ?? null,
-        longitude: body.location?.longitude ?? null,
-        place: body.location?.place || '',
-        address: body.location?.address || ''
+        latitude: locationIn.latitude ?? null,
+        longitude: locationIn.longitude ?? null,
+        place: locationIn.place || "",
+        address: locationIn.address || ""
       },
+
       commissioningDate: new Date(body.commissioningDate),
       endDate: new Date(body.endDate),
-      description: body.description || '',
+      description: body.description || "",
       baselineMethod: body.baselineMethod,
-      baselineJustification: body.baselineJustification || '',
+      baselineJustification: body.baselineJustification || "",
       calculationMethodology: body.calculationMethodology,
 
-      ...(body.calculationMethodology === 'methodology1'
-        ? { m1: {
-            ABD: (body.m1?.ABD || []).map(normalizeUnitItem('B')),
-            APD: (body.m1?.APD || []).map(normalizeUnitItem('P')),
-            ALD: (body.m1?.ALD || []).map(normalizeUnitItem('L')),
-            bufferPercent: Number(body.m1?.bufferPercent ?? 0)
-          }}
+      ...(body.calculationMethodology === "methodology1"
+        ? {
+            m1: {
+              ABD: (m1In.ABD || []).map(normalizeUnitItem("B")),
+              APD: (m1In.APD || []).map(normalizeUnitItem("P")),
+              ALD: (m1In.ALD || []).map(normalizeUnitItem("L")),
+              bufferPercent: Number(m1In.bufferPercent ?? 0)
+            }
+          }
         : {}),
 
-      ...(body.calculationMethodology === 'methodology2'
-        ? { m2: normalizeM2FromBody(body.m2 || {}) }
+      ...(body.calculationMethodology === "methodology2"
+        ? { m2: normalizeM2FromBody(m2In) }
         : {}),
 
-      ...(body.calculationMethodology === 'methodology3'
-        ? { m3: normalizeM3Body(body.m3) }
+      ...(body.calculationMethodology === "methodology3"
+        ? { m3: normalizeM3Body(m3In) }
         : {}),
-      ...(body.processFlow
-        ? { processFlow: normalizeProcessFlow(body.processFlow, req.user) }
+
+      ...(processFlowIn
+        ? { processFlow: normalizeProcessFlow(processFlowIn, req.user) }
         : {}),
-        
-      reductionDataEntry: normalizeReductionDataEntry(
-          body.reductionDataEntry || body.reductionDateEntry
-        )
+
+      // ✅ IMPORTANT: use parsed reductionEntryIn (fixes apiKeyRequest not saving on create)
+      reductionDataEntry: normalizeReductionDataEntry(reductionEntryIn, {}) // no existing yet
     });
 
-    // 🔥 UPLOAD MEDIA HERE
+    // 🔥 UPLOAD MEDIA HERE (keep current functionality)
     await replaceReductionMedia(req, doc);
 
     await doc.validate();
@@ -478,25 +507,25 @@ exports.createReduction = async (req, res) => {
     notifyReductionEvent({
       actor: req.user,
       clientId,
-      action: 'created',
+      action: "created",
       doc
     }).catch(() => {});
 
     return res.status(201).json({
       success: true,
-      message: 'Reduction project created',
+      message: "Reduction project created",
       data: doc
     });
-
   } catch (err) {
-    console.error('createReduction error:', err);
+    console.error("createReduction error:", err);
     return res.status(500).json({
-      success:false,
-      message:'Failed to create reduction',
+      success: false,
+      message: "Failed to create reduction",
       error: err.message
     });
   }
 };
+
 
 
 function normalizeUnitItem(prefix) {
@@ -897,21 +926,7 @@ exports.updateReduction = async (req, res) => {
       return res.status(404).json({ success: false, message: "Reduction not found" });
     }
 
-    // ---------------- Helpers ----------------
-    const asObject = (val, fieldName) => {
-      if (val == null) return undefined;
-      if (typeof val === "object") return val;
-      if (typeof val === "string") {
-        const trimmed = val.trim();
-        if (!trimmed) return undefined;
-        try {
-          return JSON.parse(trimmed);
-        } catch (e) {
-          throw new Error(`Invalid JSON in "${fieldName}". Send valid JSON or object.`);
-        }
-      }
-      throw new Error(`Invalid type for "${fieldName}". Expected object/JSON string.`);
-    };
+    
 
     const asString = (v) => (v == null ? undefined : String(v));
 
@@ -1013,13 +1028,25 @@ exports.updateReduction = async (req, res) => {
     }
 
     // ---------------- Data Entry ----------------
-    if (reductionEntryIn) {
-      const entry = normalizeReductionDataEntry(reductionEntryIn);
-      doc.reductionDataEntry = {
-        ...(doc.reductionDataEntry?.toObject?.() ?? {}),
-        ...entry
-      };
-    }
+    // ---------------- Data Entry ----------------
+if (reductionEntryIn) {
+  const entry = normalizeReductionDataEntry(
+    reductionEntryIn,
+    doc.reductionDataEntry?.toObject?.() ?? {}
+  );
+
+  // ⚡ Explicit preserve pending/approved apiKeyRequest if frontend omitted it
+  if (
+    entry.apiKeyRequest === undefined &&
+    doc.reductionDataEntry?.apiKeyRequest
+  ) {
+    entry.apiKeyRequest = doc.reductionDataEntry.apiKeyRequest;
+  }
+
+  doc.reductionDataEntry = { ...doc.reductionDataEntry?.toObject?.(), ...entry };
+  doc.markModified('reductionDataEntry');
+}
+
 
     // ---------------- ProcessFlow ----------------
     if (processFlowIn) {

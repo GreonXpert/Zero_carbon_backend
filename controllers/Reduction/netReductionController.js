@@ -2912,10 +2912,10 @@ async function createSystemNotification({
 }
 
 /**
- * ✅ FINAL IMPLEMENTATION
- * - manual/csv switches immediately (also saves endpoint in apiEndpoint)
+ * ✅ UPDATED IMPLEMENTATION (NET REDUCTION)
+ * - MANUAL/CSV switches immediately (also saves endpoint in apiEndpoint)
  * - API/IOT: ONLY switches if key exists
- * - if key missing: create ApiKeyRequest + notify consultant, DO NOT change inputType
+ * - if key missing: UPSERT ApiKeyRequest (with intendedInputType) + notify consultant, DO NOT change inputType
  */
 exports.switchNetReductionInputType = async (req, res) => {
   try {
@@ -2957,9 +2957,11 @@ exports.switchNetReductionInputType = async (req, res) => {
     }
 
     const previousInputType = project.reductionDataEntry.inputType;
+
+    // ✅ endpoints helper (your existing function)
     const endpoints = buildBaseEndpoints({ clientId, projectId, calculationMethodology });
 
-    // ✅ always save originalInputType too
+    // ✅ always save originalInputType too (stores what user selected)
     project.reductionDataEntry.originalInputType = inputType;
 
     // -------------------------
@@ -3002,12 +3004,18 @@ exports.switchNetReductionInputType = async (req, res) => {
     // ✅ API / IOT (STRICT)
     // -------------------------
     const keyType = inputType === "API" ? "NET_API" : "NET_IOT";
-    const existingKey = await findActiveKey({ clientId, projectId, calculationMethodology, keyType });
+    const existingKey = await findActiveKey({
+      clientId,
+      projectId,
+      calculationMethodology,
+      keyType
+    });
 
-    // 🔴 If key missing → create request + notify consultant, DO NOT SWITCH
+    // 🔴 If key missing → UPSERT request + notify consultant, DO NOT SWITCH
     if (!existingKey) {
-      await ApiKeyRequest.findOneAndUpdate(
-        { clientId, projectId, calculationMethodology, keyType },
+      // ✅ Prevent duplicate pending requests (upsert)
+      const requestDoc = await ApiKeyRequest.findOneAndUpdate(
+        { clientId, projectId, calculationMethodology, keyType, status: "pending" },
         {
           clientId,
           projectId,
@@ -3015,10 +3023,26 @@ exports.switchNetReductionInputType = async (req, res) => {
           keyType,
           status: "pending",
           requestedBy: userId,
-          requestedAt: new Date()
+          requestedAt: new Date(),
+          intendedInputType: inputType
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true }
       );
+
+      // ✅ Persist pending state inside Reduction.reductionDataEntry
+      project.reductionDataEntry.apiKeyRequest = {
+        ...(project.reductionDataEntry.apiKeyRequest || {}),
+        status: "pending",
+        requestedInputType: inputType,
+        requestedAt: requestDoc?.requestedAt || new Date(),
+        approvedAt: null,
+        rejectedAt: null,
+        apiKeyId: null,
+        requestId: requestDoc?._id || null
+      };
+
+      project.markModified('reductionDataEntry');
+      await project.save();
 
       const consultantTargets = await resolveClientConsultantTargets(clientId);
 
@@ -3053,16 +3077,38 @@ exports.switchNetReductionInputType = async (req, res) => {
     // 🟢 KEY EXISTS → SWITCH NOW
     if (inputType === "API") {
       project.reductionDataEntry.inputType = "API";
-      project.reductionDataEntry.apiEndpoint = endpoints.apiWithKey(existingKey.keyPrefix || existingKey.key);
+      project.reductionDataEntry.apiEndpoint = endpoints.apiWithKey(
+        existingKey.keyPrefix || existingKey.key
+      );
       project.reductionDataEntry.apiStatus = true;
       project.reductionDataEntry.iotStatus = false;
     } else {
       project.reductionDataEntry.inputType = "IOT";
-      project.reductionDataEntry.apiEndpoint = endpoints.iotWithKey(existingKey.keyPrefix || existingKey.key);
+      project.reductionDataEntry.apiEndpoint = endpoints.iotWithKey(
+        existingKey.keyPrefix || existingKey.key
+      );
       project.reductionDataEntry.iotStatus = true;
       project.reductionDataEntry.apiStatus = false;
     }
 
+    // ✅ If a request was pending, mark it approved in ReductionEntry
+    if (
+      project.reductionDataEntry.apiKeyRequest?.status === "pending" ||
+      project.reductionDataEntry.apiKeyRequest?.requestId
+    ) {
+      project.reductionDataEntry.apiKeyRequest = {
+        ...(project.reductionDataEntry.apiKeyRequest || {}),
+        status: "approved",
+        requestedInputType: inputType,
+        requestedAt: project.reductionDataEntry.apiKeyRequest?.requestedAt || new Date(),
+        approvedAt: new Date(),
+        rejectedAt: null,
+        apiKeyId: existingKey?._id || project.reductionDataEntry.apiKeyRequest?.apiKeyId || null,
+        requestId: project.reductionDataEntry.apiKeyRequest?.requestId || null
+      };
+    }
+
+    project.markModified('reductionDataEntry');
     await project.save();
 
     return res.status(200).json({
@@ -3070,7 +3116,6 @@ exports.switchNetReductionInputType = async (req, res) => {
       message: `Switched to ${inputType} (key exists, endpoint saved)`,
       data: project.reductionDataEntry
     });
-
   } catch (error) {
     console.error("switchNetReductionInputType error:", error);
     return res.status(500).json({

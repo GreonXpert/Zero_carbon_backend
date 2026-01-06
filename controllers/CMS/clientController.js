@@ -1206,15 +1206,21 @@ const formatPaginatedResponse = (data, total, options) => {
     timestamp: new Date().toISOString()
   };
 };
-// Create Lead (Stage 1)
-// Create Lead (Stage 1)
+
+// ✅ Create Lead (Stage 1) — FIXED
+// Fixes E11000 duplicate clientId by using ATOMIC sequence + retry on duplicate key
+// Keeps all your existing validations + notifications/emails
+
 const createLead = async (req, res) => {
-    const startTime = Date.now();
+  const startTime = Date.now();
+
   try {
     // Only consultant_admin can create leads
     if (!req.user || req.user.userType !== "consultant_admin") {
       return res.status(403).json({
-        message: "Only Consultant Admins can create leads"
+        success: false,
+        message: "Only Consultant Admins can create leads",
+        timestamp: new Date().toISOString(),
       });
     }
 
@@ -1233,160 +1239,218 @@ const createLead = async (req, res) => {
       eventName,
       eventPlace,
     } = req.body;
+
+    // Normalize inputs
+    const normalizedEmail = (email || "").toString().trim().toLowerCase();
+    const normalizedMobile = (mobileNumber || "").toString().trim();
+    const normalizedCompanyName = (companyName || "").toString().trim();
+    const normalizedContactPersonName = (contactPersonName || "").toString().trim();
+    const normalizedLeadSource = (leadSource || "").toString().trim();
+
     // Validate required fields
-    const requiredFields = { companyName, contactPersonName, email, mobileNumber };
+    const requiredFields = {
+      companyName: normalizedCompanyName,
+      contactPersonName: normalizedContactPersonName,
+      email: normalizedEmail,
+      mobileNumber: normalizedMobile,
+    };
+
     const missingFields = Object.entries(requiredFields)
       .filter(([_, value]) => !value)
       .map(([key]) => key);
 
-    //Conditional Validation 
-    // if(leadSource === 'sales Team'){
-    //   if(!salesPersonName || !salesPersonEmployeeId) missingFields.push("salesPersonName or salesPersonEmployeeId")
+    // Conditional validations
+    // (You had sales team validation commented; keeping it optional but safe.)
+    // if (normalizedLeadSource === "sales Team") {
+    //   if (!salesPersonName || !salesPersonEmployeeId) {
+    //     missingFields.push("salesPersonName or salesPersonEmployeeId");
+    //   }
     // }
-    if(leadSource === 'reference'){
-      if (!referenceName || !referenceContactNumber) missingFields.push("referenceName or referenceContactNumber")
+
+    if (normalizedLeadSource === "reference") {
+      if (!referenceName || !referenceContactNumber) {
+        missingFields.push("referenceName or referenceContactNumber");
+      }
     }
-    if(leadSource === 'event'){
-      if(!eventName || !eventPlace) missingFields.push("eventName or eventDate ")
+
+    if (normalizedLeadSource === "event") {
+      if (!eventName || !eventPlace) {
+        missingFields.push("eventName or eventPlace");
+      }
     }
+
     if (missingFields.length > 0) {
       return res.status(400).json({
         success: false,
-        message: `Missing required fields: ${missingFields.join(', ')}`,
-        timestamp: new Date().toISOString()
+        message: `Missing required fields: ${missingFields.join(", ")}`,
+        timestamp: new Date().toISOString(),
       });
     }
+
+    // Email format sanity (basic)
+    if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // Check if lead already exists by email
-    const existingLead = await Client.findOne({
-      "leadInfo.email": email
-    });
+    const existingLead = await Client.findOne({ "leadInfo.email": normalizedEmail })
+      .select("clientId leadInfo.email")
+      .lean();
+
     if (existingLead) {
       return res.status(409).json({
         success: false,
         message: "A lead with this email already exists",
         clientId: existingLead.clientId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     }
 
-    // Generate a new Client ID
-     const seq = await Client.getNextClientSequence();      // 1, 2, 3, ...
-    const clientId = Client.buildClientIdForStage(seq, "lead"); 
+    // ----------------------------
+    // ✅ IMPORTANT FIX:
+    // Use an ATOMIC sequence method (Counter/$inc) instead of sorting clients.
+    // You MUST implement Client.getNextClientSequenceAtomic() in your Client model.
+    // ----------------------------
 
-    // Create the new lead
-    const newClient = new Client({
-      clientId,
-       clientSequenceNumber: seq, // 1, 2, 3, ...
-      stage: "lead",
-      status: "contacted",
-      leadInfo: {
-        companyName,
-        contactPersonName,
-        email,
-        mobileNumber,
-        leadSource,
-        salesPersonName: leadSource === 'sales Team' ? salesPersonName : undefined,
-        salesPersonEmployeeId: leadSource === 'sales Team' ? salesPersonEmployeeId : undefined,
-        referenceName: leadSource === 'reference' ? referenceName : undefined,
-        referenceContactNumber : leadSource === "reference" ? referenceContactNumber : undefined,
-        eventName: leadSource === 'event' ? eventName : undefined,
-        eventPlace: leadSource === 'event' ? eventPlace : undefined,
-        notes,
-        consultantAdminId: req.user.id,
-        assignedConsultantId: assignedConsultantId || null,
-        createdBy: req.user.id // ← store who created
-        // createdAt is auto‐populated by schema default
-      },
-      
-      timeline: [{
-        stage: "lead",
-        status: "contacted",
-        action: "Lead created",
-        performedBy: req.user.id,
-        notes: `Lead created by ${req.user.userName}`
-      }]
-    });
+    const MAX_RETRIES = 5;
 
-    await newClient.save();
-    await emitNewClientCreated(newClient, req.user.id);
-    await emitClientListUpdate(newClient, 'created', req.user.id);
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-       sendLeadCreatedEmail(newClient, req.user.userName);
-      console.log(`✉️  Lead creation email queued for super admin (${process.env.SUPER_ADMIN_EMAIL})`);
-    } catch (mailErr) {
-      console.error("⚠️  Could not send lead-created email:", mailErr);
-    }
+        const seq = await Client.getNextClientSequenceAtomic(); // ✅ atomic $inc
+        const clientId = Client.buildClientIdForStage(seq, "lead");
 
+        const newClient = new Client({
+          clientId,
+          clientSequenceNumber: seq,
+          stage: "lead",
+          status: "contacted",
+          leadInfo: {
+            companyName: normalizedCompanyName,
+            contactPersonName: normalizedContactPersonName,
+            email: normalizedEmail,
+            mobileNumber: normalizedMobile,
+            leadSource: normalizedLeadSource,
+            salesPersonName: normalizedLeadSource === "sales Team" ? salesPersonName : undefined,
+            salesPersonEmployeeId:
+              normalizedLeadSource === "sales Team" ? salesPersonEmployeeId : undefined,
+            referenceName: normalizedLeadSource === "reference" ? referenceName : undefined,
+            referenceContactNumber:
+              normalizedLeadSource === "reference" ? referenceContactNumber : undefined,
+            eventName: normalizedLeadSource === "event" ? eventName : undefined,
+            eventPlace: normalizedLeadSource === "event" ? eventPlace : undefined,
+            notes,
+            consultantAdminId: req.user.id,
+            assignedConsultantId: assignedConsultantId || null,
+            createdBy: req.user.id,
+          },
+          timeline: [
+            {
+              stage: "lead",
+              status: "contacted",
+              action: "Lead created",
+              performedBy: req.user.id,
+              notes: `Lead created by ${req.user.userName}`,
+            },
+          ],
+        });
 
-     // 1) Try sending the “lead created” notification, but don’t let it throw.
-    try {
-       createLeadActionNotification('created', newClient, req.user);
-    } catch (notifErr) {
-      console.error("Warning: could not enqueue lead notification:", notifErr);
-      // (You can choose to swallow this completely or log it somewhere else.)
-    }
+        await newClient.save();
 
-    // 2) If there’s an assigned consultant, wrap that in its own try block too:
-    if (assignedConsultantId) {
-      // ── a) In‐app “assign” notification ───────────────────────────────────
-      try {
-        const consultant = await User.findById(assignedConsultantId).select('email userName');
-        if (consultant) {
-          // If createConsultantAssignmentNotification is async, await it
-           createConsultantAssignmentNotification(consultant, newClient, req.user);
-        }
-      } catch (assignNotifErr) {
-        console.error("Warning: could not enqueue consultant‐assignment notification:", assignNotifErr);
-      }
+        // socket emits
+        await emitNewClientCreated(newClient, req.user.id);
+        await emitClientListUpdate(newClient, "created", req.user.id);
 
-      // ── b) Email the consultant ───────────────────────────────────────────
-      try {
-        // It’s often simpler to re‐fetch only email/userName via .lean(), but
-        // since we already did findById above (with select), you can reuse it:
-        const consultantUser = await User
-          .findById(assignedConsultantId)
-          .select('email userName')
-          .lean();
-
-        if (consultantUser && consultantUser.email) {
-           sendConsultantAssignedEmail(
-            consultantUser,
-            newClient,
-            req.user.userName
+        // Email to super admin (don’t fail API if email fails)
+        try {
+          sendLeadCreatedEmail(newClient, req.user.userName);
+          console.log(
+            `✉️  Lead creation email queued for super admin (${process.env.SUPER_ADMIN_EMAIL})`
           );
-          console.log(`✉️ Consultant assignment email sent to ${consultantUser.email}`);
+        } catch (mailErr) {
+          console.error("⚠️  Could not send lead-created email:", mailErr);
         }
-      } catch (assignEmailErr) {
-        console.error("⚠️ Could not send consultant-assigned email:", assignEmailErr);
+
+        // Lead action notification (don’t fail API if notification fails)
+        try {
+          createLeadActionNotification("created", newClient, req.user);
+        } catch (notifErr) {
+          console.error("Warning: could not enqueue lead notification:", notifErr);
+        }
+
+        // Assigned consultant workflows
+        if (assignedConsultantId) {
+          // In-app “assign” notification
+          try {
+            const consultant = await User.findById(assignedConsultantId).select("email userName");
+            if (consultant) {
+              createConsultantAssignmentNotification(consultant, newClient, req.user);
+            }
+          } catch (assignNotifErr) {
+            console.error(
+              "Warning: could not enqueue consultant-assignment notification:",
+              assignNotifErr
+            );
+          }
+
+          // Email the consultant
+          try {
+            const consultantUser = await User.findById(assignedConsultantId)
+              .select("email userName")
+              .lean();
+
+            if (consultantUser?.email) {
+              sendConsultantAssignedEmail(consultantUser, newClient, req.user.userName);
+              console.log(`✉️ Consultant assignment email sent to ${consultantUser.email}`);
+            }
+          } catch (assignEmailErr) {
+            console.error("⚠️ Could not send consultant-assigned email:", assignEmailErr);
+          }
+        }
+
+        const responseTime = Date.now() - startTime;
+
+        return res.status(201).json({
+          success: true,
+          message: "Lead created successfully",
+          data: {
+            clientId: newClient.clientId,
+            stage: newClient.stage,
+            status: newClient.status,
+            leadInfo: newClient.leadInfo,
+          },
+          responseTime: `${responseTime}ms`,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        // Retry only on duplicate key (clientId collision)
+        if (err?.code === 11000 && attempt < MAX_RETRIES) {
+          continue;
+        }
+        throw err;
       }
     }
 
-
-    const responseTime = Date.now() - startTime;
-
- return res.status(201).json({
-      success: true,
-      message: "Lead created successfully",
-      data: {
-        clientId: newClient.clientId,
-        stage: newClient.stage,
-        status: newClient.status,
-        leadInfo: newClient.leadInfo
-      },
-      responseTime: `${responseTime}ms`,
-      timestamp: new Date().toISOString()
+    // If we exhausted retries
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create lead (could not generate unique clientId)",
+      timestamp: new Date().toISOString(),
     });
-
   } catch (error) {
     console.error("Create lead error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to create lead",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      timestamp: new Date().toISOString()
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      timestamp: new Date().toISOString(),
     });
   }
 };
+
 
 
 /**
