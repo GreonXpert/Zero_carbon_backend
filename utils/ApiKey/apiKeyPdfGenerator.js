@@ -24,6 +24,9 @@ const generateApiKeyPDF = async (apiKeyData, clientData, outputPath) => {
         }
       });
 
+      const pageWidth = doc.page.width - 100; // 495 for A4 with 50px margins
+      const leftMargin = 50;
+
       // Pipe to file
       const writeStream = fs.createWriteStream(outputPath);
       doc.pipe(writeStream);
@@ -31,166 +34,204 @@ const generateApiKeyPDF = async (apiKeyData, clientData, outputPath) => {
       // Add header with logo/branding
       doc.fontSize(24)
          .fillColor('#2C3E50')
-         .text('Zero Carbon Platform', { align: 'center' })
-         .moveDown(0.5);
+         .text('Zero Carbon Platform', leftMargin, doc.y, { 
+           width: pageWidth,
+           align: 'center' 
+         })
+         .moveDown(0.3);
 
       doc.fontSize(14)
          .fillColor('#7F8C8D')
-         .text('API Key Credentials', { align: 'center' })
-         .moveDown(2);
+         .text('API Key Credentials', leftMargin, doc.y, { 
+           width: pageWidth,
+           align: 'center' 
+         })
+         .moveDown(1.5);
 
       // Add warning banner
-      doc.rect(50, doc.y, 495, 80)
+      const warningY = doc.y;
+      const warningHeight = 75;
+      
+      doc.rect(leftMargin, warningY, pageWidth, warningHeight)
          .fillAndStroke('#FFF3CD', '#FFC107');
 
       doc.fontSize(12)
          .fillColor('#856404')
-         .text('⚠️ IMPORTANT SECURITY NOTICE', 70, doc.y - 70, { 
-           width: 455,
-           align: 'center'
-         })
-         .moveDown(0.5);
-
-      doc.fontSize(10)
-         .text('This API key provides access to your emissions data. Store it securely and never share it publicly.', 70, doc.y, {
-           width: 455,
-           align: 'center'
-         })
-         .text('This is the only time the full key will be displayed.', {
-           width: 455,
+         .font('Helvetica-Bold')
+         .text('⚠️  IMPORTANT SECURITY NOTICE', leftMargin, warningY + 8, { 
+           width: pageWidth,
            align: 'center'
          });
 
-      doc.moveDown(3);
+      doc.fontSize(9)
+         .fillColor('#856404')
+         .font('Helvetica')
+         .text('This API key provides access to your emissions data.', leftMargin + 10, warningY + 30, {
+           width: pageWidth - 20,
+           align: 'center'
+         })
+         .text('Store it securely and never share it publicly.', {
+           width: pageWidth - 20,
+           align: 'center'
+         })
+         .text('This is the only time the full key will be displayed.', {
+           width: pageWidth - 20,
+           align: 'center'
+         });
 
-      // Client Information Section
-      addSectionHeader(doc, 'Client Information');
-      addKeyValue(doc, 'Client ID', clientData.clientId);
-      addKeyValue(doc, 'Client Name', clientData.clientName || 'N/A');
-      addKeyValue(doc, 'Company', clientData.companyName || 'N/A');
+      doc.moveDown();
+      doc.y = warningY + warningHeight + 10;
       doc.moveDown(1);
 
+      // Client Information Section
+      addSectionHeader(doc, 'Client Information', leftMargin, pageWidth);
+      addKeyValue(doc, 'Client ID', clientData.clientId, leftMargin, pageWidth);
+      addKeyValue(doc, 'Client Name', clientData.clientName || 'N/A', leftMargin, pageWidth);
+      addKeyValue(doc, 'Company', clientData.companyName || 'N/A', leftMargin, pageWidth);
+      doc.moveDown(0.8);
+
       // API Key Information Section
-      addSectionHeader(doc, 'API Key Details');
-      addKeyValue(doc, 'Key Type', apiKeyData.keyType);
-      addKeyValue(doc, 'Key ID', apiKeyData.keyId || apiKeyData._id);
-      
+      addSectionHeader(doc, 'API Key Details', leftMargin, pageWidth);
+      addKeyValue(doc, 'Key Type', apiKeyData.keyType, leftMargin, pageWidth);
+      addKeyValue(doc, 'Key ID', apiKeyData.keyId || apiKeyData._id, leftMargin, pageWidth);
+
       // Show full API key only once
       if (apiKeyData.apiKey) {
         doc.fontSize(10)
            .fillColor('#333333')
-           .text('Full API Key:', 50, doc.y);
-        
-        doc.rect(50, doc.y + 5, 495, 30)
+           .font('Helvetica-Bold')
+           .text('Full API Key:', leftMargin, doc.y);
+
+        doc.font('Helvetica');
+        doc.moveDown(0.3);
+
+        const apiKeyBoxY = doc.y;
+        const apiKeyBoxHeight = 35;
+
+        doc.rect(leftMargin, apiKeyBoxY, pageWidth, apiKeyBoxHeight)
            .fillAndStroke('#F8F9FA', '#DEE2E6');
-        
-        doc.fontSize(9)
+
+        doc.fontSize(8)
            .fillColor('#E74C3C')
            .font('Courier')
-           .text(apiKeyData.apiKey, 60, doc.y - 18, {
-             width: 475
+           .text(apiKeyData.apiKey, leftMargin + 10, apiKeyBoxY + 8, {
+             width: pageWidth - 20,
+             align: 'left'
            })
            .font('Helvetica');
-        
-        doc.moveDown(2);
+
+        doc.y = apiKeyBoxY + apiKeyBoxHeight + 5;
       } else {
-        addKeyValue(doc, 'Key Prefix', apiKeyData.keyPrefix);
+        addKeyValue(doc, 'Key Prefix', apiKeyData.keyPrefix, leftMargin, pageWidth);
       }
 
-      addKeyValue(doc, 'Status', apiKeyData.status || 'ACTIVE');
-      addKeyValue(doc, 'Created', formatDate(apiKeyData.createdAt || new Date()));
-      addKeyValue(doc, 'Expires', formatDate(apiKeyData.expiresAt));
-      addKeyValue(doc, 'Days Until Expiry', apiKeyData.daysUntilExpiry || calculateDaysUntilExpiry(apiKeyData.expiresAt));
-      
+      addKeyValue(doc, 'Status', apiKeyData.status || 'ACTIVE', leftMargin, pageWidth);
+      addKeyValue(doc, 'Created', formatDate(apiKeyData.createdAt || new Date()), leftMargin, pageWidth);
+      addKeyValue(doc, 'Expires', formatDate(apiKeyData.expiresAt), leftMargin, pageWidth);
+      addKeyValue(doc, 'Days Until Expiry', apiKeyData.daysUntilExpiry || calculateDaysUntilExpiry(apiKeyData.expiresAt), leftMargin, pageWidth);
+
       if (apiKeyData.isSandbox || apiKeyData.isSandboxKey) {
-        addKeyValue(doc, 'Sandbox Key', 'Yes');
-        addKeyValue(doc, 'Sandbox Duration', `${apiKeyData.sandboxDuration || 'N/A'} days`);
+        addKeyValue(doc, 'Sandbox Key', 'Yes', leftMargin, pageWidth);
+        addKeyValue(doc, 'Sandbox Duration', `${apiKeyData.sandboxDuration || 'N/A'} days`, leftMargin, pageWidth);
       }
 
-      doc.moveDown(1);
+      doc.moveDown(0.8);
 
       // Endpoint Specific Information
-      addSectionHeader(doc, 'Endpoint Configuration');
-      
+      addSectionHeader(doc, 'Endpoint Configuration', leftMargin, pageWidth);
+
       if (apiKeyData.keyType === 'NET_API' || apiKeyData.keyType === 'NET_IOT') {
-        addKeyValue(doc, 'Project ID', apiKeyData.metadata?.projectId || apiKeyData.projectId);
-        addKeyValue(doc, 'Calculation Methodology', apiKeyData.metadata?.calculationMethodology || apiKeyData.calculationMethodology);
-        
+        addKeyValue(doc, 'Project ID', apiKeyData.metadata?.projectId || apiKeyData.projectId, leftMargin, pageWidth);
+        addKeyValue(doc, 'Calculation Methodology', apiKeyData.metadata?.calculationMethodology || apiKeyData.calculationMethodology, leftMargin, pageWidth);
+
         const baseUrl = process.env.API_BASE_URL || 'https://api.zerohero.ebhoom.com';
         const endpointType = apiKeyData.keyType === 'NET_API' ? 'api' : 'iot';
         const endpoint = `${baseUrl}/api/net-reduction/${clientData.clientId}/${apiKeyData.metadata?.projectId || apiKeyData.projectId}/${apiKeyData.metadata?.calculationMethodology || apiKeyData.calculationMethodology}/${endpointType}`;
-        
-        doc.moveDown(0.5);
+
+        doc.moveDown(0.3);
         doc.fontSize(10)
            .fillColor('#333333')
-           .text('Endpoint URL:', 50, doc.y);
-        
+           .font('Helvetica-Bold')
+           .text('Endpoint URL:', leftMargin, doc.y);
+
+        doc.font('Helvetica');
+        doc.moveDown(0.2);
+
         doc.fontSize(8)
            .fillColor('#3498DB')
-           .text(endpoint, 50, doc.y + 5, {
-             width: 495,
-             link: endpoint
+           .text(endpoint, leftMargin, doc.y, {
+             width: pageWidth,
+             link: endpoint,
+             lineBreak: true
            });
-        
-        doc.moveDown(1);
+
+        doc.moveDown(0.8);
       } else if (apiKeyData.keyType === 'DC_API' || apiKeyData.keyType === 'DC_IOT') {
-        addKeyValue(doc, 'Node ID', apiKeyData.metadata?.nodeId || apiKeyData.nodeId);
-        addKeyValue(doc, 'Scope Identifier', apiKeyData.metadata?.scopeIdentifier || apiKeyData.scopeIdentifier);
-        
+        addKeyValue(doc, 'Node ID', apiKeyData.metadata?.nodeId || apiKeyData.nodeId, leftMargin, pageWidth);
+        addKeyValue(doc, 'Scope Identifier', apiKeyData.metadata?.scopeIdentifier || apiKeyData.scopeIdentifier, leftMargin, pageWidth);
+
         const baseUrl = process.env.API_BASE_URL || 'https://api.zerohero.ebhoom.com';
         const endpointType = apiKeyData.keyType === 'DC_API' ? 'api-data' : 'iot-data';
         const endpoint = `${baseUrl}/api/data-collection/clients/${clientData.clientId}/nodes/${apiKeyData.metadata?.nodeId || apiKeyData.nodeId}/scopes/${apiKeyData.metadata?.scopeIdentifier || apiKeyData.scopeIdentifier}/${endpointType}`;
-        
-        doc.moveDown(0.5);
+
+        doc.moveDown(0.3);
         doc.fontSize(10)
            .fillColor('#333333')
-           .text('Endpoint URL:', 50, doc.y);
-        
+           .font('Helvetica-Bold')
+           .text('Endpoint URL:', leftMargin, doc.y);
+
+        doc.font('Helvetica');
+        doc.moveDown(0.2);
+
         doc.fontSize(8)
            .fillColor('#3498DB')
-           .text(endpoint, 50, doc.y + 5, {
-             width: 495,
-             link: endpoint
+           .text(endpoint, leftMargin, doc.y, {
+             width: pageWidth,
+             link: endpoint,
+             lineBreak: true
            });
-        
-        doc.moveDown(1);
+
+        doc.moveDown(0.8);
       }
 
       // Usage Example Section
-      doc.moveDown(1);
-      addSectionHeader(doc, 'Usage Example');
-      
+      addSectionHeader(doc, 'Usage Example', leftMargin, pageWidth);
+
       const curlExample = generateCurlExample(apiKeyData, clientData);
-      
-      doc.rect(50, doc.y, 495, 100)
+
+      const curlBoxY = doc.y;
+      const curlBoxHeight = 90;
+
+      doc.rect(leftMargin, curlBoxY, pageWidth, curlBoxHeight)
          .fillAndStroke('#F8F9FA', '#DEE2E6');
-      
-      doc.fontSize(8)
+
+      doc.fontSize(7)
          .fillColor('#2C3E50')
          .font('Courier')
-         .text(curlExample, 60, doc.y - 90, {
-           width: 475,
-           height: 80
+         .text(curlExample, leftMargin + 8, curlBoxY + 8, {
+           width: pageWidth - 16,
+           height: curlBoxHeight - 16,
+           lineBreak: true
          })
          .font('Helvetica');
-      
-      doc.moveDown(6);
+
+      doc.y = curlBoxY + curlBoxHeight + 8;
+      doc.moveDown(0.5);
 
       // Additional Information
       if (apiKeyData.description) {
-        addSectionHeader(doc, 'Description');
+        addSectionHeader(doc, 'Description', leftMargin, pageWidth);
         doc.fontSize(10)
            .fillColor('#333333')
-           .text(apiKeyData.description, 50, doc.y, {
-             width: 495
+           .text(apiKeyData.description, leftMargin, doc.y, {
+             width: pageWidth
            });
-        doc.moveDown(1);
+        doc.moveDown(0.8);
       }
 
       // Security Recommendations
-      doc.moveDown(1);
-      addSectionHeader(doc, 'Security Best Practices');
-      
+      addSectionHeader(doc, 'Security Best Practices', leftMargin, pageWidth);
+
       const securityTips = [
         '• Store this API key securely in environment variables',
         '• Never commit API keys to version control (Git, etc.)',
@@ -203,30 +244,35 @@ const generateApiKeyPDF = async (apiKeyData, clientData, outputPath) => {
 
       doc.fontSize(9)
          .fillColor('#555555');
-      
+
       securityTips.forEach(tip => {
-        doc.text(tip, 50, doc.y, { width: 495 });
-        doc.moveDown(0.3);
+        doc.text(tip, leftMargin, doc.y, { width: pageWidth });
+        doc.moveDown(0.35);
       });
 
       // Footer
-      doc.moveDown(2);
-      doc.fontSize(8)
+      doc.moveDown(1.5);
+      doc.fontSize(7)
          .fillColor('#95A5A6')
-         .text('____________________________________________________________', 50, doc.y, {
+         .text('_'.repeat(80), leftMargin, doc.y, {
            align: 'center'
          })
-         .moveDown(0.5);
-      
+         .moveDown(0.4);
+
       doc.fontSize(8)
-         .text('Zero Carbon Platform - Emissions Management System', {
+         .fillColor('#7F8C8D')
+         .text('Zero Carbon Platform - Emissions Management System', leftMargin, doc.y, {
+           width: pageWidth,
            align: 'center'
          })
+         .moveDown(0.2)
          .text(`Generated on ${new Date().toLocaleString()}`, {
+           width: pageWidth,
            align: 'center'
          })
-         .moveDown(0.5)
+         .moveDown(0.2)
          .text('For support, contact: support@zerohero.ebhoom.com', {
+           width: pageWidth,
            align: 'center'
          });
 
@@ -250,31 +296,48 @@ const generateApiKeyPDF = async (apiKeyData, clientData, outputPath) => {
 /**
  * Helper function to add section headers
  */
-const addSectionHeader = (doc, title) => {
-  doc.fontSize(14)
+const addSectionHeader = (doc, title, leftMargin, pageWidth) => {
+  doc.fontSize(13)
      .fillColor('#2C3E50')
-     .text(title, 50, doc.y)
-     .moveDown(0.5);
-  
-  doc.moveTo(50, doc.y)
-     .lineTo(545, doc.y)
+     .font('Helvetica-Bold')
+     .text(title, leftMargin, doc.y, { width: pageWidth });
+
+  doc.font('Helvetica');
+  doc.moveDown(0.4);
+
+  doc.moveTo(leftMargin, doc.y)
+     .lineTo(leftMargin + pageWidth, doc.y)
      .strokeColor('#BDC3C7')
+     .lineWidth(1)
      .stroke();
-  
+
   doc.moveDown(0.5);
 };
 
 /**
  * Helper function to add key-value pairs
  */
-const addKeyValue = (doc, key, value) => {
+const addKeyValue = (doc, key, value, leftMargin, pageWidth) => {
+  const keyWidth = 150;
+  const valueWidth = pageWidth - keyWidth;
+
   doc.fontSize(10)
      .fillColor('#555555')
-     .text(key + ':', 50, doc.y, { continued: true })
+     .font('Helvetica-Bold')
+     .text(key + ':', leftMargin, doc.y, { 
+       width: keyWidth,
+       align: 'left'
+     });
+
+  doc.font('Helvetica')
      .fillColor('#2C3E50')
-     .text('  ' + value, { width: 400 });
-  
-  doc.moveDown(0.3);
+     .fontSize(10)
+     .text(value, leftMargin + keyWidth, doc.y - doc.currentLineHeight(), {
+       width: valueWidth,
+       align: 'left'
+     });
+
+  doc.moveDown(0.4);
 };
 
 /**

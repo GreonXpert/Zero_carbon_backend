@@ -10,6 +10,7 @@ const Notification = require("../models/Notification/Notification");
 const { createUserStatusNotification } = require("../controllers/Notification/notificationControllers");
 const Flowchart = require('../models/Organization/Flowchart');
 const { saveUserProfileImage } = require('../utils/uploads/userImageUploadS3');
+const mongoose = require('mongoose');
 
 const { getNormalizedLevels } = require("../utils/Permissions/permissions");
 
@@ -1792,6 +1793,14 @@ const getUserById = async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // ✅ Avoid CastError + return proper client error
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId",
+      });
+    }
+
     let baseQuery = {};
 
     switch (req.user.userType) {
@@ -1800,19 +1809,15 @@ const getUserById = async (req, res) => {
 
       case "consultant_admin":
         baseQuery = {
-          $or: [
-            { createdBy: req.user.id },
-            { consultantAdminId: req.user.id }
-          ]
+          $or: [{ createdBy: req.user.id }, { consultantAdminId: req.user.id }],
         };
         break;
 
       case "consultant": {
         const assignedClients = await Client.find({
-          "leadInfo.assignedConsultantId": req.user.id
+          "leadInfo.assignedConsultantId": req.user.id,
         }).select("clientId");
-
-        const clientIds = assignedClients.map(c => c.clientId);
+        const clientIds = assignedClients.map((c) => c.clientId);
         baseQuery = { clientId: { $in: clientIds } };
         break;
       }
@@ -1827,10 +1832,12 @@ const getUserById = async (req, res) => {
 
       default:
         return res.status(403).json({
-          message: "You don't have permission to view this user"
+          success: false,
+          message: "You don't have permission to view this user",
         });
     }
 
+    // ✅ Correct merge (no ".baseQuery")
     const user = await User.findOne({ _id: userId, ...baseQuery })
       .select("-password")
       .populate("createdBy", "userName email profileImage")
@@ -1841,28 +1848,25 @@ const getUserById = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({
-        message: "User not found or not accessible"
+        success: false,
+        message: "User not found or not accessible",
       });
     }
 
-    // Normalize images
+    // (keep your normalize logic)
     user.createdBy = normalizeUserProfile(user.createdBy);
     user.parentUser = normalizeUserProfile(user.parentUser);
     user.consultantAdminId = normalizeUserProfile(user.consultantAdminId);
     user.employeeHeadId = normalizeUserProfile(user.employeeHeadId);
     normalizeUserProfile(user);
 
-    res.status(200).json({
-      success: true,
-      user
-    });
-
+    return res.status(200).json({ success: true, user });
   } catch (error) {
     console.error("Get user by id error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch user",
-      error: error.message
+      error: error.message,
     });
   }
 };
