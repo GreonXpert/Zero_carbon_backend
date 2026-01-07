@@ -340,9 +340,36 @@ async function createKeyExpiredNotification(apiKey) {
     console.error('[API Key] ❌ Failed to create key expired notification:', error);
   }
 }
+// ✅ NEW: Resolve who should receive API key REQUEST notifications
+// Rule: ONLY (1) consultantAdmin who created the client + (2) assigned consultant
+async function resolveApiKeyRequestTargets(clientId) {
+  const client = await Client.findOne({ clientId })
+    .select("leadInfo workflowTracking")
+    .lean();
+
+  if (!client) return [];
+
+  const consultantAdminId =
+    client?.leadInfo?.createdBy || client?.leadInfo?.consultantAdminId;
+
+  const assignedConsultantId =
+    client?.workflowTracking?.assignedConsultantId ||
+    client?.leadInfo?.assignedConsultantId;
+
+  const ids = [consultantAdminId, assignedConsultantId]
+    .filter(Boolean)
+    .map((x) => x.toString());
+
+  // remove duplicates
+  return [...new Set(ids)];
+}
+
+
+
 
 module.exports = {
   createApiKeyNotification,
   createKeyExpiryWarning,
-  createKeyExpiredNotification
+  createKeyExpiredNotification,
+  resolveApiKeyRequestTargets
 };

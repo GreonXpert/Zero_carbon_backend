@@ -2855,61 +2855,26 @@ async function findActiveKey({ clientId, projectId, calculationMethodology, keyT
 
 // ✅ helper: resolve consultant targets (consultant_admin + assigned consultant)
 async function resolveClientConsultantTargets(clientId) {
-  const client = await Client.findOne({ clientId }).select("leadInfo createdBy createdByType");
+  const client = await Client.findOne({ clientId })
+    .select("leadInfo workflowTracking")
+    .lean();
+
   if (!client) return [];
 
-  const targets = [];
+  const consultantAdminId =
+    client?.leadInfo?.createdBy || client?.leadInfo?.consultantAdminId;
 
-  // adjust these fields if your schema differs
-  const consultantAdminId = client.leadInfo?.consultantAdminId || client.leadInfo?.createdBy;
-  const assignedConsultantId = client.leadInfo?.assignedConsultantId;
+  const assignedConsultantId =
+    client?.workflowTracking?.assignedConsultantId ||
+    client?.leadInfo?.assignedConsultantId;
 
-  if (consultantAdminId) targets.push(consultantAdminId.toString());
-  if (assignedConsultantId) targets.push(assignedConsultantId.toString());
+  const targets = [consultantAdminId, assignedConsultantId]
+    .filter(Boolean)
+    .map((x) => x.toString());
 
-  return [...new Set(targets)].filter(Boolean);
+  return [...new Set(targets)];
 }
 
-// ✅ IMPORTANT: Notification.createdBy is REQUIRED in your schema
-// Set a real ObjectId (recommended: create a system user in DB and put its _id in env)
-const SYSTEM_USER_ID_RAW = process.env.SYSTEM_USER_ID || "000000000000000000000001";
-const SYSTEM_USER_ID = mongoose.Types.ObjectId.isValid(SYSTEM_USER_ID_RAW)
-  ? new mongoose.Types.ObjectId(SYSTEM_USER_ID_RAW)
-  : new mongoose.Types.ObjectId("000000000000000000000001");
-
-// ✅ helper: create notification safely
-async function createSystemNotification({
-  title,
-  message,
-  targetUsers = [],
-  targetClients = [],
-  systemAction,
-  relatedEntity
-}) {
-  if (!title || !message) return;
-
-  const notif = new Notification({
-    title,
-    message,
-    priority: "high",
-
-    // ✅ required fields
-    createdBy: SYSTEM_USER_ID,
-    creatorType: "system",
-
-    targetUsers,
-    targetClients,
-
-    status: "published",
-    publishedAt: new Date(),
-
-    isSystemNotification: true,
-    systemAction: systemAction || "api_key_requested",
-    relatedEntity: relatedEntity || null
-  });
-
-  await notif.save();
-}
 
 /**
  * ✅ UPDATED IMPLEMENTATION (NET REDUCTION)

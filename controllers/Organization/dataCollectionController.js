@@ -18,6 +18,8 @@ const {
 const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
 
 const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
+const { resolveApiKeyRequestTargets } = require("../../utils/ApiKey/apiKeyNotifications");
+
 
 
 
@@ -2708,28 +2710,28 @@ const switchInputType = async (req, res) => {
         }
       }
 
-      const consultants = await User.find({
-        userType: { $in: ["consultant", "consultant_admin"] },
-      }).select("_id");
+      const targetUsers = await resolveApiKeyRequestTargets(clientId);
 
-      const targetUsers = consultants.map((u) => u._id);
+// Only create notification if we found recipients
+if (targetUsers.length > 0) {
+  await Notification.create({
+    title: "API Key Request",
+    message: `Client ${clientId} requested ${keyType} for scope ${scopeIdentifier}`,
+    targetUsers,
+    targetClients: [clientId],
+    priority: "high",
 
-      await Notification.create({
-        title: "API Key Request",
-        message: `Client ${clientId} requested ${keyType} for scope ${scopeIdentifier}`,
-        targetUsers,
-        targetClients: [clientId],
-        priority: "high",
+    // required fields
+    createdBy: actorId,
+    creatorType: actorType,
 
-        // 🔑 REQUIRED FIELDS
-        createdBy: actorId,
-        creatorType: actorType,
+    systemAction: "api_key_request",
+    isSystemNotification: true,
+    status: "published",
+    publishedAt: new Date(),
+  });
+}
 
-        systemAction: "api_key_request",
-        isSystemNotification: true,
-        status: "published",
-        publishedAt: new Date(),
-      });
 
       return res.status(202).json({
         status: "waiting_for_key",
