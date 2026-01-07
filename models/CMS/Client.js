@@ -279,10 +279,7 @@ const clientSchema = new mongoose.Schema(
           email: { type: String },
           phoneNumber: { type: String }
         },
-        accountingPeriod: {
-          startDate: { type: Date },
-          endDate: { type: Date }
-        }
+      
       },
       // Common details schema used across Emissions Profile
 
@@ -304,7 +301,10 @@ const clientSchema = new mongoose.Schema(
           facilityName: { type: String },
           employeeCount: { type: Number }
         }],
-        accountingYear: { type: String }
+          accountingPeriod: {
+          startDate: { type: Date },
+          endDate: { type: Date }
+        }
       },
       
       // Section C: Emissions Profile
