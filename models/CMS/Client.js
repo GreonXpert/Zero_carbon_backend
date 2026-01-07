@@ -279,6 +279,10 @@ const clientSchema = new mongoose.Schema(
           email: { type: String },
           phoneNumber: { type: String }
         },
+        accountingPeriod: {
+          startDate: { type: Date },
+          endDate: { type: Date }
+        }
       },
       // Common details schema used across Emissions Profile
 
