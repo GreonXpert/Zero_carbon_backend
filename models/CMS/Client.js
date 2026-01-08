@@ -479,7 +479,7 @@ accountDetails: {
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
-      default: "pending",
+      default: null,
     },
     reason: { type: String },
 
