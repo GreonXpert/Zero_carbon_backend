@@ -1045,20 +1045,21 @@ if (isNet) {
   }
 }
 
-    return res.json({
-      success: true,
-      message: `Approved. Input switched to ${updatedInputType} and endpoint saved.`,
-      data: {
-        requestId: request._id,
-        clientId: request.clientId,
-        keyType: request.keyType,
-        keyPrefix,
-        inputType: updatedInputType,
-        apiEndpoint: updatedEndpoint,
-        // if createKey returned plaintext apiKey it will be here:
-        apiKey: createKeyPayload?.data?.apiKey || null,
-      },
-    });
+  return res.json({
+  success: true,
+  message: `Approved. Input switched to ${updatedInputType} and endpoint saved.`,
+  data: {
+    requestId: request._id,
+    clientId: request.clientId,
+    keyType: request.keyType,
+    keyPrefix,
+    inputType: updatedInputType,
+    apiEndpoint: updatedEndpoint,
+
+    // ✅ FIXED: createKey returns apiKey at top level (not inside data)
+    apiKey: createKeyPayload?.apiKey || null
+  },
+});
   } catch (error) {
     console.error("approveApiKeyRequest error:", error);
     return res.status(500).json({

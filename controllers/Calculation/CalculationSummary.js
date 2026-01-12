@@ -901,6 +901,17 @@ function mapToObj(value) {
  *   metadata: { ...root metadata... }
  * }
  */
+/**
+ * Persist an emission summary in STRUCTURE A:
+ *
+ * {
+ *   clientId,
+ *   period,
+ *   emissionSummary: { ...full emission structure... },
+ *   reductionSummary: { ... }   // if already exists or passed in
+ *   metadata: { ...root metadata... }
+ * }
+ */
 async function saveEmissionSummary(summaryData) {
   if (!summaryData) throw new Error("saveEmissionSummary: summaryData is required");
 
@@ -909,26 +920,115 @@ async function saveEmissionSummary(summaryData) {
     throw new Error("saveEmissionSummary: missing clientId or period.type");
   }
 
-  // ------------------------------------------------------------------
-  // 1) Build the query (clientId + period key fields)
-  // ------------------------------------------------------------------
-  const query = {
-    clientId,
-    "period.type": period.type
-  };
-
-  if (period.year != null) query["period.year"] = period.year;
-  if (period.month != null) query["period.month"] = period.month;
-  if (period.week != null) query["period.week"] = period.week;
-  if (period.day != null) query["period.day"] = period.day;
-
-  // Load existing doc (to keep reductionSummary + metadata versioning)
-   const existing = await EmissionSummary.findOne(query).lean();
-
   // ✅ Use the nested emissionSummary if present
   //    fall back to summaryData only if you ever call it with a flat object
   const es = summaryData.emissionSummary || summaryData;
 
+  // ------------------------------------------------------------------
+  // ✅ FIX: Normalize period so monthly won't carry week/day, etc.
+  //       This prevents creating multiple "monthly" docs for same month.
+  // ------------------------------------------------------------------
+  const normalizePeriod = (p) => {
+    if (!p || !p.type) return p;
+
+    const base = {
+      type: p.type,
+      from: p.from,
+      to: p.to
+    };
+
+    if (p.type === "daily") {
+      return {
+        ...base,
+        year: p.year,
+        month: p.month,
+        day: p.day,
+        date: p.date
+      };
+    }
+
+    if (p.type === "weekly") {
+      return {
+        ...base,
+        year: p.year,
+        week: p.week
+      };
+    }
+
+    if (p.type === "monthly") {
+      return {
+        ...base,
+        year: p.year,
+        month: p.month
+      };
+    }
+
+    if (p.type === "yearly") {
+      return {
+        ...base,
+        year: p.year
+      };
+    }
+
+    // all-time
+    return { ...base };
+  };
+
+  const normalizedPeriod = normalizePeriod(es.period || period);
+
+  // ------------------------------------------------------------------
+  // ✅ FIX: Build query only with correct key fields for the period type
+  // ------------------------------------------------------------------
+  const buildPeriodQuery = (clientId, p) => {
+    const q = { clientId, "period.type": p.type };
+
+    if (p.type === "daily") {
+      if (p.year == null || p.month == null || p.day == null) {
+        throw new Error("saveEmissionSummary: daily period requires year, month, day");
+      }
+      q["period.year"] = p.year;
+      q["period.month"] = p.month;
+      q["period.day"] = p.day;
+      return q;
+    }
+
+    if (p.type === "weekly") {
+      if (p.year == null || p.week == null) {
+        throw new Error("saveEmissionSummary: weekly period requires year, week");
+      }
+      q["period.year"] = p.year;
+      q["period.week"] = p.week;
+      return q;
+    }
+
+    if (p.type === "monthly") {
+      if (p.year == null || p.month == null) {
+        throw new Error("saveEmissionSummary: monthly period requires year, month");
+      }
+      q["period.year"] = p.year;
+      q["period.month"] = p.month;
+      return q;
+    }
+
+    if (p.type === "yearly") {
+      if (p.year == null) {
+        throw new Error("saveEmissionSummary: yearly period requires year");
+      }
+      q["period.year"] = p.year;
+      return q;
+    }
+
+    // all-time: only clientId + type
+    return q;
+  };
+
+  // ------------------------------------------------------------------
+  // 1) Build the query (clientId + period key fields)
+  // ------------------------------------------------------------------
+  const query = buildPeriodQuery(clientId, normalizedPeriod);
+
+  // Load existing doc (to keep reductionSummary + metadata versioning)
+  const existing = await EmissionSummary.findOne(query).lean();
 
   // ------------------------------------------------------------------
   // 2) Build emissionSummary (nested object) from summaryData
@@ -943,7 +1043,9 @@ async function saveEmissionSummary(summaryData) {
   });
 
   const emissionSummaryToSave = {
-    period: es.period,
+    // ✅ FIX: Always store normalized period here (no week/day in monthly)
+    period: normalizedPeriod,
+
     totalEmissions: es.totalEmissions || {
       CO2e: 0,
       CO2: 0,
@@ -951,13 +1053,15 @@ async function saveEmissionSummary(summaryData) {
       N2O: 0,
       uncertainty: 0
     },
+
     byScope: mapToObj(es.byScope),
-  byCategory: mapToObj(es.byCategory),
-byActivity: mapToObj(es.byActivity),
-byNode: mapToObj(es.byNode),
-byDepartment: mapToObj(es.byDepartment),
-byLocation: mapToObj(es.byLocation),
-byEmissionFactor: mapToObj(es.byEmissionFactor),
+    byCategory: mapToObj(es.byCategory),
+    byActivity: mapToObj(es.byActivity),
+    byNode: mapToObj(es.byNode),
+    byDepartment: mapToObj(es.byDepartment),
+    byLocation: mapToObj(es.byLocation),
+    byEmissionFactor: mapToObj(es.byEmissionFactor),
+
     trends: es.trends || {
       totalEmissionsChange: {
         value: 0,
@@ -970,22 +1074,27 @@ byEmissionFactor: mapToObj(es.byEmissionFactor),
         "Scope 3": { value: 0, percentage: 0, direction: "same" }
       }
     },
+
     metadata: {
       ...(es.metadata || {}),
+
       // Make sure we always have these fields
       totalDataPoints:
         es.metadata?.totalDataPoints ??
         (Array.isArray(es.metadata?.dataEntriesIncluded)
           ? es.metadata.dataEntriesIncluded.length
           : 0),
+
       dataEntriesIncluded:
         es.metadata?.dataEntriesIncluded || es.dataEntriesIncluded || [],
+
       lastCalculated: es.metadata?.lastCalculated || new Date(),
       calculationDuration: es.metadata?.calculationDuration ?? 0,
       calculatedBy: es.metadata?.calculatedBy ?? null,
       isComplete: es.metadata?.isComplete ?? true,
       hasErrors: es.metadata?.hasErrors ?? false,
       errors: es.metadata?.errors || [],
+
       // bump nested emissionSummary.metadata.version
       version: (existing?.emissionSummary?.metadata?.version || 0) + 1
     }
@@ -1005,12 +1114,15 @@ byEmissionFactor: mapToObj(es.byEmissionFactor),
     isComplete: emissionSummaryToSave.metadata.isComplete,
     hasErrors: emissionSummaryToSave.metadata.hasErrors,
     errors: emissionSummaryToSave.metadata.errors || [],
+
     // bump ROOT metadata.version
     version: (existing?.metadata?.version || 0) + 1,
+
     // flags related to reduction summary (do NOT flip them off here)
     hasReductionSummary:
       existing?.metadata?.hasReductionSummary ??
       !!existing?.reductionSummary,
+
     lastReductionSummaryCalculatedAt:
       existing?.metadata?.lastReductionSummaryCalculatedAt || null
   };
@@ -1022,7 +1134,10 @@ byEmissionFactor: mapToObj(es.byEmissionFactor),
   // ------------------------------------------------------------------
   const update = {
     clientId,
-    period: es.period,
+
+    // ✅ FIX: Store normalized period at ROOT too
+    period: normalizedPeriod,
+
     emissionSummary: emissionSummaryToSave,
     metadata: rootMetadata
   };
