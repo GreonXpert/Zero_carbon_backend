@@ -366,6 +366,56 @@ DataEntrySchema.index({
   timestamp: -1 
 });
 
+
+// --- Add near top (after schema declaration) ---
+const IST_OFFSET_MINUTES = 330; // +05:30
+
+function buildISTTimestampFromDateTime(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+
+  // Supports "DD/MM/YYYY" or "DD:MM:YYYY"
+  const parts = String(dateStr).includes("/")
+    ? String(dateStr).split("/")
+    : String(dateStr).split(":");
+
+  if (parts.length !== 3) return null;
+
+  const day = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const year = parseInt(parts[2], 10);
+
+  if (!day || !month || !year) return null;
+
+  const t = String(timeStr).split(":").map(v => parseInt(v, 10));
+  const hour = t[0] || 0;
+  const minute = t[1] || 0;
+  const second = t[2] || 0;
+
+  // Interpret given date+time as IST, store absolute UTC instant
+  const utcMs =
+    Date.UTC(year, month - 1, day, hour, minute, second) - IST_OFFSET_MINUTES * 60 * 1000;
+
+  return new Date(utcMs);
+}
+
+// ✅ IMPORTANT: run before validation so required timestamp never fails
+DataEntrySchema.pre("validate", function (next) {
+  try {
+    // Don't mess with summary documents
+    if (this.isSummary) return next();
+
+    // If date+time exist, timestamp MUST match them
+    if (this.date && this.time) {
+      const computed = buildISTTimestampFromDateTime(this.date, this.time);
+      if (computed) {
+        this.timestamp = computed;
+      }
+    }
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+});
 // Pre-save middleware
 DataEntrySchema.pre('save', async function(next) {
   try {
@@ -376,16 +426,9 @@ DataEntrySchema.pre('save', async function(next) {
     }
     
     // Auto-generate timestamp from date and time if not set
-  if (!this.timestamp && this.date && this.time) {
-  const parts = this.date.includes("/") ? this.date.split("/") : this.date.split(":");
-  const [day, month, year] = parts.map(Number);
-
-  const t = this.time.split(":").map(Number);
-  const hour = t[0] || 0;
-  const minute = t[1] || 0;
-  const second = t[2] || 0;
-
-  this.timestamp = new Date(year, month - 1, day, hour, minute, second);
+if (this.date && this.time) {
+  const computed = buildISTTimestampFromDateTime(this.date, this.time);
+  if (computed) this.timestamp = computed;
 }
     // Ensure only manual entries are editable
     if (this.inputType !== 'manual') {
