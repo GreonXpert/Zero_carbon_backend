@@ -23,6 +23,7 @@ const ReductionFormulaSchema = new mongoose.Schema({
   name:        { type: String, required: true, index: true },
   description: { type: String, default: '' },
   link:        { type: String, default: '' },
+  unit:        { type: String, default: '' },
 
   // Expression; variables must match VariableSchema.name
   expression:  { type: String, required: true }, // e.g. "(A * B) - sqrt(C) / D"

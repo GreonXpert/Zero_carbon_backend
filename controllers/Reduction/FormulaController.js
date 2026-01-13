@@ -29,7 +29,7 @@ exports.createFormula = async (req,res)=>{
     const err = ensureRole(req);
     if (err) return res.status(403).json({ success:false, message: err });
 
-  const { name, description, link, expression, variables, version, clientIds } = req.body;
+  const { name, description, link, unit, expression, variables, version, clientIds } = req.body;
 
 if (!name || !expression)
   return res.status(400).json({ success:false, message:'name & expression required' });
@@ -58,6 +58,7 @@ const doc = await ReductionFormula.create({
   name,
   description: description || "",
   link,
+  unit,
   expression,
   variables: variables || [],
   version: version || 1,
@@ -329,6 +330,7 @@ exports.updateFormula = async (req,res)=>{
   name,
   description,
   link,
+  unit,
   expression,
   variables,
   version,
