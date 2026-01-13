@@ -368,28 +368,53 @@ DataEntrySchema.index({
 
 
 // --- Add near top (after schema declaration) ---
+// --- Add near top (after schema declaration) ---
 const IST_OFFSET_MINUTES = 330; // +05:30
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// Supports "DD/MM/YYYY" or "DD:MM:YYYY"
+function normalizeDateStr(dateStr) {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  if (s.includes("/")) return s;          // DD/MM/YYYY
+  if (s.includes(":")) return s;          // DD:MM:YYYY
+  // Try DD-MM-YYYY -> DD/MM/YYYY
+  if (s.includes("-")) return s.replace(/-/g, "/");
+  return s;
+}
+
+// Supports "HH:mm", "H:mm", "HH:mm:ss"
+function normalizeTimeStr(timeStr) {
+  if (!timeStr) return null;
+  const parts = String(timeStr).trim().split(":").map(v => parseInt(v, 10));
+  const h = parts[0] ?? 0;
+  const m = parts[1] ?? 0;
+  const sec = parts[2] ?? 0;
+  return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+}
 
 function buildISTTimestampFromDateTime(dateStr, timeStr) {
   if (!dateStr || !timeStr) return null;
 
-  // Supports "DD/MM/YYYY" or "DD:MM:YYYY"
-  const parts = String(dateStr).includes("/")
-    ? String(dateStr).split("/")
-    : String(dateStr).split(":");
+  const d = normalizeDateStr(dateStr);
+  const t = normalizeTimeStr(timeStr);
+  if (!d || !t) return null;
 
+  const parts = d.includes("/") ? d.split("/") : d.split(":");
   if (parts.length !== 3) return null;
 
   const day = parseInt(parts[0], 10);
   const month = parseInt(parts[1], 10);
   const year = parseInt(parts[2], 10);
-
   if (!day || !month || !year) return null;
 
-  const t = String(timeStr).split(":").map(v => parseInt(v, 10));
-  const hour = t[0] || 0;
-  const minute = t[1] || 0;
-  const second = t[2] || 0;
+  const tp = t.split(":").map(v => parseInt(v, 10));
+  const hour = tp[0] || 0;
+  const minute = tp[1] || 0;
+  const second = tp[2] || 0;
 
   // Interpret given date+time as IST, store absolute UTC instant
   const utcMs =
@@ -401,55 +426,55 @@ function buildISTTimestampFromDateTime(dateStr, timeStr) {
 // ✅ IMPORTANT: run before validation so required timestamp never fails
 DataEntrySchema.pre("validate", function (next) {
   try {
-    // Don't mess with summary documents
     if (this.isSummary) return next();
 
-    // If date+time exist, timestamp MUST match them
+    if (this.date) this.date = normalizeDateStr(this.date);
+    if (this.time) this.time = normalizeTimeStr(this.time);
+
     if (this.date && this.time) {
       const computed = buildISTTimestampFromDateTime(this.date, this.time);
-      if (computed) {
-        this.timestamp = computed;
-      }
+      if (computed) this.timestamp = computed;
     }
     return next();
   } catch (err) {
     return next(err);
   }
 });
+
 // Pre-save middleware
-DataEntrySchema.pre('save', async function(next) {
+DataEntrySchema.pre("save", async function (next) {
   try {
-    // 🔹 SKIP RECALCULATION FLAG - used when recalculating historical entries
     if (this._skipRecalculation) {
       delete this._skipRecalculation;
       return next();
     }
-    
-    // Auto-generate timestamp from date and time if not set
-if (this.date && this.time) {
-  const computed = buildISTTimestampFromDateTime(this.date, this.time);
-  if (computed) this.timestamp = computed;
-}
-    // Ensure only manual entries are editable
-    if (this.inputType !== 'manual') {
-      this.isEditable = false;
+
+    // ✅ Always force timestamp from date+time (do NOT depend on existing timestamp)
+    if (!this.isSummary && this.date && this.time) {
+      this.date = normalizeDateStr(this.date);
+      this.time = normalizeTimeStr(this.time);
+
+      const computed = buildISTTimestampFromDateTime(this.date, this.time);
+      if (computed) this.timestamp = computed;
     }
-    
-    // Auto-approve manual entries
-    if (this.inputType === 'manual' && this.approvalStatus === 'auto_approved') {
+
+    // existing logic...
+    if (this.inputType !== "manual") this.isEditable = false;
+
+    if (this.inputType === "manual" && this.approvalStatus === "auto_approved") {
       this.approvedAt = new Date();
     }
-    
-    // Calculate cumulative values for ALL entry types (including manual)
+
     if (!this.isSummary) {
       await this.calculateCumulativeValues();
     }
-    
-    next();
-  } catch (error) {
-    next(error);
+
+    return next();
+  } catch (e) {
+    return next(e);
   }
 });
+
 // 🔹 POST-SAVE HOOK - Trigger recalculation of later entries when a historical entry is inserted
 DataEntrySchema.post('save', async function(doc) {
   try {

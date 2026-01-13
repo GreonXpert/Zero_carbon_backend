@@ -1355,47 +1355,88 @@ const toNumericMap = (obj = {}) => {
   });
   return m;
 };
-function parseRowDateTimeOrNowIST(row = {}) {
-  const rawDate = row.date ?? row.Date ?? row.DATE ?? null;
-  const rawTime = row.time ?? row.Time ?? row.TIME ?? null;
-  const rawTs   = row.timestamp ?? row.Timestamp ?? row.TIMESTAMP ?? null;
+function getKeyCI(obj, wanted) {
+  if (!obj) return undefined;
+  const key = Object.keys(obj).find(k => String(k).trim().toLowerCase() === wanted.toLowerCase());
+  return key ? obj[key] : undefined;
+}
 
-  // 1) timestamp provided
+function normalizeDateStr(dateStr) {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  if (s.includes("-")) return s.replace(/-/g, "/"); // DD-MM-YYYY -> DD/MM/YYYY
+  return s;
+}
+
+function normalizeTimeStr(timeStr) {
+  if (!timeStr) return null;
+  const parts = String(timeStr).trim().split(":").map(v => parseInt(v, 10));
+  const h = parts[0] ?? 0;
+  const m = parts[1] ?? 0;
+  const s = parts[2] ?? 0;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function parseRowDateTimeOrNowIST(row) {
+  const rawDate = getKeyCI(row, "date");
+  const rawTime = getKeyCI(row, "time");
+  const rawTs   = getKeyCI(row, "timestamp");
+
+  // timestamp provided (ISO etc)
   if (rawTs) {
     const dt = new Date(rawTs);
     if (!isNaN(dt.getTime())) {
       const m = moment(dt).utcOffset("+05:30");
-      return { date: m.format("DD/MM/YYYY"), time: m.format("HH:mm"), timestamp: m.toDate() };
+      return {
+        date: m.format("DD:MM:YYYY"),
+        time: m.format("HH:mm:ss"),
+        timestamp: m.toDate()
+      };
     }
   }
 
   const now = moment().utcOffset("+05:30");
 
-  const mDate = rawDate
-    ? moment(String(rawDate).trim(), ["DD/MM/YYYY","D/M/YYYY","YYYY-MM-DD","YYYY/MM/DD","MM/DD/YYYY"], true)
-    : now.clone();
+  const dStr = rawDate ? normalizeDateStr(rawDate) : null;
+  const tStr = rawTime ? normalizeTimeStr(rawTime) : null;
 
-  const mTime = rawTime
-    ? moment(String(rawTime).trim(), ["HH:mm","H:mm","HH:mm:ss","H:mm:ss"], true)
-    : now.clone();
+  // If user gave either date or time, we must validate — don’t silently store "now"
+  if (rawDate || rawTime) {
+    const mDate = dStr
+      ? moment(dStr, ["DD/MM/YYYY","D/M/YYYY","YYYY-MM-DD","YYYY/MM/DD","MM/DD/YYYY","DD:MM:YYYY"], true)
+      : null;
 
-  // If date invalid → fallback fully to now (avoid half-now/half-old)
-  if (!mDate.isValid() || !mTime.isValid()) {
-    return { date: now.format("DD/MM/YYYY"), time: now.format("HH:mm"), timestamp: now.toDate() };
+    const mTime = tStr
+      ? moment(tStr, ["HH:mm:ss","HH:mm","H:mm","H:mm:ss"], true)
+      : null;
+
+    if (!mDate?.isValid()) {
+      throw new Error(`Invalid date "${rawDate}". Use DD/MM/YYYY (or DD:MM:YYYY)`);
+    }
+    if (!mTime?.isValid()) {
+      throw new Error(`Invalid time "${rawTime}". Use HH:mm or HH:mm:ss`);
+    }
+
+    const combined = mDate
+      .clone()
+      .hour(mTime.hour())
+      .minute(mTime.minute())
+      .second(mTime.second() || 0)
+      .millisecond(0)
+      .utcOffset("+05:30", true);
+
+    return {
+      date: combined.format("DD:MM:YYYY"),
+      time: combined.format("HH:mm:ss"),
+      timestamp: combined.toDate(),
+    };
   }
 
-  const combined = mDate
-    .clone()
-    .hour(mTime.hour())
-    .minute(mTime.minute())
-    .second(mTime.second() || 0)
-    .millisecond(0)
-    .utcOffset("+05:30", true);
-
+  // Fully missing date+time -> ok fallback to now
   return {
-    date: combined.format("DD/MM/YYYY"),
-    time: combined.format("HH:mm"),
-    timestamp: combined.toDate(),
+    date: now.format("DD:MM:YYYY"),
+    time: now.format("HH:mm:ss"),
+    timestamp: now.toDate()
   };
 }
 
@@ -2467,22 +2508,24 @@ const editManualData = async (req, res) => {
       const rawTime = rawTimeInput || entry.time;
 
       const dateMoment = moment(rawDate, ['DD/MM/YYYY', 'DD-MM-YYYY'], true);
-      const timeMoment = moment(rawTime, 'HH:mm:ss', true);
+      const timeMoment = moment(rawTime, ['HH:mm:ss','HH:mm','H:mm','H:mm:ss'], true);
+
 
       if (!dateMoment.isValid() || !timeMoment.isValid()) {
         return res.status(400).json({ message: 'Invalid date/time format' });
       }
 
       const formattedDate = dateMoment.format('DD:MM:YYYY');
-      const formattedTime = timeMoment.format('HH:mm:ss');
+const formattedTime = timeMoment.format('HH:mm:ss');
 
-      const [day, month, year] = formattedDate.split(':').map(Number);
-      const [hour, minute, second] = formattedTime.split(':').map(Number);
-      const timestamp = new Date(year, month - 1, day, hour, minute, second);
+entry.date = formattedDate;
+entry.time = formattedTime;
 
-      entry.date = formattedDate;
-      entry.time = formattedTime;
-      entry.timestamp = timestamp;
+// ✅ Compute IST-based timestamp
+const computed = buildISTTimestampFromDateTime(formattedDate, formattedTime);
+if (!computed) return res.status(400).json({ message: 'Failed to build timestamp from date/time' });
+
+entry.timestamp = computed;
     }
 
     // Update data values if provided
