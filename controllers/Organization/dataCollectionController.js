@@ -1356,6 +1356,55 @@ const toNumericMap = (obj = {}) => {
   return m;
 };
 
+function parseRowDateTimeOrNowIST(row = {}) {
+  const rawDate =
+    row.date ?? row.Date ?? row.DATE ?? null;
+
+  const rawTime =
+    row.time ?? row.Time ?? row.TIME ?? null;
+
+  const rawTs =
+    row.timestamp ?? row.Timestamp ?? row.TIMESTAMP ?? null;
+
+  // 1) If timestamp exists and valid, use it
+  if (rawTs) {
+    const dt = new Date(rawTs);
+    if (!isNaN(dt.getTime())) {
+      const m = moment(dt);
+      return {
+        date: m.format("DD/MM/YYYY"),
+        time: m.format("HH:mm"),
+        timestamp: dt,
+      };
+    }
+  }
+
+  // 2) Else build from date + time (supports multiple formats)
+  const now = moment().utcOffset("+05:30");
+
+  let mDate = rawDate
+    ? moment(String(rawDate).trim(), ["DD/MM/YYYY", "D/M/YYYY", "YYYY-MM-DD", "YYYY/MM/DD", "MM/DD/YYYY"], true)
+    : now;
+  if (!mDate.isValid()) mDate = now;
+
+  let mTime = rawTime
+    ? moment(String(rawTime).trim(), ["HH:mm", "H:mm", "HH:mm:ss", "H:mm:ss"], true)
+    : now;
+  if (!mTime.isValid()) mTime = now;
+
+  const date = mDate.format("DD/MM/YYYY");
+  const time = mTime.format("HH:mm");
+
+  // IMPORTANT:
+  // We keep this consistent with the rest of your summary logic (which uses moment.utc ranges).
+  // So we generate a Date from the "clock time" and let your existing UTC-period logic work.
+  const ts = moment(`${date} ${time}`, "DD/MM/YYYY HH:mm", true).toDate();
+
+  return { date, time, timestamp: ts };
+}
+
+
+
 /**
  * Store one data row as DataEntry and trigger emission calculation
  */
@@ -1366,6 +1415,7 @@ async function saveOneEntry({
   // Normalize payload per scope config
   const pd = normalizeDataPayload(row || {}, scope, inputSource === 'CSV' ? 'CSV' : 'MANUAL');
 
+    const when = parseRowDateTimeOrNowIST(row);
   // Build the DataEntry doc
   const entry = new DataEntry({
     clientId,
@@ -1373,9 +1423,9 @@ async function saveOneEntry({
     scopeIdentifier,
     scopeType: scope.scopeType,                 // required by schema
     inputType: 'manual',                        // CSV also stored as manual (schema enum: manual/API/IOT)
-    date: row?.date || row?.Date || undefined,  // optional, schema keeps as string if present
-    time: row?.time || row?.Time || undefined,  // optional
-    timestamp: row?.timestamp ? new Date(row.timestamp) : new Date(), // required
+     date: when.date,
+  time: when.time,
+  timestamp: when.timestamp,
     dataValues: toNumericMap(pd),               // required Map<number>
     sourceDetails: {
       uploadedBy: req.user._id || req.user.id,

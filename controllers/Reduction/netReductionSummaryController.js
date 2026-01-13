@@ -258,39 +258,79 @@ async function saveIntoEmissionSummary(clientId, periodType, periodData, reducti
 // ===================================================================
 //   UPDATE ALL PERIODS (CALL THIS AFTER EVERY ENTRY SAVE)
 // ===================================================================
-async function recomputeClientNetReductionSummary(clientId) {
+async function recomputeClientNetReductionSummary(clientId, opts = {}) {
   if (!clientId) return null;
 
-  const now = moment.utc();
-  const y = now.year();
-  const m = now.month() + 1;
-  const d = now.date();
-  const w = now.isoWeek();
+  // ✅ Accept timestamps coming from CSV/multi-date uploads
+  const incoming = Array.isArray(opts.timestamps) ? opts.timestamps : [];
+  const tsList = incoming
+    .map(t => new Date(t))
+    .filter(d => !isNaN(d.getTime()));
 
-  const periods = [
-    { type: "daily", year: y, month: m, day: d },
-    { type: "weekly", year: y, week: w },
-    { type: "monthly", year: y, month: m },
-    { type: "yearly", year: y },
-    { type: "all-time" },
-  ];
+  // fallback to old behavior
+  const baseMoments = tsList.length
+    ? tsList.map(d => moment.utc(d))
+    : [moment.utc()];
 
+  const dailySet = new Set();
+  const weeklySet = new Set();
+  const monthlySet = new Set();
+  const yearlySet = new Set();
+
+  for (const m of baseMoments) {
+    const y = m.year();
+    const mo = m.month() + 1;
+    const d = m.date();
+    const w = m.isoWeek();
+    const wy = m.isoWeekYear();
+
+    dailySet.add(`${y}-${mo}-${d}`);
+    weeklySet.add(`${wy}-${w}`);
+    monthlySet.add(`${y}-${mo}`);
+    yearlySet.add(`${y}`);
+  }
+
+  const periods = [];
+
+  for (const key of dailySet) {
+    const [year, month, day] = key.split("-").map(Number);
+    periods.push({ type: "daily", year, month, day });
+  }
+
+  for (const key of weeklySet) {
+    const [year, week] = key.split("-").map(Number);
+    periods.push({ type: "weekly", year, week });
+  }
+
+  for (const key of monthlySet) {
+    const [year, month] = key.split("-").map(Number);
+    periods.push({ type: "monthly", year, month });
+  }
+
+  for (const key of yearlySet) {
+    const [year] = key.split("-").map(Number);
+    periods.push({ type: "yearly", year });
+  }
+
+  // ✅ Always refresh all-time once
+  periods.push({ type: "all-time" });
+
+  // recompute each affected period
   for (const p of periods) {
-    const { type } = p;
     const summary = await calculatePeriodSummary(
       clientId,
-      type,
+      p.type,
       p.year,
       p.month,
       p.week,
       p.day
     );
 
-    await saveIntoEmissionSummary(clientId, type, p, summary.reductionSummary);
+    await saveIntoEmissionSummary(clientId, p.type, p, summary.reductionSummary);
 
     emitNRS("net-reduction-summary-updated", {
       clientId,
-      periodType: type,
+      periodType: p.type,
       summary: summary.reductionSummary,
     });
   }

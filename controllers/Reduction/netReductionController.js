@@ -933,7 +933,9 @@ exports.saveM3NetReduction = async (req, res) => {
     // 10. Recompute project-level cumulative stats (uses netReduction series)
     await recomputeProjectCumulative(clientId, projectId, "methodology3");
     try {
-      await recomputeClientNetReductionSummary(clientId);
+      await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});
     } catch (e) {
       console.warn("recomputeClientNetReductionSummary failed:", e.message);
     }
@@ -1133,7 +1135,9 @@ exports.saveManualNetReduction = async (req, res) => {
 
       await recomputeSeries(clientId, projectId, calculationMethodology);
       try {
-        await recomputeClientNetReductionSummary(clientId);
+        await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});
       } catch {}
 
       const fresh = await NetReductionEntry.find({
@@ -1218,7 +1222,9 @@ exports.saveManualNetReduction = async (req, res) => {
 
     await recomputeSeries(clientId, projectId, calculationMethodology);
     try {
-      await recomputeClientNetReductionSummary(clientId);
+     await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});
     } catch {}
 
     const fresh = await NetReductionEntry.find({
@@ -1324,7 +1330,9 @@ exports.saveApiNetReduction = async (req, res) => {
       });
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-      try { await recomputeClientNetReductionSummary(clientId); } catch {}
+      try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch {}
 
       emitNR("net-reduction:api-saved", {
         clientId,
@@ -1382,7 +1390,9 @@ exports.saveApiNetReduction = async (req, res) => {
         });
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-        try { await recomputeClientNetReductionSummary(clientId); } catch {}
+        try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch {}
 
         emitNR("net-reduction:api-saved", {
           clientId,
@@ -1459,7 +1469,9 @@ exports.saveApiNetReduction = async (req, res) => {
       });
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-      try { await recomputeClientNetReductionSummary(clientId); } catch {}
+      try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch {}
 
       emitNR("net-reduction:api-saved", {
         clientId,
@@ -1572,7 +1584,9 @@ exports.saveIotNetReduction = async (req, res) => {
       });
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-      try { await recomputeClientNetReductionSummary(clientId); } catch {}
+      try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});} catch {}
 
       emitNR("net-reduction:iot-saved", {
         clientId,
@@ -1632,7 +1646,9 @@ exports.saveIotNetReduction = async (req, res) => {
         });
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-        try { await recomputeClientNetReductionSummary(clientId); } catch {}
+        try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});} catch {}
 
         emitNR("net-reduction:iot-saved", {
           clientId,
@@ -1708,7 +1724,9 @@ exports.saveIotNetReduction = async (req, res) => {
       });
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
-      try { await recomputeClientNetReductionSummary(clientId); } catch {}
+      try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch {}
 
       emitNR("net-reduction:iot-saved", {
         clientId,
@@ -1980,7 +1998,9 @@ exports.uploadCsvNetReduction = async (req, res) => {
 
     // Recompute summaries
     await recomputeProjectCumulative(clientId, projectId, calculationMethodology);
-    await recomputeClientNetReductionSummary(clientId);
+    await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});
 
     if (global.broadcastNetReductionCompletionUpdate) {
       global.broadcastNetReductionCompletionUpdate(clientId);
@@ -2109,7 +2129,9 @@ exports.uploadCsvNetReduction = async (req, res) => {
         time: when.time,
         timestamp: when.timestamp
       });
-      try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
+      try { await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch (e) { console.warn('summary recompute failed:', e.message); }
 
             emitNR('net-reduction:iot-saved', {
         clientId, projectId, calculationMethodology, mode: 'm2',
@@ -2737,7 +2759,9 @@ exports.updateManualNetReductionEntry = async (req, res) => {
     );
 
     try {
-      await recomputeClientNetReductionSummary(clientId);
+      await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+});
     } catch {}
 
     emitNR("net-reduction:m3-manual-updated", {
@@ -2789,7 +2813,9 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
     await NetReductionEntry.deleteOne({ _id: entry._id });
 
     const summary = await recomputeSeries(clientId, projectId, calculationMethodology);
-    try { await recomputeClientNetReductionSummary(clientId); } catch (e) { console.warn('summary recompute failed:', e.message); }
+    try {await recomputeClientNetReductionSummary(clientId, {
+  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+}); } catch (e) { console.warn('summary recompute failed:', e.message); }
     emitNR('net-reduction:manual-deleted', { clientId, projectId, calculationMethodology, entryId });
     return res.status(200).json({
       success: true,

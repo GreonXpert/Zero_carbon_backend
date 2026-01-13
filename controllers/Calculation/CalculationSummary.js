@@ -890,6 +890,7 @@ function mapToObj(value) {
 
 
 
+
 /**
  * Persist an emission summary in STRUCTURE A:
  *
@@ -897,18 +898,7 @@ function mapToObj(value) {
  *   clientId,
  *   period,
  *   emissionSummary: { ...full emission structure... },
- *   reductionSummary: { ... }   // if already exists or passed in
- *   metadata: { ...root metadata... }
- * }
- */
-/**
- * Persist an emission summary in STRUCTURE A:
- *
- * {
- *   clientId,
- *   period,
- *   emissionSummary: { ...full emission structure... },
- *   reductionSummary: { ... }   // if already exists or passed in
+ *   reductionSummary: { ... }   // preserved unless explicitly overwritten
  *   metadata: { ...root metadata... }
  * }
  */
@@ -920,138 +910,65 @@ async function saveEmissionSummary(summaryData) {
     throw new Error("saveEmissionSummary: missing clientId or period.type");
   }
 
+  // ✅ Normalize period key fields strictly by type (prevents duplicate docs)
+  const normalizePeriodKey = (p) => {
+    const t = p.type;
+    const out = { type: t };
+
+    if (t === "daily") {
+      out.year = p.year;
+      out.month = p.month;
+      out.day = p.day;
+    } else if (t === "weekly") {
+      out.year = p.year;
+      out.week = p.week;
+    } else if (t === "monthly") {
+      out.year = p.year;
+      out.month = p.month;
+    } else if (t === "yearly") {
+      out.year = p.year;
+    } else if (t === "all-time") {
+      // nothing else
+    }
+    return out;
+  };
+
+  const normalizedPeriod = {
+    ...normalizePeriodKey(period),
+    // keep from/to if you pass them (safe)
+    ...(period.from ? { from: period.from } : {}),
+    ...(period.to ? { to: period.to } : {}),
+  };
+
+  // ------------------------------------------------------------------
+  // 1) Build query (clientId + normalized period keys only)
+  // ------------------------------------------------------------------
+  const query = {
+    clientId,
+    "period.type": normalizedPeriod.type,
+  };
+
+  if (normalizedPeriod.year != null) query["period.year"] = normalizedPeriod.year;
+  if (normalizedPeriod.month != null) query["period.month"] = normalizedPeriod.month;
+  if (normalizedPeriod.week != null) query["period.week"] = normalizedPeriod.week;
+  if (normalizedPeriod.day != null) query["period.day"] = normalizedPeriod.day;
+
+  const existing = await EmissionSummary.findOne(query).lean();
+
   // ✅ Use the nested emissionSummary if present
-  //    fall back to summaryData only if you ever call it with a flat object
   const es = summaryData.emissionSummary || summaryData;
 
   // ------------------------------------------------------------------
-  // ✅ FIX: Normalize period so monthly won't carry week/day, etc.
-  //       This prevents creating multiple "monthly" docs for same month.
+  // 2) Build emissionSummary (nested object)
   // ------------------------------------------------------------------
-  const normalizePeriod = (p) => {
-    if (!p || !p.type) return p;
-
-    const base = {
-      type: p.type,
-      from: p.from,
-      to: p.to
-    };
-
-    if (p.type === "daily") {
-      return {
-        ...base,
-        year: p.year,
-        month: p.month,
-        day: p.day,
-        date: p.date
-      };
-    }
-
-    if (p.type === "weekly") {
-      return {
-        ...base,
-        year: p.year,
-        week: p.week
-      };
-    }
-
-    if (p.type === "monthly") {
-      return {
-        ...base,
-        year: p.year,
-        month: p.month
-      };
-    }
-
-    if (p.type === "yearly") {
-      return {
-        ...base,
-        year: p.year
-      };
-    }
-
-    // all-time
-    return { ...base };
-  };
-
-  const normalizedPeriod = normalizePeriod(es.period || period);
-
-  // ------------------------------------------------------------------
-  // ✅ FIX: Build query only with correct key fields for the period type
-  // ------------------------------------------------------------------
-  const buildPeriodQuery = (clientId, p) => {
-    const q = { clientId, "period.type": p.type };
-
-    if (p.type === "daily") {
-      if (p.year == null || p.month == null || p.day == null) {
-        throw new Error("saveEmissionSummary: daily period requires year, month, day");
-      }
-      q["period.year"] = p.year;
-      q["period.month"] = p.month;
-      q["period.day"] = p.day;
-      return q;
-    }
-
-    if (p.type === "weekly") {
-      if (p.year == null || p.week == null) {
-        throw new Error("saveEmissionSummary: weekly period requires year, week");
-      }
-      q["period.year"] = p.year;
-      q["period.week"] = p.week;
-      return q;
-    }
-
-    if (p.type === "monthly") {
-      if (p.year == null || p.month == null) {
-        throw new Error("saveEmissionSummary: monthly period requires year, month");
-      }
-      q["period.year"] = p.year;
-      q["period.month"] = p.month;
-      return q;
-    }
-
-    if (p.type === "yearly") {
-      if (p.year == null) {
-        throw new Error("saveEmissionSummary: yearly period requires year");
-      }
-      q["period.year"] = p.year;
-      return q;
-    }
-
-    // all-time: only clientId + type
-    return q;
-  };
-
-  // ------------------------------------------------------------------
-  // 1) Build the query (clientId + period key fields)
-  // ------------------------------------------------------------------
-  const query = buildPeriodQuery(clientId, normalizedPeriod);
-
-  // Load existing doc (to keep reductionSummary + metadata versioning)
-  const existing = await EmissionSummary.findOne(query).lean();
-
-  // ------------------------------------------------------------------
-  // 2) Build emissionSummary (nested object) from summaryData
-  // ------------------------------------------------------------------
-  const defaultScopeBlock = () => ({
-    CO2e: 0,
-    CO2: 0,
-    CH4: 0,
-    N2O: 0,
-    uncertainty: 0,
-    dataPointCount: 0
-  });
-
   const emissionSummaryToSave = {
-    // ✅ FIX: Always store normalized period here (no week/day in monthly)
     period: normalizedPeriod,
-
     totalEmissions: es.totalEmissions || {
       CO2e: 0,
       CO2: 0,
       CH4: 0,
       N2O: 0,
-      uncertainty: 0
+      uncertainty: 0,
     },
 
     byScope: mapToObj(es.byScope),
@@ -1063,47 +980,34 @@ async function saveEmissionSummary(summaryData) {
     byEmissionFactor: mapToObj(es.byEmissionFactor),
 
     trends: es.trends || {
-      totalEmissionsChange: {
-        value: 0,
-        percentage: 0,
-        direction: "same"
-      },
+      totalEmissionsChange: { value: 0, percentage: 0, direction: "same" },
       scopeChanges: {
         "Scope 1": { value: 0, percentage: 0, direction: "same" },
         "Scope 2": { value: 0, percentage: 0, direction: "same" },
-        "Scope 3": { value: 0, percentage: 0, direction: "same" }
-      }
+        "Scope 3": { value: 0, percentage: 0, direction: "same" },
+      },
     },
 
     metadata: {
       ...(es.metadata || {}),
-
-      // Make sure we always have these fields
       totalDataPoints:
         es.metadata?.totalDataPoints ??
         (Array.isArray(es.metadata?.dataEntriesIncluded)
           ? es.metadata.dataEntriesIncluded.length
           : 0),
-
-      dataEntriesIncluded:
-        es.metadata?.dataEntriesIncluded || es.dataEntriesIncluded || [],
-
+      dataEntriesIncluded: es.metadata?.dataEntriesIncluded || es.dataEntriesIncluded || [],
       lastCalculated: es.metadata?.lastCalculated || new Date(),
       calculationDuration: es.metadata?.calculationDuration ?? 0,
       calculatedBy: es.metadata?.calculatedBy ?? null,
       isComplete: es.metadata?.isComplete ?? true,
       hasErrors: es.metadata?.hasErrors ?? false,
       errors: es.metadata?.errors || [],
-
-      // bump nested emissionSummary.metadata.version
-      version: (existing?.emissionSummary?.metadata?.version || 0) + 1
-    }
+      version: (existing?.emissionSummary?.metadata?.version || 0) + 1,
+    },
   };
 
   // ------------------------------------------------------------------
-  // 3) Build ROOT metadata
-  //     - mirrors emissionSummary.metadata
-  //     - keeps reductionSummary version flags
+  // 3) ROOT metadata (mirror)
   // ------------------------------------------------------------------
   const rootMetadata = {
     ...(existing?.metadata || {}),
@@ -1114,42 +1018,31 @@ async function saveEmissionSummary(summaryData) {
     isComplete: emissionSummaryToSave.metadata.isComplete,
     hasErrors: emissionSummaryToSave.metadata.hasErrors,
     errors: emissionSummaryToSave.metadata.errors || [],
-
-    // bump ROOT metadata.version
     version: (existing?.metadata?.version || 0) + 1,
 
-    // flags related to reduction summary (do NOT flip them off here)
+    // keep reduction flags
     hasReductionSummary:
-      existing?.metadata?.hasReductionSummary ??
-      !!existing?.reductionSummary,
-
+      existing?.metadata?.hasReductionSummary ?? !!existing?.reductionSummary,
     lastReductionSummaryCalculatedAt:
-      existing?.metadata?.lastReductionSummaryCalculatedAt || null
+      existing?.metadata?.lastReductionSummaryCalculatedAt || null,
   };
 
   // ------------------------------------------------------------------
-  // 4) Build update object:
-  //     - root: clientId, period, emissionSummary, metadata
-  //     - keep existing reductionSummary unless overwriting explicitly
+  // 4) Update object (do NOT wipe reductionSummary)
   // ------------------------------------------------------------------
   const update = {
     clientId,
-
-    // ✅ FIX: Store normalized period at ROOT too
     period: normalizedPeriod,
-
     emissionSummary: emissionSummaryToSave,
-    metadata: rootMetadata
+    metadata: rootMetadata,
   };
 
-  // Very important: DO NOT wipe out reductionSummary when we are
-  // just recalculating emissions.
+  // Preserve reductionSummary if it exists
   if (existing?.reductionSummary) {
     update.reductionSummary = existing.reductionSummary;
   }
 
-  // If in the future you ever call saveEmissionSummary() with a
-  // pre-computed reductionSummary, you can merge it like this:
+  // If caller provided reductionSummary explicitly, overwrite intentionally
   if (es.reductionSummary) {
     update.reductionSummary = es.reductionSummary;
     update.metadata.hasReductionSummary = true;
@@ -1158,20 +1051,17 @@ async function saveEmissionSummary(summaryData) {
   }
 
   // ------------------------------------------------------------------
-  // 5) Upsert document
+  // 5) Upsert
   // ------------------------------------------------------------------
-  const saved = await EmissionSummary.findOneAndUpdate(
-    query,
-    update,
-    {
-      upsert: true,
-      new: true,
-      setDefaultsOnInsert: true
-    }
-  );
+  const saved = await EmissionSummary.findOneAndUpdate(query, update, {
+    upsert: true,
+    new: true,
+    setDefaultsOnInsert: true,
+  });
 
   return saved.toObject();
 }
+
 
 
 
