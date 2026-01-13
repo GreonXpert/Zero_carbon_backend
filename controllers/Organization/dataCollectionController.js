@@ -1355,52 +1355,48 @@ const toNumericMap = (obj = {}) => {
   });
   return m;
 };
-
 function parseRowDateTimeOrNowIST(row = {}) {
-  const rawDate =
-    row.date ?? row.Date ?? row.DATE ?? null;
+  const rawDate = row.date ?? row.Date ?? row.DATE ?? null;
+  const rawTime = row.time ?? row.Time ?? row.TIME ?? null;
+  const rawTs   = row.timestamp ?? row.Timestamp ?? row.TIMESTAMP ?? null;
 
-  const rawTime =
-    row.time ?? row.Time ?? row.TIME ?? null;
-
-  const rawTs =
-    row.timestamp ?? row.Timestamp ?? row.TIMESTAMP ?? null;
-
-  // 1) If timestamp exists and valid, use it
+  // 1) timestamp provided
   if (rawTs) {
     const dt = new Date(rawTs);
     if (!isNaN(dt.getTime())) {
-      const m = moment(dt);
-      return {
-        date: m.format("DD/MM/YYYY"),
-        time: m.format("HH:mm"),
-        timestamp: dt,
-      };
+      const m = moment(dt).utcOffset("+05:30");
+      return { date: m.format("DD/MM/YYYY"), time: m.format("HH:mm"), timestamp: m.toDate() };
     }
   }
 
-  // 2) Else build from date + time (supports multiple formats)
   const now = moment().utcOffset("+05:30");
 
-  let mDate = rawDate
-    ? moment(String(rawDate).trim(), ["DD/MM/YYYY", "D/M/YYYY", "YYYY-MM-DD", "YYYY/MM/DD", "MM/DD/YYYY"], true)
-    : now;
-  if (!mDate.isValid()) mDate = now;
+  const mDate = rawDate
+    ? moment(String(rawDate).trim(), ["DD/MM/YYYY","D/M/YYYY","YYYY-MM-DD","YYYY/MM/DD","MM/DD/YYYY"], true)
+    : now.clone();
 
-  let mTime = rawTime
-    ? moment(String(rawTime).trim(), ["HH:mm", "H:mm", "HH:mm:ss", "H:mm:ss"], true)
-    : now;
-  if (!mTime.isValid()) mTime = now;
+  const mTime = rawTime
+    ? moment(String(rawTime).trim(), ["HH:mm","H:mm","HH:mm:ss","H:mm:ss"], true)
+    : now.clone();
 
-  const date = mDate.format("DD/MM/YYYY");
-  const time = mTime.format("HH:mm");
+  // If date invalid → fallback fully to now (avoid half-now/half-old)
+  if (!mDate.isValid() || !mTime.isValid()) {
+    return { date: now.format("DD/MM/YYYY"), time: now.format("HH:mm"), timestamp: now.toDate() };
+  }
 
-  // IMPORTANT:
-  // We keep this consistent with the rest of your summary logic (which uses moment.utc ranges).
-  // So we generate a Date from the "clock time" and let your existing UTC-period logic work.
-  const ts = moment(`${date} ${time}`, "DD/MM/YYYY HH:mm", true).toDate();
+  const combined = mDate
+    .clone()
+    .hour(mTime.hour())
+    .minute(mTime.minute())
+    .second(mTime.second() || 0)
+    .millisecond(0)
+    .utcOffset("+05:30", true);
 
-  return { date, time, timestamp: ts };
+  return {
+    date: combined.format("DD/MM/YYYY"),
+    time: combined.format("HH:mm"),
+    timestamp: combined.toDate(),
+  };
 }
 
 

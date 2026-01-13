@@ -376,12 +376,17 @@ DataEntrySchema.pre('save', async function(next) {
     }
     
     // Auto-generate timestamp from date and time if not set
-    if (!this.timestamp && this.date && this.time) {
-      const [day, month, year] = this.date.split(':').map(Number);
-      const [hour, minute, second] = this.time.split(':').map(Number);
-      this.timestamp = new Date(year, month - 1, day, hour, minute, second);
-    }
-    
+  if (!this.timestamp && this.date && this.time) {
+  const parts = this.date.includes("/") ? this.date.split("/") : this.date.split(":");
+  const [day, month, year] = parts.map(Number);
+
+  const t = this.time.split(":").map(Number);
+  const hour = t[0] || 0;
+  const minute = t[1] || 0;
+  const second = t[2] || 0;
+
+  this.timestamp = new Date(year, month - 1, day, hour, minute, second);
+}
     // Ensure only manual entries are editable
     if (this.inputType !== 'manual') {
       this.isEditable = false;

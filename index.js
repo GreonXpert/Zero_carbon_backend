@@ -69,6 +69,15 @@ const {
 } = require('./controllers/DataCollection/dataCompletionController');
 const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
 
+// ✅ ADDED: Ticket route import
+const ticketRoutes = require('./router/Ticket/ticketRoutes');
+
+// ✅ ADDED: Ticket controller import
+const ticketController = require('./controllers/Ticket/ticketController');
+
+// ✅ ADDED: SLA checker import
+const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
+
 
   
 
@@ -166,6 +175,7 @@ app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
 
 app.use('/api', apiKeyRoutes);
+app.use('/api/tickets', ticketRoutes);
 
 
 // Create HTTP server and bind Socket.io
@@ -877,6 +887,773 @@ io.on('connection', (socket) => {
     socket.on('ping', () => {
         socket.emit('pong', { timestamp: new Date() });
     });
+
+    // ============================================================================
+// 🎫 TICKET SYSTEM - SOCKET.IO HANDLERS & BROADCAST FUNCTIONS
+// ============================================================================
+
+/**
+ * Ticket-specific Socket.IO event handlers
+ * Add these inside the io.on('connection', (socket) => { ... }) block
+ */
+
+// Place this code inside io.on('connection', (socket) => { ... }) after line ~550
+
+    // ============================================================================
+    // 🎫 TICKET SOCKET HANDLERS
+    // ============================================================================
+
+    /**
+     * Join a specific ticket room for real-time updates
+     * Usage: socket.emit('join-ticket', ticketId)
+     */
+    socket.on('join-ticket', async (ticketId) => {
+        try {
+            const { Ticket } = require('./models/Ticket/Ticket');
+            
+            // Verify ticket exists and user has access
+            const ticket = await Ticket.findById(ticketId);
+            
+            if (!ticket) {
+                return socket.emit('ticket-error', {
+                    message: 'Ticket not found',
+                    ticketId
+                });
+            }
+
+            // Check access permissions
+            const hasAccess = await checkTicketAccess(socket.user, ticket);
+            
+            if (!hasAccess) {
+                return socket.emit('ticket-error', {
+                    message: 'Access denied to this ticket',
+                    ticketId
+                });
+            }
+
+            // Join the ticket room
+            socket.join(`ticket_${ticketId}`);
+            console.log(`🎫 Socket ${socket.id} (${socket.user.userName}) joined ticket room: ${ticketId}`);
+            
+            // Notify others in the room about new viewer
+            socket.to(`ticket_${ticketId}`).emit('user-joined-ticket', {
+                ticketId,
+                userName: socket.user.userName,
+                userId: socket.userId,
+                userType: socket.user.userType,
+                timestamp: new Date().toISOString()
+            });
+
+            // Send confirmation to user
+            socket.emit('ticket-joined', {
+                ticketId,
+                message: 'Successfully joined ticket room',
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error joining ticket room:', error);
+            socket.emit('ticket-error', {
+                message: 'Failed to join ticket room',
+                error: error.message
+            });
+        }
+    });
+
+    /**
+     * Leave a ticket room
+     * Usage: socket.emit('leave-ticket', ticketId)
+     */
+    socket.on('leave-ticket', (ticketId) => {
+        try {
+            socket.leave(`ticket_${ticketId}`);
+            console.log(`🎫 Socket ${socket.id} (${socket.user.userName}) left ticket room: ${ticketId}`);
+            
+            // Notify others in the room
+            socket.to(`ticket_${ticketId}`).emit('user-left-ticket', {
+                ticketId,
+                userName: socket.user.userName,
+                userId: socket.userId,
+                timestamp: new Date().toISOString()
+            });
+
+            socket.emit('ticket-left', {
+                ticketId,
+                message: 'Successfully left ticket room',
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error leaving ticket room:', error);
+            socket.emit('ticket-error', {
+                message: 'Failed to leave ticket room',
+                error: error.message
+            });
+        }
+    });
+
+    /**
+     * Handle typing indicator for ticket comments
+     * Usage: socket.emit('ticket-typing', { ticketId, isTyping: true })
+     */
+    socket.on('ticket-typing', (data) => {
+        try {
+            const { ticketId, isTyping } = data;
+            
+            if (!ticketId) {
+                return socket.emit('ticket-error', {
+                    message: 'ticketId is required for typing indicator'
+                });
+            }
+
+            // Broadcast to others in the ticket room
+            socket.to(`ticket_${ticketId}`).emit('user-typing-ticket', {
+                ticketId,
+                userName: socket.user.userName,
+                userId: socket.userId,
+                isTyping: isTyping !== false, // default to true
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error handling ticket typing:', error);
+        }
+    });
+
+    /**
+     * Handle ticket viewing indicator (who's currently viewing)
+     * Usage: socket.emit('ticket-viewing', ticketId)
+     */
+    socket.on('ticket-viewing', async (ticketId) => {
+        try {
+            if (!ticketId) {
+                return socket.emit('ticket-error', {
+                    message: 'ticketId is required'
+                });
+            }
+
+            // Broadcast to others in the room
+            socket.to(`ticket_${ticketId}`).emit('user-viewing-ticket', {
+                ticketId,
+                userName: socket.user.userName,
+                userId: socket.userId,
+                userType: socket.user.userType,
+                timestamp: new Date().toISOString()
+            });
+
+            // Update view count in database (optional, can be done on API call instead)
+            const { Ticket } = require('./models/Ticket/Ticket');
+            const ticket = await Ticket.findById(ticketId);
+            
+            if (ticket) {
+                ticket.recordView(socket.userId);
+                await ticket.save();
+            }
+
+        } catch (error) {
+            console.error('Error handling ticket viewing:', error);
+        }
+    });
+
+    /**
+     * Request ticket details with real-time data
+     * Usage: socket.emit('request-ticket-details', ticketId)
+     */
+    socket.on('request-ticket-details', async (ticketId) => {
+        try {
+            const { Ticket } = require('./models/Ticket/Ticket');
+            const TicketActivity = require('./models/Ticket/TicketActivity');
+
+            const ticket = await Ticket.findById(ticketId)
+                .populate('createdBy', 'userName email userType')
+                .populate('assignedTo', 'userName email userType')
+                .populate('watchers', 'userName email userType')
+                .populate('escalatedBy', 'userName email userType');
+
+            if (!ticket) {
+                return socket.emit('ticket-error', {
+                    message: 'Ticket not found',
+                    ticketId
+                });
+            }
+
+            // Check access
+            const hasAccess = await checkTicketAccess(socket.user, ticket);
+            if (!hasAccess) {
+                return socket.emit('ticket-error', {
+                    message: 'Access denied',
+                    ticketId
+                });
+            }
+
+            // Get activities
+            const activities = await TicketActivity.find({
+                ticket: ticketId,
+                isDeleted: false
+            })
+                .populate('createdBy', 'userName email userType')
+                .sort({ createdAt: 1 });
+
+            // Filter internal comments based on user role
+            const supportRoles = ['super_admin', 'consultant_admin', 'consultant'];
+            const visibleActivities = activities.filter(activity => {
+                if (activity.comment?.isInternal) {
+                    return supportRoles.includes(socket.user.userType);
+                }
+                return true;
+            });
+
+            // Calculate SLA info
+            const slaInfo = {
+                dueDate: ticket.dueDate,
+                isOverdue: ticket.isOverdue(),
+                isDueSoon: ticket.isDueSoon(),
+                timeRemaining: ticket.getTimeRemaining()
+            };
+
+            socket.emit('ticket-details', {
+                ticket,
+                activities: visibleActivities,
+                slaInfo,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error fetching ticket details:', error);
+            socket.emit('ticket-error', {
+                message: 'Failed to fetch ticket details',
+                error: error.message
+            });
+        }
+    });
+
+    /**
+     * Subscribe to ticket list updates for a client
+     * Usage: socket.emit('subscribe-to-tickets', { clientId, filters })
+     */
+    socket.on('subscribe-to-tickets', async (data) => {
+        try {
+            const { clientId, filters = {} } = data;
+            const effectiveClientId = clientId || socket.clientId;
+
+            if (!effectiveClientId) {
+                return socket.emit('ticket-error', {
+                    message: 'clientId is required'
+                });
+            }
+
+            // Join client ticket room
+            socket.join(`client-tickets_${effectiveClientId}`);
+            console.log(`🎫 Socket ${socket.id} subscribed to tickets for client: ${effectiveClientId}`);
+
+            // Get initial ticket list
+            const { Ticket } = require('./models/Ticket/Ticket');
+            
+            const query = { clientId: effectiveClientId };
+            
+            // Apply filters
+            if (filters.status) {
+                query.status = Array.isArray(filters.status) 
+                    ? { $in: filters.status }
+                    : filters.status;
+            }
+            
+            if (filters.priority) {
+                query.priority = Array.isArray(filters.priority)
+                    ? { $in: filters.priority }
+                    : filters.priority;
+            }
+
+            if (filters.assignedTo === 'me') {
+                query.assignedTo = socket.userId;
+            }
+
+            if (filters.createdBy === 'me') {
+                query.createdBy = socket.userId;
+            }
+
+            const tickets = await Ticket.find(query)
+                .populate('createdBy', 'userName email userType')
+                .populate('assignedTo', 'userName email userType')
+                .sort({ updatedAt: -1 })
+                .limit(filters.limit || 50);
+
+            socket.emit('tickets-list', {
+                clientId: effectiveClientId,
+                tickets,
+                filters,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error subscribing to tickets:', error);
+            socket.emit('ticket-error', {
+                message: 'Failed to subscribe to tickets',
+                error: error.message
+            });
+        }
+    });
+
+    /**
+     * Unsubscribe from ticket updates
+     * Usage: socket.emit('unsubscribe-from-tickets', clientId)
+     */
+    socket.on('unsubscribe-from-tickets', (clientId) => {
+        try {
+            const effectiveClientId = clientId || socket.clientId;
+            socket.leave(`client-tickets_${effectiveClientId}`);
+            console.log(`🎫 Socket ${socket.id} unsubscribed from tickets for client: ${effectiveClientId}`);
+            
+            socket.emit('tickets-unsubscribed', {
+                clientId: effectiveClientId,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('Error unsubscribing from tickets:', error);
+        }
+    });
+
+    /**
+     * Request ticket statistics
+     * Usage: socket.emit('request-ticket-stats', clientId)
+     */
+    socket.on('request-ticket-stats', async (clientId) => {
+        try {
+            const effectiveClientId = clientId || socket.clientId;
+
+            if (!effectiveClientId) {
+                return socket.emit('ticket-error', {
+                    message: 'clientId is required'
+                });
+            }
+
+            const { Ticket } = require('./models/Ticket/Ticket');
+
+            // Get counts by status
+            const statusCounts = await Ticket.aggregate([
+                { $match: { clientId: effectiveClientId } },
+                { $group: { _id: '$status', count: { $sum: 1 } } }
+            ]);
+
+            // Get counts by priority
+            const priorityCounts = await Ticket.aggregate([
+                { $match: { clientId: effectiveClientId } },
+                { $group: { _id: '$priority', count: { $sum: 1 } } }
+            ]);
+
+            // Get overdue count
+            const overdueCount = await Ticket.countDocuments({
+                clientId: effectiveClientId,
+                status: { $nin: ['resolved', 'closed', 'cancelled'] },
+                dueDate: { $lt: new Date() }
+            });
+
+            // Get my tickets count
+            const myTicketsCount = await Ticket.countDocuments({
+                clientId: effectiveClientId,
+                $or: [
+                    { createdBy: socket.userId },
+                    { assignedTo: socket.userId },
+                    { watchers: socket.userId }
+                ]
+            });
+
+            const stats = {
+                total: statusCounts.reduce((sum, item) => sum + item.count, 0),
+                byStatus: statusCounts.reduce((acc, item) => {
+                    acc[item._id] = item.count;
+                    return acc;
+                }, {}),
+                byPriority: priorityCounts.reduce((acc, item) => {
+                    acc[item._id] = item.count;
+                    return acc;
+                }, {}),
+                overdue: overdueCount,
+                myTickets: myTicketsCount
+            };
+
+            socket.emit('ticket-stats', {
+                clientId: effectiveClientId,
+                stats,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('Error fetching ticket stats:', error);
+            socket.emit('ticket-error', {
+                message: 'Failed to fetch ticket statistics',
+                error: error.message
+            });
+        }
+    });
+
+// ============================================================================
+// 🎫 TICKET BROADCAST FUNCTIONS (Place outside io.on('connection') block)
+// ============================================================================
+
+/**
+ * Helper function to check ticket access
+ */
+async function checkTicketAccess(user, ticket) {
+    try {
+        const userId = user.id || user._id?.toString() || user._id;
+        
+        // Super admin has access to all
+        if (user.userType === 'super_admin') {
+            return true;
+        }
+
+        // Check if user's client matches ticket's client
+        if (user.clientId === ticket.clientId) {
+            // Client employee head - check department
+            if (user.userType === 'client_employee_head') {
+                const User = require('./models/User');
+                const creator = await User.findById(ticket.createdBy);
+                return creator && creator.department === user.department;
+            }
+            
+            // Employee can only view own tickets
+            if (user.userType === 'employee') {
+                return ticket.createdBy.toString() === userId;
+            }
+            
+            // Viewer can only view own tickets
+            if (user.userType === 'viewer') {
+                return ticket.createdBy.toString() === userId;
+            }
+            
+            // Other client roles (client_admin, auditor) can view all client tickets
+            return true;
+        }
+
+        // Check consultant access
+        if (['consultant_admin', 'consultant'].includes(user.userType)) {
+            const Client = require('./models/CMS/Client');
+            const client = await Client.findOne({ clientId: ticket.clientId });
+            
+            if (!client) return false;
+            
+            // Consultant admin who created the lead
+            if (user.userType === 'consultant_admin') {
+                if (client.leadInfo?.createdBy?.toString() === userId) {
+                    return true;
+                }
+            }
+            
+            // Assigned consultant
+            if (client.workflowTracking?.assignedConsultantId?.toString() === userId) {
+                return true;
+            }
+        }
+
+        return false;
+    } catch (error) {
+        console.error('Error checking ticket access:', error);
+        return false;
+    }
+}
+
+/**
+ * Broadcast ticket created event
+ */
+async function broadcastTicketCreated(ticketData) {
+    try {
+        const { clientId, ticketId, ticket } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket created: ${ticketId} for client ${clientId}`);
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-created', {
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'created',
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket created:', error);
+    }
+}
+
+/**
+ * Broadcast ticket updated event
+ */
+async function broadcastTicketUpdated(ticketData) {
+    try {
+        const { clientId, ticketId, changes } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket updated: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-updated', {
+            ticketId,
+            changes,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'updated',
+            ticketId,
+            changes,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket updated:', error);
+    }
+}
+
+/**
+ * Broadcast ticket status changed event
+ */
+async function broadcastTicketStatusChanged(ticketData) {
+    try {
+        const { clientId, ticketId, status, ticket } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket status changed: ${ticketId} -> ${status}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-status-changed', {
+            ticketId,
+            status,
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-status-changed', {
+            ticketId,
+            status,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'status_changed',
+            ticketId,
+            status,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket status changed:', error);
+    }
+}
+
+/**
+ * Broadcast ticket assigned event
+ */
+async function broadcastTicketAssigned(ticketData) {
+    try {
+        const { clientId, ticketId, assignedTo } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket assigned: ${ticketId} to ${assignedTo.userName}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-assigned', {
+            ticketId,
+            assignedTo,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to assignee's personal room
+        io.to(`user_${assignedTo._id}`).emit('ticket-assigned-to-me', {
+            ticketId,
+            message: 'A ticket has been assigned to you',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'assigned',
+            ticketId,
+            assignedTo,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket assigned:', error);
+    }
+}
+
+/**
+ * Broadcast new comment on ticket
+ */
+async function broadcastTicketComment(commentData) {
+    try {
+        const { clientId, ticketId, activity, isInternal } = commentData;
+        
+        console.log(`🎫 Broadcasting ticket comment: ${ticketId}${isInternal ? ' (internal)' : ''}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-new-comment', {
+            ticketId,
+            activity,
+            timestamp: new Date().toISOString()
+        });
+
+        // If not internal, broadcast to client room too
+        if (!isInternal) {
+            io.to(`client_${clientId}`).emit('ticket-activity', {
+                ticketId,
+                activityType: 'comment',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+    } catch (error) {
+        console.error('Error broadcasting ticket comment:', error);
+    }
+}
+
+/**
+ * Broadcast ticket escalated event
+ */
+async function broadcastTicketEscalated(ticketData) {
+    try {
+        const { clientId, ticketId, escalationLevel } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket escalated: ${ticketId} - Level ${escalationLevel}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-escalated', {
+            ticketId,
+            escalationLevel,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-escalated', {
+            ticketId,
+            escalationLevel,
+            priority: 'high',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to admin rooms for immediate attention
+        io.to('userType_super_admin').emit('ticket-escalated-alert', {
+            ticketId,
+            clientId,
+            escalationLevel,
+            message: 'A ticket requires immediate attention',
+            timestamp: new Date().toISOString()
+        });
+
+        io.to('userType_consultant_admin').emit('ticket-escalated-alert', {
+            ticketId,
+            clientId,
+            escalationLevel,
+            message: 'A ticket requires immediate attention',
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket escalated:', error);
+    }
+}
+
+/**
+ * Broadcast ticket attachment added
+ */
+async function broadcastTicketAttachment(attachmentData) {
+    try {
+        const { clientId, ticketId, attachments } = attachmentData;
+        
+        console.log(`🎫 Broadcasting ticket attachment added: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-attachment-added', {
+            ticketId,
+            attachments,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket attachment:', error);
+    }
+}
+
+/**
+ * Broadcast ticket deleted
+ */
+async function broadcastTicketDeleted(ticketData) {
+    try {
+        const { clientId, ticketId } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket deleted: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-deleted', {
+            ticketId,
+            message: 'This ticket has been deleted',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'deleted',
+            ticketId,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket deleted:', error);
+    }
+}
+
+/**
+ * Broadcast SLA warning or breach
+ */
+async function broadcastSLAAlert(alertData) {
+    try {
+        const { clientId, ticketId, type, ticket } = alertData;
+        
+        console.log(`🎫 Broadcasting SLA alert: ${ticketId} - ${type}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-sla-alert', {
+            ticketId,
+            type, // 'warning' or 'breach'
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-sla-alert', {
+            ticketId,
+            type,
+            priority: type === 'breach' ? 'critical' : 'high',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to admin rooms
+        io.to('userType_super_admin').emit('sla-alert', alertData);
+        io.to('userType_consultant_admin').emit('sla-alert', alertData);
+
+    } catch (error) {
+        console.error('Error broadcasting SLA alert:', error);
+    }
+}
+
+// Make broadcast functions globally available
+global.broadcastTicketCreated = broadcastTicketCreated;
+global.broadcastTicketUpdated = broadcastTicketUpdated;
+global.broadcastTicketStatusChanged = broadcastTicketStatusChanged;
+global.broadcastTicketAssigned = broadcastTicketAssigned;
+global.broadcastTicketComment = broadcastTicketComment;
+global.broadcastTicketEscalated = broadcastTicketEscalated;
+global.broadcastTicketAttachment = broadcastTicketAttachment;
+global.broadcastTicketDeleted = broadcastTicketDeleted;
+global.broadcastSLAAlert = broadcastSLAAlert;
+
+console.log('✅ Ticket broadcast functions registered globally');
+
 });
 
 // 🌐 Make io globally accessible for notifications
@@ -1115,20 +1892,7 @@ connectDB().then(() => {
     // Initialize Super Admin account
     initializeSuperAdmin();
     
-    // // Start MQTT subscriber after database connection
-    // console.log('🚀 Starting MQTT subscriber...');
-    // mqttSubscriber = new MQTTSubscriber();
-    // mqttSubscriber.connect();
     
-    // Add MQTT status tracking
-    // setInterval(() => {
-    //     if (mqttSubscriber) {
-    //         const status = mqttSubscriber.getStatus();
-    //         if (!status.connected) {
-    //             console.log('⚠️ MQTT subscriber disconnected, attempting reconnect...');
-    //         }
-    //     }
-    // }, 30000);
     
     // Schedule cron job to check expired subscriptions daily at midnight
     cron.schedule('0 0 * * *', () => {
@@ -1213,120 +1977,6 @@ cron.schedule('*/10 * * * *', async () => {
   }
 });
 
-// // Add MQTT status endpoint
-// app.get('/api/mqtt/status', (req, res) => {
-//     if (mqttSubscriber) {
-//         const status = mqttSubscriber.getStatus();
-//         res.json({
-//             success: true,
-//             mqtt: status,
-//             timestamp: new Date().toISOString()
-//         });
-//     } else {
-//         res.status(503).json({
-//             success: false,
-//             message: 'MQTT subscriber not initialized',
-//             timestamp: new Date().toISOString()
-//         });
-//     }
-// });
-
-// 📊 Real-time system status endpoint
-// app.get('/api/system/status', (req, res) => {
-//     const mongoose = require('mongoose');
-//     const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-//     const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
-    
-//     res.json({
-//         success: true,
-//         status: 'healthy',
-//         services: {
-//             database: dbStatus,
-//             mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
-//             socketio: 'running',
-//             connectedUsers: connectedUsers.size
-//         },
-//         realtime: {
-//             connectedUsers: Array.from(connectedUsers.values()).map(conn => ({
-//                 userId: conn.user._id,
-//                 userName: conn.user.userName,
-//                 userType: conn.user.userType,
-//                 connectedAt: conn.connectedAt
-//             }))
-//         },
-//         timestamp: new Date().toISOString()
-//     });
-// });
-
-// Health check endpoint
-// app.get('/api/health', async (req, res) => {
-//     try {
-//         const mongoose = require('mongoose');
-//         const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-//         const mqttStatus = mqttSubscriber ? mqttSubscriber.getStatus() : { connected: false };
-        
-//         res.json({
-//             success: true,
-//             status: 'healthy',
-//             services: {
-//                 database: dbStatus,
-//                 mqtt: mqttStatus.connected ? 'connected' : 'disconnected',
-//                 socketio: 'running'
-//             },
-//             timestamp: new Date().toISOString()
-//         });
-//     } catch (error) {
-//         res.status(500).json({
-//             success: false,
-//             status: 'unhealthy',
-//             error: error.message,
-//             timestamp: new Date().toISOString()
-//         });
-//     }
-// });
-
-// // Graceful shutdown
-// const gracefulShutdown = () => {
-//     console.log('\n🛑 Received shutdown signal, closing gracefully...');
-    
-//     // Close MQTT connection
-//     if (mqttSubscriber) {
-//         mqttSubscriber.disconnect();
-//         console.log('✅ MQTT subscriber disconnected');
-//     }
-    
-//     // Close Socket.IO server
-//     io.close(() => {
-//         console.log('✅ Socket.IO server closed');
-//     });
-    
-//     // Close HTTP server
-//     server.close(() => {
-//         console.log('✅ HTTP server closed');
-//         process.exit(0);
-//     });
-    
-//     // Force close after 10 seconds
-//     setTimeout(() => {
-//         console.log('⚠️ Forcing shutdown after timeout');
-//         process.exit(1);
-//     }, 10000);
-// };
-
-// // Handle shutdown signals
-// process.on('SIGINT', gracefulShutdown);
-// process.on('SIGTERM', gracefulShutdown);
-
-// // Handle uncaught exceptions
-// process.on('uncaughtException', (error) => {
-//     console.error('❌ Uncaught Exception:', error);
-//     gracefulShutdown();
-// });
-
-// process.on('unhandledRejection', (reason, promise) => {
-//     console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-//     gracefulShutdown();
-// });
 
 // Start Server
 const PORT = process.env.PORT || 5000;
