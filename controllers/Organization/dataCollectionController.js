@@ -1377,68 +1377,134 @@ function normalizeTimeStr(timeStr) {
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
 }
 
-function parseRowDateTimeOrNowIST(row) {
-  const rawDate = getKeyCI(row, "date");
-  const rawTime = getKeyCI(row, "time");
-  const rawTs   = getKeyCI(row, "timestamp");
 
-  // timestamp provided (ISO etc)
+const IST_OFFSET_MINUTES = 330; // +05:30
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function trimKeys(obj) {
+  if (!obj || typeof obj !== "object") return {};
+  const out = {};
+  for (const k of Object.keys(obj)) out[String(k).trim()] = obj[k];
+  return out;
+}
+
+function normalizeDateInput(dateStr) {
+  if (!dateStr) return null;
+  let s = String(dateStr).trim();
+
+  // remove hidden CR/LF
+  s = s.replace(/\r|\n/g, "");
+
+  // allow DD:MM:YYYY, DD-MM-YYYY, DD.MM.YYYY
+  s = s.replace(/[.\-:]/g, "/");
+
+  return s;
+}
+
+function normalizeTimeInput(timeStr) {
+  if (!timeStr) return null;
+  let s = String(timeStr).trim().replace(/\r|\n/g, "");
+  s = s.replace(/[.]/g, ":");
+
+  const parts = s.split(":").map((x) => parseInt(x, 10));
+  const h = Number.isFinite(parts[0]) ? parts[0] : 0;
+  const m = Number.isFinite(parts[1]) ? parts[1] : 0;
+  const sec = Number.isFinite(parts[2]) ? parts[2] : 0;
+
+  return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+}
+
+// Build absolute UTC Date from an IST wall-clock date+time
+function buildISTTimestamp(dateStr, timeStr) {
+  const d = normalizeDateInput(dateStr);
+  const t = normalizeTimeInput(timeStr);
+  if (!d || !t) return null;
+
+  const parts = d.split("/");
+  if (parts.length !== 3) return null;
+
+  let day, month, year;
+
+  // YYYY/MM/DD
+  if (parts[0].length === 4) {
+    year = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    day = parseInt(parts[2], 10);
+  } else {
+    // DD/MM/YYYY (your expected format)
+    day = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    year = parseInt(parts[2], 10);
+  }
+
+  if (!day || !month || !year) return null;
+
+  const [hh, mm, ss] = t.split(":").map((x) => parseInt(x, 10) || 0);
+
+  // interpret given wall-clock as IST, store UTC instant
+  const utcMs =
+    Date.UTC(year, month - 1, day, hh, mm, ss) - IST_OFFSET_MINUTES * 60 * 1000;
+
+  return new Date(utcMs);
+}
+
+function parseRowDateTimeOrNowIST(row = {}) {
+  const r = trimKeys(row);
+
+  const rawDate =
+    r.date ?? r.Date ?? r.DATE ?? (r.dataValues ? r.dataValues.date : null);
+  const rawTime =
+    r.time ?? r.Time ?? r.TIME ?? (r.dataValues ? r.dataValues.time : null);
+
+  const rawTs = r.timestamp ?? r.Timestamp ?? r.TIMESTAMP ?? null;
+
+  // 1) If timestamp was provided directly
   if (rawTs) {
     const dt = new Date(rawTs);
     if (!isNaN(dt.getTime())) {
-      const m = moment(dt).utcOffset("+05:30");
+      // still normalize date/time fields to your preferred storage
+      const ist = new Date(dt.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+      const dd = pad2(ist.getUTCDate());
+      const mm = pad2(ist.getUTCMonth() + 1);
+      const yy = ist.getUTCFullYear();
+      const hh = pad2(ist.getUTCHours());
+      const mi = pad2(ist.getUTCMinutes());
+      const ss = pad2(ist.getUTCSeconds());
       return {
-        date: m.format("DD:MM:YYYY"),
-        time: m.format("HH:mm:ss"),
-        timestamp: m.toDate()
+        date: `${dd}/${mm}/${yy}`,
+        time: `${hh}:${mi}:${ss}`,
+        timestamp: dt
       };
     }
   }
 
-  const now = moment().utcOffset("+05:30");
-
-  const dStr = rawDate ? normalizeDateStr(rawDate) : null;
-  const tStr = rawTime ? normalizeTimeStr(rawTime) : null;
-
-  // If user gave either date or time, we must validate — don’t silently store "now"
-  if (rawDate || rawTime) {
-    const mDate = dStr
-      ? moment(dStr, ["DD/MM/YYYY","D/M/YYYY","YYYY-MM-DD","YYYY/MM/DD","MM/DD/YYYY","DD:MM:YYYY"], true)
-      : null;
-
-    const mTime = tStr
-      ? moment(tStr, ["HH:mm:ss","HH:mm","H:mm","H:mm:ss"], true)
-      : null;
-
-    if (!mDate?.isValid()) {
-      throw new Error(`Invalid date "${rawDate}". Use DD/MM/YYYY (or DD:MM:YYYY)`);
-    }
-    if (!mTime?.isValid()) {
-      throw new Error(`Invalid time "${rawTime}". Use HH:mm or HH:mm:ss`);
-    }
-
-    const combined = mDate
-      .clone()
-      .hour(mTime.hour())
-      .minute(mTime.minute())
-      .second(mTime.second() || 0)
-      .millisecond(0)
-      .utcOffset("+05:30", true);
-
+  // 2) Build from date + time
+  const computed = buildISTTimestamp(rawDate, rawTime);
+  if (!computed) {
+    // fallback to NOW in IST (only when truly missing/invalid)
+    const now = new Date();
     return {
-      date: combined.format("DD:MM:YYYY"),
-      time: combined.format("HH:mm:ss"),
-      timestamp: combined.toDate(),
+      date: `${pad2(now.getDate())}/${pad2(now.getMonth() + 1)}/${now.getFullYear()}`,
+      time: `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`,
+      timestamp: now
     };
   }
 
-  // Fully missing date+time -> ok fallback to now
-  return {
-    date: now.format("DD:MM:YYYY"),
-    time: now.format("HH:mm:ss"),
-    timestamp: now.toDate()
-  };
+  // Keep storage consistent
+  const dNorm = normalizeDateInput(rawDate).replace(/[.\-:]/g, "/");
+  const tNorm = normalizeTimeInput(rawTime);
+
+  // if date was YYYY/MM/DD convert to DD/MM/YYYY for storage
+  const parts = dNorm.split("/");
+  let storedDate = dNorm;
+  if (parts[0].length === 4) storedDate = `${pad2(parts[2])}/${pad2(parts[1])}/${parts[0]}`;
+
+  return { date: storedDate, time: tNorm, timestamp: computed };
 }
+
 
 
 
@@ -1449,46 +1515,41 @@ async function saveOneEntry({
   req, clientId, nodeId, scopeIdentifier, scope, node, inputSource, row,
   csvMeta = null
 }) {
-  // Normalize payload per scope config
-  const pd = normalizeDataPayload(row || {}, scope, inputSource === 'CSV' ? 'CSV' : 'MANUAL');
+  // ✅ IMPORTANT: unwrap first so date/time can be read even if inside { dataValues: {...} }
+  const rawRow = unwrapDataRow(row || {});
+  const when = parseRowDateTimeOrNowIST(rawRow);
 
-    const when = parseRowDateTimeOrNowIST(row);
-  // Build the DataEntry doc
+  // Normalize payload per scope config
+  const pd = normalizeDataPayload(rawRow || {}, scope, inputSource === 'CSV' ? 'CSV' : 'MANUAL');
+
+  // ✅ Prevent meta keys ever getting stored as emission variables
+  delete pd.date;
+  delete pd.time;
+  delete pd.timestamp;
+
   const entry = new DataEntry({
     clientId,
     nodeId,
     scopeIdentifier,
-    scopeType: scope.scopeType,                 // required by schema
-    inputType: 'manual',                        // CSV also stored as manual (schema enum: manual/API/IOT)
-     date: when.date,
-  time: when.time,
-  timestamp: when.timestamp,
-    dataValues: toNumericMap(pd),               // required Map<number>
+    scopeType: scope.scopeType,
+    inputType: 'manual', // CSV also stored as manual
+    date: when.date,
+    time: when.time,
+    timestamp: when.timestamp,
+    dataValues: toNumericMap(pd),
     sourceDetails: {
       uploadedBy: req.user._id || req.user.id,
       ...(inputSource === 'CSV'
         ? { fileName: csvMeta?.fileName || '', dataSource: 'csv' }
         : { dataSource: 'manual' })
     },
-    // Optional: TypeOfNode if present on node
-    typeOfNode: node?.details?.TypeOfNode || 'Emission Source',
-    // Good defaults for calc/flags — schema will handle the rest
     processingStatus: 'pending',
     emissionCalculationStatus: 'pending',
-       emissionFactor: resolveEmissionFactor(row?.emissionFactor, scope?.emissionFactor),
-
+    emissionFactor: resolveEmissionFactor(rawRow?.emissionFactor, scope?.emissionFactor),
   });
 
   await entry.save();
- // Run the calculator and capture the result object (status + json)
   const calcResult = await triggerEmissionCalculation(entry);
-
-  // Persisted inside triggerEmissionCalculation:
-  //  - entry.calculatedEmissions
-  //  - emissionCalculationStatus, emissionCalculatedAt
-  //  - summary update attempt
-
-  // Return both to the caller so your response can mirror API/IoT
   return { entry, calcResult };
 }
 
