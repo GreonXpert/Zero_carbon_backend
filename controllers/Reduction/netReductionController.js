@@ -1778,10 +1778,11 @@ function parseM3CsvRow(row) {
   const entry = {};
 
   for (const key of Object.keys(row)) {
-    if (!key.includes("_")) continue;
+    const idx = key.indexOf("_");
+    if (idx === -1) continue;
 
-    const [itemId, varName] = key.split("_");
-    if (!itemId || !varName) continue;
+    const itemId = key.slice(0, idx);
+    const varName = key.slice(idx + 1); // keeps EF_grid
 
     const raw = row[key];
     if (raw === "" || raw == null) continue;
