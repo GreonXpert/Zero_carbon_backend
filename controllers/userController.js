@@ -25,6 +25,14 @@ const {
   OTP_CONFIG
 } = require('../utils/otpHelper');
 
+const {
+  notifySupportManagerWelcome,
+  notifySupportUserWelcome,
+  notifySupportManagerAssignmentsUpdated,
+  notifySupportUserTransferredToManager,
+  notifySupportManagerDeleted,
+  notifySupportUserDeleted,
+} = require("../utils/notifications/supportNotifications");
 
 
 
@@ -1723,6 +1731,1417 @@ const createViewer = async (req, res) => {
   }
 };
 
+
+const parseArrayField = (val) => {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+
+  if (typeof val === "string") {
+    // supports: JSON array string OR comma-separated string
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_) {}
+
+    return val
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const uniqStrings = (arr) => [...new Set((arr || []).map((x) => String(x).trim()).filter(Boolean))];
+
+const uniqObjectIds = (arr) => {
+  const cleaned = (arr || []).map((x) => String(x).trim()).filter(Boolean);
+  return [...new Set(cleaned)];
+};
+
+const findConflictsForArray = (docs, fieldName, targets) => {
+  const targetSet = new Set(targets);
+  const conflicts = [];
+
+  for (const d of docs || []) {
+    const list = Array.isArray(d[fieldName]) ? d[fieldName].map(String) : [];
+    const overlap = list.filter((x) => targetSet.has(String(x)));
+    if (overlap.length) {
+      conflicts.push({
+        _id: d._id,
+        userName: d.userName,
+        userType: d.userType,
+        conflicts: overlap,
+      });
+    }
+  }
+
+  return conflicts;
+};
+
+
+
+/**
+ * Create a new Support Manager
+ * POST /api/users/create-support-manager
+ * Auth: super_admin only
+ */
+// Create Support Manager (Super Admin only)
+/**
+ * Create a new Support Manager
+ * POST /api/users/create-support-manager
+ * Auth: super_admin only
+ */
+const createSupportManager = async (req, res) => {
+  try {
+    if (!req.user || req.user.userType !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can create Support Managers",
+      });
+    }
+
+    const {
+      email,
+      password,
+      contactNumber,
+      userName,
+      address,
+      supportManagerType,
+      supportTeamName,
+
+      // ✅ optional assignments
+      assignedSupportClients,
+      assignedConsultants,
+    } = req.body;
+
+    if (!email || !password || !userName) {
+      return res.status(400).json({
+        success: false,
+        message: "email, password and userName are required",
+      });
+    }
+
+    // ✅ parse (multipart/form-data can send arrays as strings)
+    const clientIds = uniqStrings(parseArrayField(assignedSupportClients));
+    const consultantIds = uniqObjectIds(parseArrayField(assignedConsultants));
+
+    // ✅ Validate consultant ids format
+    const invalidConsultantIds = consultantIds.filter(
+      (id) => !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (invalidConsultantIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid consultant ids in assignedConsultants",
+        meta: { invalidConsultantIds },
+      });
+    }
+
+    const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "Email or Username already exists",
+      });
+    }
+
+    // =========================
+    // ✅ 1) Existence checks
+    // =========================
+    if (clientIds.length) {
+      const foundClients = await Client.find({ clientId: { $in: clientIds } })
+        .select("clientId")
+        .lean();
+
+      const foundSet = new Set(foundClients.map((c) => c.clientId));
+      const missingClientIds = clientIds.filter((c) => !foundSet.has(c));
+
+      if (missingClientIds.length) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Some clientIds in assignedSupportClients were not found in Client collection",
+          meta: { missingClientIds },
+        });
+      }
+    }
+
+    let foundConsultants = [];
+    if (consultantIds.length) {
+      foundConsultants = await User.find({
+        _id: { $in: consultantIds },
+        isActive: true,
+        userType: { $in: ["consultant", "consultant_admin"] },
+      })
+        .select("_id userType userName email")
+        .lean();
+
+      const foundSet = new Set(foundConsultants.map((u) => String(u._id)));
+      const missingConsultantIds = consultantIds.filter(
+        (id) => !foundSet.has(String(id))
+      );
+
+      if (missingConsultantIds.length) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Some ids in assignedConsultants were not found (or not active consultant/consultant_admin)",
+          meta: { missingConsultantIds },
+        });
+      }
+    }
+
+    // =========================
+    // ✅ 2) Duplicate assignment checks
+    // (block if already assigned to another active supportManager/support user)
+    // =========================
+    if (clientIds.length) {
+      const holders = await User.find({
+        isActive: true,
+        userType: { $in: ["supportManager", "support"] },
+        assignedSupportClients: { $in: clientIds },
+      })
+        .select("_id userName userType assignedSupportClients")
+        .lean();
+
+      const conflicts = findConflictsForArray(
+        holders,
+        "assignedSupportClients",
+        clientIds
+      );
+
+      if (conflicts.length) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Some clients are already assigned to another support manager/support user",
+          meta: { conflicts },
+        });
+      }
+    }
+
+    if (consultantIds.length) {
+      const holders = await User.find({
+        isActive: true,
+        userType: { $in: ["supportManager", "support"] },
+        assignedConsultants: { $in: consultantIds },
+      })
+        .select("_id userName userType assignedConsultants")
+        .lean();
+
+      const conflicts = findConflictsForArray(
+        holders,
+        "assignedConsultants",
+        consultantIds
+      );
+
+      if (conflicts.length) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Some consultants are already assigned to another support manager/support user",
+          meta: { conflicts },
+        });
+      }
+    }
+
+    // =========================
+    // ✅ 3) Create manager
+    // =========================
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    const supportManager = new User({
+      email,
+      password: hashedPassword,
+      contactNumber,
+      userName,
+      userType: "supportManager",
+      address,
+      isActive: true,
+      supportManagerType,
+      supportTeamName,
+
+      // ✅ store assignments
+      assignedSupportClients: clientIds,
+      assignedConsultants: consultantIds,
+
+      createdBy: req.user?._id || req.user?.id || req.user?.userId,
+    });
+
+    await supportManager.save();
+
+    // ✅ 3A) Welcome notification (account created)
+    try {
+      await notifySupportManagerWelcome({ actor: req.user, supportManager, tempPassword: password, email  });
+    } catch (e) {
+      console.error("[USER CONTROLLER] welcome notif failed:", e.message);
+    }
+
+    // =========================
+    // ✅ 4) Sync to Client + Consultant docs
+    // =========================
+    let clientsUpdated = 0;
+    let consultantsUpdated = 0;
+
+    if (clientIds.length) {
+      const up = await Client.updateMany(
+        { clientId: { $in: clientIds } },
+        {
+          $set: {
+            supportManagerId: supportManager._id,
+            "supportInfo.supportManagerId": supportManager._id,
+            "supportInfo.supportTeamName": supportManager.supportTeamName || "",
+            "supportInfo.supportManagerType": supportManager.supportManagerType || "",
+          },
+        }
+      );
+      clientsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
+    }
+
+    if (consultantIds.length) {
+      const up = await User.updateMany(
+        { _id: { $in: consultantIds } },
+        {
+          $set: {
+            supportManagerId: supportManager._id,
+            "supportInfo.supportManagerId": supportManager._id,
+            "supportInfo.supportTeamName": supportManager.supportTeamName || "",
+          },
+        }
+      );
+      consultantsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
+    }
+
+    // ✅ 4A) Assignments notification (only if any assignments were provided)
+    if (clientIds.length || consultantIds.length) {
+      try {
+        await notifySupportManagerAssignmentsUpdated({
+          actor: req.user,
+          supportManager,
+          clientsAdded: clientIds,
+          consultantsAdded: consultantIds,
+        });
+      } catch (e) {
+        console.error("[USER CONTROLLER] assignment notif failed:", e.message);
+      }
+    }
+
+    // ✅ Profile Image Upload (S3)
+    let imageUploadResult = { success: false, error: null };
+    if (req.file) {
+      try {
+        await saveUserProfileImage(req, supportManager);
+        imageUploadResult.success = true;
+      } catch (e) {
+        imageUploadResult.error = e.message;
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Support Manager created successfully",
+      supportManager: {
+        id: supportManager._id,
+        email: supportManager.email,
+        userName: supportManager.userName,
+        supportManagerType: supportManager.supportManagerType || null,
+        supportTeamName: supportManager.supportTeamName || null,
+        assignedSupportClients: supportManager.assignedSupportClients || [],
+        assignedConsultants: supportManager.assignedConsultants || [],
+        profileImage: supportManager.profileImage || null,
+      },
+      sync: {
+        clientsUpdated,
+        consultantsUpdated,
+      },
+      imageUpload: imageUploadResult,
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error creating support manager:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create support manager",
+      error: error.message,
+    });
+  }
+};
+
+
+
+/**
+ * Create a new Support User
+ * POST /api/users/create-support
+ * Auth: supportManager or super_admin
+ */
+const createSupport = async (req, res) => {
+  try {
+    if (!req.user || !["super_admin", "supportManager"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin or Support Manager can create support users",
+      });
+    }
+
+    const {
+      email,
+      password,
+      contactNumber,
+      userName,
+      address,
+      specialization,
+      supportJobRole,
+      supportManagerId, // super_admin only
+
+      // ✅ optional assignments
+      assignedSupportClients,
+      assignedConsultants,
+    } = req.body;
+
+    if (!email || !password || !userName) {
+      return res.status(400).json({
+        success: false,
+        message: "email, password and userName are required",
+      });
+    }
+
+    const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "Email or Username already exists",
+      });
+    }
+
+    const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+
+    // Determine assigned manager
+    let assignedSupportManagerId = null;
+    if (req.user.userType === "supportManager") {
+      assignedSupportManagerId = currentUserId;
+    } else {
+      if (!supportManagerId) {
+        return res.status(400).json({
+          success: false,
+          message: "supportManagerId is required when created by super_admin",
+        });
+      }
+      assignedSupportManagerId = supportManagerId;
+    }
+
+    const supportManager = await User.findOne({
+      _id: assignedSupportManagerId,
+      userType: "supportManager",
+      isActive: true,
+    });
+
+    if (!supportManager) {
+      return res.status(404).json({
+        success: false,
+        message: "Support manager not found or inactive",
+      });
+    }
+
+    // ✅ parse assignment arrays
+    const clientIds = uniqStrings(parseArrayField(assignedSupportClients));
+    const consultantIds = uniqObjectIds(parseArrayField(assignedConsultants));
+
+    // ✅ validate consultant ids format
+    const invalidConsultantIds = consultantIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidConsultantIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid consultant ids in assignedConsultants",
+        meta: { invalidConsultantIds },
+      });
+    }
+
+    // ✅ existence checks
+    if (clientIds.length) {
+      const foundClients = await Client.find({ clientId: { $in: clientIds } }).select("clientId").lean();
+      const foundSet = new Set(foundClients.map((c) => c.clientId));
+      const missingClientIds = clientIds.filter((c) => !foundSet.has(c));
+      if (missingClientIds.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Some clientIds in assignedSupportClients were not found in Client collection",
+          meta: { missingClientIds },
+        });
+      }
+    }
+
+    if (consultantIds.length) {
+      const found = await User.find({
+        _id: { $in: consultantIds },
+        isActive: true,
+        userType: { $in: ["consultant", "consultant_admin"] },
+      }).select("_id").lean();
+
+      const foundSet = new Set(found.map((u) => String(u._id)));
+      const missingConsultantIds = consultantIds.filter((id) => !foundSet.has(String(id)));
+      if (missingConsultantIds.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Some ids in assignedConsultants were not found (or not active consultant/consultant_admin)",
+          meta: { missingConsultantIds },
+        });
+      }
+    }
+
+    // ✅ duplicate assignment checks (block if already assigned to OTHER active support/supportManager)
+    if (clientIds.length) {
+      const holders = await User.find({
+        isActive: true,
+        userType: { $in: ["supportManager", "support"] },
+        assignedSupportClients: { $in: clientIds },
+      }).select("_id userName userType assignedSupportClients").lean();
+
+      // allow same manager record only? (support user is new, so no allow needed)
+      const conflicts = findConflictsForArray(holders, "assignedSupportClients", clientIds);
+      if (conflicts.length) {
+        return res.status(409).json({
+          success: false,
+          message: "Some clients are already assigned to another support manager/support user",
+          meta: { conflicts },
+        });
+      }
+    }
+
+    if (consultantIds.length) {
+      const holders = await User.find({
+        isActive: true,
+        userType: { $in: ["supportManager", "support"] },
+        assignedConsultants: { $in: consultantIds },
+      }).select("_id userName userType assignedConsultants").lean();
+
+      const conflicts = findConflictsForArray(holders, "assignedConsultants", consultantIds);
+      if (conflicts.length) {
+        return res.status(409).json({
+          success: false,
+          message: "Some consultants are already assigned to another support manager/support user",
+          meta: { conflicts },
+        });
+      }
+    }
+
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    const supportUser = new User({
+      email,
+      password: hashedPassword,
+      contactNumber,
+      userName,
+      userType: "support",
+      address,
+      isActive: true,
+      specialization,
+      supportJobRole,
+
+      supportManagerId: supportManager._id,
+      supportTeamName: supportManager.supportTeamName || "",
+
+      // ✅ store assignments
+      assignedSupportClients: clientIds,
+      assignedConsultants: consultantIds,
+
+      createdBy: currentUserId,
+
+      // ✅ FIX: parentUser should always be the support manager for team mapping
+      parentUser: supportManager._id,
+    });
+
+    await supportUser.save();
+
+    try {
+  await notifySupportUserWelcome({ actor: req.user, supportUser, supportManager,tempPassword: password, email  });
+} catch (e) {
+  console.error("[USER CONTROLLER] support welcome notif failed:", e.message);
+}
+
+
+    // ✅ sync to Client + Consultant docs
+    let clientsUpdated = 0;
+    let consultantsUpdated = 0;
+
+    if (clientIds.length) {
+      const up = await Client.updateMany(
+        { clientId: { $in: clientIds } },
+        {
+          $set: {
+            supportUserId: supportUser._id,
+            "supportInfo.supportUserId": supportUser._id,
+            supportManagerId: supportManager._id,
+            "supportInfo.supportManagerId": supportManager._id,
+            "supportInfo.supportTeamName": supportManager.supportTeamName || "",
+          },
+        }
+      );
+      clientsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
+    }
+
+    if (consultantIds.length) {
+      const up = await User.updateMany(
+        { _id: { $in: consultantIds } },
+        {
+          $set: {
+            supportUserId: supportUser._id,
+            "supportInfo.supportUserId": supportUser._id,
+            supportManagerId: supportManager._id,
+            "supportInfo.supportManagerId": supportManager._id,
+            "supportInfo.supportTeamName": supportManager.supportTeamName || "",
+          },
+        }
+      );
+      consultantsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
+    }
+
+    // ✅ Profile Image Upload (S3)
+    let imageUploadResult = { success: false, error: null };
+    if (req.file) {
+      try {
+        await saveUserProfileImage(req, supportUser);
+        imageUploadResult.success = true;
+      } catch (e) {
+        imageUploadResult.error = e.message;
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Support user created successfully",
+      supportUser: {
+        id: supportUser._id,
+        email: supportUser.email,
+        userName: supportUser.userName,
+        userType: supportUser.userType,
+        supportManagerId: supportUser.supportManagerId,
+        supportTeamName: supportUser.supportTeamName,
+        assignedSupportClients: supportUser.assignedSupportClients || [],
+        assignedConsultants: supportUser.assignedConsultants || [],
+        profileImage: supportUser.profileImage || null,
+      },
+      sync: {
+        clientsUpdated,
+        consultantsUpdated,
+      },
+      imageUpload: imageUploadResult,
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error creating support user:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create support user",
+      error: error.message,
+    });
+  }
+};
+
+
+
+const getCurrentUserId = (req) =>
+  (req.user?._id || req.user?.id || req.user?.userId || "").toString();
+
+const toBool = (val, defaultVal = true) => {
+  if (val === undefined || val === null) return defaultVal;
+  if (typeof val === "boolean") return val;
+  const s = String(val).toLowerCase();
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return defaultVal;
+};
+
+/**
+ * Get all support team members for a support manager
+ * GET /api/users/support-team
+ * Auth: supportManager (own team) or super_admin (any team)
+ */
+const getSupportTeam = async (req, res) => {
+  try {
+    if (!["supportManager", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    let managerId;
+    if (req.user.userType === "supportManager") {
+      managerId = getCurrentUserId(req); // ✅ safe
+    } else {
+      managerId = req.query.supportManagerId;
+      if (!managerId) {
+        return res.status(400).json({
+          success: false,
+          message: "supportManagerId query parameter required for super_admin",
+        });
+      }
+    }
+
+    const manager = await User.findOne({
+      _id: managerId,
+      userType: "supportManager",
+      isActive: true,
+    }).select("userName supportTeamName supportManagerType");
+
+    if (!manager) {
+      return res.status(404).json({ success: false, message: "Support manager not found" });
+    }
+
+    const teamMembers = await User.find({
+      supportManagerId: managerId,
+      userType: "support",
+      isActive: true,
+    })
+      .select("-password")
+      .sort({ userName: 1 });
+
+    return res.status(200).json({
+      success: true,
+      manager,
+      teamMembers,
+      statistics: {
+        totalMembers: teamMembers.length,
+      },
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error getting support team:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error getting support team",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
+/**
+ * Change the support manager for a support user (transfer to different team)
+ * PATCH /api/users/:supportUserId/change-support-manager
+ * Body: { newSupportManagerId, reason }
+ * Auth: supportManager (from team) or super_admin
+ */
+const changeSupportUserManager = async (req, res) => {
+  try {
+    const { supportUserId } = req.params;
+    const { newSupportManagerId, reason } = req.body;
+
+    if (!["supportManager", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only support managers or super admins can transfer support users",
+      });
+    }
+
+    if (!newSupportManagerId) {
+      return res.status(400).json({ success: false, message: "newSupportManagerId is required" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(newSupportManagerId)) {
+      return res.status(400).json({ success: false, message: "Invalid newSupportManagerId" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(supportUserId)) {
+      return res.status(400).json({ success: false, message: "Invalid supportUserId" });
+    }
+
+    const supportUser = await User.findById(supportUserId);
+    if (!supportUser || supportUser.userType !== "support") {
+      return res.status(404).json({ success: false, message: "Support user not found" });
+    }
+
+    if (!supportUser.supportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: "Support user has no current supportManagerId set; cannot transfer.",
+      });
+    }
+
+    // ✅ SupportManager can transfer only from own team
+    if (req.user.userType === "supportManager") {
+      const currentUserId = getCurrentUserId(req);
+      if (String(supportUser.supportManagerId) !== String(currentUserId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only transfer members from your own team",
+        });
+      }
+    }
+
+    const newSupportManager = await User.findOne({
+      _id: newSupportManagerId,
+      userType: "supportManager",
+      isActive: true,
+    }).select("_id userName supportTeamName supportManagerType email");
+
+    if (!newSupportManager) {
+      return res.status(404).json({
+        success: false,
+        message: "New support manager not found or inactive",
+      });
+    }
+
+    if (String(supportUser.supportManagerId) === String(newSupportManagerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Support user is already in this team",
+      });
+    }
+
+    const oldManagerId = supportUser.supportManagerId;
+
+    supportUser.supportManagerId = newSupportManagerId;
+    supportUser.parentUser = newSupportManagerId;
+    supportUser.supportManagerType = newSupportManager.supportManagerType; // optional
+    supportUser.supportTeamName = newSupportManager.supportTeamName || ""; // ✅ keep consistent
+    supportUser.updatedAt = new Date();
+
+    await supportUser.save();
+
+    console.log(
+      `[USER CONTROLLER] Support user transferred: ${supportUser.userName} from ${oldManagerId} to ${newSupportManagerId}. Reason: ${reason || "N/A"}`
+    );
+
+    // ✅ Notifications: new manager + support user (and optional old manager)
+    try {
+      await notifySupportUserTransferredToManager({
+        actor: req.user,
+        supportUser,
+        oldManagerId,
+        newSupportManager,
+        reason,
+      });
+    } catch (e) {
+      console.error("[USER CONTROLLER] transfer notif failed:", e.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Support user transferred successfully",
+      supportUser: {
+        _id: supportUser._id,
+        userName: supportUser.userName,
+        email: supportUser.email,
+        oldSupportManagerId: oldManagerId,
+        newSupportManagerId,
+        reason: reason || null,
+      },
+      newSupportManager,
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error changing support user manager:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error changing support user manager",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
+/**
+ * Get all support managers with statistics
+ * GET /api/users/support-managers
+ * Auth: super_admin or supportManager
+ */
+const getAllSupportManagers = async (req, res) => {
+  try {
+    if (!["super_admin", "supportManager"].includes(req.user.userType)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const {
+      supportManagerType,
+      search,
+      isActive = "true",
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const activeBool = toBool(isActive, true);
+
+    const query = {
+      userType: "supportManager",
+      isActive: activeBool,
+    };
+
+    if (supportManagerType) query.supportManagerType = supportManagerType;
+
+    if (search && String(search).trim()) {
+      const regex = new RegExp(String(search).trim(), "i");
+      query.$or = [
+        { userName: regex },
+        { email: regex },
+        { contactNumber: regex },
+        { supportTeamName: regex },
+        { address: regex },          // ✅ Kochi is here
+        { companyName: regex },
+        { supportManagerType: regex },
+      ];
+    }
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [supportManagers, totalCount] = await Promise.all([
+      User.find(query)
+        .select("-password")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      User.countDocuments(query),
+    ]);
+
+    // Optional: add member count per manager
+    const managersWithStats = await Promise.all(
+      supportManagers.map(async (manager) => {
+        const memberCount = await User.countDocuments({
+          userType: "support",
+          supportManagerId: manager._id,
+          isActive: true,
+        });
+
+        return {
+          ...manager.toObject(),
+          teamMemberCount: memberCount,
+        };
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      supportManagers: managersWithStats,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalCount / limitNum),
+        totalCount,
+        limit: limitNum,
+      },
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error fetching support managers:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching support managers",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
+
+/**
+ * Get all support users
+ * GET /api/users/support-users
+ * Auth: super_admin or supportManager
+ */
+const getAllSupportUsers = async (req, res) => {
+  try {
+    if (!["super_admin", "supportManager"].includes(req.user.userType)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const {
+      supportManagerId,
+      specialization,
+      search,
+      isActive = "true",
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const activeBool = toBool(isActive, true);
+
+    const query = {
+      userType: "support",
+      isActive: activeBool,
+    };
+
+    // ✅ SupportManager can only view own team
+    if (req.user.userType === "supportManager") {
+      const currentUserId = getCurrentUserId(req);
+      query.supportManagerId = currentUserId;
+    } else if (supportManagerId) {
+      query.supportManagerId = supportManagerId;
+    }
+
+    // ✅ specialization is an ARRAY in DB, so use $in
+    if (specialization && String(specialization).trim()) {
+      const specs = String(specialization)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      if (specs.length) {
+        query.supportSpecialization = { $in: specs };
+      }
+    }
+
+    if (search && String(search).trim()) {
+      const regex = new RegExp(String(search).trim(), "i");
+      query.$or = [
+        { userName: regex },
+        { email: regex },
+        { contactNumber: regex },
+        { address: regex },
+        { supportEmployeeId: regex },
+        { supportJobRole: regex },
+        { supportBranch: regex },
+      ];
+    }
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [supportUsers, totalCount] = await Promise.all([
+      User.find(query)
+        .select("-password")
+        .populate("supportManagerId", "userName supportTeamName supportManagerType")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      User.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      supportUsers,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalCount / limitNum),
+        totalCount,
+        limit: limitNum,
+      },
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] Error fetching support users:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching support users",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
+
+
+
+// =======================================================
+// DELETE SUPPORT MANAGER (Super Admin only)
+// Mandatory: transfer support users to another manager
+// Optional: transfer assignedSupportClients/assignedConsultants too
+// =======================================================
+const deleteSupportManager = async (req, res) => {
+  try {
+    const { supportManagerId } = req.params;
+    const { transferToSupportManagerId, reason } = req.body;
+
+    const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+
+    if (!mongoose.Types.ObjectId.isValid(supportManagerId)) {
+      return res.status(400).json({ success: false, message: "Invalid supportManagerId" });
+    }
+
+    if (!req.user || req.user.userType !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only super_admin can delete support managers",
+      });
+    }
+
+    // Prevent self-delete
+    if (String(supportManagerId) === String(currentUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot delete your own account",
+      });
+    }
+
+    const manager = await User.findOne({
+      _id: supportManagerId,
+      userType: "supportManager",
+      isActive: true,
+    });
+
+    if (!manager) {
+      return res.status(404).json({
+        success: false,
+        message: "Support manager not found or already inactive",
+      });
+    }
+
+    // Count active team members
+    const teamCount = await User.countDocuments({
+      userType: "support",
+      isActive: true,
+      supportManagerId: manager._id,
+    });
+
+    // ✅ Mandatory transfer if there are team members
+    if (teamCount > 0 && !transferToSupportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "transferToSupportManagerId is required because this support manager has active support users",
+        meta: { teamCount },
+      });
+    }
+
+    // ✅ NEW: strict validation when transferToSupportManagerId is provided (or required)
+    let newManager = null;
+    const needsTransfer = teamCount > 0;
+
+    if (transferToSupportManagerId) {
+      if (!mongoose.Types.ObjectId.isValid(transferToSupportManagerId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid transferToSupportManagerId",
+        });
+      }
+
+      if (String(transferToSupportManagerId) === String(manager._id)) {
+        return res.status(400).json({
+          success: false,
+          message: "transferToSupportManagerId cannot be the same as the deleted manager",
+        });
+      }
+
+      // ✅ MUST check DB presence
+      newManager = await User.findOne({
+        _id: transferToSupportManagerId,
+        userType: "supportManager",
+        isActive: true,
+      });
+
+      if (!newManager) {
+        return res.status(404).json({
+          success: false,
+          message: "Transfer support manager not found or inactive",
+          meta: { transferToSupportManagerId },
+        });
+      }
+    } else if (needsTransfer) {
+      // ✅ defensive: if transfer is needed but id missing (already checked above, but keeps it safe)
+      return res.status(400).json({
+        success: false,
+        message: "transferToSupportManagerId is required for transferring team members",
+        meta: { teamCount },
+      });
+    }
+
+    // -----------------------------
+    // Capture team members BEFORE transfer (for notifications)
+    // -----------------------------
+    let movedSupportUserIds = [];
+    if (teamCount > 0) {
+      const teamUsers = await User.find({
+        userType: "support",
+        isActive: true,
+        supportManagerId: manager._id,
+      }).select("_id").lean();
+
+      movedSupportUserIds = teamUsers.map((u) => String(u._id));
+    }
+
+    // -----------------------------
+    // Transfer Team Members
+    // -----------------------------
+    let movedUsers = 0;
+
+    if (teamCount > 0 && newManager) {
+      const updateRes = await User.updateMany(
+        { userType: "support", isActive: true, supportManagerId: manager._id },
+        {
+          $set: {
+            supportManagerId: newManager._id,
+            parentUser: newManager._id,
+            supportTeamName: newManager.supportTeamName || "",
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      movedUsers = updateRes?.modifiedCount || updateRes?.nModified || 0;
+    }
+
+    // -----------------------------
+    // Transfer Assigned Clients/Consultants (if any)
+    // -----------------------------
+    let transferredClientCount = 0;
+    let transferredConsultantCount = 0;
+
+    if (newManager) {
+      const oldClients = Array.isArray(manager.assignedSupportClients)
+        ? manager.assignedSupportClients
+        : [];
+      const oldConsultants = Array.isArray(manager.assignedConsultants)
+        ? manager.assignedConsultants
+        : [];
+
+      if (oldClients.length || oldConsultants.length) {
+        await User.updateOne(
+          { _id: newManager._id },
+          {
+            ...(oldClients.length
+              ? { $addToSet: { assignedSupportClients: { $each: oldClients } } }
+              : {}),
+            ...(oldConsultants.length
+              ? { $addToSet: { assignedConsultants: { $each: oldConsultants } } }
+              : {}),
+          }
+        );
+      }
+
+      transferredClientCount = oldClients.length;
+      transferredConsultantCount = oldConsultants.length;
+    }
+
+    // -----------------------------
+    // Soft delete manager
+    // -----------------------------
+    manager.isActive = false;
+    manager.updatedAt = new Date();
+    // manager.deletionReason = reason;
+
+    await manager.save();
+
+    // -----------------------------
+    // ✅ Notifications (email + in-app)
+    // -----------------------------
+    try {
+      await notifySupportManagerDeleted({
+        actor: { ...req.user, reason },
+        deletedManager: manager,
+        transferToManager: newManager,
+        movedSupportUsers: movedSupportUserIds, // ✅ real IDs (not empty)
+      });
+    } catch (e) {
+      console.error("[USER CONTROLLER] delete manager notif failed:", e.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Support manager deleted successfully",
+      meta: {
+        deletedSupportManagerId: manager._id,
+        teamCountBeforeDelete: teamCount,
+        movedUsers,
+        movedSupportUserIds, // ✅ useful for frontend/admin logs
+        transferToSupportManagerId: newManager ? newManager._id : null,
+        transferredClientCount,
+        transferredConsultantCount,
+        reason: reason || null,
+      },
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] deleteSupportManager error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete support manager",
+      error: error.message,
+    });
+  }
+};
+
+
+// =======================================================
+// DELETE SUPPORT USER (SupportManager who owns them OR super_admin)
+// Mandatory: transfer assignedSupportClients to another support user
+// =======================================================
+const deleteSupportUser = async (req, res) => {
+  try {
+    const { supportUserId } = req.params;
+    const { transferToSupportUserId, reason } = req.body;
+
+    const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+
+    if (!mongoose.Types.ObjectId.isValid(supportUserId)) {
+      return res.status(400).json({ success: false, message: "Invalid supportUserId" });
+    }
+
+    if (!req.user || !["supportManager", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only supportManager or super_admin can delete support users",
+      });
+    }
+
+    const supportUser = await User.findOne({
+      _id: supportUserId,
+      userType: "support",
+      isActive: true,
+    });
+
+    if (!supportUser) {
+      return res.status(404).json({
+        success: false,
+        message: "Support user not found or already inactive",
+      });
+    }
+
+    // Prevent deleting self
+    if (String(supportUser._id) === String(currentUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot delete your own account",
+      });
+    }
+
+    // If supportManager is deleting: must own that support user
+    if (req.user.userType === "supportManager") {
+      if (!supportUser.supportManagerId) {
+        return res.status(403).json({
+          success: false,
+          message: "This support user has no supportManagerId; only super_admin can delete",
+        });
+      }
+
+      if (String(supportUser.supportManagerId) !== String(currentUserId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You can delete only support users in your own team",
+        });
+      }
+    }
+
+    const clientsToTransfer = Array.isArray(supportUser.assignedSupportClients)
+      ? supportUser.assignedSupportClients
+      : [];
+
+    // Mandatory transfer if the user has assigned clients
+    if (clientsToTransfer.length > 0 && !transferToSupportUserId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "transferToSupportUserId is required because this support user has assignedSupportClients",
+        meta: { assignedSupportClientsCount: clientsToTransfer.length },
+      });
+    }
+
+    let transferee = null;
+    if (transferToSupportUserId) {
+      // ✅ 1) Validate ObjectId format
+      if (!mongoose.Types.ObjectId.isValid(transferToSupportUserId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid transferToSupportUserId",
+          meta: { transferToSupportUserId },
+        });
+      }
+
+      // ✅ 2) Can't transfer to the same user
+      if (String(transferToSupportUserId) === String(supportUser._id)) {
+        return res.status(400).json({
+          success: false,
+          message: "transferToSupportUserId cannot be the same as the deleted support user",
+        });
+      }
+
+      // ✅ 3) Check DB existence (found vs inactive)
+      const transfereeAny = await User.findOne({
+        _id: transferToSupportUserId,
+        userType: "support",
+      });
+
+      if (!transfereeAny) {
+        return res.status(404).json({
+          success: false,
+          message: "Transfer support user not found",
+          meta: { transferToSupportUserId },
+        });
+      }
+
+      if (!transfereeAny.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Transfer support user is inactive",
+          meta: { transferToSupportUserId },
+        });
+      }
+
+      transferee = transfereeAny;
+
+      // ✅ 4) Enforce same team if deleted by supportManager
+      if (req.user.userType === "supportManager") {
+        if (
+          !transferee.supportManagerId ||
+          String(transferee.supportManagerId) !== String(currentUserId)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message: "Transfer support user must be in your team",
+          });
+        }
+      }
+    }
+
+    // -----------------------------
+    // Transfer assignedSupportClients
+    // -----------------------------
+    let transferredCount = 0;
+
+    if (transferee && clientsToTransfer.length > 0) {
+      await User.updateOne(
+        { _id: transferee._id },
+        { $addToSet: { assignedSupportClients: { $each: clientsToTransfer } } }
+      );
+
+      // Clear from deleted user
+      supportUser.assignedSupportClients = [];
+      transferredCount = clientsToTransfer.length;
+
+      // Optional: Update Client collection if you store assignedSupportUserId there
+      // await Client.updateMany(
+      //   { "supportInfo.assignedSupportUserId": supportUser._id },
+      //   { $set: { "supportInfo.assignedSupportUserId": transferee._id } }
+      // );
+    }
+
+    // -----------------------------
+    // Soft delete support user
+    // -----------------------------
+    supportUser.isActive = false;
+    supportUser.updatedAt = new Date();
+    // supportUser.deletionReason = reason;
+
+    await supportUser.save();
+
+    // -----------------------------
+    // ✅ Notifications (email + in-app)
+    // -----------------------------
+    try {
+      await notifySupportUserDeleted({
+        actor: { ...req.user, reason },
+        deletedSupportUser: supportUser,
+        transferToSupportUser: transferee,
+        transferredClientIds: clientsToTransfer,
+      });
+    } catch (e) {
+      console.error("[USER CONTROLLER] delete support notif failed:", e.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Support user deleted successfully",
+      meta: {
+        deletedSupportUserId: supportUser._id,
+        transferToSupportUserId: transferee ? transferee._id : null,
+        transferredCount,
+        transferredClientIds: clientsToTransfer, // ✅ useful for logs/audit
+        reason: reason || null,
+      },
+    });
+  } catch (error) {
+    console.error("[USER CONTROLLER] deleteSupportUser error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete support user",
+      error: error.message,
+    });
+  }
+};
+
+
+
 // ===============================================
 // PROFILE IMAGE NORMALIZER (S3 + Legacy Safe)
 // ===============================================
@@ -1830,6 +3249,31 @@ const getUserById = async (req, res) => {
         baseQuery = { createdBy: req.user.id };
         break;
 
+      // ✅ NEW: supportManager can access self + their team members
+      case "supportManager": {
+        const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+        baseQuery = {
+          $or: [
+            { _id: currentUserId },              // self
+            { supportManagerId: currentUserId }, // team members
+          ],
+        };
+        break;
+      }
+
+      // ✅ NEW: support can access self + their own manager
+      case "support": {
+        const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+        baseQuery = {
+          $or: [
+            { _id: currentUserId }, // self
+            // allow viewing their own manager record
+            { _id: req.user?.supportManagerId },
+          ].filter(Boolean),
+        };
+        break;
+      }
+
       default:
         return res.status(403).json({
           success: false,
@@ -1844,6 +3288,10 @@ const getUserById = async (req, res) => {
       .populate("parentUser", "userName email profileImage")
       .populate("consultantAdminId", "userName email profileImage")
       .populate("employeeHeadId", "userName email profileImage")
+
+      // ✅ NEW: populate supportManagerId for support users
+      .populate("supportManagerId", "userName email profileImage supportTeamName supportManagerType")
+
       .lean();
 
     if (!user) {
@@ -1858,6 +3306,10 @@ const getUserById = async (req, res) => {
     user.parentUser = normalizeUserProfile(user.parentUser);
     user.consultantAdminId = normalizeUserProfile(user.consultantAdminId);
     user.employeeHeadId = normalizeUserProfile(user.employeeHeadId);
+
+    // ✅ NEW
+    user.supportManagerId = normalizeUserProfile(user.supportManagerId);
+
     normalizeUserProfile(user);
 
     return res.status(200).json({ success: true, user });
@@ -1870,6 +3322,7 @@ const getUserById = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -1910,6 +3363,25 @@ const getUsers = async (req, res) => {
       case "client_employee_head":
         baseQuery = { createdBy: req.user.id };
         break;
+
+      // ✅ NEW: Support Manager can see their OWN team + self
+      case "supportManager": {
+        const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+        baseQuery = {
+          $or: [
+            { _id: currentUserId },               // manager record
+            { supportManagerId: currentUserId }   // team members
+          ]
+        };
+        break;
+      }
+
+      // ✅ NEW: Support user can at least see self (safe default)
+      case "support": {
+        const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+        baseQuery = { _id: currentUserId };
+        break;
+      }
 
       default:
         return res.status(403).json({
@@ -1954,7 +3426,17 @@ const getUsers = async (req, res) => {
         { jobRole: regex },
         { branch: regex },
         { clientId: regex },
-        { department: regex }
+        { department: regex },
+
+        // ✅ NEW: Support fields searchable too
+        { supportTeamName: regex },
+        { supportManagerType: regex },
+        { supportEmployeeId: regex },
+        { supportJobRole: regex },
+        { supportBranch: regex },
+        { supportSpecialization: regex },
+        { address: regex },
+        { contactNumber: regex }
       ];
     }
 
@@ -1984,6 +3466,10 @@ const getUsers = async (req, res) => {
       .populate('parentUser', 'userName email profileImage')
       .populate('consultantAdminId', 'userName email profileImage')
       .populate('employeeHeadId', 'userName email profileImage')
+
+      // ✅ NEW: populate support manager for support users
+      .populate('supportManagerId', 'userName email profileImage supportTeamName supportManagerType')
+
       .sort(sortObj)
       .skip(skip)
       .limit(limitNum)
@@ -2014,6 +3500,10 @@ const getUsers = async (req, res) => {
       u.parentUser = normalizeUser(u.parentUser);
       u.consultantAdminId = normalizeUser(u.consultantAdminId);
       u.employeeHeadId = normalizeUser(u.employeeHeadId);
+
+      // ✅ NEW
+      u.supportManagerId = normalizeUser(u.supportManagerId);
+
       return u;
     });
 
@@ -2308,15 +3798,16 @@ const { replaceUserProfileImage } = require(
   '../utils/uploads/update/replaceUserProfileImage'
 );
 
-// Update user
-// Update user
 // =====================================
-// UPDATE USER (S3 IMAGE SAFE)
+// UPDATE USER (S3 IMAGE SAFE) + Support Roles
 // =====================================
 const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
     const updateData = { ...req.body };
+
+    // ✅ Safe current user id (supports id/_id/userId)
+    const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
 
     // Remove immutable fields
     delete updateData.password;
@@ -2332,45 +3823,60 @@ const updateUser = async (req, res) => {
     }
 
     // -------------------------------------
-    // PERMISSION CHECK (UNCHANGED LOGIC)
+    // PERMISSION CHECK (UNCHANGED LOGIC + support roles)
     // -------------------------------------
     let canUpdate = false;
 
-    if (userToUpdate._id.toString() === req.user.id) {
+    // ✅ Self update (fixed - supports req.user.id mismatch cases)
+    if (String(userToUpdate._id) === String(currentUserId)) {
       canUpdate = true;
     } else {
       switch (req.user.userType) {
         case "super_admin":
           canUpdate =
             userToUpdate.userType !== "super_admin" ||
-            userToUpdate._id.toString() === req.user.id;
+            String(userToUpdate._id) === String(currentUserId);
           break;
 
         case "consultant_admin":
           if (userToUpdate.userType === "consultant") {
             canUpdate =
-              userToUpdate.consultantAdminId?.toString() === req.user.id;
+              String(userToUpdate.consultantAdminId) === String(currentUserId);
           }
           break;
 
         case "client_admin":
           canUpdate =
             userToUpdate.clientId === req.user.clientId &&
-            ["client_employee_head", "employee", "auditor", "viewer"]
-              .includes(userToUpdate.userType);
+            ["client_employee_head", "employee", "auditor", "viewer"].includes(
+              userToUpdate.userType
+            );
           break;
 
         case "client_employee_head":
           canUpdate =
             userToUpdate.userType === "employee" &&
-            userToUpdate.createdBy?.toString() === req.user.id;
+            String(userToUpdate.createdBy) === String(currentUserId);
+          break;
+
+        // ✅ NEW: supportManager can update support users in their team
+        case "supportManager":
+          canUpdate =
+            userToUpdate.userType === "support" &&
+            userToUpdate.supportManagerId &&
+            String(userToUpdate.supportManagerId) === String(currentUserId);
+          break;
+
+        // ✅ NEW: support cannot update others
+        case "support":
+          canUpdate = false;
           break;
       }
     }
 
     if (!canUpdate) {
       return res.status(403).json({
-        message: "You don't have permission to update this user"
+        message: "You don't have permission to update this user",
       });
     }
 
@@ -2388,19 +3894,18 @@ const updateUser = async (req, res) => {
     }
 
     const updatedUser = await User.findById(userId)
-      .select('-password')
+      .select("-password")
       .lean();
 
     return res.status(200).json({
       message: "User updated successfully",
-      user: updatedUser
+      user: updatedUser,
     });
-
   } catch (error) {
     console.error("Update user error:", error);
     return res.status(500).json({
       message: "Failed to update user",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -3652,6 +5157,114 @@ const removeAssignment = async (req, res) => {
   }
 };
 
+/**
+ * Assign support manager to consultant or consultant admin
+ * PATCH /api/users/:userId/assign-support-manager
+ * Body: { supportManagerId }
+ * Auth: super_admin only
+ */
+const assignSupportManagerToConsultant = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { supportManagerId } = req.body;
+
+    // Only super_admin can assign support to consultants
+    if (req.user.userType !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only super admins can assign support to consultants'
+      });
+    }
+
+    if (!supportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'supportManagerId is required'
+      });
+    }
+
+    // Get the consultant/consultant_admin
+    const consultant = await User.findById(userId);
+    if (!consultant || !['consultant', 'consultant_admin'].includes(consultant.userType)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultant or consultant admin not found'
+      });
+    }
+
+    // Verify support manager exists and is active
+    const supportManager = await User.findOne({
+      _id: supportManagerId,
+      userType: 'supportManager',
+      isActive: true
+    });
+
+    if (!supportManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'Support manager not found or inactive'
+      });
+    }
+
+    // Check if support manager can handle consultant support
+    if (supportManager.supportManagerType === 'client_support') {
+      return res.status(400).json({
+        success: false,
+        message: 'This support manager only handles client support, not consultant support'
+      });
+    }
+
+    // Add consultant to support manager's assigned consultants list
+    if (!supportManager.assignedConsultants) {
+      supportManager.assignedConsultants = [];
+    }
+    
+    const consultantIdStr = consultant._id.toString();
+    const alreadyAssigned = supportManager.assignedConsultants.some(
+      id => id.toString() === consultantIdStr
+    );
+
+    if (alreadyAssigned) {
+      return res.status(400).json({
+        success: false,
+        message: 'This support manager is already assigned to this consultant'
+      });
+    }
+
+    supportManager.assignedConsultants.push(consultant._id);
+    await supportManager.save();
+
+    console.log(`[CLIENT CONTROLLER] Support manager ${supportManager.userName} assigned to consultant ${consultant.userName}`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Support manager assigned to consultant successfully',
+      assignment: {
+        consultant: {
+          _id: consultant._id,
+          userName: consultant.userName,
+          userType: consultant.userType
+        },
+        supportManager: {
+          _id: supportManager._id,
+          userName: supportManager.userName,
+          supportTeamName: supportManager.supportTeamName,
+          supportManagerType: supportManager.supportManagerType
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('[CLIENT CONTROLLER] Error assigning support manager to consultant:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error assigning support manager',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+
 
 
 module.exports = {
@@ -3679,6 +5292,15 @@ module.exports = {
   getNodeAssignments,
   getMyAssignments,
   removeAssignment,
-    verifyLoginOTP,          // ← NEW: OTP verification
-  resendLoginOTP,          // ← NEW: Resend OTP
+  verifyLoginOTP,          // ← NEW: OTP verification
+  resendLoginOTP,
+  assignSupportManagerToConsultant,          // ← NEW: Resend OTP
+  createSupportManager,
+  createSupport,
+  getSupportTeam,
+  changeSupportUserManager,
+  getAllSupportManagers,
+  getAllSupportUsers,
+  deleteSupportManager,
+  deleteSupportUser,
 };

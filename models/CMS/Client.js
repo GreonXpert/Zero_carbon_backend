@@ -210,6 +210,71 @@ const clientSchema = new mongoose.Schema(
       }
     },
 
+        // ============================================================================
+    // 🆕 SUPPORT SECTION - Support Manager Assignment
+    // ============================================================================
+    supportSection: {
+      // Assigned Support Manager
+      assignedSupportManagerId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: "User" 
+      },
+      
+      supportManagerType: {
+        type: String,
+        enum: ['client_support', 'consultant_support', 'general_support']
+        // client_support: Handles client-side tickets
+        // consultant_support: Handles consultant-side tickets
+        // general_support: Handles all types
+      },
+      
+      // Assignment tracking
+      supportAssignedAt: { type: Date },
+      supportAssignedBy: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: "User" 
+      },
+      
+      // Notes and configuration
+      supportNotes: { type: String },
+      supportPriority: {
+        type: String,
+        enum: ['normal', 'high', 'vip'],
+        default: 'normal'
+      },
+      
+      // Support Manager change history
+      supportManagerHistory: [{
+        supportManagerId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        supportManagerName: { type: String },
+        supportTeamName: { type: String },
+        assignedAt: { type: Date },
+        unassignedAt: { type: Date },
+        assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        unassignedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        reasonForChange: { type: String },
+        isActive: { type: Boolean, default: true }
+      }],
+      
+      // Current active support team members
+      activeSupportTeamMembers: [{
+        supportUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        supportUserName: { type: String },
+        specialization: [{ type: String }],
+        assignedAt: { type: Date }
+      }],
+      
+      // Support metrics
+      supportMetrics: {
+        totalTicketsRaised: { type: Number, default: 0 },
+        totalTicketsResolved: { type: Number, default: 0 },
+        avgResolutionTime: { type: Number, default: 0 }, // in hours
+        lastTicketRaisedAt: { type: Date },
+        lastTicketResolvedAt: { type: Date }
+      }
+    },
+
+
     // Stage 1: Lead Information
     leadInfo: {
       companyName: { type: String, required: true },
@@ -625,6 +690,133 @@ clientSchema.index({ "workflowTracking.assignedConsultantId": 1 });
 clientSchema.index({ "workflowTracking.flowchartStatus": 1 });
 clientSchema.index({ "workflowTracking.processFlowchartStatus": 1 });
 clientSchema.index({ sandbox: 1 }); // NEW INDEX
+// 🆕 ADD THESE INDEXES at the end of the schema (around line 623)
+clientSchema.index({ "supportSection.assignedSupportManagerId": 1 });
+clientSchema.index({ "supportSection.supportManagerType": 1 });
+clientSchema.index({ "supportSection.supportPriority": 1 });
+
+
+/**
+ * Get current support manager for this client
+ */
+clientSchema.methods.getSupportManager = async function() {
+  if (!this.supportSection?.assignedSupportManagerId) {
+    return null;
+  }
+  const User = mongoose.model('User');
+  return await User.findById(this.supportSection.assignedSupportManagerId);
+};
+
+/**
+ * Get support team members assigned to this client
+ */
+clientSchema.methods.getSupportTeamMembers = async function() {
+  if (!this.supportSection?.assignedSupportManagerId) {
+    return [];
+  }
+  
+  const User = mongoose.model('User');
+  return await User.find({
+    supportManagerId: this.supportSection.assignedSupportManagerId,
+    userType: 'support',
+    isActive: true
+  });
+};
+
+/**
+ * Check if client has assigned support manager
+ */
+clientSchema.methods.hasSupportManager = function() {
+  return !!(this.supportSection?.assignedSupportManagerId);
+};
+
+/**
+ * Update support metrics when a ticket is created
+ */
+clientSchema.methods.incrementSupportTicketCount = async function() {
+  if (!this.supportSection) {
+    this.supportSection = {};
+  }
+  
+  if (!this.supportSection.supportMetrics) {
+    this.supportSection.supportMetrics = {
+      totalTicketsRaised: 0,
+      totalTicketsResolved: 0,
+      avgResolutionTime: 0,
+      customerSatisfactionAvg: 0,
+      totalSatisfactionRatings: 0
+    };
+  }
+  
+  this.supportSection.supportMetrics.totalTicketsRaised += 1;
+  this.supportSection.supportMetrics.lastTicketRaisedAt = new Date();
+  
+  await this.save();
+};
+
+/**
+ * Update support metrics after ticket resolution
+ */
+clientSchema.methods.updateSupportMetrics = async function(resolutionTimeHours) {
+  if (!this.supportSection) {
+    this.supportSection = {};
+  }
+  
+  if (!this.supportSection.supportMetrics) {
+    this.supportSection.supportMetrics = {
+      totalTicketsRaised: 0,
+      totalTicketsResolved: 0,
+      avgResolutionTime: 0
+    };
+  }
+  
+  const metrics = this.supportSection.supportMetrics;
+  metrics.totalTicketsResolved += 1;
+  metrics.lastTicketResolvedAt = new Date();
+  
+  // Calculate new average resolution time
+  const totalResolutionTime = metrics.avgResolutionTime * (metrics.totalTicketsResolved - 1);
+  metrics.avgResolutionTime = (totalResolutionTime + resolutionTimeHours) / metrics.totalTicketsResolved;
+
+  
+  // Update satisfaction rating if provided
+  if (satisfactionRating !== null && satisfactionRating >= 1 && satisfactionRating <= 5) {
+    const totalSatisfaction = metrics.customerSatisfactionAvg * metrics.totalSatisfactionRatings;
+    metrics.totalSatisfactionRatings += 1;
+    metrics.customerSatisfactionAvg = (totalSatisfaction + satisfactionRating) / metrics.totalSatisfactionRatings;
+  }
+  
+  await this.save();
+};
+
+/**
+ * Get support analytics for this client
+ */
+clientSchema.methods.getSupportAnalytics = function() {
+  if (!this.supportSection?.supportMetrics) {
+    return {
+      totalTickets: 0,
+      resolved: 0,
+      resolutionRate: 0,
+      avgResolutionTime: 0,
+      satisfaction: 0
+    };
+  }
+  
+  const metrics = this.supportSection.supportMetrics;
+  const resolutionRate = metrics.totalTicketsRaised > 0 
+    ? (metrics.totalTicketsResolved / metrics.totalTicketsRaised * 100).toFixed(2)
+    : 0;
+  
+  return {
+    totalTickets: metrics.totalTicketsRaised,
+    resolved: metrics.totalTicketsResolved,
+    resolutionRate: parseFloat(resolutionRate),
+    avgResolutionTime: parseFloat(metrics.avgResolutionTime.toFixed(2)),
+    satisfaction: parseFloat(metrics.customerSatisfactionAvg.toFixed(2))
+  };
+};
+
 
 
 clientSchema.statics.getNextClientSequenceAtomic = async function () {

@@ -1782,7 +1782,8 @@ function parseM3CsvRow(row) {
     if (idx === -1) continue;
 
     const itemId = key.slice(0, idx);
-    const varName = key.slice(idx + 1); // keeps EF_grid
+    const varName = key.slice(idx + 1); // keeps EF_grid fully
+    if (!itemId || !varName) continue;
 
     const raw = row[key];
     if (raw === "" || raw == null) continue;

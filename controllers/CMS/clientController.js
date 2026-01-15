@@ -5184,8 +5184,451 @@ const purgeClientCompletely = async (req, res) => {
   }
 };
 
+// -------------------------
+// SAFE ID HELPERS
+// -------------------------
+const getCurrentUserId = (req) => req.user?._id || req.user?.id || req.user?.userId;
+
+const idsEqual = (a, b) => {
+  if (!a || !b) return false;
+  return String(a) === String(b);
+};
+
+/**
+ * Assign a support manager to a client
+ * PATCH /api/clients/:clientId/assign-support-manager
+ * Body: { supportManagerId, supportPriority, supportNotes }
+ * Auth: super_admin or consultant_admin
+ */
+const assignSupportManager = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { supportManagerId, supportPriority = "normal", supportNotes } = req.body;
+
+    if (!["super_admin", "consultant_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only admins can assign support managers",
+      });
+    }
+
+    if (!supportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: "supportManagerId is required",
+      });
+    }
+
+    // ✅ validate ObjectId to avoid cast errors
+    if (!mongoose.Types.ObjectId.isValid(supportManagerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid supportManagerId",
+      });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: "Client not found",
+      });
+    }
+
+    // ✅ FIX: safe ownership check (prevents toString crash)
+    if (req.user.userType === "consultant_admin") {
+      const currentUserId = getCurrentUserId(req);
+      const createdBy = client.leadInfo?.createdBy; // can be undefined in older clients
+
+      if (!currentUserId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized (missing user id in token)",
+        });
+      }
+
+      if (!createdBy || !idsEqual(createdBy, currentUserId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only assign support to your own clients",
+          meta: {
+            note: "Client leadInfo.createdBy missing or not matching your account",
+            clientId,
+          },
+        });
+      }
+    }
+
+    const supportManager = await User.findOne({
+      _id: supportManagerId,
+      userType: "supportManager",
+      isActive: true,
+    });
+
+    if (!supportManager) {
+      return res.status(404).json({
+        success: false,
+        message: "Support manager not found or inactive",
+      });
+    }
+
+    if (supportManager.supportManagerType === "consultant_support") {
+      return res.status(400).json({
+        success: false,
+        message: "This support manager only handles consultant support, not client support",
+      });
+    }
+
+    // Check if already assigned
+    if (client.supportSection?.assignedSupportManagerId && idsEqual(client.supportSection.assignedSupportManagerId, supportManagerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "This support manager is already assigned to this client",
+      });
+    }
+
+    // Initialize supportSection if it doesn't exist
+    if (!client.supportSection) {
+      client.supportSection = {
+        supportManagerHistory: [],
+        activeSupportTeamMembers: [],
+        supportMetrics: {
+          totalTicketsRaised: 0,
+          totalTicketsResolved: 0,
+          avgResolutionTime: 0,
+          customerSatisfactionAvg: 0,
+          totalSatisfactionRatings: 0,
+        },
+      };
+    }
+
+    // If there's an existing support manager, add to history
+    if (client.supportSection.assignedSupportManagerId) {
+      const oldManager = await User.findById(client.supportSection.assignedSupportManagerId);
+
+      client.supportSection.supportManagerHistory.forEach((entry) => {
+        if (entry.isActive) {
+          entry.isActive = false;
+          entry.unassignedAt = new Date();
+          entry.unassignedBy = getCurrentUserId(req) || req.user?._id;
+        }
+      });
+
+      if (oldManager) {
+        client.supportSection.supportManagerHistory.push({
+          supportManagerId: oldManager._id,
+          supportManagerName: oldManager.userName,
+          supportTeamName: oldManager.supportTeamName,
+          assignedAt: client.supportSection.supportAssignedAt,
+          unassignedAt: new Date(),
+          assignedBy: client.supportSection.supportAssignedBy,
+          unassignedBy: getCurrentUserId(req) || req.user?._id,
+          reasonForChange: "Support manager changed",
+          isActive: false,
+        });
+      }
+    }
+
+    // Assign new support manager
+    client.supportSection.assignedSupportManagerId = supportManagerId;
+    client.supportSection.supportManagerType = supportManager.supportManagerType;
+    client.supportSection.supportAssignedAt = new Date();
+    client.supportSection.supportAssignedBy = getCurrentUserId(req) || req.user?._id;
+    client.supportSection.supportPriority = supportPriority;
+    client.supportSection.supportNotes = supportNotes;
+
+    // Add current assignment to history
+    client.supportSection.supportManagerHistory.push({
+      supportManagerId: supportManager._id,
+      supportManagerName: supportManager.userName,
+      supportTeamName: supportManager.supportTeamName,
+      assignedAt: new Date(),
+      assignedBy: getCurrentUserId(req) || req.user?._id,
+      reasonForChange: "Initial assignment",
+      isActive: true,
+    });
+
+    // Update support manager's assigned clients list
+    if (!Array.isArray(supportManager.assignedSupportClients)) {
+      supportManager.assignedSupportClients = [];
+    }
+    if (!supportManager.assignedSupportClients.includes(clientId)) {
+      supportManager.assignedSupportClients.push(clientId);
+      await supportManager.save();
+    }
+
+    await client.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Support manager assigned successfully",
+      assignment: {
+        clientId: client.clientId,
+        companyName: client.leadInfo?.companyName || null,
+        supportManager: {
+          _id: supportManager._id,
+          userName: supportManager.userName,
+          supportTeamName: supportManager.supportTeamName,
+          supportManagerType: supportManager.supportManagerType,
+        },
+        supportPriority,
+        assignedAt: client.supportSection.supportAssignedAt,
+        assignedBy: req.user.userName,
+      },
+    });
+  } catch (error) {
+    console.error("[CLIENT CONTROLLER] Error assigning support manager:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error assigning support manager",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
 
 
+/**
+ * Change support manager for a client
+ * PATCH /api/clients/:clientId/change-support-manager
+ * Body: { newSupportManagerId, reason, supportPriority, supportNotes }
+ * Auth: super_admin or consultant_admin
+ */
+const changeSupportManager = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { newSupportManagerId, reason, supportPriority, supportNotes } = req.body;
+
+    // Only super_admin or consultant_admin can change support managers
+    if (!['super_admin', 'consultant_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only admins can change support managers'
+      });
+    }
+
+    if (!newSupportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'newSupportManagerId is required'
+      });
+    }
+
+    // Get the client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Consultant admin can only change for their own clients
+    if (req.user.userType === "consultant_admin") {
+  const currentUserId = getCurrentUserId(req);
+  const createdBy = client.leadInfo?.createdBy;
+
+  if (!createdBy || !idsEqual(createdBy, currentUserId)) {
+    return res.status(403).json({
+      success: false,
+      message: "You can only change support for your own clients",
+      meta: { clientId },
+    });
+  }
+}
+
+    // Check if client has a support manager
+    if (!client.supportSection?.assignedSupportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No support manager currently assigned to this client'
+      });
+    }
+
+    // Check if it's the same manager
+    if (client.supportSection.assignedSupportManagerId.toString() === newSupportManagerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'This support manager is already assigned'
+      });
+    }
+
+    // Verify new support manager exists and is active
+    const newSupportManager = await User.findOne({
+      _id: newSupportManagerId,
+      userType: 'supportManager',
+      isActive: true
+    });
+
+    if (!newSupportManager) {
+      return res.status(404).json({
+        success: false,
+        message: 'New support manager not found or inactive'
+      });
+    }
+
+    // Check if new support manager can handle client support
+    if (newSupportManager.supportManagerType === 'consultant_support') {
+      return res.status(400).json({
+        success: false,
+        message: 'This support manager only handles consultant support'
+      });
+    }
+
+    // Get old support manager details
+    const oldSupportManager = await User.findById(client.supportSection.assignedSupportManagerId);
+
+    // Update old manager's history entries
+    client.supportSection.supportManagerHistory.forEach(entry => {
+      if (entry.isActive) {
+        entry.isActive = false;
+        entry.unassignedAt = new Date();
+        entry.unassignedBy = req.user._id;
+        entry.reasonForChange = reason || 'Support manager changed';
+      }
+    });
+
+    // Remove client from old manager's list
+    if (oldSupportManager && oldSupportManager.assignedSupportClients) {
+      oldSupportManager.assignedSupportClients = oldSupportManager.assignedSupportClients
+        .filter(id => id !== clientId);
+      await oldSupportManager.save();
+    }
+
+    // Assign new support manager
+    client.supportSection.assignedSupportManagerId = newSupportManagerId;
+    client.supportSection.supportManagerType = newSupportManager.supportManagerType;
+    client.supportSection.supportAssignedAt = new Date();
+    client.supportSection.supportAssignedBy = req.user._id;
+    
+    if (supportPriority) {
+      client.supportSection.supportPriority = supportPriority;
+    }
+    if (supportNotes) {
+      client.supportSection.supportNotes = supportNotes;
+    }
+
+    // Add to history
+    client.supportSection.supportManagerHistory.push({
+      supportManagerId: newSupportManager._id,
+      supportManagerName: newSupportManager.userName,
+      supportTeamName: newSupportManager.supportTeamName,
+      assignedAt: new Date(),
+      assignedBy: req.user._id,
+      reasonForChange: reason || 'Support manager changed',
+      isActive: true
+    });
+
+    // Add client to new manager's list
+    if (!newSupportManager.assignedSupportClients) {
+      newSupportManager.assignedSupportClients = [];
+    }
+    if (!newSupportManager.assignedSupportClients.includes(clientId)) {
+      newSupportManager.assignedSupportClients.push(clientId);
+      await newSupportManager.save();
+    }
+
+    await client.save();
+
+    console.log(`[CLIENT CONTROLLER] Support manager changed for ${clientId} from ${oldSupportManager?.userName} to ${newSupportManager.userName} by ${req.user.userName}`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Support manager changed successfully',
+      change: {
+        clientId: client.clientId,
+        companyName: client.leadInfo.companyName,
+        oldSupportManager: {
+          _id: oldSupportManager._id,
+          userName: oldSupportManager.userName,
+          supportTeamName: oldSupportManager.supportTeamName
+        },
+        newSupportManager: {
+          _id: newSupportManager._id,
+          userName: newSupportManager.userName,
+          supportTeamName: newSupportManager.supportTeamName
+        },
+        reason: reason || 'Support manager changed',
+        changedBy: req.user.userName
+      }
+    });
+
+  } catch (error) {
+    console.error('[CLIENT CONTROLLER] Error changing support manager:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error changing support manager',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+
+/**
+ * Get support manager details for a client
+ * GET /api/clients/:clientId/support-manager
+ * Auth: Any authenticated user with access to the client
+ */
+const getSupportManagerForClient = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Get the client
+    const client = await Client.findOne({ clientId })
+      .populate('supportSection.assignedSupportManagerId', '-password');
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Check access permissions
+   const hasAccess =
+  req.user.userType === "super_admin" ||
+  (req.user.userType === "consultant_admin" &&
+    client.leadInfo?.createdBy &&
+    idsEqual(client.leadInfo.createdBy, currentUserId)) ||
+  (req.user.userType === "consultant" &&
+    client.workflowTracking?.assignedConsultantId &&
+    idsEqual(client.workflowTracking.assignedConsultantId, currentUserId)) ||
+  (req.user.clientId === clientId);
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this client'
+      });
+    }
+
+    if (!client.supportSection?.assignedSupportManagerId) {
+      return res.status(404).json({
+        success: false,
+        message: 'No support manager assigned to this client'
+      });
+    }
+
+    // Get support team members
+    const teamMembers = await client.getSupportTeamMembers();
+
+    return res.status(200).json({
+      success: true,
+      supportManager: client.supportSection.assignedSupportManagerId,
+      supportTeamMembers: teamMembers,
+      supportPriority: client.supportSection.supportPriority,
+      supportNotes: client.supportSection.supportNotes,
+      supportMetrics: client.getSupportAnalytics()
+    });
+
+  } catch (error) {
+    console.error('[CLIENT CONTROLLER] Error getting support manager:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error getting support manager',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
 
 
 module.exports = {
@@ -5221,5 +5664,8 @@ module.exports = {
   removeConsultant,
   updateAssessmentLevelOnly,
   hardResetClientSystem,
-  purgeClientCompletely
+  purgeClientCompletely,
+  assignSupportManager,
+  changeSupportManager,
+  getSupportManagerForClient
 };

@@ -252,6 +252,24 @@ NetReductionEntrySchema.pre('save', async function(next) {
   }
 });
 
+async function recalculateNetReductionEntriesAfter(seedDoc) {
+  const Model = seedDoc.constructor; // NetReductionEntry model
+
+  const laterEntries = await Model.find({
+    clientId: seedDoc.clientId,
+    projectId: seedDoc.projectId,
+    calculationMethodology: seedDoc.calculationMethodology,
+    timestamp: { $gt: seedDoc.timestamp },
+    _id: { $ne: seedDoc._id }
+  }).sort({ timestamp: 1 });
+
+  for (const e of laterEntries) {
+    e._isRecalculating = true;   // prevents post-save loop
+    await e.save();              // runs pre-save and rebuilds cumulative values
+  }
+}
+
+
 // 🔹 POST-SAVE HOOK - Trigger recalculation of later entries when a historical entry is inserted
 NetReductionEntrySchema.post('save', async function(doc) {
   try {

@@ -9,14 +9,26 @@ const userSchema = new mongoose.Schema(
     userType: {
       type: String,
       required: true,
-      enum: ["super_admin", "consultant_admin", "consultant", "client_admin", "client_employee_head", "employee", "viewer", "auditor"],
+      // 🆕 ADDED: supportManager and support
+      enum: [
+        "super_admin", 
+        "consultant_admin", 
+        "consultant",
+        "supportManager",     // NEW: Support team manager
+        "support",            // NEW: Support team member
+        "client_admin", 
+        "client_employee_head", 
+        "employee", 
+        "viewer", 
+        "auditor"
+      ],
     },
     address: { type: String, required: true },
     companyName: { type: String },
     isFirstLogin: { type: Boolean, default: true },
     isActive: { type: Boolean, default: false },
 
-    // ===== NEW: SANDBOX FLAG =====
+    // ===== SANDBOX FLAG =====
     sandbox: { 
       type: Boolean, 
       default: false 
@@ -41,12 +53,69 @@ const userSchema = new mongoose.Schema(
     jobRole: { type: String },
     branch: { type: String },
     consultantAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-
-    
-    // ADD THIS NEW FIELD:
-    assignedClients: [{ type: String }], // Array of clientIds (this already exists)
-    // ADD THIS NEW FIELD FOR CONSULTANT:
     hasAssignedClients: { type: Boolean, default: false },
+
+    // 🆕 SUPPORT MANAGER SPECIFIC FIELDS
+    supportTeamName: { 
+      type: String 
+      // e.g., "Customer Success Team A", "Technical Support Team"
+    },
+    
+    assignedSupportClients: [{ 
+      type: String 
+      // Array of clientIds this support manager handles
+      // e.g., ["Greon001", "Greon002", "Greon005"]
+    }],
+    
+    assignedConsultants: [{ 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "User" 
+      // Array of consultant/consultant_admin IDs this support manager supports
+      // These consultants can raise tickets that come to this support manager
+    }],
+    
+    supportManagerType: {
+      type: String,
+      enum: ['client_support', 'consultant_support', 'general_support'],
+      default: 'general_support'
+      // client_support: Handles only client-side tickets
+      // consultant_support: Handles only consultant-side tickets (for consultants' internal issues)
+      // general_support: Handles all types of tickets
+    },
+
+    // 🆕 SUPPORT USER SPECIFIC FIELDS
+    supportManagerId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "User" 
+      // Reference to Support Manager (similar to consultantAdminId)
+    },
+    
+    supportEmployeeId: { 
+      type: String 
+      // Employee ID for support staff (e.g., "SUP-001")
+    },
+    
+    supportJobRole: { 
+      type: String 
+      // Role like "Technical Support Specialist", "Customer Success Manager"
+    },
+    
+    supportBranch: { 
+      type: String 
+      // Support branch/location if applicable
+    },
+    
+    supportSpecialization: [{
+      type: String,
+      enum: [
+        'technical',          // Technical issues, system errors
+        'data_issues',        // Data-related problems
+        'training',           // Training and onboarding
+        'billing',            // Billing and subscriptions
+        'compliance',         // Compliance and audit support
+        'general'             // General support
+      ]
+    }], // Areas of expertise for routing tickets
     
     // Client Employee Head specific
     department: { type: String },
@@ -67,13 +136,13 @@ const userSchema = new mongoose.Schema(
     viewerPurpose: { type: String },
     viewerExpiryDate: { type: Date },
 
-        // Profile image metadata
+    // Profile image metadata
     profileImage: {
       filename: { type: String },
       path:     { type: String },
       url:      { type: String },
       uploadedAt: { type: Date },
-      storedAt: { type: String } // folder hint
+      storedAt: { type: String }
     },
     
     // Permissions
@@ -84,9 +153,14 @@ const userSchema = new mongoose.Schema(
       canViewReports: { type: Boolean, default: false },
       canEditBoundaries: { type: Boolean, default: false },
       canSubmitData: { type: Boolean, default: false },
-      canAudit: { type: Boolean, default: false }
+      canAudit: { type: Boolean, default: false },
+      // 🆕 NEW PERMISSIONS FOR SUPPORT
+      canManageSupportTeam: { type: Boolean, default: false }, // For supportManager
+      canViewAllTickets: { type: Boolean, default: false },    // For supportManager
+      canAssignTickets: { type: Boolean, default: false }      // For supportManager
     },
-     assessmentLevel: {
+    
+    assessmentLevel: {
       type: [String],
       enum: ['reduction', 'decarbonization', 'organization', 'process', 'both'],
       default: []
@@ -95,16 +169,12 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-
-// ===== NEW: ENFORCE SANDBOX/ACTIVE INVARIANTS =====
+// ===== ENFORCE SANDBOX/ACTIVE INVARIANTS =====
 userSchema.pre('save', function(next) {
-  // Enforce the invariant: if sandbox === true then isActive === false
-  // and if isActive === true then sandbox === false
   if (this.sandbox === true && this.isActive === true) {
     return next(new Error('User cannot be both sandbox and active'));
   }
   
-  // Auto-adjust to maintain invariant
   if (this.isModified('sandbox')) {
     if (this.sandbox === true) {
       this.isActive = false;
@@ -117,32 +187,105 @@ userSchema.pre('save', function(next) {
     }
   }
   
+  // 🆕 AUTO-SET PERMISSIONS FOR SUPPORT MANAGER
+  if (this.userType === 'supportManager' && this.isModified('userType')) {
+    this.permissions.canManageSupportTeam = true;
+    this.permissions.canViewAllTickets = true;
+    this.permissions.canAssignTickets = true;
+  }
+  
   next();
 });
 
-// ===== NEW: Method to check if user has sandbox access =====
+// ===== METHOD TO CHECK SANDBOX ACCESS =====
 userSchema.methods.hasSandboxAccess = function(route) {
-  if (!this.sandbox) return true; // Non-sandbox users have full access
+  if (!this.sandbox) return true;
   
-  // Define sandbox-allowed routes
   const sandboxAllowedRoutes = [
     '/api/dashboard',
     '/api/profile',
-    '/api/clients/own', // View own client data
+    '/api/clients/own',
     '/api/proposal/view',
     '/api/submission/status',
     '/api/flowchart/view',
     '/api/reports/basic',
-    // Add more allowed routes as needed
   ];
   
-  // Check if the route starts with any allowed pattern
   return sandboxAllowedRoutes.some(allowed => 
     route.startsWith(allowed)
   );
 };
 
-// Index for efficient queries
+// 🆕 METHOD TO CHECK IF USER IS SUPPORT STAFF
+userSchema.methods.isSupportStaff = function() {
+  return ['supportManager', 'support'].includes(this.userType);
+};
+
+// 🆕 METHOD TO CHECK IF USER IS CONSULTANT STAFF
+userSchema.methods.isConsultantStaff = function() {
+  return ['consultant_admin', 'consultant'].includes(this.userType);
+};
+
+// 🆕 METHOD TO CHECK IF USER CAN MANAGE SUPPORT TEAM
+userSchema.methods.canManageSupportTeam = function() {
+  return this.userType === 'supportManager' || this.userType === 'super_admin';
+};
+
+// 🆕 METHOD TO GET SUPPORT MANAGER FOR A SUPPORT USER
+userSchema.methods.getSupportManager = async function() {
+  if (this.userType !== 'support' || !this.supportManagerId) {
+    return null;
+  }
+  return await mongoose.model('User').findById(this.supportManagerId);
+};
+
+// 🆕 METHOD TO GET SUPPORT TEAM MEMBERS FOR A SUPPORT MANAGER
+userSchema.methods.getSupportTeamMembers = async function() {
+  if (this.userType !== 'supportManager') {
+    return [];
+  }
+  return await mongoose.model('User').find({
+    supportManagerId: this._id,
+    isActive: true,
+    userType: 'support'
+  }).select('-password');
+};
+
+// 🆕 METHOD TO CHECK IF SUPPORT MANAGER HANDLES A CLIENT
+userSchema.methods.handlesSupportForClient = function(clientId) {
+  if (this.userType !== 'supportManager') {
+    return false;
+  }
+  
+  if (this.supportManagerType === 'general_support') {
+    return true; // General support handles all clients
+  }
+  
+  if (this.supportManagerType === 'client_support') {
+    return this.assignedSupportClients?.includes(clientId) || false;
+  }
+  
+  return false;
+};
+
+// 🆕 METHOD TO CHECK IF SUPPORT MANAGER HANDLES A CONSULTANT
+userSchema.methods.handlesSupportForConsultant = function(consultantId) {
+  if (this.userType !== 'supportManager') {
+    return false;
+  }
+  
+  if (this.supportManagerType === 'general_support') {
+    return true; // General support handles all consultants
+  }
+  
+  if (this.supportManagerType === 'consultant_support') {
+    return this.assignedConsultants?.some(id => id.toString() === consultantId.toString()) || false;
+  }
+  
+  return false;
+};
+
+// Indexes
 userSchema.index({ clientId: 1 });
 userSchema.index({ userType: 1 });
 userSchema.index({ createdBy: 1 });
@@ -152,5 +295,11 @@ userSchema.index({ clientId: 1, userType: 1, isActive: 1 });
 userSchema.index({ consultantAdminId: 1, isActive: 1 });
 userSchema.index({ email: 1 }, { unique: true });
 
+// 🆕 NEW INDEXES FOR SUPPORT
+userSchema.index({ supportManagerId: 1, isActive: 1 });
+userSchema.index({ userType: 1, isActive: 1 });
+userSchema.index({ assignedSupportClients: 1 });
+userSchema.index({ assignedConsultants: 1 });
+userSchema.index({ supportSpecialization: 1 });
 
 module.exports = mongoose.model("User", userSchema);

@@ -14,7 +14,10 @@ const {
   notifyTicketStatusChanged,
   notifyTicketCommented,
   notifyTicketEscalated,
-  notifyTicketResolved
+  notifyTicketResolved,
+  // 🆕 Support manager notifications
+  notifySupportManagerNewTicket,
+  notifySupportUserAssigned
 } = require('../../utils/notifications/ticketNotifications');
 
 // ===== SOCKET.IO INTEGRATION =====
@@ -53,6 +56,111 @@ function emitTicketEvent(eventType, data) {
 
 // ===== HELPER FUNCTIONS =====
 
+async function checkTicketAccess(user, ticket) {
+  const userId = user._id.toString();
+  const userType = user.userType;
+
+  // Super admin - full access
+  if (userType === 'super_admin') {
+    return true;
+  }
+
+  // 🆕 Support Manager - can access tickets for assigned clients/consultants
+  if (userType === 'supportManager') {
+    // Check if support manager handles this client
+    if (ticket.clientId && user.handlesSupportForClient(ticket.clientId)) {
+      return true;
+    }
+    
+    // Check if support manager handles the ticket creator (if consultant)
+    if (ticket.createdByType === 'consultant' || ticket.createdByType === 'consultant_admin') {
+      if (user.handlesSupportForConsultant(ticket.createdBy)) {
+        return true;
+      }
+    }
+    
+    // Check if assigned to this support manager
+    if (ticket.assignedTo?.toString() === userId) {
+      return true;
+    }
+    
+    // General support managers can see all tickets
+    if (user.supportManagerType === 'general_support') {
+      return true;
+    }
+    
+    return false;
+  }
+
+  // 🆕 Support User - can access tickets assigned to them
+  if (userType === 'support') {
+    // Can view if assigned to them
+    if (ticket.assignedTo?.toString() === userId) {
+      return true;
+    }
+    
+    // Can view if they're a watcher
+    if (ticket.watchers?.some(w => w.toString() === userId)) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  // Consultant admin - tickets for clients they created
+  if (userType === 'consultant_admin') {
+    const client = await Client.findOne({ 
+      clientId: ticket.clientId,
+      'leadInfo.createdBy': userId
+    });
+    return !!client;
+  }
+
+  // Consultant - tickets for assigned clients
+  if (userType === 'consultant') {
+    const client = await Client.findOne({ 
+      clientId: ticket.clientId,
+      'workflowTracking.assignedConsultantId': userId
+    });
+    
+    if (client) return true;
+    
+    // Also if assigned to the ticket
+    if (ticket.assignedTo?.toString() === userId) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  // Client users - tickets for their client only
+  if (['client_admin', 'client_employee_head', 'employee', 'viewer'].includes(userType)) {
+    // Check if ticket belongs to user's client
+    if (ticket.clientId !== user.clientId) {
+      return false;
+    }
+
+    // Client admin - can view all client tickets
+    if (userType === 'client_admin') {
+      return true;
+    }
+
+    // Employee head - can view department tickets
+    if (userType === 'client_employee_head') {
+      const creator = await User.findById(ticket.createdBy);
+      if (!creator) return false;
+      return creator.department === user.department;
+    }
+
+    // Employee/Viewer - only own tickets
+    if (userType === 'employee' || userType === 'viewer') {
+      return ticket.createdBy.toString() === userId;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Normalize user ID (handle both req.user.id and req.user._id)
  */
@@ -69,6 +177,23 @@ async function canAccessClientTickets(user, clientId) {
   // Super admin can access all
   if (user.userType === 'super_admin') {
     return { allowed: true, reason: 'Super admin access' };
+  }
+
+  // 🔧 FIX: Support managers can access assigned clients
+  if (user.userType === 'supportManager') {
+    if (user.handlesSupportForClient(clientId)) {
+      return { allowed: true, reason: 'Support manager access' };
+    }
+  }
+
+  // 🔧 FIX: Support users can access if they're assigned to tickets for this client
+  if (user.userType === 'support') {
+    const client = await Client.findOne({ clientId });
+    if (client?.supportSection?.assignedSupportManagerId) {
+      if (user.supportManagerId?.toString() === client.supportSection.assignedSupportManagerId.toString()) {
+        return { allowed: true, reason: 'Support user access' };
+      }
+    }
   }
 
   // Client users can access their own client
@@ -161,6 +286,14 @@ async function canViewTicket(user, ticket) {
     return { allowed: true };
   }
 
+  // 🔧 FIX: Support manager and support users
+  if (user.userType === 'supportManager' || user.userType === 'support') {
+    const hasAccess = await checkTicketAccess(user, ticket);
+    if (hasAccess) {
+      return { allowed: true };
+    }
+  }
+
   // Check client access
   const clientAccess = await canAccessClientTickets(user, ticket.clientId);
   if (!clientAccess.allowed) {
@@ -195,6 +328,21 @@ async function canModifyTicket(user, ticket) {
   // Super admin can modify all
   if (user.userType === 'super_admin') {
     return { allowed: true };
+  }
+
+  // 🔧 FIX: Support manager can modify tickets they have access to
+  if (user.userType === 'supportManager') {
+    const hasAccess = await checkTicketAccess(user, ticket);
+    if (hasAccess) {
+      return { allowed: true };
+    }
+  }
+
+  // 🔧 FIX: Support users can modify assigned tickets (limited)
+  if (user.userType === 'support') {
+    if (ticket.assignedTo?.toString() === userId) {
+      return { allowed: true, limited: true };
+    }
   }
 
   // Client admin can modify tickets for their client
@@ -242,6 +390,14 @@ async function canAssignTicket(user, ticket) {
     return { allowed: true };
   }
 
+  // 🔧 FIX: Support manager can assign tickets
+  if (user.userType === 'supportManager') {
+    const hasAccess = await checkTicketAccess(user, ticket);
+    if (hasAccess) {
+      return { allowed: true };
+    }
+  }
+
   // Client admin can assign within their client
   if (user.userType === 'client_admin' && user.clientId === ticket.clientId) {
     return { allowed: true };
@@ -287,8 +443,8 @@ async function canResolveTicket(user, ticket) {
     return { allowed: true };
   }
 
-  // Consultant admin and consultant can resolve if they have access
-  if (['consultant_admin', 'consultant'].includes(user.userType)) {
+  // 🔧 FIX: Support manager and support can resolve tickets
+  if (['consultant_admin', 'consultant', 'supportManager', 'support'].includes(user.userType)) {
     const access = await canAccessClientTickets(user, ticket.clientId);
     if (access.allowed) {
       return { allowed: true };
@@ -304,7 +460,8 @@ async function canResolveTicket(user, ticket) {
 function canViewComment(user, activity) {
   // Internal comments are only visible to support roles
   if (activity.comment?.isInternal) {
-    const supportRoles = ['super_admin', 'consultant_admin', 'consultant'];
+    // 🔧 FIX: Include supportManager and support
+    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'support'];
     return supportRoles.includes(user.userType);
   }
   return true;
@@ -430,6 +587,30 @@ exports.createTicket = async (req, res) => {
 
     await ticket.save();
 
+    // 🆕 NOTIFY SUPPORT MANAGER
+    if (client && client.supportSection?.assignedSupportManagerId) {
+      const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
+      
+      if (supportManager) {
+        console.log(`[TICKET] Notifying support manager ${supportManager.userName} about new ticket ${ticket.ticketId}`);
+        
+        // Send notification to support manager
+        await notifySupportManagerNewTicket(ticket, supportManager);
+        
+        // Broadcast via Socket.IO
+        if (global.broadcastTicketCreated) {
+          global.broadcastTicketCreated({
+            ...ticket.toObject(),
+            notifiedSupportManager: {
+              _id: supportManager._id,
+              userName: supportManager.userName,
+              supportTeamName: supportManager.supportTeamName
+            }
+          });
+        }
+      }
+    }
+
     // Log creation activity
     await logActivity(
       ticket._id,
@@ -509,7 +690,46 @@ exports.listTickets = async (req, res) => {
       if (clientId) {
         query.clientId = clientId;
       }
-    } else {
+    } 
+    // 🔧 FIX: Support manager filtering
+    else if (req.user.userType === 'supportManager') {
+      if (req.user.supportManagerType === 'general_support') {
+        // Can see all tickets
+        if (clientId) {
+          query.clientId = clientId;
+        }
+      } else if (req.user.supportManagerType === 'client_support') {
+        // Only assigned clients
+        const assignedClients = req.user.assignedSupportClients || [];
+        if (clientId && assignedClients.includes(clientId)) {
+          query.clientId = clientId;
+        } else if (!clientId) {
+          query.clientId = { $in: assignedClients };
+        } else {
+          return res.status(403).json({
+            success: false,
+            message: 'No access to specified client'
+          });
+        }
+      } else if (req.user.supportManagerType === 'consultant_support') {
+        // Tickets created by assigned consultants
+        const assignedConsultants = req.user.assignedConsultants || [];
+        query.createdBy = { $in: assignedConsultants };
+      }
+    }
+    // 🔧 FIX: Support user filtering
+    else if (req.user.userType === 'support') {
+      // Can only see tickets assigned to them or where they're watchers
+      query.$or = [
+        { assignedTo: userId },
+        { watchers: userId }
+      ];
+      
+      if (clientId) {
+        query.clientId = clientId;
+      }
+    }
+    else {
       // For client users, filter by their client
       if (req.user.clientId) {
         query.clientId = req.user.clientId;
@@ -1005,8 +1225,8 @@ exports.addComment = async (req, res) => {
       });
     }
 
-    // Only support roles can add internal comments
-    const supportRoles = ['super_admin', 'consultant_admin', 'consultant'];
+    // 🔧 FIX: Include supportManager and support in supportRoles
+    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'support'];
     if (isInternal && !supportRoles.includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
@@ -1102,12 +1322,24 @@ exports.assignTicket = async (req, res) => {
       });
     }
 
-    // Check permissions
-    const canAssign = await canAssignTicket(req.user, ticket);
-    if (!canAssign.allowed) {
+    // Check access
+    const hasAccess = await checkTicketAccess(req.user, ticket);
+    if (!hasAccess) {
       return res.status(403).json({
         success: false,
-        message: canAssign.reason || 'Access denied'
+        message: 'You do not have permission to assign this ticket'
+      });
+    }
+
+    // Check permissions
+    // 🔧 FIX: Include supportManager in canAssign check
+    const canAssign = ['super_admin', 'consultant_admin', 'supportManager'].includes(req.user.userType) ||
+      (req.user.userType === 'consultant' && ticket.assignedTo?.toString() === req.user._id.toString());
+
+    if (!canAssign) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to assign tickets'
       });
     }
 
@@ -1120,6 +1352,40 @@ exports.assignTicket = async (req, res) => {
       });
     }
 
+    // 🆕 Validate assignee type includes support roles
+    const validAssigneeTypes = [
+      'super_admin', 
+      'consultant_admin', 
+      'consultant', 
+      'supportManager',
+      'support',
+      'client_admin'
+    ];
+
+    if (!validAssigneeTypes.includes(assignee.userType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid assignee type'
+      });
+    }
+
+    // 🆕 If assigning to support user, verify they're in the right team
+    if (assignee.userType === 'support') {
+      const client = await Client.findOne({ clientId: ticket.clientId });
+      
+      if (client?.supportSection?.assignedSupportManagerId) {
+        const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
+        
+        // Verify support user belongs to the assigned support manager's team
+        if (!assignee.supportManagerId || assignee.supportManagerId.toString() !== supportManager._id.toString()) {
+          return res.status(400).json({
+            success: false,
+            message: 'This support user does not belong to the assigned support team for this client'
+          });
+        }
+      }
+    }
+
     // Store old assignee for activity log
     const oldAssignee = ticket.assignedTo ? ticket.assignedTo.toString() : null;
 
@@ -1127,6 +1393,10 @@ exports.assignTicket = async (req, res) => {
     ticket.assignedTo = assignTo;
     ticket.assignedToType = assignee.userType;
     ticket.status = 'assigned';
+
+    if (!ticket.firstResponseAt) {
+      ticket.firstResponseAt = new Date();
+    }
 
     await ticket.save();
 
@@ -1152,8 +1422,25 @@ exports.assignTicket = async (req, res) => {
       assignedTo: assignee
     });
 
-    // Send notifications
-    await notifyTicketAssigned(ticket, assignee, req.user);
+    // 🔧 FIX: Send notifications (removed duplicate call)
+    // If assigning to support user, use special notification
+    if (assignee.userType === 'support') {
+      await notifySupportUserAssigned(ticket, assignee, req.user);
+    } else {
+      await notifyTicketAssigned(ticket, assignee, req.user);
+    }
+
+    // Broadcast
+    if (global.broadcastTicketAssigned) {
+      global.broadcastTicketAssigned({
+        ...ticket.toObject(),
+        assignedTo: {
+          _id: assignee._id,
+          userName: assignee.userName,
+          userType: assignee.userType
+        }
+      });
+    }
 
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
@@ -1194,8 +1481,8 @@ exports.escalateTicket = async (req, res) => {
       });
     }
 
-    // Check permissions (support roles only)
-    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
+    // 🔧 FIX: Include supportManager in supportRoles
+    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'client_admin'];
     if (!supportRoles.includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
@@ -1208,7 +1495,7 @@ exports.escalateTicket = async (req, res) => {
     ticket.escalatedAt = new Date();
     ticket.escalatedBy = userId;
     ticket.escalationReason = reason;
-    ticket.escalationLevel = (ticket.escalationLevel || 0)  + 1;
+    ticket.escalationLevel = (ticket.escalationLevel || 0) + 1;
     ticket.status = 'escalated';
 
     // Increase priority if not already critical
@@ -1474,7 +1761,7 @@ exports.reopenTicket = async (req, res) => {
     // Check permissions (creator, assignee, or admin)
     const isCreator = ticket.createdBy.toString() === userId;
     const isAssignee = ticket.assignedTo && ticket.assignedTo.toString() === userId;
-    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin'].includes(req.user.userType);
+    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin', 'supportManager'].includes(req.user.userType);
 
     if (!isCreator && !isAssignee && !isAdmin) {
       return res.status(403).json({
@@ -1539,7 +1826,6 @@ exports.reopenTicket = async (req, res) => {
     });
   }
 };
-
 
 // ===== ATTACHMENT OPERATIONS =====
 
@@ -1667,7 +1953,7 @@ exports.deleteAttachment = async (req, res) => {
     // Check if user can delete (uploader, assignee, or admin)
     const isUploader = attachment.uploadedBy.toString() === userId;
     const isAssignee = ticket.assignedTo && ticket.assignedTo.toString() === userId;
-    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin'].includes(req.user.userType);
+    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin', 'supportManager'].includes(req.user.userType);
 
     if (!isUploader && !isAssignee && !isAdmin) {
       return res.status(403).json({
@@ -1855,7 +2141,7 @@ exports.removeWatcher = async (req, res) => {
 
     // Check if user is trying to remove themselves or is admin
     const isSelf = watcherId === userId;
-    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin'].includes(req.user.userType);
+    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin', 'supportManager'].includes(req.user.userType);
 
     if (!isSelf && !isAdmin) {
       return res.status(403).json({
@@ -2006,7 +2292,7 @@ exports.getStats = async (req, res) => {
       { $sort: { count: -1 } }
     ]);
 
-    // Calculate average resolution time (in hours)
+    // 🔧 FIX: Calculate average resolution time (in hours)
     const resolvedTickets = await Ticket.find({
       ...baseQuery,
       status: { $in: ['resolved', 'closed'] },
@@ -2017,14 +2303,14 @@ exports.getStats = async (req, res) => {
     let totalResolutionTime = 0;
     resolvedTickets.forEach(ticket => {
       const resTime = ticket.resolvedAt.getTime() - ticket.createdAt.getTime();
-      totalResolutionTime = resTime;
+      totalResolutionTime += resTime; // 🔧 FIX: Changed from = to +=
     });
 
     const avgResolutionTime = resolvedTickets.length > 0
       ? totalResolutionTime / resolvedTickets.length / (1000 * 60 * 60) // Convert to hours
       : 0;
 
-    // Calculate SLA compliance rate
+    // 🔧 FIX: Calculate SLA compliance rate
     const ticketsWithDueDate = await Ticket.find({
       ...baseQuery,
       dueDate: { $exists: true },
@@ -2035,7 +2321,7 @@ exports.getStats = async (req, res) => {
     ticketsWithDueDate.forEach(ticket => {
       if (ticket.resolvedAt && ticket.dueDate) {
         if (ticket.resolvedAt <= ticket.dueDate) {
-          slaCompliant;
+          slaCompliant++; // 🔧 FIX: Added ++ to actually increment
         }
       }
     });

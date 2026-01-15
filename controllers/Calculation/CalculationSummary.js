@@ -2977,11 +2977,14 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
  * Route (to be added):
  *   GET /api/summaries/:clientId/scope-identifiers/hierarchy
  */
+/**
+ * GET /api/summaries/:clientId/scope-identifiers/hierarchy
+ * Supports filters and returns "wrapped" hierarchy when filters like location/department are used.
+ */
 const getScopeIdentifierHierarchy = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // ✅ NEW: add filter params
     let {
       periodType = "monthly",
       year,
@@ -2998,11 +3001,39 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       scopeType,
       category,
       activity,
+
+      // NEW (optional): force the top-level grouping
+      groupBy, // location | department | node | scopeType | category | activity | scopeIdentifier
     } = req.query;
 
     if (!clientId) {
       return res.status(400).json({ success: false, message: "clientId is required" });
     }
+
+    // ---------------------------- helpers ----------------------------
+    const toArr = (v) => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v.flatMap(toArr);
+      return String(v)
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    };
+
+    const locFilter = toArr(location);
+    const deptFilter = toArr(department);
+    const nodeFilter = toArr(nodeId);
+    const sidFilter = toArr(scopeIdentifier);
+    const scopeTypeFilter = toArr(scopeType);
+    const categoryFilter = toArr(category);
+    const activityFilter = toArr(activity);
+
+    const matches = (value, arr) => {
+      if (!arr?.length) return true;
+      if (value === null || value === undefined) return false;
+      const v = String(value).toLowerCase();
+      return arr.some((x) => String(x).toLowerCase() === v);
+    };
 
     // ---------------------------- PERIOD RANGE ----------------------------
     const now = moment.utc();
@@ -3026,66 +3057,14 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       endDate = moment.utc({ year: y, month: m - 1 }).endOf("month");
     }
 
-    // ---------------------------- helpers ----------------------------
-    const toList = (v) => {
-      if (!v) return [];
-      if (Array.isArray(v)) return v.map(s => String(s).trim()).filter(Boolean);
-      return String(v)
-        .split(",")
-        .map(s => s.trim())
-        .filter(Boolean);
-    };
-
-    const locFilter = toList(location);
-    const deptFilter = toList(department);
-    const nodeFilter = toList(nodeId);
-    const sidFilter = toList(scopeIdentifier);
-    const scopeTypeFilter = toList(scopeType);
-    const categoryFilter = toList(category);
-    const activityFilter = toList(activity);
-
-    const matches = (value, allowedList) => {
-      if (!allowedList?.length) return true;
-      return allowedList.includes(value);
-    };
-
-    // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
-    const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
-    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
-
-    const allNodes = {};
-    const allScopes = {};
-
-    const ingestChart = (chart) => {
-      if (!chart?.nodes) return;
-      for (const node of chart.nodes) {
-        allNodes[node.id] = {
-          label: node.label || "Unknown Node",
-          department: node.details?.department || null,
-          location: node.details?.location || null
-        };
-
-        for (const s of node.details?.scopeDetails || []) {
-          allScopes[`${node.id}::${s.scopeIdentifier}`] = {
-            scopeType: s.scopeType,
-            categoryName: s.categoryName,
-            activity: s.activity
-          };
-        }
-      }
-    };
-
-    ingestChart(orgChart);
-    ingestChart(processChart);
-
     // ---------------------------- LOAD DATAENTRY (DB-level filters where possible) ----------------------------
     const findQuery = {
       clientId,
       timestamp: { $gte: startDate.toDate(), $lte: endDate.toDate() },
-      processingStatus: "processed"
+      processingStatus: "processed",
     };
 
-    // ✅ these exist on DataEntry (your code already uses them)
+    // only safe filters (exist in DataEntry directly)
     if (nodeFilter.length) findQuery.nodeId = { $in: nodeFilter };
     if (sidFilter.length) findQuery.scopeIdentifier = { $in: sidFilter };
     if (scopeTypeFilter.length) findQuery.scopeType = { $in: scopeTypeFilter };
@@ -3111,42 +3090,181 @@ const getScopeIdentifierHierarchy = async (req, res) => {
             scopeIdentifier: sidFilter,
             scopeType: scopeTypeFilter,
             category: categoryFilter,
-            activity: activityFilter
-          }
+            activity: activityFilter,
+          },
         },
-        message: "No summary found for this period (or filters)"
+        message: "No summary found for this period",
       });
     }
 
+    // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
+    const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
+    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
+
+    const allNodes = {};
+    const allScopes = {};
+
+    const ingestChart = (chart) => {
+      if (!chart?.nodes) return;
+      for (const node of chart.nodes) {
+        allNodes[node.id] = {
+          label: node.label || "Unknown Node",
+          department: node.details?.department || null,
+          location: node.details?.location || null,
+        };
+
+        for (const s of node.details?.scopeDetails || []) {
+          allScopes[`${node.id}::${s.scopeIdentifier}`] = {
+            scopeType: s.scopeType,
+            categoryName: s.categoryName,
+            activity: s.activity,
+          };
+        }
+      }
+    };
+
+    ingestChart(orgChart);
+    ingestChart(processChart);
+
     // ---------------------------- AGGREGATION MAPS ----------------------------
-    const scopeTree = new Map();
     const nodeMap = new Map();
     const locMap = new Map();
     const deptMap = new Map();
     const scopeTypeMap = new Map();
 
+    // Wrapper grouping:
+    // If groupBy not provided, auto-wrap when a non-scope filter is used.
+    const inferredGroupBy =
+      groupBy ||
+      (locFilter.length
+        ? "location"
+        : deptFilter.length
+        ? "department"
+        : nodeFilter.length
+        ? "node"
+        : categoryFilter.length
+        ? "category"
+        : activityFilter.length
+        ? "activity"
+        : sidFilter.length
+        ? "scopeIdentifier"
+        : "scopeType");
+
+    const wrapHierarchy = inferredGroupBy !== "scopeType";
+
+    // groupMap: groupKey -> { id,label, CO2e..., scopeTree: Map() }
+    const groupMap = new Map();
+    const globalScopeTree = new Map();
+
     const safe = (v) => (v ? Number(v) : 0);
 
     const sumFromEntry = (entry) => {
       const src = entry.calculatedEmissions?.incoming || entry.calculatedEmissions?.cumulative || {};
-      const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
-
+      let totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
       for (const bucket of Object.values(src)) {
         totals.CO2e += safe(bucket.CO2e);
-        totals.CO2  += safe(bucket.CO2);
-        totals.CH4  += safe(bucket.CH4);
-        totals.N2O  += safe(bucket.N2O);
+        totals.CO2 += safe(bucket.CO2);
+        totals.CH4 += safe(bucket.CH4);
+        totals.N2O += safe(bucket.N2O);
       }
       return totals;
     };
 
     const pushSum = (map, key, label, emissions) => {
       if (!map.has(key)) map.set(key, { id: key, label, CO2e: 0, CO2: 0, CH4: 0, N2O: 0 });
-      const obj = map.get(key);
-      obj.CO2e += emissions.CO2e;
-      obj.CO2  += emissions.CO2;
-      obj.CH4  += emissions.CH4;
-      obj.N2O  += emissions.N2O;
+      const x = map.get(key);
+      x.CO2e += emissions.CO2e;
+      x.CO2 += emissions.CO2;
+      x.CH4 += emissions.CH4;
+      x.N2O += emissions.N2O;
+    };
+
+    const getGroupInfo = ({
+      resolvedLocation,
+      resolvedDepartment,
+      resolvedScopeType,
+      resolvedCategory,
+      resolvedActivity,
+      nodeLabel,
+      nodeId,
+      sid,
+    }) => {
+      switch (inferredGroupBy) {
+        case "location":
+          return { key: resolvedLocation || "Unknown Location", label: resolvedLocation || "Unknown Location" };
+        case "department":
+          return { key: resolvedDepartment || "Unknown Department", label: resolvedDepartment || "Unknown Department" };
+        case "node":
+          return { key: nodeId || "Unknown Node", label: nodeLabel || "Unknown Node" };
+        case "category":
+          return { key: resolvedCategory || "Uncategorized", label: resolvedCategory || "Uncategorized" };
+        case "activity":
+          return { key: resolvedActivity || "Unspecified", label: resolvedActivity || "Unspecified" };
+        case "scopeIdentifier":
+          return { key: sid || "Unknown Scope Identifier", label: sid || "Unknown Scope Identifier" };
+        case "scopeType":
+        default:
+          return { key: "__root__", label: "__root__" };
+      }
+    };
+
+    const getScopeTreeForGroup = (groupKey, groupLabel) => {
+      if (!wrapHierarchy) return globalScopeTree;
+      if (!groupMap.has(groupKey)) {
+        groupMap.set(groupKey, {
+          id: groupKey,
+          label: groupLabel,
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          scopeTree: new Map(),
+        });
+      }
+      return groupMap.get(groupKey).scopeTree;
+    };
+
+    const ensureScopePath = (scopeTree, scopeTypeKey, categoryKey, activityKey) => {
+      if (!scopeTree.has(scopeTypeKey)) {
+        scopeTree.set(scopeTypeKey, {
+          id: scopeTypeKey,
+          label: scopeTypeKey,
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          categories: new Map(),
+        });
+      }
+      const scopeNode = scopeTree.get(scopeTypeKey);
+
+      if (!scopeNode.categories.has(categoryKey)) {
+        scopeNode.categories.set(categoryKey, {
+          id: `${scopeTypeKey}::${categoryKey}`,
+          label: categoryKey,
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          activities: new Map(),
+        });
+      }
+      const catNode = scopeNode.categories.get(categoryKey);
+
+      if (!catNode.activities.has(activityKey)) {
+        catNode.activities.set(activityKey, {
+          id: `${scopeTypeKey}::${categoryKey}::${activityKey}`,
+          label: activityKey,
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          scopeIds: new Map(), // aggregate by scopeIdentifier
+        });
+      }
+      const actNode = catNode.activities.get(activityKey);
+
+      return { scopeNode, catNode, actNode };
     };
 
     // ---------------------------- PROCESS EACH DATAENTRY ----------------------------
@@ -3169,85 +3287,75 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       const nodeLabel = nodeMeta.label || "Unknown Node";
       const resolvedDepartment = nodeMeta.department || "Unknown Department";
       const resolvedLocation = nodeMeta.location || "Unknown Location";
-      const resolvedScopeIdentifier = entry.scopeIdentifier || "Unknown Scope Identifier";
 
-      // ✅ IN-MEMORY FILTERS (for derived fields)
+      // ---- APPLY FILTERS (based on resolved values) ----
       if (!matches(resolvedLocation, locFilter)) continue;
       if (!matches(resolvedDepartment, deptFilter)) continue;
+      if (!matches(entry.nodeId, nodeFilter)) continue;
+      if (!matches(entry.scopeIdentifier, sidFilter)) continue;
       if (!matches(resolvedScopeType, scopeTypeFilter)) continue;
       if (!matches(resolvedCategory, categoryFilter)) continue;
       if (!matches(resolvedActivity, activityFilter)) continue;
 
-      // if we reach here, entry is included
+      // passed all filters
       usedCount += 1;
       grandTotal += emissions.CO2e;
 
-      // ----------------- NESTED HIERARCHY -----------------
-      if (!scopeTree.has(resolvedScopeType)) {
-        scopeTree.set(resolvedScopeType, {
-          id: resolvedScopeType,
-          label: resolvedScopeType,
-          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
-          categories: new Map()
-        });
+      // ---- pick group root (location/department/node/...) ----
+      const g = getGroupInfo({
+        resolvedLocation,
+        resolvedDepartment,
+        resolvedScopeType,
+        resolvedCategory,
+        resolvedActivity,
+        nodeLabel,
+        nodeId: entry.nodeId,
+        sid: entry.scopeIdentifier,
+      });
+
+      const scopeTree = getScopeTreeForGroup(g.key, g.label);
+
+      if (wrapHierarchy) {
+        const groupObj = groupMap.get(g.key);
+        groupObj.CO2e += emissions.CO2e;
+        groupObj.CO2 += emissions.CO2;
+        groupObj.CH4 += emissions.CH4;
+        groupObj.N2O += emissions.N2O;
       }
-      const scopeNode = scopeTree.get(resolvedScopeType);
+
+      // ---- nested hierarchy (inside group) ----
+      const { scopeNode, actNode } = ensureScopePath(scopeTree, resolvedScopeType, resolvedCategory, resolvedActivity);
+
       scopeNode.CO2e += emissions.CO2e;
-      scopeNode.CO2  += emissions.CO2;
-      scopeNode.CH4  += emissions.CH4;
-      scopeNode.N2O  += emissions.N2O;
+      scopeNode.CO2 += emissions.CO2;
+      scopeNode.CH4 += emissions.CH4;
+      scopeNode.N2O += emissions.N2O;
 
-      // Category level
-      if (!scopeNode.categories.has(resolvedCategory)) {
-        scopeNode.categories.set(resolvedCategory, {
-          id: `${resolvedScopeType}::${resolvedCategory}`,
-          label: resolvedCategory,
-          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
-          activities: new Map()
+      // aggregate leaf per scopeIdentifier
+      const sid = entry.scopeIdentifier || "Unknown Scope Identifier";
+      if (!actNode.scopeIds.has(sid)) {
+        actNode.scopeIds.set(sid, {
+          id: `${resolvedScopeType}::${resolvedCategory}::${resolvedActivity}::${sid}`,
+          label: sid,
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
         });
       }
-      const catNode = scopeNode.categories.get(resolvedCategory);
-      catNode.CO2e += emissions.CO2e;
-      catNode.CO2  += emissions.CO2;
-      catNode.CH4  += emissions.CH4;
-      catNode.N2O  += emissions.N2O;
+      const leaf = actNode.scopeIds.get(sid);
+      leaf.CO2e += emissions.CO2e;
+      leaf.CO2 += emissions.CO2;
+      leaf.CH4 += emissions.CH4;
+      leaf.N2O += emissions.N2O;
 
-      // Activity level
-      if (!catNode.activities.has(resolvedActivity)) {
-        catNode.activities.set(resolvedActivity, {
-          id: `${resolvedScopeType}::${resolvedCategory}::${resolvedActivity}`,
-          label: resolvedActivity,
-          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
-          scopeIds: new Map() // ✅ aggregate by scopeIdentifier instead of pushing duplicates
-        });
-      }
-      const actNode = catNode.activities.get(resolvedActivity);
-      actNode.CO2e += emissions.CO2e;
-      actNode.CO2  += emissions.CO2;
-      actNode.CH4  += emissions.CH4;
-      actNode.N2O  += emissions.N2O;
-
-      if (!actNode.scopeIds.has(resolvedScopeIdentifier)) {
-        actNode.scopeIds.set(resolvedScopeIdentifier, {
-          id: `${resolvedScopeType}::${resolvedCategory}::${resolvedActivity}::${resolvedScopeIdentifier}`,
-          label: resolvedScopeIdentifier,
-          CO2e: 0, CO2: 0, CH4: 0, N2O: 0
-        });
-      }
-      const sidNode = actNode.scopeIds.get(resolvedScopeIdentifier);
-      sidNode.CO2e += emissions.CO2e;
-      sidNode.CO2  += emissions.CO2;
-      sidNode.CH4  += emissions.CH4;
-      sidNode.N2O  += emissions.N2O;
-
-      // ----------------- FLAT HIERARCHIES -----------------
+      // ---- flat hierarchies ----
       pushSum(nodeMap, entry.nodeId, nodeLabel, emissions);
       pushSum(locMap, resolvedLocation, resolvedLocation, emissions);
       pushSum(deptMap, resolvedDepartment, resolvedDepartment, emissions);
       pushSum(scopeTypeMap, resolvedScopeType, resolvedScopeType, emissions);
     }
 
-    // if filters removed everything
     if (!usedCount) {
       return res.status(200).json({
         success: true,
@@ -3267,48 +3375,69 @@ const getScopeIdentifierHierarchy = async (req, res) => {
             scopeIdentifier: sidFilter,
             scopeType: scopeTypeFilter,
             category: categoryFilter,
-            activity: activityFilter
-          }
+            activity: activityFilter,
+          },
         },
-        message: "No results after applying filters"
+        message: "No results after applying filters",
       });
     }
 
     // ---------------------------- FORMAT FINAL TREE ----------------------------
-    const scopeList = [];
+    const buildScopeList = (scopeTree) => {
+      const scopeList = [];
 
-    for (const [, scopeObj] of scopeTree.entries()) {
-      const catList = [];
+      for (const [, scopeObj] of scopeTree.entries()) {
+        const catList = [];
 
-      for (const [, catObj] of scopeObj.categories.entries()) {
-        const actList = [];
+        for (const [, catObj] of scopeObj.categories.entries()) {
+          const actList = [];
 
-        for (const [, actObj] of catObj.activities.entries()) {
-          // convert aggregated map -> array
-          const children = Array.from(actObj.scopeIds.values()).sort((a, b) => b.CO2e - a.CO2e);
-          actObj.children = children;
-          delete actObj.scopeIds;
+          for (const [, actObj] of catObj.activities.entries()) {
+            const children = Array.from(actObj.scopeIds.values()).sort((a, b) => b.CO2e - a.CO2e);
+            actObj.children = children;
+            delete actObj.scopeIds;
+            actList.push(actObj);
+          }
 
-          actList.push(actObj);
+          actList.sort((a, b) => b.CO2e - a.CO2e);
+          catObj.children = actList;
+          delete catObj.activities;
+          catList.push(catObj);
         }
 
-        actList.sort((a, b) => b.CO2e - a.CO2e);
-        catObj.children = actList;
-        delete catObj.activities;
+        catList.sort((a, b) => b.CO2e - a.CO2e);
+        scopeObj.children = catList;
+        delete scopeObj.categories;
 
-        catList.push(catObj);
+        scopeList.push(scopeObj);
       }
 
-      catList.sort((a, b) => b.CO2e - a.CO2e);
-      scopeObj.children = catList;
-      delete scopeObj.categories;
-
-      scopeList.push(scopeObj);
-    }
-
-    scopeList.sort((a, b) => b.CO2e - a.CO2e);
+      scopeList.sort((a, b) => b.CO2e - a.CO2e);
+      return scopeList;
+    };
 
     const sortFlat = (arr) => arr.sort((a, b) => b.CO2e - a.CO2e);
+
+    // ---- NEW: if wrapped, scopeIdentifierHierarchy becomes group-rooted ----
+    let finalHierarchyList;
+    if (!wrapHierarchy) {
+      finalHierarchyList = buildScopeList(globalScopeTree);
+    } else {
+      finalHierarchyList = Array.from(groupMap.values())
+        .map((g) => {
+          const children = buildScopeList(g.scopeTree);
+          return {
+            id: g.id,
+            label: g.label,
+            CO2e: g.CO2e,
+            CO2: g.CO2,
+            CH4: g.CH4,
+            N2O: g.N2O,
+            children,
+          };
+        })
+        .sort((a, b) => b.CO2e - a.CO2e);
+    }
 
     // ---------------------------- FINAL RESPONSE ----------------------------
     return res.status(200).json({
@@ -3317,11 +3446,19 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         clientId,
         period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
         totals: { totalEntries: usedCount, totalCO2e: grandTotal },
-        scopeIdentifierHierarchy: { list: scopeList },
+
+        // This is what your frontend uses for the “tree”
+        scopeIdentifierHierarchy: { list: finalHierarchyList },
+
+        // flat lists
         nodeHierarchy: { list: sortFlat(Array.from(nodeMap.values())) },
         locationHierarchy: { list: sortFlat(Array.from(locMap.values())) },
         departmentHierarchy: { list: sortFlat(Array.from(deptMap.values())) },
         scopeTypeHierarchy: { list: sortFlat(Array.from(scopeTypeMap.values())) },
+
+        // helpful for UI debug
+        groupByApplied: inferredGroupBy,
+
         filtersApplied: {
           location: locFilter,
           department: deptFilter,
@@ -3329,16 +3466,16 @@ const getScopeIdentifierHierarchy = async (req, res) => {
           scopeIdentifier: sidFilter,
           scopeType: scopeTypeFilter,
           category: categoryFilter,
-          activity: activityFilter
-        }
-      }
+          activity: activityFilter,
+        },
+      },
     });
-
   } catch (error) {
     console.error("Hierarchy Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 
 
