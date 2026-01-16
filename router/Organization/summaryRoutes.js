@@ -10,7 +10,9 @@ const {
   getScopeIdentifierEmissionExtremes,
   getScopeIdentifierHierarchy, 
   getReductionSummaryHierarchy,
-     getSbtiProgress
+     getSbtiProgress,
+  getReductionSummariesByProjects,
+
   
   
 } = require('../../controllers/Calculation/CalculationSummary');
@@ -130,6 +132,15 @@ router.get(
   checkSummaryPermission,
   getSbtiProgress
 );
+
+
+// routes/summaries.js (or wherever you define summary routes)
+router.get(
+  "/:clientId/reduction/projects",
+  getReductionSummariesByProjects
+);
+
+
 
 
 module.exports = router;

@@ -502,35 +502,82 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
 /**
  * Build date range based on period type
  */
-function buildDateRange(periodType, year, month, week, day) {
-  const now = new Date();
+function buildDateRange(periodType, yearOrObj, month, week, day) {
+  const now = moment.utc();
+
+  // Supports:
+  // buildDateRange(type, year, month, week, day)
+  // buildDateRange(type, { year, month, week, day, quarter, from, to, fyStartYear, fyStartMonth })
+  const params = (yearOrObj && typeof yearOrObj === "object")
+    ? yearOrObj
+    : { year: yearOrObj, month, week, day };
+
+  const y = Number.parseInt(params.year, 10) || now.year();
+  const m = Number.parseInt(params.month, 10) || (now.month() + 1);
+  const w = Number.parseInt(params.week, 10) || now.isoWeek();
+  const d = Number.parseInt(params.day, 10) || now.date();
+  const q = Number.parseInt(params.quarter, 10) || (Math.floor((m - 1) / 3) + 1);
+
+  const fyStartMonth = Number.parseInt(params.fyStartMonth, 10) || 4;
+  const fyStartYear = Number.isFinite(Number.parseInt(params.fyStartYear, 10))
+    ? Number.parseInt(params.fyStartYear, 10)
+    : (m >= fyStartMonth ? y : y - 1);
+
   let from, to;
 
   switch (periodType) {
-    case 'daily':
-      from = moment.utc({ year, month: month - 1, day }).startOf('day').toDate();
-      to = moment.utc(from).endOf('day').toDate();
+    case "custom": {
+      const start = params.from ? moment.utc(params.from).startOf("day") : moment.utc().startOf("year");
+      const end = params.to ? moment.utc(params.to).endOf("day") : moment.utc().endOf("year");
+      from = start.toDate();
+      to = end.toDate();
       break;
-    case 'weekly':
-      from = moment.utc({ year, week }).startOf('isoWeek').toDate();
-      to = moment.utc(from).endOf('isoWeek').toDate();
+    }
+    case "daily":
+      from = moment.utc({ year: y, month: m - 1, day: d }).startOf("day").toDate();
+      to = moment.utc(from).endOf("day").toDate();
       break;
-    case 'monthly':
-      from = moment.utc({ year, month: month - 1 }).startOf('month').toDate();
-      to = moment.utc(from).endOf('month').toDate();
+    case "weekly":
+      from = moment.utc({ year: y, week: w }).startOf("isoWeek").toDate();
+      to = moment.utc(from).endOf("isoWeek").toDate();
       break;
-    case 'yearly':
-      from = moment.utc({ year }).startOf('year').toDate();
-      to = moment.utc(from).endOf('year').toDate();
+    case "monthly":
+      from = moment.utc({ year: y, month: m - 1 }).startOf("month").toDate();
+      to = moment.utc(from).endOf("month").toDate();
       break;
-    case 'all-time':
+    case "quarterly": {
+      const quarter = q >= 1 && q <= 4 ? q : 1;
+      const startMonth = (quarter - 1) * 3;
+      from = moment.utc({ year: y, month: startMonth, day: 1 }).startOf("day").toDate();
+      to = moment.utc(from).add(3, "months").subtract(1, "millisecond").toDate();
+      break;
+    }
+    case "financial-year": {
+      from = moment.utc({ year: fyStartYear, month: fyStartMonth - 1, day: 1 }).startOf("day").toDate();
+      to = moment.utc(from).add(12, "months").subtract(1, "millisecond").toDate();
+      break;
+    }
+    case "yearly":
+      from = moment.utc({ year: y }).startOf("year").toDate();
+      to = moment.utc(from).endOf("year").toDate();
+      break;
+    case "all-time":
       from = new Date(Date.UTC(2000, 0, 1));
       to = new Date();
       break;
     default:
       throw new Error(`Invalid period type: ${periodType}`);
   }
-  return { from, to };
+
+  if (isNaN(from?.valueOf()) || isNaN(to?.valueOf())) {
+    throw new Error(`Invalid date range computed for periodType=${periodType}`);
+  }
+
+  return {
+    from,
+    to,
+    period: { type: periodType, year: y, month: m, week: w, day: d, quarter: q, fyStartYear, fyStartMonth, from, to }
+  };
 }
 
 /**
@@ -3486,39 +3533,78 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 /**
  * GET /api/summaries/:clientId/reduction/hierarchy
  *
- * Builds hierarchies FROM NetReductionEntry collection.
- * Does NOT use EmissionSummary.
+ * Now supports:
+ *  - periodType: daily | monthly | yearly | quarterly | financial-year | custom
+ *  - custom: ?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *  - quarterly: ?year=2026&quarter=1..4
+ *  - financial-year: ?fyStartYear=2025&fyStartMonth=4   (default fyStartMonth=4 => Apr-Mar)
  *
- * Supported periodType:
- *  - monthly (default)
- *  - yearly
- *  - daily
- *  - custom?from&to
+ * Filters:
+ *  - projectId OR projectIds=comma,separated
+ *  - scopes=Scope 1,Scope 2...
+ *  - locations=Plant A,Plant B...
+ *  - categories=Other,...
+ *  - methodologies=methodology1,methodology2,methodology3
+ *  - projectActivities=Reduction,Removal,...
  */
-
-
-
 const getReductionSummaryHierarchy = async (req, res) => {
   try {
     const { clientId } = req.params;
-    let { projectId, periodType = "monthly", year, month, day, from, to } =
-      req.query;
+
+    let {
+      projectId,
+      projectIds,
+      periodType = "monthly",
+      year,
+      month,
+      day,
+      quarter,
+      from,
+      to,
+      fyStartYear,
+      fyStartMonth,
+
+      // advanced filters
+      scopes,
+      locations,
+      categories,
+      methodologies,
+      projectActivities,
+    } = req.query;
 
     if (!clientId) {
-      return res.status(400).json({
-        success: false,
-        message: "clientId is required",
-      });
+      return res.status(400).json({ success: false, message: "clientId is required" });
     }
+
+    const now = moment.utc();
+
+    // parse lists
+    const splitList = (v) =>
+      typeof v === "string" && v.trim()
+        ? v.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+
+    const projectIdList = [
+      ...(projectId ? [projectId] : []),
+      ...splitList(projectIds),
+    ];
+
+    const scopeFilter = new Set(splitList(scopes));
+    const locationFilter = new Set(splitList(locations));
+    const categoryFilter = new Set(splitList(categories));
+    const methodologyFilter = new Set(splitList(methodologies));
+    const projectActivityFilter = new Set(splitList(projectActivities));
 
     // -------------------------------
     // 1) RESOLVE PERIOD RANGE
     // -------------------------------
-    const now = moment.utc();
+    const y = Number.parseInt(year, 10) || now.year();
+    const m = Number.parseInt(month, 10) || now.month() + 1;
+    const d = Number.parseInt(day, 10) || now.date();
+    const q = Number.parseInt(quarter, 10);
 
-    const y = parseInt(year) || now.year();
-    const m = parseInt(month) || now.month() + 1;
-    const d = parseInt(day) || now.date();
+    const fyMonth = Number.parseInt(fyStartMonth, 10) || 4; // default Apr
+    const fyY = Number.parseInt(fyStartYear, 10);
 
     let start, end;
 
@@ -3531,30 +3617,34 @@ const getReductionSummaryHierarchy = async (req, res) => {
     } else if (periodType === "daily") {
       start = moment.utc({ year: y, month: m - 1, day: d }).startOf("day");
       end = moment.utc({ year: y, month: m - 1, day: d }).endOf("day");
+    } else if (periodType === "quarterly") {
+      const qq = q >= 1 && q <= 4 ? q : Math.floor((m - 1) / 3) + 1; // fallback from month
+      const startMonth = (qq - 1) * 3; // 0,3,6,9
+      start = moment.utc({ year: y, month: startMonth, day: 1 }).startOf("day");
+      end = moment.utc(start).add(3, "months").subtract(1, "millisecond");
+    } else if (periodType === "financial-year") {
+      // FY: fyStartMonth..(fyStartMonth-1) next year
+      // Example: fyStartMonth=4 => Apr 1, 2025 - Mar 31, 2026
+      const startYear = Number.isFinite(fyY) ? fyY : (m >= fyMonth ? y : y - 1);
+      start = moment.utc({ year: startYear, month: fyMonth - 1, day: 1 }).startOf("day");
+      end = moment.utc(start).add(12, "months").subtract(1, "millisecond");
     } else {
       // default monthly
       start = moment.utc({ year: y, month: m - 1 }).startOf("month");
       end = moment.utc({ year: y, month: m - 1 }).endOf("month");
     }
 
-    const rangeQuery = {
-      timestamp: {
-        $gte: start.toDate(),
-        $lte: end.toDate(),
-      },
-    };
-
     // -------------------------------
-    // 2) LOAD ALL NET REDUCTION ENTRIES
+    // 2) LOAD NET REDUCTION ENTRIES
     // -------------------------------
-    const filters = {
+    const entryQuery = {
       clientId,
-      ...rangeQuery,
+      timestamp: { $gte: start.toDate(), $lte: end.toDate() },
     };
+    if (projectIdList.length) entryQuery.projectId = { $in: projectIdList };
 
-    if (projectId) filters.projectId = projectId;
-
-    const rows = await NetReductionEntry.find(filters).lean();
+    // NOTE: we only filter by entry fields here (projectId). Others need Reduction meta.
+    const rows = await NetReductionEntry.find(entryQuery).lean();
 
     if (!rows.length) {
       return res.status(200).json({
@@ -3562,164 +3652,143 @@ const getReductionSummaryHierarchy = async (req, res) => {
         message: "No net reduction data for this range",
         data: {
           clientId,
-          period: {
-            type: periodType,
-            year: y,
-            month: m,
-            day: d,
-            from: start,
-            to: end,
-          },
-          totals: {
-            totalEntries: 0,
-            totalNetReduction: 0,
-          },
+          period: { type: periodType, year: y, month: m, day: d, quarter: q, from: start.toDate(), to: end.toDate() },
+          totals: { totalEntries: 0, totalNetReduction: 0 },
           projectHierarchy: { list: [] },
           categoryHierarchy: { list: [] },
           methodologyHierarchy: { list: [] },
-          locationHierarchy: { list: [] }, // safe empty
-          scopeHierarchy: { list: [] }, // safe empty
+          locationHierarchy: { list: [] },
+          scopeHierarchy: { list: [] },
         },
       });
     }
 
     // -------------------------------
-    // 3) SAFE HELPERS
+    // 3) LOAD REDUCTION META (scope/location/category/activity/name)
     // -------------------------------
-    const safe = (n) => (isNaN(n) ? 0 : Number(n));
+    const uniqProjectIds = Array.from(new Set(rows.map((r) => r.projectId)));
+    const projects = await Reduction.find({
+      clientId,
+      projectId: { $in: uniqProjectIds },
+      isDeleted: { $ne: true },
+    })
+      .select("projectId projectName projectActivity category scope location calculationMethodology")
+      .lean();
 
-    // Map → list(sorted)
-    const toList = (map) =>
-      Array.from(map.values()).sort((a, b) => safe(b.total) - safe(a.total));
+    const metaByProject = new Map();
+    projects.forEach((p) => metaByProject.set(p.projectId, p));
 
     // -------------------------------
-    // 4) BUILD HIERARCHY MAPS
+    // 4) APPLY META-BASED FILTERS
     // -------------------------------
+    const filteredRows = rows.filter((r) => {
+      const meta = metaByProject.get(r.projectId) || {};
+      const scope = meta.scope || "Unknown";
+      const category = meta.category || "Unknown";
+      const activity = meta.projectActivity || "Unknown";
+      const methodology = meta.calculationMethodology || r.calculationMethodology || "unknown";
+      const location =
+        meta.location?.place ||
+        meta.location?.address ||
+        (meta.location?.latitude && meta.location?.longitude
+          ? `${meta.location.latitude},${meta.location.longitude}`
+          : "Unknown");
+
+      if (scopeFilter.size && !scopeFilter.has(scope)) return false;
+      if (locationFilter.size && !locationFilter.has(location)) return false;
+      if (categoryFilter.size && !categoryFilter.has(category)) return false;
+      if (projectActivityFilter.size && !projectActivityFilter.has(activity)) return false;
+      if (methodologyFilter.size && !methodologyFilter.has(methodology)) return false;
+
+      return true;
+    });
+
+    if (!filteredRows.length) {
+      return res.status(200).json({
+        success: true,
+        message: "No net reduction data after applying filters",
+        data: {
+          clientId,
+          period: { type: periodType, year: y, month: m, day: d, quarter: q, from: start.toDate(), to: end.toDate() },
+          totals: { totalEntries: 0, totalNetReduction: 0 },
+          projectHierarchy: { list: [] },
+          categoryHierarchy: { list: [] },
+          methodologyHierarchy: { list: [] },
+          locationHierarchy: { list: [] },
+          scopeHierarchy: { list: [] },
+        },
+      });
+    }
+
+    // -------------------------------
+    // 5) BUILD HIERARCHIES
+    // -------------------------------
+    const safe = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
+    const toList = (map) => Array.from(map.values()).sort((a, b) => safe(b.total) - safe(a.total));
+
     const projectMap = new Map();
     const categoryMap = new Map();
     const methodologyMap = new Map();
+    const scopeMap = new Map();
+    const locationMap = new Map();
 
     let grandTotal = 0;
 
-    for (const row of rows) {
-      const project = row.projectId;
-      const meth = row.calculationMethodology;
+    for (const row of filteredRows) {
+      const meta = metaByProject.get(row.projectId) || {};
+      const projectLabel = meta.projectName || row.projectId;
+      const scope = meta.scope || "Unknown";
+      const category = meta.category || "Unknown";
+      const location =
+        meta.location?.place ||
+        meta.location?.address ||
+        (meta.location?.latitude && meta.location?.longitude
+          ? `${meta.location.latitude},${meta.location.longitude}`
+          : "Unknown");
+
+      const meth = meta.calculationMethodology || row.calculationMethodology || "unknown";
       const net = safe(row.netReduction);
 
       grandTotal += net;
 
-      // ---------------------------------
-      // PROJECT HIERARCHY
-      // ---------------------------------
-      if (!projectMap.has(project)) {
-        projectMap.set(project, {
-          id: project,
-          label: project,
+      // PROJECT -> METHODOLOGY
+      if (!projectMap.has(row.projectId)) {
+        projectMap.set(row.projectId, {
+          id: row.projectId,
+          label: projectLabel,
           total: 0,
           methodologies: new Map(),
         });
       }
-      const pObj = projectMap.get(project);
+      const pObj = projectMap.get(row.projectId);
       pObj.total += net;
 
-      // METHODOLOGY UNDER PROJECT
       if (!pObj.methodologies.has(meth)) {
-        pObj.methodologies.set(meth, {
-          id: `${project}::${meth}`,
-          label: meth,
-          total: 0,
-        });
+        pObj.methodologies.set(meth, { id: `${row.projectId}::${meth}`, label: meth, total: 0 });
       }
       pObj.methodologies.get(meth).total += net;
 
-      // ---------------------------------
-      // CATEGORY HIERARCHY (for M3 items)
-      // fallback for M1/M2: put into generic categories
-      // ---------------------------------
-      if (meth === "methodology3") {
-        // Add baseline
-        for (const x of row.m3?.breakdown?.baseline || []) {
-          const key = `Baseline::${x.id}`;
-          if (!categoryMap.has(key)) {
-            categoryMap.set(key, {
-              id: key,
-              label: `${project} - Baseline ${x.id}`,
-              total: 0,
-            });
-          }
-          categoryMap.get(key).total += safe(x.value);
-        }
+      // CATEGORY (meta-based)
+      if (!categoryMap.has(category)) categoryMap.set(category, { id: category, label: category, total: 0 });
+      categoryMap.get(category).total += net;
 
-        // Project group
-        for (const x of row.m3?.breakdown?.project || []) {
-          const key = `Project::${x.id}`;
-          if (!categoryMap.has(key)) {
-            categoryMap.set(key, {
-              id: key,
-              label: `${project} - Project ${x.id}`,
-              total: 0,
-            });
-          }
-          categoryMap.get(key).total += safe(x.value);
-        }
-
-        // Leakage group
-        for (const x of row.m3?.breakdown?.leakage || []) {
-          const key = `Leakage::${x.id}`;
-          if (!categoryMap.has(key)) {
-            categoryMap.set(key, {
-              id: key,
-              label: `${project} - Leakage ${x.id}`,
-              total: 0,
-            });
-          }
-          categoryMap.get(key).total += safe(x.value);
-        }
-      } else if (meth === "methodology2") {
-        const key = `Formula:${project}`;
-        if (!categoryMap.has(key)) {
-          categoryMap.set(key, {
-            id: key,
-            label: `${project} - Formula`,
-            total: 0,
-          });
-        }
-        categoryMap.get(key).total += net;
-      } else {
-        // M1
-        const key = `Value:${project}`;
-        if (!categoryMap.has(key)) {
-          categoryMap.set(key, {
-            id: key,
-            label: `${project} - Value Based`,
-            total: 0,
-          });
-        }
-        categoryMap.get(key).total += net;
-      }
-
-      // ---------------------------------
-      // METHODOLOGY HIERARCHY (GLOBAL)
-      // ---------------------------------
-      if (!methodologyMap.has(meth)) {
-        methodologyMap.set(meth, {
-          id: meth,
-          label: meth,
-          total: 0,
-        });
-      }
+      // METHODOLOGY (global)
+      if (!methodologyMap.has(meth)) methodologyMap.set(meth, { id: meth, label: meth, total: 0 });
       methodologyMap.get(meth).total += net;
+
+      // SCOPE
+      if (!scopeMap.has(scope)) scopeMap.set(scope, { id: scope, label: scope, total: 0 });
+      scopeMap.get(scope).total += net;
+
+      // LOCATION
+      if (!locationMap.has(location)) locationMap.set(location, { id: location, label: location, total: 0 });
+      locationMap.get(location).total += net;
     }
 
-    // -------------------------------
-    // 5) FINAL_FORMATTING
-    // -------------------------------
-    const projectList = Array.from(projectMap.values()).map((p) => {
-      return {
-        ...p,
-        methodologies: toList(p.methodologies),
-      };
-    });
+    const projectList = Array.from(projectMap.values()).map((p) => ({
+      ...p,
+      methodologies: toList(p.methodologies),
+    }));
 
     return res.status(200).json({
       success: true,
@@ -3730,21 +3799,31 @@ const getReductionSummaryHierarchy = async (req, res) => {
           year: y,
           month: m,
           day: d,
-          from: start,
-          to: end,
+          quarter: periodType === "quarterly" ? (q || Math.floor((m - 1) / 3) + 1) : undefined,
+          fyStartYear: periodType === "financial-year" ? (Number.isFinite(fyY) ? fyY : (m >= fyMonth ? y : y - 1)) : undefined,
+          fyStartMonth: periodType === "financial-year" ? fyMonth : undefined,
+          from: start.toDate(),
+          to: end.toDate(),
         },
         totals: {
-          totalEntries: rows.length,
+          totalEntries: filteredRows.length,
           totalNetReduction: grandTotal,
         },
 
         projectHierarchy: { list: projectList },
         categoryHierarchy: { list: toList(categoryMap) },
         methodologyHierarchy: { list: toList(methodologyMap) },
+        locationHierarchy: { list: toList(locationMap) },
+        scopeHierarchy: { list: toList(scopeMap) },
 
-        // optional empty (no location/scope fields exist in NetReductionEntry)
-        locationHierarchy: { list: [] },
-        scopeHierarchy: { list: [] },
+        filtersApplied: {
+          projectIds: projectIdList,
+          scopes: Array.from(scopeFilter),
+          locations: Array.from(locationFilter),
+          categories: Array.from(categoryFilter),
+          methodologies: Array.from(methodologyFilter),
+          projectActivities: Array.from(projectActivityFilter),
+        },
       },
     });
   } catch (error) {
@@ -3754,6 +3833,209 @@ const getReductionSummaryHierarchy = async (req, res) => {
       message: "Failed to build reduction summary hierarchy",
       error: error.message,
     });
+  }
+};
+
+// ---------- HELPER: ROUND ----------
+function round6(n) {
+  return Math.round((Number(n) || 0) * 1e6) / 1e6;
+}
+
+
+// ===================================================================
+//  REDUCTION SUMMARIZER (same logic as netReductionSummaryController)
+// ===================================================================
+function computeSummary(entries, projectMeta) {
+  const summary = {
+    totalNetReduction: 0,
+    entriesCount: entries.length,
+
+    byProject: [],
+    byCategory: {},
+    byScope: {},
+    byLocation: {},
+    byProjectActivity: {},
+    byMethodology: {},
+  };
+
+  const projectMap = new Map();
+
+  for (const e of entries) {
+    const net = Number(e.netReduction || 0);
+    summary.totalNetReduction = round6(summary.totalNetReduction + net);
+
+    const meta = projectMeta.get(e.projectId) || {};
+
+    const projectId = e.projectId;
+    const projectName = meta.projectName || e.projectId;
+    const projectActivity = meta.projectActivity || "Unknown";
+    const category = meta.category || "Unknown";
+    const scope = meta.scope || "Unknown";
+    const location =
+      meta.location?.place ||
+      meta.location?.address ||
+      (meta.location?.latitude && meta.location?.longitude
+        ? `${meta.location.latitude},${meta.location.longitude}`
+        : "Unknown");
+
+    const methodology = meta.calculationMethodology || "unknown";
+
+    // --- byProject ---
+    if (!projectMap.has(projectId)) {
+      projectMap.set(projectId, {
+        projectId,
+        projectName,
+        projectActivity,
+        category,
+        scope,
+        location,
+        methodology,
+        totalNetReduction: 0,
+        entriesCount: 0,
+      });
+    }
+    const row = projectMap.get(projectId);
+    row.totalNetReduction = round6(row.totalNetReduction + net);
+    row.entriesCount++;
+
+    // --- CATEGORY ---
+    if (!summary.byCategory[category]) summary.byCategory[category] = { totalNetReduction: 0, entriesCount: 0 };
+    summary.byCategory[category].totalNetReduction += net;
+    summary.byCategory[category].entriesCount++;
+
+    // --- SCOPE ---
+    if (!summary.byScope[scope]) summary.byScope[scope] = { totalNetReduction: 0, entriesCount: 0 };
+    summary.byScope[scope].totalNetReduction += net;
+    summary.byScope[scope].entriesCount++;
+
+    // --- LOCATION ---
+    if (!summary.byLocation[location]) summary.byLocation[location] = { totalNetReduction: 0, entriesCount: 0 };
+    summary.byLocation[location].totalNetReduction += net;
+    summary.byLocation[location].entriesCount++;
+
+    // --- PROJECT ACTIVITY ---
+    if (!summary.byProjectActivity[projectActivity]) summary.byProjectActivity[projectActivity] = { totalNetReduction: 0, entriesCount: 0 };
+    summary.byProjectActivity[projectActivity].totalNetReduction += net;
+    summary.byProjectActivity[projectActivity].entriesCount++;
+
+    // --- METHODOLOGY ---
+    if (!summary.byMethodology[methodology]) summary.byMethodology[methodology] = { totalNetReduction: 0, entriesCount: 0 };
+    summary.byMethodology[methodology].totalNetReduction += net;
+    summary.byMethodology[methodology].entriesCount++;
+  }
+
+  summary.byProject = [...projectMap.values()];
+  return summary;
+}
+
+
+const getReductionSummariesByProjects = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const {
+      projectIds, // comma separated
+      periodType = "monthly",
+
+      // date selectors
+      year,
+      month,
+      week,
+      day,
+      quarter,
+      from,
+      to,
+      fyStartYear,
+      fyStartMonth,
+    } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "clientId is required" });
+    }
+
+    const list = String(projectIds || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+    if (!list.length) {
+      return res.status(400).json({ success: false, message: "projectIds is required (comma separated)" });
+    }
+
+    // build range (see section 3 below for the updated buildDateRange)
+    const { from: rangeFrom, to: rangeTo, period } = buildDateRange(periodType, {
+      year: Number(year),
+      month: Number(month),
+      week: Number(week),
+      day: Number(day),
+      quarter: Number(quarter),
+      from,
+      to,
+      fyStartYear: Number(fyStartYear),
+      fyStartMonth: Number(fyStartMonth),
+    });
+
+    // entries
+    const entries = await NetReductionEntry.find({
+      clientId,
+      projectId: { $in: list },
+      timestamp: { $gte: rangeFrom, $lte: rangeTo },
+    }).lean();
+
+    // load project meta
+    const projects = await Reduction.find({
+      clientId,
+      projectId: { $in: list },
+      isDeleted: { $ne: true },
+    })
+      .select("projectId projectName projectActivity category scope location calculationMethodology")
+      .lean();
+
+    const metaByProject = new Map();
+    projects.forEach((p) => metaByProject.set(p.projectId, p));
+
+    // group entries per project
+    const grouped = new Map();
+    for (const e of entries) {
+      if (!grouped.has(e.projectId)) grouped.set(e.projectId, []);
+      grouped.get(e.projectId).push(e);
+    }
+
+    // build per-project summaries
+    const data = list.map((pid) => {
+      const meta = metaByProject.get(pid) || {};
+      const rows = grouped.get(pid) || [];
+
+      // reuse computeSummary but only for this one project
+      const summary = computeSummary(rows, new Map([[pid, meta]]));
+
+      return {
+        projectId: pid,
+        projectName: meta.projectName || pid,
+        projectActivity: meta.projectActivity || "Unknown",
+        category: meta.category || "Unknown",
+        scope: meta.scope || "Unknown",
+        location:
+          meta.location?.place ||
+          meta.location?.address ||
+          (meta.location?.latitude && meta.location?.longitude
+            ? `${meta.location.latitude},${meta.location.longitude}`
+            : "Unknown"),
+        methodology: meta.calculationMethodology || "unknown",
+        reductionSummary: summary,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientId,
+        period,
+        count: data.length,
+        projects: data,
+      },
+    });
+  } catch (err) {
+    console.error("getReductionSummariesByProjects error:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -3773,6 +4055,7 @@ module.exports = {
   getScopeIdentifierHierarchy, 
   getSbtiProgress,
   getReductionSummaryHierarchy,
+  getReductionSummariesByProjects,
     
 
 };
