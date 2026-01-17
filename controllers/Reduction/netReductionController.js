@@ -2904,22 +2904,64 @@ async function resolveClientConsultantTargets(clientId) {
 }
 
 
+// ✅ Add this helper in netReductionController.js (near other helpers)
+async function createSystemNotification({
+  title,
+  message,
+  targetUsers = [],
+  targetClients = [],
+  systemAction = "api_key_requested",
+  relatedEntity = null,
+  createdBy,
+  creatorType,
+  priority = "high"
+}) {
+  // do not throw here—avoid breaking the main switch API
+  if (!createdBy || !creatorType) {
+    console.warn("[createSystemNotification] Missing createdBy/creatorType, skipping notification");
+    return null;
+  }
+
+  const payload = {
+    title,
+    message,
+    targetUsers: Array.isArray(targetUsers) ? targetUsers : [],
+    targetClients: Array.isArray(targetClients) ? targetClients : [],
+    priority,
+
+    // REQUIRED in your notification creation pattern
+    createdBy,
+    creatorType,
+
+    systemAction,
+    isSystemNotification: true,
+    status: "published",
+    publishedAt: new Date()
+  };
+
+  if (relatedEntity) payload.relatedEntity = relatedEntity;
+
+  return Notification.create(payload);
+}
+
+
 /**
  * ✅ UPDATED IMPLEMENTATION (NET REDUCTION)
  * - MANUAL/CSV switches immediately (also saves endpoint in apiEndpoint)
  * - API/IOT: ONLY switches if key exists
- * - if key missing: UPSERT ApiKeyRequest (with intendedInputType) + notify consultant, DO NOT change inputType
+ * - if key missing: UPSERT ApiKeyRequest (with intendedInputType) + notify consultant targets, DO NOT change inputType
  */
 exports.switchNetReductionInputType = async (req, res) => {
   try {
     const { clientId, projectId, calculationMethodology } = req.params;
 
     const userId = getUserId(req.user);
-    if (!userId) {
+    const creatorType = req.user?.userType;
+
+    if (!userId || !creatorType) {
       return res.status(401).json({ success: false, message: "Invalid session" });
     }
 
-    // ✅ inputType accepted: manual | API | IOT | CSV
     let { inputType } = req.body;
     inputType = (inputType || "").toString().trim().toUpperCase();
 
@@ -2931,13 +2973,11 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    // ✅ Fetch project
     const project = await Reduction.findOne({ clientId, projectId, calculationMethodology });
     if (!project) {
       return res.status(404).json({ success: false, message: "Reduction project not found" });
     }
 
-    // ✅ Ensure object exists
     if (!project.reductionDataEntry) {
       project.reductionDataEntry = {
         inputType: "manual",
@@ -2945,24 +2985,21 @@ exports.switchNetReductionInputType = async (req, res) => {
         apiEndpoint: "",
         iotDeviceId: "",
         apiStatus: false,
-        iotStatus: false
+        iotStatus: false,
+        apiKeyRequest: null
       };
     }
 
     const previousInputType = project.reductionDataEntry.inputType;
-
-    // ✅ endpoints helper (your existing function)
     const endpoints = buildBaseEndpoints({ clientId, projectId, calculationMethodology });
 
-    // ✅ always save originalInputType too (stores what user selected)
+    // store what user selected
     project.reductionDataEntry.originalInputType = inputType;
 
-    // -------------------------
     // ✅ MANUAL
-    // -------------------------
     if (inputType === "MANUAL") {
       project.reductionDataEntry.inputType = "manual";
-      project.reductionDataEntry.apiEndpoint = endpoints.manual; // ✅ always save
+      project.reductionDataEntry.apiEndpoint = endpoints.manual;
       project.reductionDataEntry.apiStatus = false;
       project.reductionDataEntry.iotStatus = false;
 
@@ -2975,12 +3012,10 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    // -------------------------
-    // ✅ CSV  (mapped to manual)
-    // -------------------------
+    // ✅ CSV (mapped to manual)
     if (inputType === "CSV") {
       project.reductionDataEntry.inputType = "manual";
-      project.reductionDataEntry.apiEndpoint = endpoints.csv; // ✅ always save
+      project.reductionDataEntry.apiEndpoint = endpoints.csv;
       project.reductionDataEntry.apiStatus = false;
       project.reductionDataEntry.iotStatus = false;
 
@@ -2993,20 +3028,12 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    // -------------------------
-    // ✅ API / IOT (STRICT)
-    // -------------------------
+    // ✅ API / IOT
     const keyType = inputType === "API" ? "NET_API" : "NET_IOT";
-    const existingKey = await findActiveKey({
-      clientId,
-      projectId,
-      calculationMethodology,
-      keyType
-    });
+    const existingKey = await findActiveKey({ clientId, projectId, calculationMethodology, keyType });
 
-    // 🔴 If key missing → UPSERT request + notify consultant, DO NOT SWITCH
+    // 🔴 No key → create request + notify targets, DO NOT SWITCH
     if (!existingKey) {
-      // ✅ Prevent duplicate pending requests (upsert)
       const requestDoc = await ApiKeyRequest.findOneAndUpdate(
         { clientId, projectId, calculationMethodology, keyType, status: "pending" },
         {
@@ -3022,7 +3049,7 @@ exports.switchNetReductionInputType = async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      // ✅ Persist pending state inside Reduction.reductionDataEntry
+      // ✅ store pending info inside reductionDataEntry (so UI can show request status)
       project.reductionDataEntry.apiKeyRequest = {
         ...(project.reductionDataEntry.apiKeyRequest || {}),
         status: "pending",
@@ -3034,29 +3061,37 @@ exports.switchNetReductionInputType = async (req, res) => {
         requestId: requestDoc?._id || null
       };
 
-      project.markModified('reductionDataEntry');
+      project.markModified("reductionDataEntry");
       await project.save();
 
+      // ✅ notify ONLY createdBy consultant_admin + assigned consultant
       const consultantTargets = await resolveClientConsultantTargets(clientId);
 
       if (consultantTargets.length > 0) {
-        await createSystemNotification({
-          title: `API Key Request (${inputType}) - ${project.projectName}`,
-          message:
-            `Client ${clientId} requested ${inputType} connection.\n\n` +
-            `Project: ${project.projectName}\n` +
-            `ProjectId: ${projectId}\n` +
-            `Methodology: ${calculationMethodology}\n` +
-            `KeyType: ${keyType}\n\n` +
-            `Action: Please generate an API key. After creation, the endpoint will be auto-connected.`,
-          targetUsers: consultantTargets,
-          targetClients: [clientId],
-          systemAction: "api_key_requested",
-          relatedEntity: { type: "reduction", id: project._id }
-        });
+        try {
+          await createSystemNotification({
+            title: `API Key Request (${inputType}) - ${project.projectName}`,
+            message:
+              `Client ${clientId} requested ${inputType} connection.\n\n` +
+              `Project: ${project.projectName}\n` +
+              `ProjectId: ${projectId}\n` +
+              `Methodology: ${calculationMethodology}\n` +
+              `KeyType: ${keyType}\n\n` +
+              `Action: Please generate an API key. After creation, the endpoint will be auto-connected.`,
+            targetUsers: consultantTargets,
+            targetClients: [clientId],
+            systemAction: "api_key_requested",
+            relatedEntity: { type: "reduction", id: project._id },
+
+            // ✅ required
+            createdBy: userId,
+            creatorType
+          });
+        } catch (e) {
+          console.warn("[switchNetReductionInputType] notification failed:", e.message);
+        }
       }
 
-      // ✅ Do NOT change anything
       return res.status(202).json({
         success: true,
         status: "waiting_for_key",
@@ -3067,41 +3102,31 @@ exports.switchNetReductionInputType = async (req, res) => {
       });
     }
 
-    // 🟢 KEY EXISTS → SWITCH NOW
+    // 🟢 Key exists → switch now
     if (inputType === "API") {
       project.reductionDataEntry.inputType = "API";
-      project.reductionDataEntry.apiEndpoint = endpoints.apiWithKey(
-        existingKey.keyPrefix || existingKey.key
-      );
+      project.reductionDataEntry.apiEndpoint = endpoints.apiWithKey(existingKey.keyPrefix || existingKey.key);
       project.reductionDataEntry.apiStatus = true;
       project.reductionDataEntry.iotStatus = false;
     } else {
       project.reductionDataEntry.inputType = "IOT";
-      project.reductionDataEntry.apiEndpoint = endpoints.iotWithKey(
-        existingKey.keyPrefix || existingKey.key
-      );
+      project.reductionDataEntry.apiEndpoint = endpoints.iotWithKey(existingKey.keyPrefix || existingKey.key);
       project.reductionDataEntry.iotStatus = true;
       project.reductionDataEntry.apiStatus = false;
     }
 
-    // ✅ If a request was pending, mark it approved in ReductionEntry
-    if (
-      project.reductionDataEntry.apiKeyRequest?.status === "pending" ||
-      project.reductionDataEntry.apiKeyRequest?.requestId
-    ) {
+    // if request existed, mark approved locally (applyKeyToNetReductionProject also does this on approval path)
+    if (project.reductionDataEntry.apiKeyRequest?.requestId) {
       project.reductionDataEntry.apiKeyRequest = {
         ...(project.reductionDataEntry.apiKeyRequest || {}),
         status: "approved",
-        requestedInputType: inputType,
-        requestedAt: project.reductionDataEntry.apiKeyRequest?.requestedAt || new Date(),
         approvedAt: new Date(),
         rejectedAt: null,
-        apiKeyId: existingKey?._id || project.reductionDataEntry.apiKeyRequest?.apiKeyId || null,
-        requestId: project.reductionDataEntry.apiKeyRequest?.requestId || null
+        apiKeyId: existingKey?._id || project.reductionDataEntry.apiKeyRequest?.apiKeyId || null
       };
     }
 
-    project.markModified('reductionDataEntry');
+    project.markModified("reductionDataEntry");
     await project.save();
 
     return res.status(200).json({
