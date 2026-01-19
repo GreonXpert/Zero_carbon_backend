@@ -98,7 +98,7 @@ router.patch("/:clientId/change-support-manager", changeSupportManager);
  * Get Support Manager for Client
  * GET /api/clients/:clientId/support-manager
  */
-router.get("/:clientId/support-manager", getSupportManagerForClient);
+router.get("/support-manager", getSupportManagerForClient);
 
 // ===================================================================
 // SUBSCRIPTION MANAGEMENT

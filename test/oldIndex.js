@@ -24,19 +24,22 @@ const ipccDataRoutes = require('./router/EmissionFactor/ipccDataRoutes');
 const EPADataRoutes = require('./router/EmissionFactor/EPADataRoutes');
 const emissionFactorRoutes = require('./router/EmissionFactor/emissionFactorRoutes');
 const ipccConverstionCalculation = require('./router/EmissionFactor/IpccConverstionCalculation');
-const summaryRoutes = require('./router/Organization/summaryRoutes');
-const reductionRoutes = require('./router/Reduction/reductionR');
-const netReductionRoutes = require('./router/Reduction/netReductionR');
-const FormulaR = require('./router/Reduction/FormulaR');
-const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR');
-const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes');
+const summaryRoutes = require('./router/Organization/summaryRoutes'); // 🆕 Corrected path
+const reductionRoutes = require('./router/Reduction/reductionR'); // 🆕 Corrected path
+const netReductionRoutes = require('./router/Reduction/netReductionR'); // 🆕 Corrected path
+const FormulaR = require('./router/Reduction/FormulaR'); // 🆕 Corrected path
+const netReductionSummaryR = require('./router/Reduction/netReductionSummaryR'); // 🆕 Corrected path
+const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes'); // 🆕 Corrected path
+
+
 
 // Import notification routes
 const notificationRoutes = require('./router/Notification/notificationRoutes');
 const { dataCollectionRouter, iotRouter } = require('./router/Organization/dataCollectionRoutes');
 
-// Import IoT routes
+// Import IoT routes and MQTT subscriber
 const iotRoutes = require('./router/iotRoutes');
+// const MQTTSubscriber = require('./mqtt/mqttSubscriber');
 
 // Import controllers
 const { checkExpiredSubscriptions } = require("./controllers/CMS/clientController");
@@ -44,7 +47,7 @@ const { initializeSuperAdmin } = require("./controllers/userController");
 const { publishScheduledNotifications } = require('./controllers/Notification/notificationControllers');
 const { scheduleMonthlySummary, checkAndCreateMissedSummaries } = require('./controllers/DataCollection/monthlyDataSummaryController');
 
-// Import summary controller
+// 🆕 Import summary controller
 const calculationSummaryController = require('./controllers/Calculation/CalculationSummary');
 const dataCollectionController = require('./controllers/Organization/dataCollectionController');
 const netReductionController = require('./controllers/Reduction/netReductionController');
@@ -52,8 +55,9 @@ const netReductionSummaryController = require('./controllers/Reduction/netReduct
 const sbtiController = require('./controllers/Decabonization/sbtiController');
 const transportFlowRouter = require('./router/Organization/transportFlowR');
 const sandboxRoutes = require('./router/CMS/sandboxRoutes');
-const apiKeyRoutes = require('./router/apiKeyRoutes');
-const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
+   const apiKeyRoutes = require('./router/apiKeyRoutes');
+   const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
+
 
 // Import models for real-time features
 const User = require('./models/User');
@@ -65,22 +69,27 @@ const {
 } = require('./controllers/DataCollection/dataCompletionController');
 const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
 
-// Ticket route import
+// ✅ ADDED: Ticket route import
 const ticketRoutes = require('./router/Ticket/ticketRoutes');
 
-// Ticket controller import
+// ✅ ADDED: Ticket controller import
 const ticketController = require('./controllers/Ticket/ticketController');
 
-// SLA checker import
+// ✅ ADDED: SLA checker import
 const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
 
+
+  
+
 const helmet = require('helmet');
+
 
 dotenv.config();
 
 const app = express();
 
 app.use(helmet());
+
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -93,8 +102,13 @@ app.use(helmet({
   hsts: { maxAge: 31536000, includeSubDomains: true }
 }));
 
+
 // Middleware
 app.use(express.json());
+
+
+// Allow frontend origins to fetch images
+
 
 // Global request logger
 app.use((req, res, next) => {
@@ -104,14 +118,12 @@ app.use((req, res, next) => {
     console.log("  Body  :", req.body);
     next();
 });
-
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
     next();
   });
 }
-
 // CORS allowed frontend domains
 app.use(cors({
   origin: [
@@ -124,12 +136,14 @@ app.use(cors({
   credentials: true,
 }));
 
-// Static files
+// in index.js / server.js once:
 app.use(
   '/uploads',
   helmet.crossOriginResourcePolicy({ policy: "cross-origin" }),
   express.static('uploads')
 );
+
+
 
 // Routes
 app.use("/api/users", userR);
@@ -142,17 +156,18 @@ app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
 app.use("/api/processflow", processFlowR);
 app.use('/api/transport-flowchart', transportFlowRouter);
+// app.use('/api/data-entry', dataEntryRoutes);
 app.use('/api/emission-factor-hub', EmissionFactorHub);
 app.use('/api/iot', iotRoutes);
 app.use('/api/ipcc', ipccDataRoutes);
 app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
 app.use('/api/emission-factor', ipccConverstionCalculation);
-app.use('/api/summaries', summaryRoutes);
-app.use('/api/reductions', reductionRoutes);
-app.use('/api/net-reduction', netReductionRoutes);
-app.use('/api/formulas', FormulaR);
-app.use('/api/sbti', DecarbonizationRoutes);
+app.use('/api/summaries', summaryRoutes); // 🆕 Summary routes
+app.use('/api/reductions', reductionRoutes); // 🆕 Reduction routes
+app.use('/api/net-reduction', netReductionRoutes); // 🆕 Net Reduction routes
+app.use('/api/formulas', FormulaR); // 🆕 M2 Formula routes
+app.use('/api/sbti', DecarbonizationRoutes); // 🆕 SBTi Decarbonization routes
 
 // Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);
@@ -162,100 +177,25 @@ app.use('/api/iot', iotRouter);
 app.use('/api', apiKeyRoutes);
 app.use('/api/tickets', ticketRoutes);
 
-// ============================================================================
-// 🔐 HELPER FUNCTIONS (MUST BE OUTSIDE CONNECTION HANDLER)
-// ============================================================================
-
-/**
- * Helper function to check ticket access
- * MOVED OUTSIDE connection handler to be accessible by broadcast functions
- */
-async function checkTicketAccess(user, ticket) {
-    try {
-        const userId = user.id || user._id?.toString() || user._id;
-        
-        // Super admin has access to all
-        if (user.userType === 'super_admin') {
-            return true;
-        }
-
-        // Check if user's client matches ticket's client
-        if (user.clientId === ticket.clientId) {
-            // Client employee head - check department
-            if (user.userType === 'client_employee_head') {
-                const User = require('./models/User');
-                const creator = await User.findById(ticket.createdBy);
-                return creator && creator.department === user.department;
-            }
-            
-            // Employee can only view own tickets
-            if (user.userType === 'employee') {
-                return ticket.createdBy.toString() === userId;
-            }
-            
-            // Viewer can only view own tickets
-            if (user.userType === 'viewer') {
-                return ticket.createdBy.toString() === userId;
-            }
-            
-            // Other client roles (client_admin, auditor) can view all client tickets
-            return true;
-        }
-
-        // Check consultant access
-        if (['consultant_admin', 'consultant'].includes(user.userType)) {
-            const Client = require('./models/CMS/Client');
-            const client = await Client.findOne({ clientId: ticket.clientId });
-            
-            if (!client) return false;
-            
-            // Consultant admin who created the lead
-            if (user.userType === 'consultant_admin') {
-                if (client.leadInfo?.createdBy?.toString() === userId) {
-                    return true;
-                }
-            }
-            
-            // Assigned consultant
-            if (client.workflowTracking?.assignedConsultantId?.toString() === userId) {
-                return true;
-            }
-        }
-
-        return false;
-    } catch (error) {
-        console.error('Error checking ticket access:', error);
-        return false;
-    }
-}
-
-// ============================================================================
-// 📊 SOCKET.IO SERVER SETUP
-// ============================================================================
 
 // Create HTTP server and bind Socket.io
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: [
-      "http://localhost:3000", 
-      "http://localhost:3002", 
-      "http://localhost:5174",
-      "https://zerocarbon.greonxpert.com",
-      "https://www.zerocarbon.greonxpert.com"
-    ],
+    origin: ["http://localhost:3000", "http://localhost:3002", "https://zerocarbon.greonxpert.com","https://www.zerocarbon.greonxpert.com", "http://localhost:5174"],
     credentials: true
   }
 });
 
-// Set socket.io instance in controllers
+// 🆕 Set socket.io instance in controllers
 dataCollectionController.setSocketIO(io);
 calculationSummaryController.setSocketIO(io);
 netReductionController.setSocketIO(io);
 sbtiController.setSocketIO(io);
 dataCompletionController.setSocketIO(io);
 
-// Socket.IO Authentication Middleware
+
+// 🔐 Socket.IO Authentication Middleware
 io.use(async (socket, next) => {
     try {
         const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
@@ -284,13 +224,10 @@ io.use(async (socket, next) => {
     }
 });
 
-// Track connected users
+// 📊 Track connected users
 const connectedUsers = new Map();
 
-// ============================================================================
-// 🔄 SOCKET.IO CONNECTION HANDLER
-// ============================================================================
-
+// 🔄 Enhanced Socket.IO connection handling with Real-time Notifications and Summaries
 io.on('connection', (socket) => {
     console.log(`🔌 Client connected: ${socket.user.userName} (${socket.id})`);
     
@@ -323,10 +260,7 @@ io.on('connection', (socket) => {
         timestamp: new Date().toISOString()
     });
 
-    // ========================================================================
-    // 📊 SUMMARY SOCKET HANDLERS
-    // ========================================================================
-
+    // 🆕 Handle joining summary-specific rooms
     socket.on('join-summary-room', (clientId) => {
         socket.join(`summaries-${clientId}`);
         console.log(`📊 Socket ${socket.id} joined summary room: summaries-${clientId}`);
@@ -339,12 +273,15 @@ io.on('connection', (socket) => {
         });
     });
 
+    // 🆕 Handle summary subscription requests
     socket.on('subscribe-to-summaries', async (data) => {
         try {
             const { clientId, periodTypes = ['monthly', 'yearly', 'all-time'] } = data;
             
+            // Join the summary room
             socket.join(`summaries-${clientId}`);
             
+            // Send current summary data
             const EmissionSummary = require('./models/EmissionSummary');
             const summaries = {};
             
@@ -384,12 +321,14 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 🆕 Handle real-time summary calculation requests
     socket.on('calculate-summary', async (data) => {
         try {
             const { clientId, periodType = 'monthly', year, month } = data;
             
             console.log(`📊 Real-time summary calculation requested for client: ${clientId}`);
             
+            // Trigger summary calculation
             const { recalculateAndSaveSummary } = calculationSummaryController;
             const summary = await recalculateAndSaveSummary(
                 clientId, 
@@ -399,6 +338,7 @@ io.on('connection', (socket) => {
             );
             
             if (summary) {
+                // Emit updated summary to all clients in the room
                 io.to(`summaries-${clientId}`).emit('summary-calculated', {
                     clientId,
                     summaryId: summary._id,
@@ -408,6 +348,7 @@ io.on('connection', (socket) => {
                     timestamp: new Date()
                 });
                 
+                // Send success confirmation to requesting client
                 socket.emit('summary-calculation-complete', {
                     success: true,
                     summaryId: summary._id,
@@ -428,11 +369,8 @@ io.on('connection', (socket) => {
             });
         }
     });
-
-    // ========================================================================
-    // 📨 NOTIFICATION SOCKET HANDLERS
-    // ========================================================================
     
+    // 📨 Send initial notification data
     socket.on('requestNotifications', async () => {
         try {
             const notifications = await Notification.getNotificationsForUser(socket.user, {
@@ -462,18 +400,21 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 📖 Handle mark as read
     socket.on('markNotificationAsRead', async (notificationId) => {
         try {
             const notification = await Notification.findById(notificationId);
             if (notification && await notification.canBeViewedBy(socket.user)) {
                 await notification.markAsReadBy(socket.userId);
                 
+                // Emit updated read status
                 socket.emit('notificationReadStatusUpdate', {
                     notificationId,
                     isRead: true,
                     readAt: new Date()
                 });
                 
+                // Update unread count
                 const unreadCount = await getUnreadCountForUser(socket.user);
                 socket.emit('unreadCountUpdate', { unreadCount });
             }
@@ -481,11 +422,8 @@ io.on('connection', (socket) => {
             console.error('Error marking notification as read:', error);
         }
     });
-
-    // ========================================================================
-    // 📊 IOT & DASHBOARD SOCKET HANDLERS
-    // ========================================================================
     
+    // 📊 Handle IoT data requests
     socket.on('requestLatestIoTData', async () => {
         try {
             const IOTData = require('./models/IOTData');
@@ -499,6 +437,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 🎯 Handle dashboard data requests
     socket.on('requestDashboardData', async (dashboardType) => {
         try {
             const { 
@@ -507,6 +446,7 @@ io.on('connection', (socket) => {
                 getOrganizationOverviewDashboard 
             } = require('./controllers/CMS/clientController');
             
+            // Create a mock request/response object for the controller
             const mockReq = {
                 user: socket.user,
                 params: {},
@@ -516,6 +456,7 @@ io.on('connection', (socket) => {
             const mockRes = {
                 status: () => mockRes,
                 json: (data) => {
+                    // Emit the dashboard data to the requesting socket
                     socket.emit('dashboardData', {
                         type: dashboardType,
                         data: data,
@@ -524,6 +465,7 @@ io.on('connection', (socket) => {
                 }
             };
             
+            // Call the appropriate dashboard function
             switch (dashboardType) {
                 case 'metrics':
                     await getDashboardMetrics(mockReq, mockRes);
@@ -554,17 +496,21 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 🔄 Handle real-time dashboard subscriptions
     socket.on('subscribeToDashboard', async (dashboardType) => {
         try {
+            // Join dashboard-specific room
             socket.join(`dashboard_${dashboardType}_${socket.userId}`);
             
             console.log(`📊 User ${socket.user.userName} subscribed to ${dashboardType} dashboard`);
             
+            // Send initial dashboard data
             socket.emit('dashboardSubscribed', {
                 dashboardType,
                 message: `Successfully subscribed to ${dashboardType} dashboard updates`
             });
             
+            // Trigger initial data fetch
             socket.emit('requestDashboardData', dashboardType);
         } catch (error) {
             console.error('Error subscribing to dashboard:', error);
@@ -574,22 +520,21 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ========================================================================
-    // 📋 CLIENT LIST SOCKET HANDLERS
-    // ========================================================================
-    
+    // 🔄 Handle real-time client list requests
     socket.on('requestClients', async (filters = {}) => {
         try {
             const { getClients } = require('./controllers/CMS/clientController');
             
+            // Create mock request/response objects
             const mockReq = {
                 user: socket.user,
-                query: filters
+                query: filters // { stage, status, search, page, limit }
             };
             
             const mockRes = {
                 status: () => mockRes,
                 json: (data) => {
+                    // Emit the clients data to the requesting socket
                     socket.emit('clients_data', {
                         type: 'clients_list',
                         data: data,
@@ -598,6 +543,7 @@ io.on('connection', (socket) => {
                 }
             };
             
+            // Call getClients with mock objects
             await getClients(mockReq, mockRes);
             
         } catch (error) {
@@ -609,11 +555,14 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 📊 Subscribe to client list updates
     socket.on('subscribeToClients', async (filters = {}) => {
         try {
+            // Join client updates room based on user type
             const roomName = `clients_${socket.userType}_${socket.userId}`;
             socket.join(roomName);
             
+            // If filters are provided, join filtered room
             if (filters.stage || filters.status) {
                 const filterRoom = `clients_filtered_${JSON.stringify(filters)}_${socket.userId}`;
                 socket.join(filterRoom);
@@ -626,6 +575,7 @@ io.on('connection', (socket) => {
                 filters: filters
             });
             
+            // Send initial client data
             socket.emit('requestClients', filters);
             
         } catch (error) {
@@ -636,8 +586,10 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 🔄 Unsubscribe from client updates
     socket.on('unsubscribeFromClients', () => {
         try {
+            // Leave all client-related rooms
             const rooms = Array.from(socket.rooms);
             rooms.forEach(room => {
                 if (room.startsWith('clients_')) {
@@ -654,14 +606,17 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 🔍 Handle client search
     socket.on('searchClients', async (searchQuery) => {
         try {
             const Client = require('./models/CMS/Client');
             
             let query = { isDeleted: false };
             
+            // Apply user-based filtering
             switch (socket.user.userType) {
                 case "super_admin":
+                    // Can search all clients
                     break;
                     
                 case "consultant_admin":
@@ -697,6 +652,7 @@ io.on('connection', (socket) => {
                     return;
             }
             
+            // Add search criteria
             if (searchQuery) {
                 query.$and = [
                     ...(query.$and || []),
@@ -732,10 +688,13 @@ io.on('connection', (socket) => {
         }
     });
     
+    // 📊 Get client statistics
     socket.on('requestClientStats', async () => {
         try {
             const Client = require('./models/CMS/Client');
             let query = { isDeleted: false };
+            
+            // Apply user-based filtering similar to above...
             
             const stats = await Client.aggregate([
                 { $match: query },
@@ -827,12 +786,10 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ========================================================================
-    // 📊 DATA COLLECTION SOCKET HANDLERS
-    // ========================================================================
-
+    // Handle data collection events
     socket.on('request-data-status', async (clientId) => {
         try {
+            // Get real-time data collection status
             const DataCollectionConfig = require('./models/Organization/DataCollectionConfig');
             const configs = await DataCollectionConfig.find({ clientId }).lean();
             
@@ -847,12 +804,14 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Handle leaving rooms
     socket.on('leave-client-room', (clientId) => {
         socket.leave(`client-${clientId}`);
         socket.leave(`summaries-${clientId}`);
         console.log(`📡 Socket ${socket.id} left rooms for client: ${clientId}`);
     });
 
+        // 🆕 Subscribe to data completion updates for a client
     socket.on('subscribe-to-data-completion', async (clientId) => {
         try {
             const effectiveClientId = clientId || socket.clientId;
@@ -866,6 +825,7 @@ io.on('connection', (socket) => {
             socket.join(roomName);
             console.log(`📊 Socket ${socket.id} joined data completion room: ${roomName}`);
 
+            // Send initial snapshot immediately
             const stats =
                 await dataCompletionController.calculateDataCompletionStatsForClient(
                     effectiveClientId
@@ -886,6 +846,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 🆕 One-time request for latest data completion stats
     socket.on('request-data-completion', async (clientId) => {
         try {
             const effectiveClientId = clientId || socket.clientId;
@@ -915,14 +876,42 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ========================================================================
-    // 🎫 TICKET SOCKET HANDLERS
-    // ========================================================================
 
+    // 🔌 Handle disconnect
+    socket.on('disconnect', () => {
+        console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
+        connectedUsers.delete(socket.userId);
+    });
+
+    // 🆕 Handle ping for connection health check
+    socket.on('ping', () => {
+        socket.emit('pong', { timestamp: new Date() });
+    });
+
+    // ============================================================================
+// 🎫 TICKET SYSTEM - SOCKET.IO HANDLERS & BROADCAST FUNCTIONS
+// ============================================================================
+
+/**
+ * Ticket-specific Socket.IO event handlers
+ * Add these inside the io.on('connection', (socket) => { ... }) block
+ */
+
+// Place this code inside io.on('connection', (socket) => { ... }) after line ~550
+
+    // ============================================================================
+    // 🎫 TICKET SOCKET HANDLERS
+    // ============================================================================
+
+    /**
+     * Join a specific ticket room for real-time updates
+     * Usage: socket.emit('join-ticket', ticketId)
+     */
     socket.on('join-ticket', async (ticketId) => {
         try {
             const { Ticket } = require('./models/Ticket/Ticket');
             
+            // Verify ticket exists and user has access
             const ticket = await Ticket.findById(ticketId);
             
             if (!ticket) {
@@ -932,6 +921,7 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Check access permissions
             const hasAccess = await checkTicketAccess(socket.user, ticket);
             
             if (!hasAccess) {
@@ -941,9 +931,11 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Join the ticket room
             socket.join(`ticket_${ticketId}`);
             console.log(`🎫 Socket ${socket.id} (${socket.user.userName}) joined ticket room: ${ticketId}`);
             
+            // Notify others in the room about new viewer
             socket.to(`ticket_${ticketId}`).emit('user-joined-ticket', {
                 ticketId,
                 userName: socket.user.userName,
@@ -952,6 +944,7 @@ io.on('connection', (socket) => {
                 timestamp: new Date().toISOString()
             });
 
+            // Send confirmation to user
             socket.emit('ticket-joined', {
                 ticketId,
                 message: 'Successfully joined ticket room',
@@ -967,11 +960,16 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Leave a ticket room
+     * Usage: socket.emit('leave-ticket', ticketId)
+     */
     socket.on('leave-ticket', (ticketId) => {
         try {
             socket.leave(`ticket_${ticketId}`);
             console.log(`🎫 Socket ${socket.id} (${socket.user.userName}) left ticket room: ${ticketId}`);
             
+            // Notify others in the room
             socket.to(`ticket_${ticketId}`).emit('user-left-ticket', {
                 ticketId,
                 userName: socket.user.userName,
@@ -994,6 +992,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Handle typing indicator for ticket comments
+     * Usage: socket.emit('ticket-typing', { ticketId, isTyping: true })
+     */
     socket.on('ticket-typing', (data) => {
         try {
             const { ticketId, isTyping } = data;
@@ -1004,11 +1006,12 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Broadcast to others in the ticket room
             socket.to(`ticket_${ticketId}`).emit('user-typing-ticket', {
                 ticketId,
                 userName: socket.user.userName,
                 userId: socket.userId,
-                isTyping: isTyping !== false,
+                isTyping: isTyping !== false, // default to true
                 timestamp: new Date().toISOString()
             });
 
@@ -1017,6 +1020,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Handle ticket viewing indicator (who's currently viewing)
+     * Usage: socket.emit('ticket-viewing', ticketId)
+     */
     socket.on('ticket-viewing', async (ticketId) => {
         try {
             if (!ticketId) {
@@ -1025,6 +1032,7 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Broadcast to others in the room
             socket.to(`ticket_${ticketId}`).emit('user-viewing-ticket', {
                 ticketId,
                 userName: socket.user.userName,
@@ -1033,6 +1041,7 @@ io.on('connection', (socket) => {
                 timestamp: new Date().toISOString()
             });
 
+            // Update view count in database (optional, can be done on API call instead)
             const { Ticket } = require('./models/Ticket/Ticket');
             const ticket = await Ticket.findById(ticketId);
             
@@ -1046,6 +1055,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Request ticket details with real-time data
+     * Usage: socket.emit('request-ticket-details', ticketId)
+     */
     socket.on('request-ticket-details', async (ticketId) => {
         try {
             const { Ticket } = require('./models/Ticket/Ticket');
@@ -1064,6 +1077,7 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Check access
             const hasAccess = await checkTicketAccess(socket.user, ticket);
             if (!hasAccess) {
                 return socket.emit('ticket-error', {
@@ -1072,6 +1086,7 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Get activities
             const activities = await TicketActivity.find({
                 ticket: ticketId,
                 isDeleted: false
@@ -1079,6 +1094,7 @@ io.on('connection', (socket) => {
                 .populate('createdBy', 'userName email userType')
                 .sort({ createdAt: 1 });
 
+            // Filter internal comments based on user role
             const supportRoles = ['super_admin', 'consultant_admin', 'consultant'];
             const visibleActivities = activities.filter(activity => {
                 if (activity.comment?.isInternal) {
@@ -1087,6 +1103,7 @@ io.on('connection', (socket) => {
                 return true;
             });
 
+            // Calculate SLA info
             const slaInfo = {
                 dueDate: ticket.dueDate,
                 isOverdue: ticket.isOverdue(),
@@ -1110,6 +1127,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Subscribe to ticket list updates for a client
+     * Usage: socket.emit('subscribe-to-tickets', { clientId, filters })
+     */
     socket.on('subscribe-to-tickets', async (data) => {
         try {
             const { clientId, filters = {} } = data;
@@ -1121,13 +1142,16 @@ io.on('connection', (socket) => {
                 });
             }
 
+            // Join client ticket room
             socket.join(`client-tickets_${effectiveClientId}`);
             console.log(`🎫 Socket ${socket.id} subscribed to tickets for client: ${effectiveClientId}`);
 
+            // Get initial ticket list
             const { Ticket } = require('./models/Ticket/Ticket');
             
             const query = { clientId: effectiveClientId };
             
+            // Apply filters
             if (filters.status) {
                 query.status = Array.isArray(filters.status) 
                     ? { $in: filters.status }
@@ -1170,6 +1194,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Unsubscribe from ticket updates
+     * Usage: socket.emit('unsubscribe-from-tickets', clientId)
+     */
     socket.on('unsubscribe-from-tickets', (clientId) => {
         try {
             const effectiveClientId = clientId || socket.clientId;
@@ -1185,6 +1213,10 @@ io.on('connection', (socket) => {
         }
     });
 
+    /**
+     * Request ticket statistics
+     * Usage: socket.emit('request-ticket-stats', clientId)
+     */
     socket.on('request-ticket-stats', async (clientId) => {
         try {
             const effectiveClientId = clientId || socket.clientId;
@@ -1197,22 +1229,26 @@ io.on('connection', (socket) => {
 
             const { Ticket } = require('./models/Ticket/Ticket');
 
+            // Get counts by status
             const statusCounts = await Ticket.aggregate([
                 { $match: { clientId: effectiveClientId } },
                 { $group: { _id: '$status', count: { $sum: 1 } } }
             ]);
 
+            // Get counts by priority
             const priorityCounts = await Ticket.aggregate([
                 { $match: { clientId: effectiveClientId } },
                 { $group: { _id: '$priority', count: { $sum: 1 } } }
             ]);
 
+            // Get overdue count
             const overdueCount = await Ticket.countDocuments({
                 clientId: effectiveClientId,
                 status: { $nin: ['resolved', 'closed', 'cancelled'] },
                 dueDate: { $lt: new Date() }
             });
 
+            // Get my tickets count
             const myTicketsCount = await Ticket.countDocuments({
                 clientId: effectiveClientId,
                 $or: [
@@ -1251,31 +1287,379 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ========================================================================
-    // 🔌 COMMON SOCKET HANDLERS
-    // ========================================================================
-
-    socket.on('disconnect', () => {
-        console.log(`🔌 Client disconnected: ${socket.user.userName} (${socket.id})`);
-        connectedUsers.delete(socket.userId);
-    });
-
-    socket.on('ping', () => {
-        socket.emit('pong', { timestamp: new Date() });
-    });
-
-}); // END OF io.on('connection')
-
 // ============================================================================
-// 🌐 GLOBAL IO INSTANCE
+// 🎫 TICKET BROADCAST FUNCTIONS (Place outside io.on('connection') block)
 // ============================================================================
 
+/**
+ * Helper function to check ticket access
+ */
+async function checkTicketAccess(user, ticket) {
+    try {
+        const userId = user.id || user._id?.toString() || user._id;
+        
+        // Super admin has access to all
+        if (user.userType === 'super_admin') {
+            return true;
+        }
+
+        // Check if user's client matches ticket's client
+        if (user.clientId === ticket.clientId) {
+            // Client employee head - check department
+            if (user.userType === 'client_employee_head') {
+                const User = require('./models/User');
+                const creator = await User.findById(ticket.createdBy);
+                return creator && creator.department === user.department;
+            }
+            
+            // Employee can only view own tickets
+            if (user.userType === 'employee') {
+                return ticket.createdBy.toString() === userId;
+            }
+            
+            // Viewer can only view own tickets
+            if (user.userType === 'viewer') {
+                return ticket.createdBy.toString() === userId;
+            }
+            
+            // Other client roles (client_admin, auditor) can view all client tickets
+            return true;
+        }
+
+        // Check consultant access
+        if (['consultant_admin', 'consultant'].includes(user.userType)) {
+            const Client = require('./models/CMS/Client');
+            const client = await Client.findOne({ clientId: ticket.clientId });
+            
+            if (!client) return false;
+            
+            // Consultant admin who created the lead
+            if (user.userType === 'consultant_admin') {
+                if (client.leadInfo?.createdBy?.toString() === userId) {
+                    return true;
+                }
+            }
+            
+            // Assigned consultant
+            if (client.workflowTracking?.assignedConsultantId?.toString() === userId) {
+                return true;
+            }
+        }
+
+        return false;
+    } catch (error) {
+        console.error('Error checking ticket access:', error);
+        return false;
+    }
+}
+
+/**
+ * Broadcast ticket created event
+ */
+async function broadcastTicketCreated(ticketData) {
+    try {
+        const { clientId, ticketId, ticket } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket created: ${ticketId} for client ${clientId}`);
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-created', {
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'created',
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket created:', error);
+    }
+}
+
+/**
+ * Broadcast ticket updated event
+ */
+async function broadcastTicketUpdated(ticketData) {
+    try {
+        const { clientId, ticketId, changes } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket updated: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-updated', {
+            ticketId,
+            changes,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'updated',
+            ticketId,
+            changes,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket updated:', error);
+    }
+}
+
+/**
+ * Broadcast ticket status changed event
+ */
+async function broadcastTicketStatusChanged(ticketData) {
+    try {
+        const { clientId, ticketId, status, ticket } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket status changed: ${ticketId} -> ${status}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-status-changed', {
+            ticketId,
+            status,
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-status-changed', {
+            ticketId,
+            status,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'status_changed',
+            ticketId,
+            status,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket status changed:', error);
+    }
+}
+
+/**
+ * Broadcast ticket assigned event
+ */
+async function broadcastTicketAssigned(ticketData) {
+    try {
+        const { clientId, ticketId, assignedTo } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket assigned: ${ticketId} to ${assignedTo.userName}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-assigned', {
+            ticketId,
+            assignedTo,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to assignee's personal room
+        io.to(`user_${assignedTo._id}`).emit('ticket-assigned-to-me', {
+            ticketId,
+            message: 'A ticket has been assigned to you',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'assigned',
+            ticketId,
+            assignedTo,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket assigned:', error);
+    }
+}
+
+/**
+ * Broadcast new comment on ticket
+ */
+async function broadcastTicketComment(commentData) {
+    try {
+        const { clientId, ticketId, activity, isInternal } = commentData;
+        
+        console.log(`🎫 Broadcasting ticket comment: ${ticketId}${isInternal ? ' (internal)' : ''}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-new-comment', {
+            ticketId,
+            activity,
+            timestamp: new Date().toISOString()
+        });
+
+        // If not internal, broadcast to client room too
+        if (!isInternal) {
+            io.to(`client_${clientId}`).emit('ticket-activity', {
+                ticketId,
+                activityType: 'comment',
+                timestamp: new Date().toISOString()
+            });
+        }
+
+    } catch (error) {
+        console.error('Error broadcasting ticket comment:', error);
+    }
+}
+
+/**
+ * Broadcast ticket escalated event
+ */
+async function broadcastTicketEscalated(ticketData) {
+    try {
+        const { clientId, ticketId, escalationLevel } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket escalated: ${ticketId} - Level ${escalationLevel}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-escalated', {
+            ticketId,
+            escalationLevel,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-escalated', {
+            ticketId,
+            escalationLevel,
+            priority: 'high',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to admin rooms for immediate attention
+        io.to('userType_super_admin').emit('ticket-escalated-alert', {
+            ticketId,
+            clientId,
+            escalationLevel,
+            message: 'A ticket requires immediate attention',
+            timestamp: new Date().toISOString()
+        });
+
+        io.to('userType_consultant_admin').emit('ticket-escalated-alert', {
+            ticketId,
+            clientId,
+            escalationLevel,
+            message: 'A ticket requires immediate attention',
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket escalated:', error);
+    }
+}
+
+/**
+ * Broadcast ticket attachment added
+ */
+async function broadcastTicketAttachment(attachmentData) {
+    try {
+        const { clientId, ticketId, attachments } = attachmentData;
+        
+        console.log(`🎫 Broadcasting ticket attachment added: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-attachment-added', {
+            ticketId,
+            attachments,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket attachment:', error);
+    }
+}
+
+/**
+ * Broadcast ticket deleted
+ */
+async function broadcastTicketDeleted(ticketData) {
+    try {
+        const { clientId, ticketId } = ticketData;
+        
+        console.log(`🎫 Broadcasting ticket deleted: ${ticketId}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-deleted', {
+            ticketId,
+            message: 'This ticket has been deleted',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client tickets room
+        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
+            action: 'deleted',
+            ticketId,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting ticket deleted:', error);
+    }
+}
+
+/**
+ * Broadcast SLA warning or breach
+ */
+async function broadcastSLAAlert(alertData) {
+    try {
+        const { clientId, ticketId, type, ticket } = alertData;
+        
+        console.log(`🎫 Broadcasting SLA alert: ${ticketId} - ${type}`);
+
+        // Emit to ticket room
+        io.to(`ticket_${ticketId}`).emit('ticket-sla-alert', {
+            ticketId,
+            type, // 'warning' or 'breach'
+            ticket,
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to client room
+        io.to(`client_${clientId}`).emit('ticket-sla-alert', {
+            ticketId,
+            type,
+            priority: type === 'breach' ? 'critical' : 'high',
+            timestamp: new Date().toISOString()
+        });
+
+        // Emit to admin rooms
+        io.to('userType_super_admin').emit('sla-alert', alertData);
+        io.to('userType_consultant_admin').emit('sla-alert', alertData);
+
+    } catch (error) {
+        console.error('Error broadcasting SLA alert:', error);
+    }
+}
+
+// Make broadcast functions globally available
+global.broadcastTicketCreated = broadcastTicketCreated;
+global.broadcastTicketUpdated = broadcastTicketUpdated;
+global.broadcastTicketStatusChanged = broadcastTicketStatusChanged;
+global.broadcastTicketAssigned = broadcastTicketAssigned;
+global.broadcastTicketComment = broadcastTicketComment;
+global.broadcastTicketEscalated = broadcastTicketEscalated;
+global.broadcastTicketAttachment = broadcastTicketAttachment;
+global.broadcastTicketDeleted = broadcastTicketDeleted;
+global.broadcastSLAAlert = broadcastSLAAlert;
+
+console.log('✅ Ticket broadcast functions registered globally');
+
+});
+
+// 🌐 Make io globally accessible for notifications
 global.io = io;
 
-// ============================================================================
-// 📨 NOTIFICATION BROADCAST FUNCTIONS (OUTSIDE CONNECTION HANDLER)
-// ============================================================================
-
+// 📨 Real-time Notification Broadcasting Functions
 const broadcastNotification = async (notification) => {
     try {
         const populatedNotification = await Notification.findById(notification._id)
@@ -1293,14 +1677,17 @@ const broadcastNotification = async (notification) => {
             attachments: populatedNotification.attachments
         };
         
+        // Get target users
         const targetUsers = await getTargetUsersForNotification(populatedNotification);
         
+        // Broadcast to specific users
         for (const user of targetUsers) {
             const userConnection = connectedUsers.get(user._id.toString());
             
             if (userConnection) {
                 io.to(`user_${user._id}`).emit('newNotification', notificationData);
                 
+                // Update unread count for connected user
                 const unreadCount = await getUnreadCountForUser(user);
                 io.to(`user_${user._id}`).emit('unreadCountUpdate', { unreadCount });
                 
@@ -1315,9 +1702,11 @@ const broadcastNotification = async (notification) => {
     }
 };
 
+// 🎯 Get target users for notification
 const getTargetUsersForNotification = async (notification) => {
     const targetUsers = [];
     
+    // Specific users
     if (notification.targetUsers.length > 0) {
         const users = await User.find({
             _id: { $in: notification.targetUsers },
@@ -1326,6 +1715,7 @@ const getTargetUsersForNotification = async (notification) => {
         targetUsers.push(...users);
     }
     
+    // User types
     if (notification.targetUserTypes.length > 0) {
         const users = await User.find({
             userType: { $in: notification.targetUserTypes },
@@ -1334,6 +1724,7 @@ const getTargetUsersForNotification = async (notification) => {
         targetUsers.push(...users);
     }
     
+    // Client-specific
     if (notification.targetClients.length > 0) {
         const users = await User.find({
             clientId: { $in: notification.targetClients },
@@ -1342,6 +1733,7 @@ const getTargetUsersForNotification = async (notification) => {
         targetUsers.push(...users);
     }
     
+    // Remove duplicates
     const uniqueUsers = targetUsers.filter((user, index, self) => 
         index === self.findIndex(u => u._id.toString() === user._id.toString())
     );
@@ -1349,6 +1741,7 @@ const getTargetUsersForNotification = async (notification) => {
     return uniqueUsers;
 };
 
+// 📊 Get unread count for user
 const getUnreadCountForUser = async (user) => {
     try {
         const targetingConditions = [
@@ -1390,6 +1783,7 @@ const getUnreadCountForUser = async (user) => {
     }
 };
 
+// 🔄 Real-time Dashboard Update Functions
 const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
     try {
         const updateData = {
@@ -1399,10 +1793,12 @@ const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
         };
         
         if (targetUsers.length > 0) {
+            // Send to specific users
             targetUsers.forEach(userId => {
                 io.to(`user_${userId}`).emit('dashboard_update', updateData);
             });
         } else {
+            // Broadcast to all relevant users based on update type
             switch (updateType) {
                 case 'workflow_tracking':
                     io.to('userType_super_admin').emit('dashboard_update', updateData);
@@ -1428,285 +1824,26 @@ const broadcastDashboardUpdate = async (updateType, data, targetUsers = []) => {
     }
 };
 
-// ============================================================================
-// 🎫 TICKET BROADCAST FUNCTIONS (OUTSIDE CONNECTION HANDLER)
-// ============================================================================
-
-async function broadcastTicketCreated(ticketData) {
-    try {
-        const { clientId, ticketId, ticket } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket created: ${ticketId} for client ${clientId}`);
-
-        io.to(`client_${clientId}`).emit('ticket-created', {
-            ticket,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
-            action: 'created',
-            ticket,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket created:', error);
-    }
-}
-
-async function broadcastTicketUpdated(ticketData) {
-    try {
-        const { clientId, ticketId, changes } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket updated: ${ticketId}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-updated', {
-            ticketId,
-            changes,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
-            action: 'updated',
-            ticketId,
-            changes,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket updated:', error);
-    }
-}
-
-async function broadcastTicketStatusChanged(ticketData) {
-    try {
-        const { clientId, ticketId, status, ticket } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket status changed: ${ticketId} -> ${status}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-status-changed', {
-            ticketId,
-            status,
-            ticket,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client_${clientId}`).emit('ticket-status-changed', {
-            ticketId,
-            status,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
-            action: 'status_changed',
-            ticketId,
-            status,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket status changed:', error);
-    }
-}
-
-async function broadcastTicketAssigned(ticketData) {
-    try {
-        const { clientId, ticketId, assignedTo } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket assigned: ${ticketId} to ${assignedTo.userName}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-assigned', {
-            ticketId,
-            assignedTo,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`user_${assignedTo._id}`).emit('ticket-assigned-to-me', {
-            ticketId,
-            message: 'A ticket has been assigned to you',
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
-            action: 'assigned',
-            ticketId,
-            assignedTo,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket assigned:', error);
-    }
-}
-
-async function broadcastTicketComment(commentData) {
-    try {
-        const { clientId, ticketId, activity, isInternal } = commentData;
-        
-        console.log(`🎫 Broadcasting ticket comment: ${ticketId}${isInternal ? ' (internal)' : ''}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-new-comment', {
-            ticketId,
-            activity,
-            timestamp: new Date().toISOString()
-        });
-
-        if (!isInternal) {
-            io.to(`client_${clientId}`).emit('ticket-activity', {
-                ticketId,
-                activityType: 'comment',
-                timestamp: new Date().toISOString()
-            });
-        }
-
-    } catch (error) {
-        console.error('Error broadcasting ticket comment:', error);
-    }
-}
-
-async function broadcastTicketEscalated(ticketData) {
-    try {
-        const { clientId, ticketId, escalationLevel } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket escalated: ${ticketId} - Level ${escalationLevel}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-escalated', {
-            ticketId,
-            escalationLevel,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client_${clientId}`).emit('ticket-escalated', {
-            ticketId,
-            escalationLevel,
-            priority: 'high',
-            timestamp: new Date().toISOString()
-        });
-
-        io.to('userType_super_admin').emit('ticket-escalated-alert', {
-            ticketId,
-            clientId,
-            escalationLevel,
-            message: 'A ticket requires immediate attention',
-            timestamp: new Date().toISOString()
-        });
-
-        io.to('userType_consultant_admin').emit('ticket-escalated-alert', {
-            ticketId,
-            clientId,
-            escalationLevel,
-            message: 'A ticket requires immediate attention',
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket escalated:', error);
-    }
-}
-
-async function broadcastTicketAttachment(attachmentData) {
-    try {
-        const { clientId, ticketId, attachments } = attachmentData;
-        
-        console.log(`🎫 Broadcasting ticket attachment added: ${ticketId}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-attachment-added', {
-            ticketId,
-            attachments,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket attachment:', error);
-    }
-}
-
-async function broadcastTicketDeleted(ticketData) {
-    try {
-        const { clientId, ticketId } = ticketData;
-        
-        console.log(`🎫 Broadcasting ticket deleted: ${ticketId}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-deleted', {
-            ticketId,
-            message: 'This ticket has been deleted',
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client-tickets_${clientId}`).emit('ticket-list-updated', {
-            action: 'deleted',
-            ticketId,
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('Error broadcasting ticket deleted:', error);
-    }
-}
-
-async function broadcastSLAAlert(alertData) {
-    try {
-        const { clientId, ticketId, type, ticket } = alertData;
-        
-        console.log(`🎫 Broadcasting SLA alert: ${ticketId} - ${type}`);
-
-        io.to(`ticket_${ticketId}`).emit('ticket-sla-alert', {
-            ticketId,
-            type,
-            ticket,
-            timestamp: new Date().toISOString()
-        });
-
-        io.to(`client_${clientId}`).emit('ticket-sla-alert', {
-            ticketId,
-            type,
-            priority: type === 'breach' ? 'critical' : 'high',
-            timestamp: new Date().toISOString()
-        });
-
-        io.to('userType_super_admin').emit('sla-alert', alertData);
-        io.to('userType_consultant_admin').emit('sla-alert', alertData);
-
-    } catch (error) {
-        console.error('Error broadcasting SLA alert:', error);
-    }
-}
-
-// ============================================================================
-// 🌐 EXPORT BROADCAST FUNCTIONS AS GLOBALS
-// ============================================================================
-
+// Export broadcast functions for use in controllers
 global.broadcastNotification = broadcastNotification;
 global.broadcastDashboardUpdate = broadcastDashboardUpdate;
 global.getUnreadCountForUser = getUnreadCountForUser;
-global.getTargetUsersForNotification = getTargetUsersForNotification;
+global.getTargetUsersForNotification = getTargetUsersForNotification
+// For DataEntry / emissions
 global.broadcastDataCompletionUpdate = broadcastDataCompletionUpdate;
+// For NetReductionEntry / reduction projects
 global.broadcastNetReductionCompletionUpdate = broadcastNetReductionCompletionUpdate;
 
-// Ticket broadcast functions
-global.broadcastTicketCreated = broadcastTicketCreated;
-global.broadcastTicketUpdated = broadcastTicketUpdated;
-global.broadcastTicketStatusChanged = broadcastTicketStatusChanged;
-global.broadcastTicketAssigned = broadcastTicketAssigned;
-global.broadcastTicketComment = broadcastTicketComment;
-global.broadcastTicketEscalated = broadcastTicketEscalated;
-global.broadcastTicketAttachment = broadcastTicketAttachment;
-global.broadcastTicketDeleted = broadcastTicketDeleted;
-global.broadcastSLAAlert = broadcastSLAAlert;
 
-console.log('✅ All broadcast functions registered globally');
-
-// ============================================================================
-// 🔄 PERIODIC SUMMARY HEALTH CHECK
-// ============================================================================
-
+// 🆕 Periodic summary health check and updates
 setInterval(async () => {
   try {
     const now = new Date();
     
+    // Check for clients that need summary updates
     const DataEntry = require('./models/Organization/DataEntry');
     const recentEntries = await DataEntry.find({
-      timestamp: { $gte: new Date(now.getTime() - 60 * 60 * 1000) },
+      timestamp: { $gte: new Date(now.getTime() - 60 * 60 * 1000) }, // Last hour
       calculatedEmissions: { $exists: true },
       summaryUpdateStatus: { $ne: 'completed' }
     }).distinct('clientId');
@@ -1716,6 +1853,7 @@ setInterval(async () => {
       
       for (const clientId of recentEntries) {
         try {
+          // Update current month summary
           const { recalculateAndSaveSummary } = calculationSummaryController;
           const monthlySummary = await recalculateAndSaveSummary(
             clientId,
@@ -1725,6 +1863,7 @@ setInterval(async () => {
           );
           
           if (monthlySummary) {
+            // Emit update to connected clients
             io.to(`summaries-${clientId}`).emit('summary-auto-updated', {
               clientId,
               summaryId: monthlySummary._id,
@@ -1741,11 +1880,10 @@ setInterval(async () => {
   } catch (error) {
     console.error('Error in periodic summary check:', error);
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000); // Every 5 minutes
 
-// ============================================================================
-// 🗄️ DATABASE CONNECTION AND SERVER STARTUP
-// ============================================================================
+// Initialize MQTT subscriber variable
+// let mqttSubscriber = null;
 
 // Connect to Database and start services
 connectDB().then(() => {
@@ -1753,6 +1891,8 @@ connectDB().then(() => {
     
     // Initialize Super Admin account
     initializeSuperAdmin();
+    
+    
     
     // Schedule cron job to check expired subscriptions daily at midnight
     cron.schedule('0 0 * * *', () => {
@@ -1776,10 +1916,13 @@ connectDB().then(() => {
       }
     })();
     
-    // Start API Key Expiry Checker
+     // ✅ NEW: Start API Key Expiry Checker
     console.log('🔐 Starting API Key expiry checker...');
     startApiKeyExpiryChecker();
 
+    // Initialize MQTT Subscriber
+    // global.mqttSubscriber = new MQTTSubscriber();
+    
     // Schedule cron jobs
     cron.schedule('0 2 * * *', async () => {
       console.log('🔄 Running daily subscription check...');
@@ -1790,7 +1933,7 @@ connectDB().then(() => {
     process.exit(1);
 });
 
-// Enhanced scheduled notifications with real-time broadcasting
+// 🔄 Enhanced scheduled notifications with real-time broadcasting
 cron.schedule('*/5 * * * *', async () => {
     console.log('🔄 Checking for scheduled notifications...');
     
@@ -1834,11 +1977,17 @@ cron.schedule('*/10 * * * *', async () => {
   }
 });
 
+
 // Start Server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`📡 Socket.IO server running with authentication`);
+    // console.log(`📨 Real-time notifications enabled`);
+    // console.log(`📊 Real-time summary updates enabled`);
+    // console.log(`🔗 MQTT broker: 13.233.116.100:1883`);
+    // console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+    // console.log(`📊 System status: http://localhost:${PORT}/api/system/status`);
 });
 
 module.exports = { app, server, io };
