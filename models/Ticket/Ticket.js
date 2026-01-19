@@ -1,5 +1,5 @@
 // models/Ticket/Ticket.js
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 const { Schema } = mongoose;
 
 /**
@@ -8,246 +8,255 @@ const { Schema } = mongoose;
  */
 const ticketCounterSchema = new Schema({
   _id: { type: String, required: true }, // e.g., "ticket_2024"
-  seq: { type: Number, default: 0 }
+  seq: { type: Number, default: 0 },
 });
 
-const TicketCounter = mongoose.model('TicketCounter', ticketCounterSchema);
+// Prevent OverwriteModelError in dev/hot-reload
+const TicketCounter =
+  mongoose.models.TicketCounter || mongoose.model("TicketCounter", ticketCounterSchema);
 
 /**
  * Attachment sub-schema
  */
-const attachmentSchema = new Schema({
-  filename: { type: String, required: true },
-  fileUrl: { type: String, required: true },
-  s3Key: { type: String, required: true },
-  bucket: { type: String, required: true },
-  uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  uploadedAt: { type: Date, default: Date.now },
-  fileSize: { type: Number }, // bytes
-  mimeType: { type: String }
-}, { _id: true });
+const attachmentSchema = new Schema(
+  {
+    filename: { type: String, required: true },
+    fileUrl: { type: String, required: true },
+    s3Key: { type: String, required: true },
+    bucket: { type: String, required: true },
+    uploadedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    uploadedAt: { type: Date, default: Date.now },
+    fileSize: { type: Number }, // bytes
+    mimeType: { type: String },
+  },
+  { _id: true }
+);
 
 /**
  * Related entities for context linking
  */
-const relatedEntitiesSchema = new Schema({
-  flowchartId: { type: String },
-  nodeId: { type: String },
-  scopeIdentifier: { type: String },
-  dataEntryId: { type: Schema.Types.ObjectId, ref: 'DataEntry' },
-  summaryId: { type: Schema.Types.ObjectId, ref: 'EmissionSummary' },
-  processFlowId: { type: String }
-}, { _id: false });
+const relatedEntitiesSchema = new Schema(
+  {
+    flowchartId: { type: String },
+    nodeId: { type: String },
+    scopeIdentifier: { type: String },
+    dataEntryId: { type: Schema.Types.ObjectId, ref: "DataEntry" },
+    summaryId: { type: Schema.Types.ObjectId, ref: "EmissionSummary" },
+    processFlowId: { type: String },
+  },
+  { _id: false }
+);
 
 /**
  * Last viewed by tracking
  */
-const lastViewedBySchema = new Schema({
-  userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  viewedAt: { type: Date, default: Date.now }
-}, { _id: false });
+const lastViewedBySchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    viewedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 /**
  * Resolution details
  */
-const resolutionSchema = new Schema({
-  resolvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-  resolutionNotes: { type: String },
-  resolutionDate: { type: Date },
-  satisfactionRating: { type: Number, min: 1, max: 5 },
-  userFeedback: { type: String }
-}, { _id: false });
+const resolutionSchema = new Schema(
+  {
+    resolvedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    resolutionNotes: { type: String },
+    resolutionDate: { type: Date },
+    satisfactionRating: { type: Number, min: 1, max: 5 },
+    userFeedback: { type: String },
+  },
+  { _id: false }
+);
 
 /**
  * Main Ticket Schema
  */
-const ticketSchema = new Schema({
-  // Unique ticket identifier
-  ticketId: {
-    type: String,
-    unique: true,
-    required: true
-  },
+const ticketSchema = new Schema(
+  {
+    // Unique ticket identifier
+    ticketId: {
+      type: String,
+      unique: true,
+      required: true,
+      index: true,
+    },
 
-  // Client & User Context
-  clientId: {
-    type: String,
-    required: true,
-    index: true
-  },
-  
-  createdBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  
-  createdByType: {
-    type: String,
-    required: true,
-    enum: ['super_admin', 'consultant_admin', 'consultant', 'client_admin', 
-           'client_employee_head', 'employee', 'auditor', 'viewer']
-  },
-  
-  assignedTo: {
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  
-  assignedToType: {
-    type: String,
-    enum: ['super_admin', 'consultant_admin', 'consultant', 'client_admin', 
-           'client_employee_head', 'employee']
-  },
+    // Client & User Context
+    clientId: {
+      type: String,
+      required: true,
+      index: true,
+    },
 
-  // Ticket Details
-  category: {
-    type: String,
-    required: true,
-    enum: ['Data Issues', 'Flowchart/Process Issues', 'System Access', 
-           'Feature Requests', 'Technical Support', 'Compliance & Audit', 
-           'Billing & Subscription']
-  },
-  
-  subCategory: {
-    type: String
-  },
-  
-  subject: {
-    type: String,
-    required: true,
-    maxlength: 200
-  },
-  
-  description: {
-    type: String,
-    required: true
-  },
-  
-  priority: {
-    type: String,
-    required: true,
-    enum: ['critical', 'high', 'medium', 'low'],
-    default: 'medium'
-  },
-  
-  status: {
-    type: String,
-    required: true,
-    enum: ['draft', 'open', 'assigned', 'in_progress', 'pending_info', 
-           'pending_approval', 'resolved', 'closed', 'reopened', 
-           'escalated', 'cancelled'],
-    default: 'open'
-  },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
 
-  // Related Entities
-  relatedEntities: relatedEntitiesSchema,
+    createdByType: {
+      type: String,
+      required: true,
+      enum: [
+        "super_admin",
+        "consultant_admin",
+        "consultant",
+        "client_admin",
+        "client_employee_head",
+        "employee",
+        "auditor",
+        "viewer",
+        "supportManager",
+        "support",
+      ],
+      index: true,
+    },
 
-  // Attachments
-  attachments: [attachmentSchema],
+    // Owning queue (Support Manager for this ticket)
+    supportManagerId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+      default: null, // allow unassigned → super_admin queue fallback
+    },
 
-  // Timeline Fields
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  },
-  
-  firstResponseAt: {
-    type: Date
-  },
-  
-  resolvedAt: {
-    type: Date
-  },
-  
-  closedAt: {
-    type: Date
-  },
-  
-  dueDate: {
-    type: Date
-  },
+    // Working assignee (Support User after assignment)
+    assignedTo: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
 
-  // Escalation
-  isEscalated: {
-    type: Boolean,
-    default: false
-  },
-  
-  escalatedAt: {
-    type: Date
-  },
-  
-  escalatedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  
-  escalationReason: {
-    type: String
-  },
-  
-  escalationLevel: {
-    type: Number,
-    default: 0,
-    min: 0,
-    max: 3
-  },
+    assignedToType: {
+      type: String,
+      enum: [
+        "super_admin",
+        "consultant_admin",
+        "consultant",
+        "client_admin",
+        "client_employee_head",
+        "employee",
+        "viewer",
+        "auditor",
+        "supportManager",
+        "support",
+      ],
+      default: null, // allow unassigned tickets
+    },
 
-  // Metadata
-  tags: [{
-    type: String
-  }],
-  
-  watchers: [{
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  }],
-  
-  viewCount: {
-    type: Number,
-    default: 0
-  },
-  
-  lastViewedBy: [lastViewedBySchema],
+    // Ticket Details
+    category: {
+      type: String,
+      required: true,
+      enum: [
+        "Data Issues",
+        "Flowchart/Process Issues",
+        "System Access",
+        "Feature Requests",
+        "Technical Support",
+        "Compliance & Audit",
+        "Billing & Subscription",
+      ],
+      index: true,
+    },
 
-  // Resolution
-  resolution: resolutionSchema,
+    subCategory: {
+      type: String,
+    },
 
-  // Approval (for critical changes)
-  requiresApproval: {
-    type: Boolean,
-    default: false
-  },
-  
-  approvalStatus: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending'
-  },
-  
-  approvedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  
-  approvalDate: {
-    type: Date
-  },
+    subject: {
+      type: String,
+      required: true,
+      maxlength: 200,
+    },
 
-  // Sandbox flag
-  sandbox: {
-    type: Boolean,
-    default: false
+    description: {
+      type: String,
+      required: true,
+    },
+
+    priority: {
+      type: String,
+      required: true,
+      enum: ["critical", "high", "medium", "low"],
+      default: "medium",
+      index: true,
+    },
+
+    status: {
+      type: String,
+      required: true,
+      enum: [
+        "draft",
+        "open",
+        "assigned",
+        "in_progress",
+        "pending_info",
+        "pending_approval",
+        "resolved",
+        "closed",
+        "reopened",
+        "escalated",
+        "cancelled",
+      ],
+      default: "open",
+      index: true,
+    },
+
+    // Related Entities
+    relatedEntities: relatedEntitiesSchema,
+
+    // Attachments
+    attachments: [attachmentSchema],
+
+    // Timeline Fields (timestamps plugin will manage createdAt/updatedAt)
+    firstResponseAt: { type: Date },
+    resolvedAt: { type: Date },
+    closedAt: { type: Date },
+    dueDate: { type: Date, index: true },
+
+    // Escalation
+    isEscalated: { type: Boolean, default: false, index: true },
+    escalatedAt: { type: Date },
+    escalatedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    escalationReason: { type: String },
+    escalationLevel: { type: Number, default: 0, min: 0, max: 3 },
+
+    // Metadata
+    tags: [{ type: String }],
+    watchers: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    viewCount: { type: Number, default: 0 },
+    lastViewedBy: [lastViewedBySchema],
+
+    // SLA/automation state (used by SLA checker: ticket.metadata.*)
+    metadata: { type: Schema.Types.Mixed, default: {} },
+
+    // Resolution
+    resolution: resolutionSchema,
+
+    // Approval (for critical changes)
+    requiresApproval: { type: Boolean, default: false },
+    approvalStatus: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+    },
+    approvedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    approvalDate: { type: Date },
+
+    // Sandbox flag
+    sandbox: { type: Boolean, default: false, index: true },
+  },
+  {
+    timestamps: true, // creates createdAt & updatedAt
   }
-}, {
-  timestamps: true
-});
+);
 
 // ===== INDEXES =====
 ticketSchema.index({ ticketId: 1 }, { unique: true });
@@ -255,14 +264,16 @@ ticketSchema.index({ clientId: 1, status: 1, priority: 1, updatedAt: -1 });
 ticketSchema.index({ assignedTo: 1, status: 1 });
 ticketSchema.index({ createdBy: 1, status: 1 });
 ticketSchema.index({ status: 1, dueDate: 1 });
-ticketSchema.index({ category: 1 });
 ticketSchema.index({ isEscalated: 1, status: 1 });
 ticketSchema.index({ sandbox: 1 });
 
+// Support-manager queue performance
+ticketSchema.index({ supportManagerId: 1, status: 1, updatedAt: -1 });
+
 // Text index for search
-ticketSchema.index({ 
-  subject: 'text', 
-  description: 'text' 
+ticketSchema.index({
+  subject: "text",
+  description: "text",
 });
 
 // ===== STATIC METHODS =====
@@ -271,66 +282,68 @@ ticketSchema.index({
  * Generate next ticket ID
  * Format: TKT-YYYY-00001
  */
-ticketSchema.statics.generateTicketId = async function() {
+ticketSchema.statics.generateTicketId = async function () {
   const year = new Date().getFullYear();
   const counterKey = `ticket_${year}`;
-  
+
   const counter = await TicketCounter.findByIdAndUpdate(
     counterKey,
     { $inc: { seq: 1 } },
     { new: true, upsert: true }
   );
-  
-  const seqStr = String(counter.seq).padStart(5, '0');
+
+  const seqStr = String(counter.seq).padStart(5, "0");
   return `TKT-${year}-${seqStr}`;
 };
 
 /**
  * Calculate SLA due date based on priority
  */
-ticketSchema.statics.calculateDueDate = function(priority, createdAt = new Date()) {
+ticketSchema.statics.calculateDueDate = function (priority, createdAt = new Date()) {
   const SLA_CONFIG = {
-    critical: 4 * 60 * 60 * 1000,          // 4 hours
-    high: 24 * 60 * 60 * 1000,             // 24 hours
-    medium: 3 * 24 * 60 * 60 * 1000,       // 3 days
-    low: 7 * 24 * 60 * 60 * 1000           // 7 days
+    critical: 4 * 60 * 60 * 1000, // 4 hours
+    high: 24 * 60 * 60 * 1000, // 24 hours
+    medium: 3 * 24 * 60 * 60 * 1000, // 3 days
+    low: 7 * 24 * 60 * 60 * 1000, // 7 days
   };
-  
+
   const slaTime = SLA_CONFIG[priority] || SLA_CONFIG.medium;
-  return new Date(createdAt.getTime()  + slaTime);
+  return new Date(createdAt.getTime() + slaTime);
 };
 
 /**
  * Check if ticket is overdue
  */
-ticketSchema.methods.isOverdue = function() {
+ticketSchema.methods.isOverdue = function () {
   if (!this.dueDate) return false;
-  if (['resolved', 'closed', 'cancelled'].includes(this.status)) return false;
+  if (["resolved", "closed", "cancelled"].includes(this.status)) return false;
   return new Date() > this.dueDate;
 };
 
 /**
  * Check if ticket is due soon (80% of SLA elapsed)
  */
-ticketSchema.methods.isDueSoon = function() {
+ticketSchema.methods.isDueSoon = function () {
   if (!this.dueDate) return false;
-  if (['resolved', 'closed', 'cancelled'].includes(this.status)) return false;
-  
+  if (["resolved", "closed", "cancelled"].includes(this.status)) return false;
+
   const now = new Date();
   const created = this.createdAt;
   const due = this.dueDate;
-  
+
   const totalTime = due.getTime() - created.getTime();
+  if (totalTime <= 0) return false;
+
   const elapsed = now.getTime() - created.getTime();
   const percentElapsed = (elapsed / totalTime) * 100;
-  
+
   return percentElapsed >= 80 && percentElapsed < 100;
 };
 
 /**
  * Get time remaining until due (in milliseconds)
  */
-ticketSchema.methods.getTimeRemaining = function() {
+ticketSchema.methods.getTimeRemaining = function () {
   if (!this.dueDate) return null;
   const now = new Date();
   return this.dueDate.getTime() - now.getTime();
@@ -339,10 +352,11 @@ ticketSchema.methods.getTimeRemaining = function() {
 /**
  * Add a watcher
  */
-ticketSchema.methods.addWatcher = function(userId) {
+ticketSchema.methods.addWatcher = function (userId) {
+  if (!userId) return;
   const userIdStr = userId.toString();
-  const watcherIds = this.watchers.map(w => w.toString());
-  
+  const watcherIds = (this.watchers || []).map((w) => w.toString());
+
   if (!watcherIds.includes(userIdStr)) {
     this.watchers.push(userId);
   }
@@ -351,30 +365,31 @@ ticketSchema.methods.addWatcher = function(userId) {
 /**
  * Remove a watcher
  */
-ticketSchema.methods.removeWatcher = function(userId) {
+ticketSchema.methods.removeWatcher = function (userId) {
+  if (!userId) return;
   const userIdStr = userId.toString();
-  this.watchers = this.watchers.filter(w => w.toString() !== userIdStr);
+  this.watchers = (this.watchers || []).filter((w) => w.toString() !== userIdStr);
 };
 
 /**
  * Record view
  */
-ticketSchema.methods.recordView = function(userId) {
-  this.viewCount = 1;
-  
+ticketSchema.methods.recordView = function (userId) {
+  this.viewCount = (this.viewCount || 0) + 1;
+
   // Update or add lastViewedBy entry (limit to 10 recent viewers)
-  const existingIndex = this.lastViewedBy.findIndex(
-    v => v.userId.toString() === userId.toString()
+  const existingIndex = (this.lastViewedBy || []).findIndex(
+    (v) => v.userId.toString() === userId.toString()
   );
-  
+
   if (existingIndex >= 0) {
     this.lastViewedBy[existingIndex].viewedAt = new Date();
   } else {
     this.lastViewedBy.unshift({
       userId: userId,
-      viewedAt: new Date()
+      viewedAt: new Date(),
     });
-    
+
     // Keep only last 10 viewers
     if (this.lastViewedBy.length > 10) {
       this.lastViewedBy = this.lastViewedBy.slice(0, 10);
@@ -384,27 +399,22 @@ ticketSchema.methods.recordView = function(userId) {
 
 // ===== MIDDLEWARE =====
 
-// Update timestamps
-ticketSchema.pre('save', function(next) {
-  this.updatedAt = new Date();
+// assignedToType is required only when assignedTo is set
+ticketSchema.pre("validate", function (next) {
+  if (this.assignedTo && !this.assignedToType) {
+    return next(new Error("assignedToType is required when assignedTo is set"));
+  }
   next();
 });
 
 // Ensure watchers include creator and assignee
-ticketSchema.pre('save', function(next) {
-  // Add creator as watcher
-  if (this.createdBy) {
-    this.addWatcher(this.createdBy);
-  }
-  
-  // Add assignee as watcher
-  if (this.assignedTo) {
-    this.addWatcher(this.assignedTo);
-  }
-  
+ticketSchema.pre("save", function (next) {
+  if (this.createdBy) this.addWatcher(this.createdBy);
+  if (this.assignedTo) this.addWatcher(this.assignedTo);
   next();
 });
 
-const Ticket = mongoose.model('Ticket', ticketSchema);
+// Prevent OverwriteModelError in dev/hot-reload
+const Ticket = mongoose.models.Ticket || mongoose.model("Ticket", ticketSchema);
 
 module.exports = { Ticket, TicketCounter };
