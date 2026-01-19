@@ -5292,9 +5292,9 @@ module.exports = {
   getNodeAssignments,
   getMyAssignments,
   removeAssignment,
-  verifyLoginOTP,          // ← NEW: OTP verification
+  verifyLoginOTP,         
   resendLoginOTP,
-  assignSupportManagerToConsultant,          // ← NEW: Resend OTP
+  assignSupportManagerToConsultant,          
   createSupportManager,
   createSupport,
   getSupportTeam,

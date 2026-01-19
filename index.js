@@ -848,7 +848,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('leave-client-room', (clientId) => {
-        socket.leave(`client-${clientId}`);
+        socket.leave(`client_${clientId}`);
         socket.leave(`summaries-${clientId}`);
         console.log(`📡 Socket ${socket.id} left rooms for client: ${clientId}`);
     });
