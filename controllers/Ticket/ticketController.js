@@ -15,7 +15,6 @@ const {
   notifyTicketCommented,
   notifyTicketEscalated,
   notifyTicketResolved,
-  // 🆕 Support manager notifications
   notifySupportManagerNewTicket,
   notifySupportUserAssigned
 } = require('../../utils/notifications/ticketNotifications');
@@ -65,22 +64,10 @@ async function checkTicketAccess(user, ticket) {
     return true;
   }
 
-  // 🆕 Support Manager - can access tickets for assigned clients/consultants
+  // Support Manager - can access tickets assigned to them
   if (userType === 'supportManager') {
-    // Check if support manager handles this client
-    if (ticket.clientId && user.handlesSupportForClient(ticket.clientId)) {
-      return true;
-    }
-    
-    // Check if support manager handles the ticket creator (if consultant)
-    if (ticket.createdByType === 'consultant' || ticket.createdByType === 'consultant_admin') {
-      if (user.handlesSupportForConsultant(ticket.createdBy)) {
-        return true;
-      }
-    }
-    
-    // Check if assigned to this support manager
-    if (ticket.assignedTo?.toString() === userId) {
+    // Check if this support manager is assigned to the ticket
+    if (ticket.supportManagerId?.toString() === userId) {
       return true;
     }
     
@@ -92,7 +79,7 @@ async function checkTicketAccess(user, ticket) {
     return false;
   }
 
-  // 🆕 Support User - can access tickets assigned to them
+  // Support User - can access tickets assigned to them or managed by their manager
   if (userType === 'support') {
     // Can view if assigned to them
     if (ticket.assignedTo?.toString() === userId) {
@@ -104,11 +91,21 @@ async function checkTicketAccess(user, ticket) {
       return true;
     }
     
+    // Can view if ticket is managed by their support manager
+    if (user.supportManagerId && ticket.supportManagerId?.toString() === user.supportManagerId.toString()) {
+      return true;
+    }
+    
     return false;
   }
 
   // Consultant admin - tickets for clients they created
   if (userType === 'consultant_admin') {
+    // Can access own tickets
+    if (ticket.createdBy.toString() === userId) {
+      return true;
+    }
+    
     const client = await Client.findOne({ 
       clientId: ticket.clientId,
       'leadInfo.createdBy': userId
@@ -116,8 +113,13 @@ async function checkTicketAccess(user, ticket) {
     return !!client;
   }
 
-  // Consultant - tickets for assigned clients
+  // Consultant - tickets for assigned clients or own tickets
   if (userType === 'consultant') {
+    // Can access own tickets
+    if (ticket.createdBy.toString() === userId) {
+      return true;
+    }
+    
     const client = await Client.findOne({ 
       clientId: ticket.clientId,
       'workflowTracking.assignedConsultantId': userId
@@ -134,7 +136,7 @@ async function checkTicketAccess(user, ticket) {
   }
 
   // Client users - tickets for their client only
-  if (['client_admin', 'client_employee_head', 'employee', 'viewer'].includes(userType)) {
+  if (['client_admin', 'client_employee_head', 'employee', 'viewer', 'auditor'].includes(userType)) {
     // Check if ticket belongs to user's client
     if (ticket.clientId !== user.clientId) {
       return false;
@@ -142,6 +144,11 @@ async function checkTicketAccess(user, ticket) {
 
     // Client admin - can view all client tickets
     if (userType === 'client_admin') {
+      return true;
+    }
+
+    // Auditor - can view all client tickets
+    if (userType === 'auditor') {
       return true;
     }
 
@@ -169,6 +176,45 @@ function getUserId(user) {
 }
 
 /**
+ * Get support manager for a ticket creator
+ * Returns supportManagerId based on user type
+ */
+async function getSupportManagerForUser(user, clientId = null) {
+  try {
+    const userType = user.userType;
+    
+    // For client-side users (client_admin, employee_head, employee, auditor)
+    if (['client_admin', 'client_employee_head', 'employee', 'auditor'].includes(userType)) {
+      // Get support manager from client
+      if (clientId || user.clientId) {
+        const client = await Client.findOne({ clientId: clientId || user.clientId });
+        if (client?.supportSection?.assignedSupportManagerId) {
+          return client.supportSection.assignedSupportManagerId;
+        }
+      }
+      
+      // Fallback: Get from user's supportManagerId if exists
+      if (user.supportManagerId) {
+        return user.supportManagerId;
+      }
+    }
+    
+    // For consultant/consultant_admin - use their assigned supportManager
+    if (['consultant', 'consultant_admin'].includes(userType)) {
+      if (user.supportManagerId) {
+        return user.supportManagerId;
+      }
+    }
+    
+    // No support manager found
+    return null;
+  } catch (error) {
+    console.error('[TICKET] Error getting support manager:', error);
+    return null;
+  }
+}
+
+/**
  * Check if user can access client's tickets
  */
 async function canAccessClientTickets(user, clientId) {
@@ -179,14 +225,20 @@ async function canAccessClientTickets(user, clientId) {
     return { allowed: true, reason: 'Super admin access' };
   }
 
-  // 🔧 FIX: Support managers can access assigned clients
+  // Support managers can access tickets they manage
   if (user.userType === 'supportManager') {
-    if (user.handlesSupportForClient(clientId)) {
+    // Check if managing this client
+    if (user.assignedSupportClients?.includes(clientId)) {
       return { allowed: true, reason: 'Support manager access' };
+    }
+    
+    // General support can access all
+    if (user.supportManagerType === 'general_support') {
+      return { allowed: true, reason: 'General support access' };
     }
   }
 
-  // 🔧 FIX: Support users can access if they're assigned to tickets for this client
+  // Support users can access if they belong to the support team managing this client
   if (user.userType === 'support') {
     const client = await Client.findOne({ clientId });
     if (client?.supportSection?.assignedSupportManagerId) {
@@ -286,37 +338,13 @@ async function canViewTicket(user, ticket) {
     return { allowed: true };
   }
 
-  // 🔧 FIX: Support manager and support users
-  if (user.userType === 'supportManager' || user.userType === 'support') {
-    const hasAccess = await checkTicketAccess(user, ticket);
-    if (hasAccess) {
-      return { allowed: true };
-    }
+  // Check general access
+  const hasAccess = await checkTicketAccess(user, ticket);
+  if (hasAccess) {
+    return { allowed: true };
   }
 
-  // Check client access
-  const clientAccess = await canAccessClientTickets(user, ticket.clientId);
-  if (!clientAccess.allowed) {
-    return { allowed: false, reason: 'No access to client' };
-  }
-
-  // Client employee head can only view tickets from their department
-  if (user.userType === 'client_employee_head') {
-    // Check if ticket creator is in the same department
-    const creator = await User.findById(ticket.createdBy);
-    if (creator && creator.department !== user.department) {
-      return { allowed: false, reason: 'Different department' };
-    }
-  }
-
-  // Viewers can only view tickets they created
-  if (user.userType === 'viewer') {
-    if (ticket.createdBy.toString() !== userId) {
-      return { allowed: false, reason: 'Can only view own tickets' };
-    }
-  }
-
-  return { allowed: true };
+  return { allowed: false, reason: 'No access to ticket' };
 }
 
 /**
@@ -330,18 +358,17 @@ async function canModifyTicket(user, ticket) {
     return { allowed: true };
   }
 
-  // 🔧 FIX: Support manager can modify tickets they have access to
+  // Support manager can modify tickets assigned to them
   if (user.userType === 'supportManager') {
-    const hasAccess = await checkTicketAccess(user, ticket);
-    if (hasAccess) {
+    if (ticket.supportManagerId?.toString() === userId) {
       return { allowed: true };
     }
   }
 
-  // 🔧 FIX: Support users can modify assigned tickets (limited)
+  // Support user can modify assigned tickets
   if (user.userType === 'support') {
     if (ticket.assignedTo?.toString() === userId) {
-      return { allowed: true, limited: true };
+      return { allowed: true };
     }
   }
 
@@ -390,32 +417,23 @@ async function canAssignTicket(user, ticket) {
     return { allowed: true };
   }
 
-  // 🔧 FIX: Support manager can assign tickets
+  // Support manager can assign tickets managed by them
   if (user.userType === 'supportManager') {
-    const hasAccess = await checkTicketAccess(user, ticket);
-    if (hasAccess) {
+    if (ticket.supportManagerId?.toString() === userId) {
       return { allowed: true };
     }
   }
 
-  // Client admin can assign within their client
+  // Client admin can assign within their client (limited)
   if (user.userType === 'client_admin' && user.clientId === ticket.clientId) {
-    return { allowed: true };
+    return { allowed: true, limited: true };
   }
 
-  // Consultant admin can assign tickets for their clients
+  // Consultant admin can assign tickets for their clients (limited)
   if (user.userType === 'consultant_admin') {
     const access = await canAccessClientTickets(user, ticket.clientId);
     if (access.allowed) {
-      return { allowed: true };
-    }
-  }
-
-  // Consultant can assign if they have access
-  if (user.userType === 'consultant') {
-    const access = await canAccessClientTickets(user, ticket.clientId);
-    if (access.allowed) {
-      return { allowed: true };
+      return { allowed: true, limited: true };
     }
   }
 
@@ -433,20 +451,31 @@ async function canResolveTicket(user, ticket) {
     return { allowed: true };
   }
 
-  // Assigned user can resolve
-  if (ticket.assignedTo && ticket.assignedTo.toString() === userId) {
-    return { allowed: true };
+  // Support manager can resolve tickets they manage
+  if (user.userType === 'supportManager') {
+    if (ticket.supportManagerId?.toString() === userId) {
+      return { allowed: true };
+    }
   }
 
-  // Client admin can resolve tickets for their client
-  if (user.userType === 'client_admin' && user.clientId === ticket.clientId) {
-    return { allowed: true };
+  // Support user can resolve assigned tickets
+  if (user.userType === 'support') {
+    if (ticket.assignedTo?.toString() === userId) {
+      return { allowed: true };
+    }
   }
 
-  // 🔧 FIX: Support manager and support can resolve tickets
-  if (['consultant_admin', 'consultant', 'supportManager', 'support'].includes(user.userType)) {
+  // Consultant admin can resolve
+  if (user.userType === 'consultant_admin') {
     const access = await canAccessClientTickets(user, ticket.clientId);
     if (access.allowed) {
+      return { allowed: true };
+    }
+  }
+
+  // Consultant can resolve if assigned
+  if (user.userType === 'consultant') {
+    if (ticket.assignedTo && ticket.assignedTo.toString() === userId) {
       return { allowed: true };
     }
   }
@@ -460,7 +489,6 @@ async function canResolveTicket(user, ticket) {
 function canViewComment(user, activity) {
   // Internal comments are only visible to support roles
   if (activity.comment?.isInternal) {
-    // 🔧 FIX: Include supportManager and support
     const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'support'];
     return supportRoles.includes(user.userType);
   }
@@ -493,6 +521,13 @@ async function logActivity(ticketId, activityType, data, userId, userType) {
 /**
  * Create a new ticket
  * POST /api/tickets
+ * 
+ * UPDATED LOGIC:
+ * - For client-side users (client_admin, employee_head, employee, auditor): 
+ *   Auto-assign to client's supportManager
+ * - For consultant-side users (consultant, consultant_admin): 
+ *   Auto-assign to consultant's supportManager
+ * - SupportManager must review and assign to support user
  */
 exports.createTicket = async (req, res) => {
   try {
@@ -555,12 +590,24 @@ exports.createTicket = async (req, res) => {
     // Determine sandbox status
     const isSandbox = client.sandbox === true || req.user.sandbox === true;
 
-    // Create ticket
+    // ===== AUTO-ASSIGN TO SUPPORT MANAGER =====
+    let assignedSupportManagerId = null;
+    
+    // Get the appropriate support manager based on user type
+    assignedSupportManagerId = await getSupportManagerForUser(req.user, clientId);
+    
+    if (!assignedSupportManagerId) {
+      console.warn(`[TICKET] No support manager found for user ${req.user.userName} (${req.user.userType}), clientId: ${clientId}`);
+      // Don't fail ticket creation, just log warning
+    }
+
+    // Create ticket with supportManagerId assigned
     const ticket = new Ticket({
       ticketId,
       clientId,
       createdBy: userId,
       createdByType: req.user.userType,
+      supportManagerId: assignedSupportManagerId, // Auto-assign to support manager
       category,
       subCategory,
       subject,
@@ -587,30 +634,6 @@ exports.createTicket = async (req, res) => {
 
     await ticket.save();
 
-    // 🆕 NOTIFY SUPPORT MANAGER
-    if (client && client.supportSection?.assignedSupportManagerId) {
-      const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
-      
-      if (supportManager) {
-        console.log(`[TICKET] Notifying support manager ${supportManager.userName} about new ticket ${ticket.ticketId}`);
-        
-        // Send notification to support manager
-        await notifySupportManagerNewTicket(ticket, supportManager);
-        
-        // Broadcast via Socket.IO
-        if (global.broadcastTicketCreated) {
-          global.broadcastTicketCreated({
-            ...ticket.toObject(),
-            notifiedSupportManager: {
-              _id: supportManager._id,
-              userName: supportManager.userName,
-              supportTeamName: supportManager.supportTeamName
-            }
-          });
-        }
-      }
-    }
-
     // Log creation activity
     await logActivity(
       ticket._id,
@@ -626,6 +649,35 @@ exports.createTicket = async (req, res) => {
       req.user.userType
     );
 
+    // ===== NOTIFY SUPPORT MANAGER =====
+    if (assignedSupportManagerId) {
+      const supportManager = await User.findById(assignedSupportManagerId);
+      
+      if (supportManager) {
+        console.log(`[TICKET] Notifying support manager ${supportManager.userName} about new ticket ${ticket.ticketId}`);
+        
+        // Send notification to support manager
+        try {
+          await notifySupportManagerNewTicket(ticket, supportManager, req.user);
+        } catch (notifyError) {
+          console.error('[TICKET] Error notifying support manager:', notifyError);
+          // Don't fail ticket creation if notification fails
+        }
+        
+        // Broadcast via Socket.IO
+        if (global.broadcastTicketCreated) {
+          global.broadcastTicketCreated({
+            ...ticket.toObject(),
+            notifiedSupportManager: {
+              _id: supportManager._id,
+              userName: supportManager.userName,
+              supportTeamName: supportManager.supportTeamName
+            }
+          });
+        }
+      }
+    }
+
     // Emit socket event
     emitTicketEvent('ticket-created', {
       clientId,
@@ -633,16 +685,25 @@ exports.createTicket = async (req, res) => {
       ticket: ticket.toObject()
     });
 
-    // Send notifications
-    await notifyTicketCreated(ticket, req.user);
+    // Send general notifications
+    try {
+      await notifyTicketCreated(ticket, req.user);
+    } catch (notifyError) {
+      console.error('[TICKET] Error sending general notifications:', notifyError);
+      // Don't fail ticket creation
+    }
 
     // Populate references before sending response
     await ticket.populate('createdBy', 'userName email userType');
+    if (ticket.supportManagerId) {
+      await ticket.populate('supportManagerId', 'userName email userType supportTeamName supportManagerType');
+    }
 
     res.status(201).json({
       success: true,
       message: 'Ticket created successfully',
-      ticket
+      ticket,
+      supportManagerAssigned: !!assignedSupportManagerId
     });
 
   } catch (error) {
@@ -691,38 +752,20 @@ exports.listTickets = async (req, res) => {
         query.clientId = clientId;
       }
     } 
-    // 🔧 FIX: Support manager filtering
+    // Support manager filtering - tickets assigned to them
     else if (req.user.userType === 'supportManager') {
-      if (req.user.supportManagerType === 'general_support') {
-        // Can see all tickets
-        if (clientId) {
-          query.clientId = clientId;
-        }
-      } else if (req.user.supportManagerType === 'client_support') {
-        // Only assigned clients
-        const assignedClients = req.user.assignedSupportClients || [];
-        if (clientId && assignedClients.includes(clientId)) {
-          query.clientId = clientId;
-        } else if (!clientId) {
-          query.clientId = { $in: assignedClients };
-        } else {
-          return res.status(403).json({
-            success: false,
-            message: 'No access to specified client'
-          });
-        }
-      } else if (req.user.supportManagerType === 'consultant_support') {
-        // Tickets created by assigned consultants
-        const assignedConsultants = req.user.assignedConsultants || [];
-        query.createdBy = { $in: assignedConsultants };
+      query.supportManagerId = userId;
+      
+      if (clientId) {
+        query.clientId = clientId;
       }
     }
-    // 🔧 FIX: Support user filtering
+    // Support user filtering - only their assigned tickets or where they're watchers
     else if (req.user.userType === 'support') {
-      // Can only see tickets assigned to them or where they're watchers
       query.$or = [
         { assignedTo: userId },
-        { watchers: userId }
+        { watchers: userId },
+        { supportManagerId: req.user.supportManagerId } // Can see tickets managed by their manager
       ];
       
       if (clientId) {
@@ -748,8 +791,8 @@ exports.listTickets = async (req, res) => {
             tickets: [],
             pagination: {
               total: 0,
-              page: parseInt(page),
-              limit: parseInt(limit),
+              page: 1,
+              limit,
               pages: 0
             }
           });
@@ -759,137 +802,87 @@ exports.listTickets = async (req, res) => {
           query.clientId = clientId;
         } else if (!clientId) {
           query.clientId = { $in: accessibleClients };
-        } else {
-          return res.status(403).json({
-            success: false,
-            message: 'No access to specified client'
-          });
         }
       }
     }
 
-    // Status filter (can be multiple)
+    // Additional filters
     if (status) {
-      const statuses = Array.isArray(status) ? status : status.split(',');
-      query.status = { $in: statuses };
+      const statusArray = status.split(',').map(s => s.trim());
+      query.status = statusArray.length > 1 ? { $in: statusArray } : statusArray[0];
     }
 
-    // Priority filter (can be multiple)
     if (priority) {
-      const priorities = Array.isArray(priority) ? priority : priority.split(',');
-      query.priority = { $in: priorities };
+      const priorityArray = priority.split(',').map(p => p.trim());
+      query.priority = priorityArray.length > 1 ? { $in: priorityArray } : priorityArray[0];
     }
 
-    // Category filter
     if (category) {
       query.category = category;
     }
 
-    // Assigned to filter
     if (assignedTo) {
       query.assignedTo = assignedTo === 'me' ? userId : assignedTo;
     }
 
-    // Created by filter
     if (createdBy) {
       query.createdBy = createdBy === 'me' ? userId : createdBy;
     }
 
-    // Tags filter
     if (tags) {
-      const tagArray = Array.isArray(tags) ? tags : tags.split(',');
-      query.tags = { $in: tagArray };
+      const tagsArray = tags.split(',').map(t => t.trim());
+      query.tags = { $in: tagsArray };
     }
 
-    // Has attachments filter
     if (hasAttachments === 'true') {
       query['attachments.0'] = { $exists: true };
     }
 
-    // Date range filter
+    // Date range
     if (fromDate || toDate) {
       query.createdAt = {};
-      if (fromDate) {
-        query.createdAt.$gte = new Date(fromDate);
-      }
-      if (toDate) {
-        query.createdAt.$lte = new Date(toDate);
-      }
+      if (fromDate) query.createdAt.$gte = new Date(fromDate);
+      if (toDate) query.createdAt.$lte = new Date(toDate);
     }
 
-    // Text search
+    // Search
     if (search) {
       query.$text = { $search: search };
     }
 
-    // Additional role-based filters
-    if (req.user.userType === 'employee') {
-      // Employees can only see their own tickets
-      query.createdBy = userId;
-    } else if (req.user.userType === 'client_employee_head') {
-      // Employee heads can see tickets from their department
-      const deptUsers = await User.find({
-        clientId: req.user.clientId,
-        department: req.user.department
-      }).distinct('_id');
-      query.createdBy = { $in: deptUsers };
-    } else if (req.user.userType === 'viewer') {
-      // Viewers can only see their own tickets
-      query.createdBy = userId;
-    }
+    // Count total matching documents
+    const total = await Ticket.countDocuments(query);
 
-    // Execute query with pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    // Get paginated results
+    const skip = (page - 1) * limit;
+    let tickets = await Ticket.find(query)
+      .populate('createdBy', 'userName email userType')
+      .populate('assignedTo', 'userName email userType')
+      .populate('supportManagerId', 'userName email supportTeamName supportManagerType')
+      .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
-    const [tickets, total] = await Promise.all([
-      Ticket.find(query)
-        .populate('createdBy', 'userName email userType')
-        .populate('assignedTo', 'userName email userType')
-        .sort(sortOptions)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      Ticket.countDocuments(query)
-    ]);
-
-    // Apply post-query filters (overdue, dueSoon)
-    let filteredTickets = tickets;
-    
+    // Apply overdue/dueSoon filters (after query)
     if (overdue === 'true') {
-      filteredTickets = filteredTickets.filter(t => {
-        if (!t.dueDate) return false;
-        if (['resolved', 'closed', 'cancelled'].includes(t.status)) return false;
-        return new Date() > new Date(t.dueDate);
-      });
+      tickets = tickets.filter(t => t.isOverdue());
     }
 
     if (dueSoon === 'true') {
-      filteredTickets = filteredTickets.filter(t => {
-        if (!t.dueDate) return false;
-        if (['resolved', 'closed', 'cancelled'].includes(t.status)) return false;
-        
-        const now = new Date();
-        const created = new Date(t.createdAt);
-        const due = new Date(t.dueDate);
-        
-        const totalTime = due.getTime() - created.getTime();
-        const elapsed = now.getTime() - created.getTime();
-        const percentElapsed = (elapsed / totalTime) * 100;
-        
-        return percentElapsed >= 80 && percentElapsed < 100;
-      });
+      tickets = tickets.filter(t => t.isDueSoon());
     }
+
+    // Calculate pagination
+    const pages = Math.ceil(total / limit);
 
     res.status(200).json({
       success: true,
-      tickets: filteredTickets,
+      tickets,
       pagination: {
         total,
         page: parseInt(page),
         limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit))
+        pages
       }
     });
 
@@ -909,17 +902,14 @@ exports.listTickets = async (req, res) => {
  */
 exports.getTicket = async (req, res) => {
   try {
-    const userId = getUserId(req.user);
     const { id } = req.params;
 
     // Find ticket
     const ticket = await Ticket.findById(id)
-      .populate('createdBy', 'userName email userType department')
-      .populate('assignedTo', 'userName email userType')
-      .populate('escalatedBy', 'userName email userType')
-      .populate('approvedBy', 'userName email userType')
-      .populate('watchers', 'userName email userType')
-      .populate('resolution.resolvedBy', 'userName email userType');
+      .populate('createdBy', 'userName email userType profileImage')
+      .populate('assignedTo', 'userName email userType profileImage')
+      .populate('supportManagerId', 'userName email userType supportTeamName supportManagerType profileImage')
+      .populate('watchers', 'userName email userType profileImage');
 
     if (!ticket) {
       return res.status(404).json({
@@ -933,39 +923,38 @@ exports.getTicket = async (req, res) => {
     if (!canView.allowed) {
       return res.status(403).json({
         success: false,
-        message: canView.reason || 'Access denied'
+        message: 'Access denied'
       });
     }
 
     // Record view
-    ticket.recordView(userId);
+    ticket.recordView(req.user._id);
     await ticket.save();
 
-    // Get activity history
-    const activities = await TicketActivity.find({ 
+    // Get ticket activities (filtered by visibility)
+    let activities = await TicketActivity.find({ 
       ticket: ticket._id,
-      isDeleted: false
+      isDeleted: false 
     })
-      .populate('createdBy', 'userName email userType')
-      .sort({ createdAt: 1 });
+      .populate('createdBy', 'userName email userType profileImage')
+      .sort({ createdAt: -1 });
 
-    // Filter internal comments based on user role
-    const visibleActivities = activities.filter(activity => 
-      canViewComment(req.user, activity)
-    );
+    // Filter out internal comments for non-support users
+    activities = activities.filter(activity => canViewComment(req.user, activity));
 
     // Calculate SLA info
     const slaInfo = {
       dueDate: ticket.dueDate,
       isOverdue: ticket.isOverdue(),
       isDueSoon: ticket.isDueSoon(),
-      timeRemaining: ticket.getTimeRemaining()
+      timeRemaining: ticket.getTimeRemaining(),
+      breached: ticket.metadata?.slaBreached || false
     };
 
     res.status(200).json({
       success: true,
       ticket,
-      activities: visibleActivities,
+      activities,
       slaInfo
     });
 
@@ -973,7 +962,7 @@ exports.getTicket = async (req, res) => {
     console.error('Error getting ticket:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to get ticket',
+      message: 'Failed to get ticket details',
       error: error.message
     });
   }
@@ -1006,107 +995,68 @@ exports.updateTicket = async (req, res) => {
       });
     }
 
-    // Track changes for activity log
+    // Fields that can be updated
+    const allowedFields = canModify.limited 
+      ? ['subject', 'description', 'tags']
+      : ['subject', 'description', 'category', 'subCategory', 'tags', 'priority', 'status'];
+
+    const updates = {};
     const changes = [];
 
-    // Editable fields
-    const editableFields = ['subject', 'description', 'category', 'subCategory', 'tags'];
-    
-    // Limited editable fields for regular users
-    if (canModify.limited) {
-      // Regular users can only edit subject, description, and tags
-      const limitedFields = ['subject', 'description', 'tags'];
-      
-      for (const field of limitedFields) {
-        if (req.body[field] !== undefined) {
-          const oldValue = Array.isArray(ticket[field]) 
-            ? ticket[field].join(', ') 
-            : String(ticket[field] || '');
-          const newValue = Array.isArray(req.body[field])
-            ? req.body[field].join(', ')
-            : String(req.body[field] || '');
-          
-          if (oldValue !== newValue) {
-            changes.push({
-              field,
-              oldValue,
-              newValue
-            });
-            ticket[field] = req.body[field];
-          }
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        const oldValue = ticket[field];
+        const newValue = req.body[field];
+        
+        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+          updates[field] = newValue;
+          changes.push({
+            field,
+            oldValue: JSON.stringify(oldValue),
+            newValue: JSON.stringify(newValue)
+          });
         }
       }
-    } else {
-      // Admin/support can edit more fields
-      for (const field of editableFields) {
-        if (req.body[field] !== undefined) {
-          const oldValue = Array.isArray(ticket[field]) 
-            ? ticket[field].join(', ') 
-            : String(ticket[field] || '');
-          const newValue = Array.isArray(req.body[field])
-            ? req.body[field].join(', ')
-            : String(req.body[field] || '');
-          
-          if (oldValue !== newValue) {
-            changes.push({
-              field,
-              oldValue,
-              newValue
-            });
-            ticket[field] = req.body[field];
-          }
-        }
-      }
+    });
 
-      // Priority can be changed by admins/support
-      if (req.body.priority && req.body.priority !== ticket.priority) {
-        changes.push({
-          field: 'priority',
-          oldValue: ticket.priority,
-          newValue: req.body.priority
-        });
-        
-        ticket.priority = req.body.priority;
-        
-        // Recalculate due date if priority changed
-        ticket.dueDate = Ticket.calculateDueDate(req.body.priority, ticket.createdAt);
-      }
-    }
-
-    if (changes.length === 0) {
+    if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'No changes detected'
+        message: 'No valid updates provided'
       });
     }
 
+    // Apply updates
+    Object.assign(ticket, updates);
     await ticket.save();
 
     // Log activity
-    await logActivity(
-      ticket._id,
-      'status_change',
-      { changes },
-      userId,
-      req.user.userType
-    );
+    if (changes.length > 0) {
+      await logActivity(
+        ticket._id,
+        'status_change',
+        { changes },
+        userId,
+        req.user.userType
+      );
+    }
 
     // Emit socket event
     emitTicketEvent('ticket-updated', {
       clientId: ticket.clientId,
       ticketId: ticket._id,
-      changes
+      updates
     });
 
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
     await ticket.populate('assignedTo', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
 
     res.status(200).json({
       success: true,
       message: 'Ticket updated successfully',
-      ticket,
-      changes
+      ticket
     });
 
   } catch (error) {
@@ -1125,6 +1075,7 @@ exports.updateTicket = async (req, res) => {
  */
 exports.deleteTicket = async (req, res) => {
   try {
+    const userId = getUserId(req.user);
     const { id } = req.params;
 
     // Find ticket
@@ -1136,15 +1087,14 @@ exports.deleteTicket = async (req, res) => {
       });
     }
 
-    // Only super_admin or ticket creator (if draft) can delete
-    const userId = getUserId(req.user);
-    const isCreator = ticket.createdBy.toString() === userId;
-    const isDraft = ticket.status === 'draft';
+    // Only super_admin or creator (for drafts) can delete
+    const canDelete = req.user.userType === 'super_admin' || 
+                     (ticket.createdBy.toString() === userId && ticket.status === 'draft');
 
-    if (req.user.userType !== 'super_admin' && !(isCreator && isDraft)) {
+    if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Access denied. Only super admin or creator (for drafts) can delete tickets'
+        message: 'Only super admins or creators can delete draft tickets'
       });
     }
 
@@ -1153,19 +1103,11 @@ exports.deleteTicket = async (req, res) => {
       await deleteMultipleAttachments(ticket.attachments);
     }
 
-    // Delete activity attachments
-    const activities = await TicketActivity.find({ ticket: ticket._id });
-    for (const activity of activities) {
-      if (activity.attachments && activity.attachments.length > 0) {
-        await deleteMultipleAttachments(activity.attachments);
-      }
-    }
-
     // Delete activities
     await TicketActivity.deleteMany({ ticket: ticket._id });
 
     // Delete ticket
-    await Ticket.findByIdAndDelete(id);
+    await ticket.deleteOne();
 
     // Emit socket event
     emitTicketEvent('ticket-deleted', {
@@ -1187,8 +1129,6 @@ exports.deleteTicket = async (req, res) => {
     });
   }
 };
-
-// ===== WORKFLOW OPERATIONS =====
 
 /**
  * Add comment to ticket
@@ -1225,60 +1165,56 @@ exports.addComment = async (req, res) => {
       });
     }
 
-    // 🔧 FIX: Include supportManager and support in supportRoles
-    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'support'];
-    if (isInternal && !supportRoles.includes(req.user.userType)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only support staff can add internal comments'
-      });
-    }
-
-    // Create activity
-    const activity = new TicketActivity({
-      ticket: ticket._id,
-      activityType: 'comment',
+    // Create activity data
+    const activityData = {
       comment: {
-        text,
+        text: text.trim(),
         isInternal,
         mentions
-      },
-      createdBy: userId,
-      createdByType: req.user.userType
-    });
+      }
+    };
 
-    // Handle attachments if present
+    // Handle attachments
     if (req.files && req.files.length > 0) {
       const attachments = await saveTicketAttachments(req, {
         clientId: ticket.clientId,
         ticketId: ticket.ticketId,
         userId,
-        type: 'activity',
-        activityId: activity._id.toString()
+        type: 'activity'
       });
-      activity.attachments = attachments;
+      activityData.attachments = attachments;
     }
 
-    await activity.save();
+    // Log activity
+    const activity = await logActivity(
+      ticket._id,
+      'comment',
+      activityData,
+      userId,
+      req.user.userType
+    );
 
-    // Set first response time if this is first support comment
-    if (!ticket.firstResponseAt && supportRoles.includes(req.user.userType)) {
+    // Update first response time if not set and comment is from assignee/support
+    if (!ticket.firstResponseAt && 
+        (ticket.assignedTo?.toString() === userId || 
+         req.user.userType === 'support' || 
+         req.user.userType === 'supportManager')) {
       ticket.firstResponseAt = new Date();
       await ticket.save();
     }
 
     // Emit socket event
-    emitTicketEvent('ticket-new-comment', {
+    emitTicketEvent('ticket-comment-added', {
       clientId: ticket.clientId,
       ticketId: ticket._id,
       activity: activity.toObject()
     });
 
     // Send notifications
-    await notifyTicketCommented(ticket, activity, req.user);
+    await notifyTicketCommented(ticket, req.user, text);
 
-    // Populate references
-    await activity.populate('createdBy', 'userName email userType');
+    // Populate activity
+    await activity.populate('createdBy', 'userName email userType profileImage');
 
     res.status(201).json({
       success: true,
@@ -1297,8 +1233,10 @@ exports.addComment = async (req, res) => {
 };
 
 /**
- * Assign ticket
+ * Assign ticket to support user
  * POST /api/tickets/:id/assign
+ * 
+ * UPDATED: Only supportManager can assign to support users in their team
  */
 exports.assignTicket = async (req, res) => {
   try {
@@ -1322,21 +1260,9 @@ exports.assignTicket = async (req, res) => {
       });
     }
 
-    // Check access
-    const hasAccess = await checkTicketAccess(req.user, ticket);
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'You do not have permission to assign this ticket'
-      });
-    }
-
-    // Check permissions
-    // 🔧 FIX: Include supportManager in canAssign check
-    const canAssign = ['super_admin', 'consultant_admin', 'supportManager'].includes(req.user.userType) ||
-      (req.user.userType === 'consultant' && ticket.assignedTo?.toString() === req.user._id.toString());
-
-    if (!canAssign) {
+    // Check if user can assign
+    const canAssign = await canAssignTicket(req.user, ticket);
+    if (!canAssign.allowed) {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to assign tickets'
@@ -1352,7 +1278,7 @@ exports.assignTicket = async (req, res) => {
       });
     }
 
-    // 🆕 Validate assignee type includes support roles
+    // Valid assignee types
     const validAssigneeTypes = [
       'super_admin', 
       'consultant_admin', 
@@ -1369,20 +1295,39 @@ exports.assignTicket = async (req, res) => {
       });
     }
 
-    // 🆕 If assigning to support user, verify they're in the right team
+    // If assignee is a support user, verify they belong to the ticket's support manager's team
     if (assignee.userType === 'support') {
-      const client = await Client.findOne({ clientId: ticket.clientId });
-      
-      if (client?.supportSection?.assignedSupportManagerId) {
-        const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
-        
-        // Verify support user belongs to the assigned support manager's team
-        if (!assignee.supportManagerId || assignee.supportManagerId.toString() !== supportManager._id.toString()) {
-          return res.status(400).json({
-            success: false,
-            message: 'This support user does not belong to the assigned support team for this client'
-          });
-        }
+      // Verify support user belongs to the ticket's support manager's team
+      if (!ticket.supportManagerId) {
+        return res.status(400).json({
+          success: false,
+          message: 'This ticket does not have an assigned support manager'
+        });
+      }
+
+      if (!assignee.supportManagerId || 
+          assignee.supportManagerId.toString() !== ticket.supportManagerId.toString()) {
+        return res.status(400).json({
+          success: false,
+          message: 'This support user does not belong to the ticket\'s support team'
+        });
+      }
+
+      // Only the ticket's support manager can assign to support users
+      if (req.user.userType !== 'super_admin' && 
+          req.user.userType !== 'supportManager') {
+        return res.status(403).json({
+          success: false,
+          message: 'Only support managers can assign tickets to support users'
+        });
+      }
+
+      if (req.user.userType === 'supportManager' && 
+          ticket.supportManagerId.toString() !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only assign tickets managed by you'
+        });
       }
     }
 
@@ -1422,8 +1367,7 @@ exports.assignTicket = async (req, res) => {
       assignedTo: assignee
     });
 
-    // 🔧 FIX: Send notifications (removed duplicate call)
-    // If assigning to support user, use special notification
+    // Send notifications
     if (assignee.userType === 'support') {
       await notifySupportUserAssigned(ticket, assignee, req.user);
     } else {
@@ -1445,6 +1389,7 @@ exports.assignTicket = async (req, res) => {
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
     await ticket.populate('assignedTo', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
 
     res.status(200).json({
       success: true,
@@ -1481,8 +1426,7 @@ exports.escalateTicket = async (req, res) => {
       });
     }
 
-    // 🔧 FIX: Include supportManager in supportRoles
-    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'client_admin'];
+    const supportRoles = ['super_admin', 'consultant_admin', 'consultant', 'supportManager', 'support', 'client_admin'];
     if (!supportRoles.includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
@@ -1490,15 +1434,28 @@ exports.escalateTicket = async (req, res) => {
       });
     }
 
+    // Check access
+    const hasAccess = await checkTicketAccess(req.user, ticket);
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    // Store old values
+    const oldPriority = ticket.priority;
+    const oldEscalationLevel = ticket.escalationLevel || 0;
+
     // Update ticket
     ticket.isEscalated = true;
     ticket.escalatedAt = new Date();
     ticket.escalatedBy = userId;
-    ticket.escalationReason = reason;
+    ticket.escalationReason = reason || 'Manual escalation';
     ticket.escalationLevel = (ticket.escalationLevel || 0) + 1;
     ticket.status = 'escalated';
 
-    // Increase priority if not already critical
+    // Increase priority
     if (ticket.priority === 'low') {
       ticket.priority = 'medium';
     } else if (ticket.priority === 'medium') {
@@ -1514,11 +1471,23 @@ exports.escalateTicket = async (req, res) => {
       ticket._id,
       'escalation',
       {
-        changes: [{
-          field: 'escalationLevel',
-          oldValue: String(ticket.escalationLevel - 1),
-          newValue: String(ticket.escalationLevel)
-        }]
+        changes: [
+          {
+            field: 'escalationLevel',
+            oldValue: oldEscalationLevel.toString(),
+            newValue: ticket.escalationLevel.toString()
+          },
+          {
+            field: 'priority',
+            oldValue: oldPriority,
+            newValue: ticket.priority
+          },
+          {
+            field: 'status',
+            oldValue: 'previous',
+            newValue: 'escalated'
+          }
+        ]
       },
       userId,
       req.user.userType
@@ -1528,7 +1497,8 @@ exports.escalateTicket = async (req, res) => {
     emitTicketEvent('ticket-escalated', {
       clientId: ticket.clientId,
       ticketId: ticket._id,
-      escalationLevel: ticket.escalationLevel
+      escalationLevel: ticket.escalationLevel,
+      priority: ticket.priority
     });
 
     // Send notifications
@@ -1537,7 +1507,7 @@ exports.escalateTicket = async (req, res) => {
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
     await ticket.populate('assignedTo', 'userName email userType');
-    await ticket.populate('escalatedBy', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
 
     res.status(200).json({
       success: true,
@@ -1584,11 +1554,12 @@ exports.resolveTicket = async (req, res) => {
     }
 
     // Update ticket
+    const oldStatus = ticket.status;
     ticket.status = 'resolved';
     ticket.resolvedAt = new Date();
     ticket.resolution = {
       resolvedBy: userId,
-      resolutionNotes,
+      resolutionNotes: resolutionNotes || '',
       resolutionDate: new Date()
     };
 
@@ -1601,7 +1572,7 @@ exports.resolveTicket = async (req, res) => {
       {
         changes: [{
           field: 'status',
-          oldValue: 'in_progress',
+          oldValue: oldStatus,
           newValue: 'resolved'
         }]
       },
@@ -1610,18 +1581,18 @@ exports.resolveTicket = async (req, res) => {
     );
 
     // Emit socket event
-    emitTicketEvent('ticket-status-changed', {
+    emitTicketEvent('ticket-resolved', {
       clientId: ticket.clientId,
-      ticketId: ticket._id,
-      status: 'resolved'
+      ticketId: ticket._id
     });
 
     // Send notifications
-    await notifyTicketResolved(ticket, req.user);
+    await notifyTicketResolved(ticket, req.user, resolutionNotes);
 
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
     await ticket.populate('assignedTo', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
     await ticket.populate('resolution.resolvedBy', 'userName email userType');
 
     res.status(200).json({
@@ -1659,19 +1630,18 @@ exports.closeTicket = async (req, res) => {
       });
     }
 
-    // Check permissions
-    const canClose = await canModifyTicket(req.user, ticket);
-    if (!canClose.allowed) {
-      // Also allow ticket creator to close their own resolved ticket
-      if (ticket.createdBy.toString() !== userId || ticket.status !== 'resolved') {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied'
-        });
-      }
+    // Only creator or support roles can close
+    const canClose = ticket.createdBy.toString() === userId || 
+                    ['super_admin', 'supportManager', 'support'].includes(req.user.userType);
+
+    if (!canClose) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only ticket creator or support staff can close tickets'
+      });
     }
 
-    // Ticket must be resolved before closing
+    // Ticket must be resolved first
     if (ticket.status !== 'resolved') {
       return res.status(400).json({
         success: false,
@@ -1680,13 +1650,14 @@ exports.closeTicket = async (req, res) => {
     }
 
     // Update ticket
+    const oldStatus = ticket.status;
     ticket.status = 'closed';
     ticket.closedAt = new Date();
 
-    // Add satisfaction rating if provided
     if (satisfactionRating) {
       ticket.resolution.satisfactionRating = satisfactionRating;
     }
+
     if (userFeedback) {
       ticket.resolution.userFeedback = userFeedback;
     }
@@ -1700,7 +1671,7 @@ exports.closeTicket = async (req, res) => {
       {
         changes: [{
           field: 'status',
-          oldValue: 'resolved',
+          oldValue: oldStatus,
           newValue: 'closed'
         }]
       },
@@ -1709,11 +1680,18 @@ exports.closeTicket = async (req, res) => {
     );
 
     // Emit socket event
-    emitTicketEvent('ticket-status-changed', {
+    emitTicketEvent('ticket-closed', {
       clientId: ticket.clientId,
-      ticketId: ticket._id,
-      status: 'closed'
+      ticketId: ticket._id
     });
+
+    // Send notifications
+    await notifyTicketStatusChanged(ticket, oldStatus, 'closed', req.user);
+
+    // Populate references
+    await ticket.populate('createdBy', 'userName email userType');
+    await ticket.populate('assignedTo', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
 
     res.status(200).json({
       success: true,
@@ -1751,29 +1729,26 @@ exports.reopenTicket = async (req, res) => {
     }
 
     // Can only reopen closed or resolved tickets
-    if (!['closed', 'resolved'].includes(ticket.status)) {
+    if (!['resolved', 'closed'].includes(ticket.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Can only reopen closed or resolved tickets'
+        message: 'Can only reopen resolved or closed tickets'
       });
     }
 
-    // Check permissions (creator, assignee, or admin)
-    const isCreator = ticket.createdBy.toString() === userId;
-    const isAssignee = ticket.assignedTo && ticket.assignedTo.toString() === userId;
-    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin', 'supportManager'].includes(req.user.userType);
-
-    if (!isCreator && !isAssignee && !isAdmin) {
+    // Check permissions
+    const hasAccess = await checkTicketAccess(req.user, ticket);
+    if (!hasAccess) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
       });
     }
 
-    const oldStatus = ticket.status;
-
     // Update ticket
+    const oldStatus = ticket.status;
     ticket.status = 'reopened';
+    ticket.resolvedAt = null;
     ticket.closedAt = null;
 
     await ticket.save();
@@ -1787,29 +1762,26 @@ exports.reopenTicket = async (req, res) => {
           field: 'status',
           oldValue: oldStatus,
           newValue: 'reopened'
-        }],
-        comment: {
-          text: reason || 'Ticket reopened',
-          isInternal: false
-        }
+        }]
       },
       userId,
       req.user.userType
     );
 
     // Emit socket event
-    emitTicketEvent('ticket-status-changed', {
+    emitTicketEvent('ticket-reopened', {
       clientId: ticket.clientId,
       ticketId: ticket._id,
-      status: 'reopened'
+      reason
     });
 
-    // Notify assignee and watchers
+    // Send notifications
     await notifyTicketStatusChanged(ticket, oldStatus, 'reopened', req.user);
 
     // Populate references
     await ticket.populate('createdBy', 'userName email userType');
     await ticket.populate('assignedTo', 'userName email userType');
+    await ticket.populate('supportManagerId', 'userName email supportTeamName');
 
     res.status(200).json({
       success: true,
@@ -1827,8 +1799,6 @@ exports.reopenTicket = async (req, res) => {
   }
 };
 
-// ===== ATTACHMENT OPERATIONS =====
-
 /**
  * Upload attachments to ticket
  * POST /api/tickets/:id/attachments
@@ -1838,7 +1808,6 @@ exports.uploadAttachment = async (req, res) => {
     const userId = getUserId(req.user);
     const { id } = req.params;
 
-    // Check if files are present
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1864,7 +1833,7 @@ exports.uploadAttachment = async (req, res) => {
       });
     }
 
-    // Upload files to S3
+    // Save attachments
     const attachments = await saveTicketAttachments(req, {
       clientId: ticket.clientId,
       ticketId: ticket.ticketId,
@@ -1872,7 +1841,7 @@ exports.uploadAttachment = async (req, res) => {
       type: 'ticket'
     });
 
-    // Add attachments to ticket
+    // Add to ticket
     ticket.attachments.push(...attachments);
     await ticket.save();
 
@@ -1880,13 +1849,7 @@ exports.uploadAttachment = async (req, res) => {
     await logActivity(
       ticket._id,
       'attachment',
-      {
-        changes: [{
-          field: 'attachments',
-          oldValue: String(ticket.attachments.length - attachments.length),
-          newValue: String(ticket.attachments.length)
-        }]
-      },
+      { attachments },
       userId,
       req.user.userType
     );
@@ -1905,10 +1868,10 @@ exports.uploadAttachment = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error uploading attachment:', error);
+    console.error('Error uploading attachments:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload attachment',
+      message: 'Failed to upload attachments',
       error: error.message
     });
   }
@@ -1950,15 +1913,14 @@ exports.deleteAttachment = async (req, res) => {
       });
     }
 
-    // Check if user can delete (uploader, assignee, or admin)
-    const isUploader = attachment.uploadedBy.toString() === userId;
-    const isAssignee = ticket.assignedTo && ticket.assignedTo.toString() === userId;
-    const isAdmin = ['super_admin', 'consultant_admin', 'client_admin', 'supportManager'].includes(req.user.userType);
+    // Only uploader or admin can delete
+    const canDelete = attachment.uploadedBy.toString() === userId || 
+                     req.user.userType === 'super_admin';
 
-    if (!isUploader && !isAssignee && !isAdmin) {
+    if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Can only delete your own attachments'
+        message: 'Only uploader or admin can delete attachments'
       });
     }
 
@@ -1968,21 +1930,6 @@ exports.deleteAttachment = async (req, res) => {
     // Remove from ticket
     ticket.attachments.pull(attachmentId);
     await ticket.save();
-
-    // Log activity
-    await logActivity(
-      ticket._id,
-      'attachment',
-      {
-        changes: [{
-          field: 'attachments',
-          oldValue: attachment.filename,
-          newValue: 'deleted'
-        }]
-      },
-      userId,
-      req.user.userType
-    );
 
     // Emit socket event
     emitTicketEvent('ticket-attachment-deleted', {
@@ -2005,8 +1952,6 @@ exports.deleteAttachment = async (req, res) => {
     });
   }
 };
-
-// ===== WATCHER OPERATIONS =====
 
 /**
  * Add watcher to ticket
@@ -2034,7 +1979,7 @@ exports.addWatcher = async (req, res) => {
       });
     }
 
-    // Check permissions - user must have access to the ticket
+    // Check permissions
     const canView = await canViewTicket(req.user, ticket);
     if (!canView.allowed) {
       return res.status(403).json({
@@ -2048,7 +1993,7 @@ exports.addWatcher = async (req, res) => {
     if (!watcher) {
       return res.status(404).json({
         success: false,
-        message: 'Watcher user not found'
+        message: 'User not found'
       });
     }
 
@@ -2072,7 +2017,7 @@ exports.addWatcher = async (req, res) => {
       {
         changes: [{
           field: 'watchers',
-          oldValue: 'added',
+          oldValue: 'none',
           newValue: watcher.userName
         }]
       },
@@ -2087,7 +2032,7 @@ exports.addWatcher = async (req, res) => {
       watcher: {
         _id: watcher._id,
         userName: watcher.userName,
-        email: watcher.email
+        userType: watcher.userType
       }
     });
 
@@ -2097,7 +2042,6 @@ exports.addWatcher = async (req, res) => {
       watcher: {
         _id: watcher._id,
         userName: watcher.userName,
-        email: watcher.email,
         userType: watcher.userType
       }
     });
@@ -2222,6 +2166,19 @@ exports.getStats = async (req, res) => {
       if (clientId) {
         baseQuery.clientId = clientId;
       }
+    } else if (req.user.userType === 'supportManager') {
+      baseQuery.supportManagerId = userId;
+      if (clientId) {
+        baseQuery.clientId = clientId;
+      }
+    } else if (req.user.userType === 'support') {
+      baseQuery.$or = [
+        { assignedTo: userId },
+        { supportManagerId: req.user.supportManagerId }
+      ];
+      if (clientId) {
+        baseQuery.clientId = clientId;
+      }
     } else {
       if (req.user.clientId) {
         baseQuery.clientId = req.user.clientId;
@@ -2243,7 +2200,7 @@ exports.getStats = async (req, res) => {
               byPriority: {},
               byCategory: {},
               avgResolutionTime: 0,
-              slaCompliance: 0,
+              slaComplianceRate: 0,
               escalationRate: 0
             }
           });
@@ -2292,7 +2249,7 @@ exports.getStats = async (req, res) => {
       { $sort: { count: -1 } }
     ]);
 
-    // 🔧 FIX: Calculate average resolution time (in hours)
+    // Calculate average resolution time (in hours)
     const resolvedTickets = await Ticket.find({
       ...baseQuery,
       status: { $in: ['resolved', 'closed'] },
@@ -2303,14 +2260,14 @@ exports.getStats = async (req, res) => {
     let totalResolutionTime = 0;
     resolvedTickets.forEach(ticket => {
       const resTime = ticket.resolvedAt.getTime() - ticket.createdAt.getTime();
-      totalResolutionTime += resTime; // 🔧 FIX: Changed from = to +=
+      totalResolutionTime += resTime;
     });
 
     const avgResolutionTime = resolvedTickets.length > 0
       ? totalResolutionTime / resolvedTickets.length / (1000 * 60 * 60) // Convert to hours
       : 0;
 
-    // 🔧 FIX: Calculate SLA compliance rate
+    // Calculate SLA compliance rate
     const ticketsWithDueDate = await Ticket.find({
       ...baseQuery,
       dueDate: { $exists: true },
@@ -2321,7 +2278,7 @@ exports.getStats = async (req, res) => {
     ticketsWithDueDate.forEach(ticket => {
       if (ticket.resolvedAt && ticket.dueDate) {
         if (ticket.resolvedAt <= ticket.dueDate) {
-          slaCompliant++; // 🔧 FIX: Added ++ to actually increment
+          slaCompliant++;
         }
       }
     });

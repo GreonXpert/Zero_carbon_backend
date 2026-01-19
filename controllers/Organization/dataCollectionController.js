@@ -306,7 +306,7 @@ const setSocketIO = (socketIO) => {
 const emitDataUpdate = (eventType, data) => {
   if (io) {
     // Emit to all connected clients in the same clientId room
-    io.to(`client-${data.clientId}`).emit(eventType, {
+    io.to(`client_${data.clientId}`).emit(eventType, {
       timestamp: new Date(),
       type: eventType,
       data: data
