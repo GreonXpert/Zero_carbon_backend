@@ -2792,40 +2792,100 @@ exports.updateManualNetReductionEntry = async (req, res) => {
 };
 
 
-// --- ADD THIS EXPORT ---
 /**
- * Delete a MANUAL net-reduction entry and recompute the series.
- * Route (suggested):
- *   DELETE /net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ * Delete a HUMAN-entered net-reduction entry (MANUAL or CSV) and recompute the series.
+ * Suggested Route:
+ *   DELETE /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual/:entryId
+ *
+ * NOTE:
+ * - CSV uploads often store inputType/dataSource as "CSV". This endpoint allows both manual+csv.
+ * - API/IOT entries are blocked here (should be deleted by their own logic if you support it).
  */
 exports.deleteManualNetReductionEntry = async (req, res) => {
   try {
     const { clientId, projectId, calculationMethodology, entryId } = req.params;
 
-    // permission
+    // ✅ Permission
     const can = await canWriteReductionData(req.user, clientId);
-    if (!can.ok) return res.status(403).json({ success:false, message: can.reason });
-
-    const entry = await NetReductionEntry.findOne({ _id: entryId, clientId, projectId, calculationMethodology });
-    if (!entry) return res.status(404).json({ success:false, message: 'Entry not found' });
-    if ((entry.inputType || '').toLowerCase() !== 'manual') {
-      return res.status(400).json({ success:false, message: 'Only manual entries can be deleted with this endpoint' });
+    if (!can.ok) {
+      return res.status(403).json({ success: false, message: can.reason });
     }
 
+    // ✅ Validate ObjectId to avoid CastError → 500
+    if (!mongoose?.Types?.ObjectId?.isValid(entryId)) {
+      return res.status(400).json({ success: false, message: "Invalid entryId" });
+    }
+
+    // ✅ Find entry (must belong to same client/project/methodology)
+    const entry = await NetReductionEntry.findOne({
+      _id: entryId,
+      clientId,
+      projectId,
+      calculationMethodology
+    }).select("_id inputType sourceDetails timestamp");
+
+    if (!entry) {
+      return res.status(404).json({ success: false, message: "Entry not found" });
+    }
+
+    // ✅ Allow deletion ONLY for MANUAL/CSV (block API/IOT)
+    const inputType = String(entry.inputType || "").toLowerCase();
+    const dataSource = String(entry.sourceDetails?.dataSource || "").toLowerCase();
+
+    const isManual = inputType === "manual" || dataSource === "manual";
+    const isCsv = inputType === "csv" || dataSource === "csv";
+
+    if (!isManual && !isCsv) {
+      return res.status(400).json({
+        success: false,
+        message: "Only MANUAL/CSV entries can be deleted with this endpoint"
+      });
+    }
+
+    // ✅ Delete
     await NetReductionEntry.deleteOne({ _id: entry._id });
 
-    const summary = await recomputeSeries(clientId, projectId, calculationMethodology);
-    try {await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
-}); } catch (e) { console.warn('summary recompute failed:', e.message); }
-    emitNR('net-reduction:manual-deleted', { clientId, projectId, calculationMethodology, entryId });
+    // ✅ Recompute cumulative/high/low series for this project+methodology
+    let series = null;
+    try {
+      series = await recomputeSeries(clientId, projectId, calculationMethodology);
+    } catch (e) {
+      console.warn("recomputeSeries failed:", e.message);
+    }
+
+    // ✅ Recompute client summary (FIX: no `saved.map(...)`)
+    try {
+      // safest: recompute summary fully (no undefined vars)
+      await recomputeClientNetReductionSummary(clientId);
+      // If your summary function supports timestamps optimization and you want it:
+      // await recomputeClientNetReductionSummary(clientId, { timestamps: [entry.timestamp].filter(Boolean) });
+    } catch (e) {
+      console.warn("summary recompute failed:", e.message);
+    }
+
+    // ✅ Socket event
+    try {
+      emitNR("net-reduction:manual-deleted", {
+        clientId,
+        projectId,
+        calculationMethodology,
+        entryId
+      });
+    } catch (e) {
+      console.warn("emitNR failed:", e.message);
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Manual entry deleted and series recomputed',
-      series: summary
+      message: "Entry deleted and series recomputed",
+      series
     });
   } catch (err) {
-    return res.status(500).json({ success:false, message: 'Failed to delete manual net reduction entry', error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete net reduction entry",
+      error: err.message
+    });
   }
 };
 

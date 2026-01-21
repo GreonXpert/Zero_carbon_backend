@@ -20,6 +20,9 @@ const {
   getAllSupportManagers,
   getAllSupportUsers,
   // EXISTING FUNCTIONS
+    assignSupportManagerToConsultant,
+
+
   getMyProfile,
   getUserById,
   getUsers,
@@ -180,6 +183,20 @@ router.delete(
   "/support-users/:supportUserId",
   checkRole("supportManager", "super_admin"),
   deleteSupportUser
+);
+// -------------------------------------------------------------------
+// ✅ SUPPORT MANAGER → CONSULTANT ASSIGNMENT ROUTE (MISSING BEFORE)
+// -------------------------------------------------------------------
+/**
+ * Assign support manager to consultant or consultant admin
+ * PATCH /api/users/:userId/assign-support-manager
+ * Body: { supportManagerId }
+ * Auth: super_admin only
+ */
+router.patch(
+  "/:userId/assign-support-manager",
+  checkRole("super_admin"),
+  assignSupportManagerToConsultant
 );
 
 // ===================================================================
