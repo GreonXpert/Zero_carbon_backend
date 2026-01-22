@@ -2538,11 +2538,12 @@ const changeSupportUserManager = async (req, res) => {
 /**
  * Get all support managers with statistics
  * GET /api/users/support-managers
- * Auth: super_admin or supportManager
+ * Auth: super_admin | supportManager | consultant_admin | consultant
  */
 const getAllSupportManagers = async (req, res) => {
   try {
-    if (!["super_admin", "supportManager"].includes(req.user.userType)) {
+    const allowedTypes = ["super_admin", "supportManager", "consultant_admin", "consultant"];
+    if (!req.user || !allowedTypes.includes(req.user.userType)) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
@@ -2555,26 +2556,56 @@ const getAllSupportManagers = async (req, res) => {
     } = req.query;
 
     const activeBool = toBool(isActive, true);
+    const currentUserId = getCurrentUserId(req);
 
-    const query = {
-      userType: "supportManager",
-      isActive: activeBool,
-    };
+    // Build query safely using $and so we can combine role restrictions + search filters
+    const andConditions = [
+      { userType: "supportManager", isActive: activeBool },
+    ];
 
-    if (supportManagerType) query.supportManagerType = supportManagerType;
+    // Consultant-side users: ONLY their support managers (general_support OR assigned consultant_support)
+    if (["consultant_admin", "consultant"].includes(req.user.userType)) {
+      const supportManagerIdFromUser =
+        req.user.supportManagerId || req.user?.supportInfo?.supportManagerId || null;
 
+      const orConditions = [
+        { supportManagerType: "general_support" },
+        { supportManagerType: "consultant_support", assignedConsultants: currentUserId },
+      ];
+
+      // Optional fallback if you sync consultant -> supportManagerId (your createSupportManager does this)
+      if (supportManagerIdFromUser) {
+        orConditions.push({ _id: supportManagerIdFromUser });
+      }
+
+      andConditions.push({ $or: orConditions });
+
+      // Hard-stop them from seeing client_support managers
+      andConditions.push({ supportManagerType: { $in: ["general_support", "consultant_support"] } });
+    }
+
+    // Optional filter
+    if (supportManagerType) {
+      andConditions.push({ supportManagerType });
+    }
+
+    // Search filter
     if (search && String(search).trim()) {
       const regex = new RegExp(String(search).trim(), "i");
-      query.$or = [
-        { userName: regex },
-        { email: regex },
-        { contactNumber: regex },
-        { supportTeamName: regex },
-        { address: regex },          // ✅ Kochi is here
-        { companyName: regex },
-        { supportManagerType: regex },
-      ];
+      andConditions.push({
+        $or: [
+          { userName: regex },
+          { email: regex },
+          { contactNumber: regex },
+          { supportTeamName: regex },
+          { address: regex },
+          { companyName: regex },
+          { supportManagerType: regex },
+        ],
+      });
     }
+
+    const query = andConditions.length === 1 ? andConditions[0] : { $and: andConditions };
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -2589,21 +2620,31 @@ const getAllSupportManagers = async (req, res) => {
       User.countDocuments(query),
     ]);
 
-    // Optional: add member count per manager
-    const managersWithStats = await Promise.all(
-      supportManagers.map(async (manager) => {
-        const memberCount = await User.countDocuments({
-          userType: "support",
-          supportManagerId: manager._id,
-          isActive: true,
-        });
+    // Efficient member counts (avoid N+1 queries)
+    const managerIds = supportManagers.map((m) => m._id);
+    const countMap = {};
 
-        return {
-          ...manager.toObject(),
-          teamMemberCount: memberCount,
-        };
-      })
-    );
+    if (managerIds.length) {
+      const counts = await User.aggregate([
+        {
+          $match: {
+            userType: "support",
+            isActive: true,
+            supportManagerId: { $in: managerIds },
+          },
+        },
+        { $group: { _id: "$supportManagerId", count: { $sum: 1 } } },
+      ]);
+
+      counts.forEach((c) => {
+        countMap[String(c._id)] = c.count;
+      });
+    }
+
+    const managersWithStats = supportManagers.map((manager) => ({
+      ...manager.toObject(), // ✅ fixed (was `.manager.toObject()` which crashes)
+      teamMemberCount: countMap[String(manager._id)] || 0,
+    }));
 
     return res.status(200).json({
       success: true,
@@ -2626,15 +2667,15 @@ const getAllSupportManagers = async (req, res) => {
 };
 
 
-
 /**
  * Get all support users
  * GET /api/users/support-users
- * Auth: super_admin or supportManager
+ * Auth: super_admin | supportManager | consultant_admin | consultant
  */
 const getAllSupportUsers = async (req, res) => {
   try {
-    if (!["super_admin", "supportManager"].includes(req.user.userType)) {
+    const allowedTypes = ["super_admin", "supportManager", "consultant_admin", "consultant"];
+    if (!req.user || !allowedTypes.includes(req.user.userType)) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
@@ -2648,21 +2689,72 @@ const getAllSupportUsers = async (req, res) => {
     } = req.query;
 
     const activeBool = toBool(isActive, true);
+    const currentUserId = getCurrentUserId(req);
 
-    const query = {
-      userType: "support",
-      isActive: activeBool,
-    };
+    const andConditions = [
+      { userType: "support", isActive: activeBool },
+    ];
 
-    // ✅ SupportManager can only view own team
+    // SupportManager: only their own team
     if (req.user.userType === "supportManager") {
-      const currentUserId = getCurrentUserId(req);
-      query.supportManagerId = currentUserId;
-    } else if (supportManagerId) {
-      query.supportManagerId = supportManagerId;
+      andConditions.push({ supportManagerId: currentUserId });
     }
 
-    // ✅ specialization is an ARRAY in DB, so use $in
+    // Consultant-side: only support users under their support manager(s)
+    if (["consultant_admin", "consultant"].includes(req.user.userType)) {
+      const supportManagerIdFromUser =
+        req.user.supportManagerId || req.user?.supportInfo?.supportManagerId || null;
+
+      const managerMatchOr = [
+        { supportManagerType: "general_support" },
+        { supportManagerType: "consultant_support", assignedConsultants: currentUserId },
+      ];
+
+      if (supportManagerIdFromUser) {
+        managerMatchOr.push({ _id: supportManagerIdFromUser });
+      }
+
+      const allowedManagers = await User.find({
+        userType: "supportManager",
+        isActive: true,
+        supportManagerType: { $in: ["general_support", "consultant_support"] },
+        $or: managerMatchOr,
+      }).select("_id");
+
+      const allowedManagerIds = allowedManagers.map((m) => m._id);
+
+      // If no support manager is linked, return empty (don’t leak anything)
+      if (!allowedManagerIds.length) {
+        return res.status(200).json({
+          success: true,
+          supportUsers: [],
+          pagination: {
+            currentPage: 1,
+            totalPages: 0,
+            totalCount: 0,
+            limit: Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100),
+          },
+        });
+      }
+
+      // If they request a specific managerId, enforce it is within allowed list
+      if (supportManagerId) {
+        const ok = allowedManagerIds.some((id) => String(id) === String(supportManagerId));
+        if (!ok) {
+          return res.status(403).json({ success: false, message: "Access denied" });
+        }
+        andConditions.push({ supportManagerId });
+      } else {
+        andConditions.push({ supportManagerId: { $in: allowedManagerIds } });
+      }
+    }
+
+    // Super admin: optional filter by supportManagerId
+    if (req.user.userType === "super_admin" && supportManagerId) {
+      andConditions.push({ supportManagerId });
+    }
+
+    // specialization is an ARRAY in DB, so use $in
     if (specialization && String(specialization).trim()) {
       const specs = String(specialization)
         .split(",")
@@ -2670,22 +2762,26 @@ const getAllSupportUsers = async (req, res) => {
         .filter(Boolean);
 
       if (specs.length) {
-        query.supportSpecialization = { $in: specs };
+        andConditions.push({ supportSpecialization: { $in: specs } });
       }
     }
 
     if (search && String(search).trim()) {
       const regex = new RegExp(String(search).trim(), "i");
-      query.$or = [
-        { userName: regex },
-        { email: regex },
-        { contactNumber: regex },
-        { address: regex },
-        { supportEmployeeId: regex },
-        { supportJobRole: regex },
-        { supportBranch: regex },
-      ];
+      andConditions.push({
+        $or: [
+          { userName: regex },
+          { email: regex },
+          { contactNumber: regex },
+          { address: regex },
+          { supportEmployeeId: regex },
+          { supportJobRole: regex },
+          { supportBranch: regex },
+        ],
+      });
     }
+
+    const query = andConditions.length === 1 ? andConditions[0] : { $and: andConditions };
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -2720,7 +2816,6 @@ const getAllSupportUsers = async (req, res) => {
     });
   }
 };
-
 
 
 
