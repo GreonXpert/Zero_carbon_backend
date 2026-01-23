@@ -4,6 +4,12 @@ const router = express.Router();
 const { authenticate } = require('../../middleware/auth');
 const { uploadTicketAttachments } = require('../../utils/uploads/ticketUploadS3');
 const ticketController = require('../../controllers/Ticket/ticketController');
+/**
+ * IMPORTANT: Add this at the top of your ticketRoutes.js file
+ * after the existing requires
+ */
+const ticketChatController = require('../../controllers/Ticket/ticketChatController');
+
 
 /**
  * Apply authentication to all ticket routes
@@ -220,7 +226,110 @@ router.delete(
   ticketController.removeWatcher
 );
 
+// ===== TICKET CHAT OPERATIONS =====
+
+/**
+ * Get chat history for a ticket
+ * GET /api/tickets/:id/chat
+ * Query params:
+ *   - page: Page number (default: 1)
+ *   - limit: Items per page (default: 100)
+ *   - includeDeleted: Include deleted messages (default: false)
+ * Returns: Nested structure of comments with their replies
+ */
+router.get(
+  '/:id/chat',
+  ticketChatController.getChatHistory
+);
+
+/**
+ * Get unread chat count for a ticket
+ * GET /api/tickets/:id/chat/unread-count
+ */
+router.get(
+  '/:id/chat/unread-count',
+  ticketChatController.getUnreadCount
+);
+
+/**
+ * Post a new comment on a ticket
+ * POST /api/tickets/:id/chat/comment
+ * Body: { message, mentions }
+ * Files: attachments (optional, max 5 files, 10MB each)
+ * Who can use: client, client_admin, employee, auditor, consultant, consultant_admin, super_admin
+ */
+router.post(
+  '/:id/chat/comment',
+  uploadTicketAttachments,
+  ticketChatController.createComment
+);
+
+/**
+ * Reply to a specific comment
+ * POST /api/tickets/:id/chat/:commentId/reply
+ * Body: { message, mentions }
+ * Files: attachments (optional, max 5 files, 10MB each)
+ * Who can use: support (assigned to ticket), supportManager, super_admin
+ */
+router.post(
+  '/:id/chat/:commentId/reply',
+  uploadTicketAttachments,
+  ticketChatController.createReply
+);
+
+/**
+ * Edit a chat message
+ * PATCH /api/tickets/:id/chat/:chatId
+ * Body: { message }
+ * Rules: Can only edit own messages within 24 hours
+ */
+router.patch(
+  '/:id/chat/:chatId',
+  ticketChatController.editChatMessage
+);
+
+/**
+ * Delete a chat message (soft delete)
+ * DELETE /api/tickets/:id/chat/:chatId
+ * Rules: Can only delete own messages within 5 minutes (or super_admin anytime)
+ * Note: Deleting a comment also deletes all its replies
+ */
+router.delete(
+  '/:id/chat/:chatId',
+  ticketChatController.deleteChatMessage
+);
+
+/**
+ * Mark a chat message as read
+ * POST /api/tickets/:id/chat/:chatId/read
+ */
+router.post(
+  '/:id/chat/:chatId/read',
+  ticketChatController.markAsRead
+);
+
+// ===== END OF CHAT ROUTES =====
+
+/**
+ * INTEGRATION NOTES:
+ * 
+ * 1. The above routes should be added to your existing router/Ticket/ticketRoutes.js file
+ * 2. Add the require statement at the top with your other requires
+ * 3. Add the routes AFTER your existing ticket routes but BEFORE error handlers
+ * 4. The uploadTicketAttachments middleware is already imported in your file
+ * 5. All routes use the existing authenticate middleware applied to the router
+ * 
+ * Example placement in your file:
+ * 
+ * router.delete('/:id/watchers/:watcherId', ticketController.removeWatcher);
+ * 
+ * // ===== TICKET CHAT OPERATIONS ===== 
+ * // [ADD THE CHAT ROUTES HERE]
+ * 
+
 // ===== ROUTE ERROR HANDLING =====
+
+
 
 /**
  * Handle 404 for ticket routes
@@ -262,5 +371,8 @@ router.use((error, req, res, next) => {
     ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
   });
 });
+
+
+
 
 module.exports = router;

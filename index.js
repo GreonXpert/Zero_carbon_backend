@@ -58,13 +58,11 @@ const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker')
 // Import models for real-time features
 const User = require('./models/User');
 const Notification = require('./models/Notification/Notification');
+const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
 const {
-  setSocketIO,
   broadcastDataCompletionUpdate,
   broadcastNetReductionCompletionUpdate
-} = require('./controllers/DataCollection/dataCompletionController');
-const dataCompletionController = require('./controllers/DataCollection/dataCompletionController');
-
+} = dataCompletionController;
 // Ticket route import
 const ticketRoutes = require('./router/Ticket/ticketRoutes');
 
@@ -73,6 +71,7 @@ const ticketController = require('./controllers/Ticket/ticketController');
 
 // SLA checker import
 const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
+const { setTicketChatSocketIO } = require('./utils/sockets/ticketChatSocket');
 
 const helmet = require('helmet');
 
@@ -254,6 +253,9 @@ calculationSummaryController.setSocketIO(io);
 netReductionController.setSocketIO(io);
 sbtiController.setSocketIO(io);
 dataCompletionController.setSocketIO(io);
+ticketController.setSocketIO(io);
+
+setTicketChatSocketIO(io);
 
 // Socket.IO Authentication Middleware
 io.use(async (socket, next) => {
