@@ -52,7 +52,10 @@ async function checkSLAStatus() {
         $nin: ['resolved', 'closed', 'cancelled'] 
       },
       dueDate: { $exists: true }
-    }).populate('assignedTo', 'userName email');
+    }).populate('assignedTo', 'userName email')
+      .populate('supportManagerId', 'userName email')
+      .populate('consultantContext.consultantAdminId', 'userName email')
+      .populate('consultantContext.assignedConsultantId', 'userName email');
 
     console.log(`[SLA CHECKER] Found ${activeTickets.length} active tickets to check`);
 
@@ -69,12 +72,12 @@ async function checkSLAStatus() {
         // Check for SLA breach
         if (isOverdue) {
           await handleSLABreach(ticket);
-          breachedCount;
+          breachedCount++;
         }
         // Check for SLA warning (80% elapsed)
         else if (isDueSoon) {
           await handleSLAWarning(ticket);
-          warningCount;
+          warningCount++;
         }
 
         // Check for auto-escalation conditions
@@ -82,7 +85,7 @@ async function checkSLAStatus() {
           const shouldEscalate = await checkAutoEscalation(ticket, now);
           if (shouldEscalate) {
             await autoEscalateTicket(ticket, shouldEscalate.reason);
-            autoEscalatedCount;
+            autoEscalatedCount++;
           }
         }
 
@@ -125,6 +128,8 @@ async function handleSLABreach(ticket) {
     ticket.metadata.lastSLABreachNotification = new Date();
     ticket.metadata.slaBreached = true;
     
+    // Mark for save (using markModified since metadata is Mixed type)
+    ticket.markModified('metadata');
     await ticket.save();
 
   } catch (error) {
@@ -157,6 +162,7 @@ async function handleSLAWarning(ticket) {
     }
     ticket.metadata.lastSLAWarningNotification = new Date();
     
+    ticket.markModified('metadata');
     await ticket.save();
 
   } catch (error) {
@@ -235,7 +241,7 @@ async function autoEscalateTicket(ticket, reason) {
     ticket.isEscalated = true;
     ticket.escalatedAt = new Date();
     ticket.escalationReason = `[AUTO-ESCALATED] ${reason}`;
-    ticket.escalationLevel = (ticket.escalationLevel || 0) +  1;
+    ticket.escalationLevel = (ticket.escalationLevel || 0) + 1;
     ticket.status = 'escalated';
 
     // Increase priority
@@ -255,14 +261,15 @@ async function autoEscalateTicket(ticket, reason) {
     ticket.metadata.autoEscalatedAt = new Date();
     ticket.metadata.autoEscalatedReason = reason;
 
+    ticket.markModified('metadata');
     await ticket.save();
 
     // Send escalation notification
     const { notifyTicketEscalated } = require('../notifications/ticketNotifications');
     await notifyTicketEscalated(ticket, reason, {
       userName: 'System',
-      userType: 'super_admin',
-      id: null
+      userType: 'system',
+      _id: null
     });
 
     console.log(`[SLA CHECKER] Successfully auto-escalated ticket ${ticket.ticketId}`);

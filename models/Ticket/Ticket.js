@@ -73,6 +73,28 @@ const resolutionSchema = new Schema(
 );
 
 /**
+ * 🆕 Consultant context tracking
+ * Tracks consultant/consultant_admin relationship for reporting
+ */
+const consultantContextSchema = new Schema(
+  {
+    // For tickets created by consultants/consultant_admins about their own issues
+    isConsultantIssue: { type: Boolean, default: false },
+    
+    // For tickets created by client users - track which consultant oversees this client
+    consultantAdminId: { type: Schema.Types.ObjectId, ref: "User" },
+    consultantAdminName: { type: String },
+    
+    assignedConsultantId: { type: Schema.Types.ObjectId, ref: "User" },
+    assignedConsultantName: { type: String },
+    
+    // Timestamp when consultant context was set
+    contextSetAt: { type: Date },
+  },
+  { _id: false }
+);
+
+/**
  * Main Ticket Schema
  */
 const ticketSchema = new Schema(
@@ -86,9 +108,10 @@ const ticketSchema = new Schema(
     },
 
     // Client & User Context
+    // 🆕 UPDATED: clientId is now optional - for consultant internal issues, will be "INTERNAL-SUPPORT"
     clientId: {
       type: String,
-      required: true,
+      required: true, // Still required, but will use system value for consultant issues
       index: true,
     },
 
@@ -150,6 +173,9 @@ const ticketSchema = new Schema(
       default: null, // allow unassigned tickets
     },
 
+    // 🆕 Consultant Context
+    consultantContext: consultantContextSchema,
+
     // Ticket Details
     category: {
       type: String,
@@ -162,6 +188,8 @@ const ticketSchema = new Schema(
         "Technical Support",
         "Compliance & Audit",
         "Billing & Subscription",
+        "Consultant Support", // 🆕 New category for consultant-specific issues
+        "Client Management", // 🆕 New category for client management issues
       ],
       index: true,
     },
@@ -270,6 +298,12 @@ ticketSchema.index({ sandbox: 1 });
 // Support-manager queue performance
 ticketSchema.index({ supportManagerId: 1, status: 1, updatedAt: -1 });
 
+// 🆕 Consultant context indexes
+ticketSchema.index({ "consultantContext.isConsultantIssue": 1 });
+ticketSchema.index({ "consultantContext.consultantAdminId": 1, status: 1 });
+ticketSchema.index({ "consultantContext.assignedConsultantId": 1, status: 1 });
+ticketSchema.index({ createdByType: 1, status: 1 });
+
 // Text index for search
 ticketSchema.index({
   subject: "text",
@@ -350,6 +384,13 @@ ticketSchema.methods.getTimeRemaining = function () {
 };
 
 /**
+ * 🆕 Check if this is an internal consultant issue
+ */
+ticketSchema.methods.isInternalIssue = function () {
+  return this.clientId === 'INTERNAL-SUPPORT' || this.consultantContext?.isConsultantIssue === true;
+};
+
+/**
  * Add a watcher
  */
 ticketSchema.methods.addWatcher = function (userId) {
@@ -411,6 +452,15 @@ ticketSchema.pre("validate", function (next) {
 ticketSchema.pre("save", function (next) {
   if (this.createdBy) this.addWatcher(this.createdBy);
   if (this.assignedTo) this.addWatcher(this.assignedTo);
+  
+  // 🆕 Auto-add consultant admin and consultant to watchers if present
+  if (this.consultantContext?.consultantAdminId) {
+    this.addWatcher(this.consultantContext.consultantAdminId);
+  }
+  if (this.consultantContext?.assignedConsultantId) {
+    this.addWatcher(this.consultantContext.assignedConsultantId);
+  }
+  
   next();
 });
 

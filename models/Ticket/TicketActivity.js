@@ -77,6 +77,7 @@ const ticketActivitySchema = new Schema(
         "resolution",
         "reopened",
         "created",
+        "consultant_context_updated", // 🆕 For tracking consultant context changes
       ],
       index: true,
     },
@@ -152,6 +153,8 @@ const ticketActivitySchema = new Schema(
 
 // ===== INDEXES =====
 ticketActivitySchema.index({ ticket: 1, createdAt: -1 });
+ticketActivitySchema.index({ createdBy: 1, createdAt: -1 });
+ticketActivitySchema.index({ activityType: 1, createdAt: -1 });
 
 // ===== VALIDATION (prevents garbage activity docs) =====
 ticketActivitySchema.pre("validate", function (next) {
@@ -172,6 +175,7 @@ ticketActivitySchema.pre("validate", function (next) {
     "watcher_change",
     "resolution",
     "reopened",
+    "consultant_context_updated",
   ]);
   if (changeTypes.has(this.activityType)) {
     if (!Array.isArray(this.changes) || this.changes.length === 0) {

@@ -2,6 +2,8 @@ const EPAData = require('../../models/EmissionFactor/EPAData');
 const csvtojson = require('csvtojson');
 const XLSX = require('xlsx');
 const multer = require('multer');
+const fs = require('fs');
+
 
 const createEPAData = async (req, res) => {
     const userName = req.user.name || req.user?.email || req.user._id || 'system';
@@ -202,97 +204,321 @@ const downloadEPADataCSV = async (req, res) => {
 };
 
 // Unified bulk upload function for CSV and Excel
+// HIGH-SCALE upload: supports 10k–100k+ using streaming + bulkWrite
 const uploadEPADataFromCSV = async (req, res) => {
   try {
-    const userName = req.user.userName;
+    const userName = req.user?.userName || req.user?.email || req.user?.id || 'system';
 
     if (!req.file && !req.body.csv) {
       return res.status(400).json({ success: false, error: 'No file provided.' });
     }
 
-    let rawRows, fileType;
-    if (req.file) {
-      const name = req.file.originalname.toLowerCase();
-      fileType = name.endsWith('.csv') ? 'CSV' : 'Excel';
-      if (fileType === 'CSV') {
-        rawRows = await csvtojson().fromString(req.file.buffer.toString('utf8'));
-      } else {
-        const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-        rawRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-      }
-    } else {
-      fileType = 'CSV';
-      rawRows = await csvtojson().fromString(req.body.csv);
-    }
+    const BATCH_SIZE = 1000;        // tune 500–5000
+    const MAX_ERROR_SAMPLES = 50;   // prevent huge response payloads
 
-    // Normalize everything to the same shape
-    const rows = rawRows.map(r => ({
-      scopeEPA:   (r.scopeEPA   ?? r.Scope   ?? '').toString().trim(),
-      level1EPA:  (r.level1EPA  ?? r['Level 1'] ?? '').toString().trim(),
-      level2EPA:  (r.level2EPA  ?? r['Level 2'] ?? '').toString().trim(),
-      level3EPA:  (r.level3EPA  ?? r['Level 3'] ?? '').toString().trim(),
-      level4EPA:  (r.level4EPA  ?? r['Level 4'] ?? '').toString().trim(),
-      columnTextEPA: (r.columnTextEPA ?? r['Column Text'] ?? '').toString().trim(),
-      uomEPA:     (r.uomEPA     ?? r.UOM     ?? '').toString().trim(),
-      ghgUnitEPA: (r.ghgUnitEPA ?? r['GHG/Unit'] ?? '').toString().trim(),
-      ghgConversionFactorEPA: parseFloat(
-        r.ghgConversionFactorEPA
-        ?? r['GHG Conversion Factor 2025']
-        ?? r['GHG Conversion Factor']
-        ?? r['ghg conversion factor']
-        ?? ''
-      )
-    }));
+    const results = {
+      fileType: '',
+      totalRows: 0,
+      validRows: 0,
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      duplicateRowsInFile: 0,
+      errors: []
+    };
 
-    const results = { fileType, totalRows: rows.length, created: 0, updated: 0, unchanged: 0, errors: [] };
+    const clean = (v) => (v == null ? '' : String(v)).trim();
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-
-      // Auto-fill columnTextEPA if blank
-      if (!row.columnTextEPA && row.uomEPA) {
-        row.columnTextEPA = row.uomEPA;
-      }
-
-      // Validate
-      if (!row.scopeEPA || !row.level1EPA || !row.uomEPA || !row.ghgUnitEPA || isNaN(row.ghgConversionFactorEPA)) {
-        results.errors.push({ rowNumber: i + 2, row, error: 'Missing or invalid fields' });
-        continue;
-      }
-
-      const query = {
-        scopeEPA: row.scopeEPA, level1EPA: row.level1EPA,
-        level2EPA: row.level2EPA, level3EPA: row.level3EPA,
-        level4EPA: row.level4EPA, columnTextEPA: row.columnTextEPA,
-        uomEPA: row.uomEPA, ghgUnitEPA: row.ghgUnitEPA
+    const normalizeRow = (r) => {
+      const row = {
+        scopeEPA: clean(r.scopeEPA ?? r.Scope),
+        level1EPA: clean(r.level1EPA ?? r['Level 1']),
+        level2EPA: clean(r.level2EPA ?? r['Level 2']),
+        level3EPA: clean(r.level3EPA ?? r['Level 3']),
+        level4EPA: clean(r.level4EPA ?? r['Level 4']),
+        columnTextEPA: clean(r.columnTextEPA ?? r['Column Text']),
+        uomEPA: clean(r.uomEPA ?? r.UOM),
+        ghgUnitEPA: clean(r.ghgUnitEPA ?? r['GHG/Unit']),
+        ghgConversionFactorEPA: r.ghgConversionFactorEPA
+          ?? r['GHG Conversion Factor 2025']
+          ?? r['GHG Conversion Factor']
+          ?? r['ghg conversion factor']
       };
 
-      const existing = await EPAData.findOne(query);
+      // Auto-fill columnTextEPA if blank
+      if (!row.columnTextEPA && row.uomEPA) row.columnTextEPA = row.uomEPA;
 
-      if (existing) {
-        if (existing.updateConversionFactorEPA(row.ghgConversionFactorEPA, userName)) {
-          await existing.save();
-          results.updated++;
-        } else {
-          results.unchanged++;
+      const factor = parseFloat(String(row.ghgConversionFactorEPA ?? '').trim());
+      row.ghgConversionFactorEPA = factor;
+
+      return row;
+    };
+
+    const buildKey = (r) => [
+      r.scopeEPA, r.level1EPA, r.level2EPA, r.level3EPA, r.level4EPA,
+      r.columnTextEPA, r.uomEPA, r.ghgUnitEPA
+    ].join('||');
+
+    const buildUpsertOp = (r) => {
+      const filter = {
+        scopeEPA: r.scopeEPA,
+        level1EPA: r.level1EPA,
+        level2EPA: r.level2EPA,
+        level3EPA: r.level3EPA,
+        level4EPA: r.level4EPA,
+        columnTextEPA: r.columnTextEPA,
+        uomEPA: r.uomEPA,
+        ghgUnitEPA: r.ghgUnitEPA
+      };
+
+      // Uses update pipeline so we can:
+      // - detect change
+      // - push to conversionFactorHistoryEPA only when changed
+      // - only update updatedAt when changed
+      return {
+        updateOne: {
+          filter,
+          upsert: true,
+          update: [
+            {
+              $set: {
+                scopeEPA: r.scopeEPA,
+                level1EPA: r.level1EPA,
+                level2EPA: r.level2EPA,
+                level3EPA: r.level3EPA,
+                level4EPA: r.level4EPA,
+                columnTextEPA: r.columnTextEPA,
+                uomEPA: r.uomEPA,
+                ghgUnitEPA: r.ghgUnitEPA,
+
+                conversionFactorHistoryEPA: { $ifNull: ['$conversionFactorHistoryEPA', []] },
+                createdBy: { $ifNull: ['$createdBy', userName] },
+                createdAt: { $ifNull: ['$createdAt', '$$NOW'] }
+              }
+            },
+            {
+              $set: {
+                __changed: { $ne: ['$ghgConversionFactorEPA', r.ghgConversionFactorEPA] },
+                __old: '$ghgConversionFactorEPA'
+              }
+            },
+            {
+              $set: {
+                conversionFactorHistoryEPA: {
+                  $cond: [
+                    '$__changed',
+                    {
+                      $concatArrays: [
+                        '$conversionFactorHistoryEPA',
+                        [
+                          {
+                            oldValue: '$__old',
+                            newValue: r.ghgConversionFactorEPA,
+                            changedAt: '$$NOW',
+                            changedBy: userName
+                          }
+                        ]
+                      ]
+                    },
+                    '$conversionFactorHistoryEPA'
+                  ]
+                },
+                ghgConversionFactorEPA: {
+                  $cond: ['$__changed', r.ghgConversionFactorEPA, '$ghgConversionFactorEPA']
+                },
+                updatedBy: { $cond: ['$__changed', userName, '$updatedBy'] },
+                updatedAt: { $cond: ['$__changed', '$$NOW', '$updatedAt'] }
+              }
+            },
+            { $unset: ['__changed', '__old'] }
+          ]
         }
-      } else {
-        const doc = new EPAData({
-          ...query,
-          ghgConversionFactorEPA: row.ghgConversionFactorEPA,
-          createdBy: userName
-        });
-        await doc.save();
-        results.created++;
+      };
+    };
+
+    const flushBatch = async (ops) => {
+      if (!ops.length) return;
+
+      try {
+        const r = await EPAData.bulkWrite(ops, { ordered: false });
+        results.created += (r.upsertedCount || 0);
+        results.updated += (r.modifiedCount || 0);
+      } catch (err) {
+        // partial success possible
+        if (err?.name === 'BulkWriteError') {
+          const r = err.result || err;
+          results.created += (r.upsertedCount || r.result?.nUpserted || 0);
+          results.updated += (r.modifiedCount || r.result?.nModified || 0);
+
+          const writeErrors = err.writeErrors || err.result?.writeErrors || [];
+          writeErrors
+            .slice(0, Math.max(0, MAX_ERROR_SAMPLES - results.errors.length))
+            .forEach((e) => {
+              results.errors.push({
+                rowNumber: null,
+                row: null,
+                error: e.errmsg || e.message || 'Bulk write error'
+              });
+            });
+          return;
+        }
+        throw err;
       }
+    };
+
+    const processRowsArray = async (rawRows, fileType) => {
+      results.fileType = fileType;
+
+      let batchMap = new Map();
+
+      for (let i = 0; i < rawRows.length; i++) {
+        results.totalRows += 1;
+
+        const row = normalizeRow(rawRows[i]);
+
+        if (!row.scopeEPA || !row.level1EPA || !row.uomEPA || !row.ghgUnitEPA || Number.isNaN(row.ghgConversionFactorEPA)) {
+          if (results.errors.length < MAX_ERROR_SAMPLES) {
+            results.errors.push({ rowNumber: i + 2, row, error: 'Missing or invalid fields' });
+          }
+          continue;
+        }
+
+        results.validRows += 1;
+
+        const key = buildKey(row);
+        if (batchMap.has(key)) {
+          results.duplicateRowsInFile += 1;
+          batchMap.set(key, row);
+          continue;
+        }
+
+        batchMap.set(key, row);
+
+        if (batchMap.size >= BATCH_SIZE) {
+          const ops = Array.from(batchMap.values()).map(buildUpsertOp);
+          batchMap = new Map();
+          // eslint-disable-next-line no-await-in-loop
+          await flushBatch(ops);
+        }
+      }
+
+      if (batchMap.size) {
+        const ops = Array.from(batchMap.values()).map(buildUpsertOp);
+        await flushBatch(ops);
+      }
+
+      results.unchanged = Math.max(0, results.validRows - (results.created + results.updated));
+    };
+
+    // ----------------------------
+    // Parse input
+    // ----------------------------
+    if (req.file) {
+      const filename = (req.file.originalname || '').toLowerCase();
+      const mimeType = req.file.mimetype || '';
+
+      const isCSV = filename.endsWith('.csv') || mimeType === 'text/csv' || mimeType === 'application/csv';
+      const isExcel =
+        filename.endsWith('.xlsx') ||
+        filename.endsWith('.xls') ||
+        mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        mimeType === 'application/vnd.ms-excel';
+
+      if (isCSV) {
+        results.fileType = 'CSV';
+
+        // If you move to diskStorage, multer provides req.file.path.
+        // With memoryStorage, we stream from buffer.
+        const { Readable } = require('stream');
+        const stream = req.file.path
+          ? fs.createReadStream(req.file.path)
+          : Readable.from([req.file.buffer]);
+
+        stream.setEncoding('utf8');
+
+        let batchMap = new Map();
+        let rowIndex = 0;
+        let chain = Promise.resolve();
+
+        await new Promise((resolve, reject) => {
+          csvtojson({ trim: true })
+            .fromStream(stream)
+            .subscribe(
+              (jsonObj) => {
+                chain = chain.then(async () => {
+                  rowIndex += 1;
+                  results.totalRows += 1;
+
+                  const row = normalizeRow(jsonObj);
+
+                  if (!row.scopeEPA || !row.level1EPA || !row.uomEPA || !row.ghgUnitEPA || Number.isNaN(row.ghgConversionFactorEPA)) {
+                    if (results.errors.length < MAX_ERROR_SAMPLES) {
+                      results.errors.push({ rowNumber: rowIndex + 1, row, error: 'Missing or invalid fields' });
+                    }
+                    return;
+                  }
+
+                  results.validRows += 1;
+
+                  const key = buildKey(row);
+                  if (batchMap.has(key)) {
+                    results.duplicateRowsInFile += 1;
+                    batchMap.set(key, row);
+                    return;
+                  }
+                  batchMap.set(key, row);
+
+                  if (batchMap.size >= BATCH_SIZE) {
+                    const ops = Array.from(batchMap.values()).map(buildUpsertOp);
+                    batchMap = new Map();
+                    await flushBatch(ops);
+                  }
+                });
+
+                return chain;
+              },
+              (err) => reject(err),
+              () => resolve()
+            );
+        });
+
+        if (batchMap.size) {
+          const ops = Array.from(batchMap.values()).map(buildUpsertOp);
+          await flushBatch(ops);
+        }
+
+        results.unchanged = Math.max(0, results.validRows - (results.created + results.updated));
+
+        if (req.file.path) {
+          try { fs.unlinkSync(req.file.path); } catch (_) {}
+        }
+      } else if (isExcel) {
+        results.fileType = 'Excel';
+        const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        await processRowsArray(rawRows, 'Excel');
+      } else {
+        return res.status(400).json({ success: false, error: 'Invalid file type. Upload CSV or Excel.' });
+      }
+    } else if (req.body.csv) {
+      // Raw CSV text: okay for small uploads. For 100k+ use file upload.
+      results.fileType = 'CSV';
+      const rawRows = await csvtojson({ trim: true }).fromString(req.body.csv);
+      await processRowsArray(rawRows, 'CSV');
     }
 
-    return res.status(200).json({ success: true, message: `Processed ${fileType}`, results });
+    return res.status(200).json({
+      success: true,
+      message: `Processed ${results.fileType}`,
+      results
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
 
 // Advanced filter with multiple criteria
 const filterEPAData = async (req, res) => {

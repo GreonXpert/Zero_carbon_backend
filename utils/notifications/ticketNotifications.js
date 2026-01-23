@@ -1,4 +1,3 @@
-
 // utils/notifications/ticketNotifications.js
 const Notification = require('../../models/Notification/Notification');
 const User = require('../../models/User');
@@ -27,7 +26,6 @@ const getFrontendUrl = () => {
   return process.env.FRONTEND_URL || 'https://zerocarbon.greonxpert.com';
 };
 
-
 /**
  * Get notification targets for a ticket
  * Returns array of user IDs who should receive notification
@@ -55,6 +53,20 @@ async function getNotificationTargets(ticket, excludeUserId = null) {
     });
   }
 
+  // 🆕 Add consultant admin if present
+  if (ticket.consultantContext?.consultantAdminId) {
+    const adminId = ticket.consultantContext.consultantAdminId._id || 
+                   ticket.consultantContext.consultantAdminId;
+    targets.add(adminId.toString());
+  }
+
+  // 🆕 Add assigned consultant if present
+  if (ticket.consultantContext?.assignedConsultantId) {
+    const consultantId = ticket.consultantContext.assignedConsultantId._id || 
+                         ticket.consultantContext.assignedConsultantId;
+    targets.add(consultantId.toString());
+  }
+
   // Remove excluded user (typically the one performing the action)
   if (excludeUserId) {
     targets.delete(excludeUserId.toString());
@@ -66,12 +78,9 @@ async function getNotificationTargets(ticket, excludeUserId = null) {
 /**
  * Notify support manager when a new ticket is created for their client
  */
-async function notifySupportManagerNewTicket(ticket, supportManager) {
+async function notifySupportManagerNewTicket(ticket, supportManager, creator) {
   try {
     const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    
-    // Get creator details
-    const creator = await User.findById(ticket.createdBy).select('userName email userType');
     
     // Get client details
     const client = await Client.findOne({ clientId: ticket.clientId });
@@ -82,6 +91,14 @@ async function notifySupportManagerNewTicket(ticket, supportManager) {
       medium: '🟡',
       low: '🟢'
     };
+
+    // Determine ticket source description
+    let sourceDescription = '';
+    if (ticket.consultantContext?.isConsultantIssue) {
+      sourceDescription = `<p><strong>Issue Type:</strong> <span style="color: #6c63ff;">Consultant Internal Issue</span></p>`;
+    } else {
+      sourceDescription = `<p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>`;
+    }
 
     // Email to support manager
     const emailSubject = `${priorityEmoji[ticket.priority]} New Ticket: ${ticket.subject}`;
@@ -96,557 +113,427 @@ async function notifySupportManagerNewTicket(ticket, supportManager) {
           <p><strong>Priority:</strong> <span style="color: ${ticket.priority === 'critical' ? '#dc3545' : ticket.priority === 'high' ? '#ff6b6b' : ticket.priority === 'medium' ? '#ffa500' : '#28a745'};">${ticket.priority.toUpperCase()}</span></p>
           <p><strong>Category:</strong> ${ticket.category}</p>
           <p><strong>Status:</strong> ${ticket.status}</p>
+          ${sourceDescription}
         </div>
 
-        <div style="background-color: #e8f4fd; padding: 15px; border-left: 4px solid #0066cc; margin: 20px 0;">
-          <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
-          <p><strong>Created By:</strong> ${creator?.userName || 'Unknown'} (${creator?.userType || 'N/A'})</p>
+        <div style="background-color: #fff; padding: 15px; border-left: 4px solid #007bff; margin: 20px 0;">
+          <p><strong>Created By:</strong> ${creator?.userName || 'Unknown'} (${creator?.userType || 'Unknown'})</p>
           <p><strong>Created At:</strong> ${new Date(ticket.createdAt).toLocaleString()}</p>
+          ${ticket.dueDate ? `<p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>` : ''}
         </div>
 
         <div style="margin: 20px 0;">
           <p><strong>Description:</strong></p>
-          <div style="background-color: #ffffff; padding: 15px; border: 1px solid #dee2e6; border-radius: 4px;">
-            ${ticket.description}
-          </div>
+          <p style="background-color: #f8f9fa; padding: 15px; border-radius: 4px;">${ticket.description}</p>
         </div>
 
-        ${ticket.priority === 'critical' || ticket.priority === 'high' ? `
-          <div style="background-color: #fff3cd; padding: 15px; border-left: 4px solid #ff6b6b; margin: 20px 0;">
-            <p style="color: #856404; margin: 0;">
-              ⚠️ <strong>High Priority Ticket:</strong> This ticket requires immediate attention. 
-              ${ticket.priority === 'critical' ? 'SLA: First response within 1 hour, resolution within 4 hours.' : 'SLA: First response within 4 hours, resolution within 24 hours.'}
-            </p>
-          </div>
-        ` : ''}
-
         <div style="margin: 30px 0; text-align: center;">
-          <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
-            View Ticket & Assign to Team Member
+          <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
+            View Ticket
           </a>
         </div>
 
-        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-          <p style="margin: 0; font-size: 12px; color: #6c757d;">
-            <strong>Next Steps:</strong>
-          </p>
-          <ol style="margin: 10px 0; padding-left: 20px; font-size: 12px; color: #6c757d;">
-            <li>Review the ticket details and priority</li>
-            <li>Assign to appropriate support team member based on specialization</li>
-            <li>Ensure first response within SLA timeframe</li>
-            <li>Monitor progress and escalate if needed</li>
-          </ol>
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px;">
+          <p>This ticket requires your team's attention. Please review and assign to an appropriate support team member.</p>
         </div>
-
-        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
-        
-        <p style="font-size: 12px; color: #6c757d; text-align: center;">
-          Zero Carbon Platform - Support Team Management<br>
-          This is an automated notification. Please do not reply to this email.
-        </p>
       </div>
     `;
 
+    // Send email
     await sendMail(supportManager.email, emailSubject, emailBody);
-    
-    console.log(`[NOTIFICATIONS] Support manager ${supportManager.userName} notified about ticket ${ticket.ticketId}`);
-    
-    // In-app notification via Socket.IO
-    if (global.io) {
-      global.io.to(`user_${supportManager._id}`).emit('support-ticket-assigned', {
-        type: 'new_ticket_for_team',
-        ticketId: ticket._id,
-        ticketNumber: ticket.ticketId,
-        subject: ticket.subject,
+
+    // Create in-app notification
+    const notification = new Notification({
+      userId: supportManager._id,
+      type: 'ticket_assigned_to_team',
+      title: `New Ticket: ${ticket.subject}`,
+      message: `A new ${ticket.priority} priority ticket has been assigned to your support team`,
+      relatedId: ticket._id,
+      relatedModel: 'Ticket',
+      metadata: {
+        ticketId: ticket.ticketId,
         priority: ticket.priority,
         category: ticket.category,
         clientId: ticket.clientId,
-        companyName: client?.leadInfo?.companyName,
-        createdBy: creator?.userName,
-        createdAt: ticket.createdAt,
-        message: `New ${ticket.priority} priority ticket assigned to your support team`
-      });
-    }
-
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error notifying support manager:', error);
-  }
-}
-
-/**
- * Notify support user when ticket is assigned to them
- */
-async function notifySupportUserAssigned(ticket, supportUser, assignedBy) {
-  try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    
-    const client = await Client.findOne({ clientId: ticket.clientId });
-    
-    const emailSubject = `Ticket Assigned: ${ticket.ticketId} - ${ticket.subject}`;
-    
-    const emailBody = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2c3e50;">New Ticket Assigned to You</h2>
-        
-        <div style="background-color: #e8f4fd; padding: 15px; border-left: 4px solid #0066cc; margin: 20px 0;">
-          <p style="margin: 0;">
-            Hi ${supportUser.userName},<br><br>
-            A new ticket has been assigned to you by ${assignedBy.userName}.
-          </p>
-        </div>
-
-        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-          <p><strong>Subject:</strong> ${ticket.subject}</p>
-          <p><strong>Priority:</strong> <span style="color: ${ticket.priority === 'critical' ? '#dc3545' : ticket.priority === 'high' ? '#ff6b6b' : '#ffa500'};">${ticket.priority.toUpperCase()}</span></p>
-          <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
-          <p><strong>Due Date:</strong> ${ticket.dueDate ? new Date(ticket.dueDate).toLocaleString() : 'Not set'}</p>
-        </div>
-
-        <div style="margin: 20px 0;">
-          <p><strong>Description:</strong></p>
-          <div style="background-color: #ffffff; padding: 15px; border: 1px solid #dee2e6; border-radius: 4px;">
-            ${ticket.description}
-          </div>
-        </div>
-
-        <div style="margin: 30px 0; text-align: center;">
-          <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
-            View & Respond to Ticket
-          </a>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
-        
-        <p style="font-size: 12px; color: #6c757d; text-align: center;">
-          Zero Carbon Platform<br>
-          This is an automated notification. Please do not reply to this email.
-        </p>
-      </div>
-    `;
-
-    await sendMail(supportUser.email, emailSubject, emailBody);
-    
-    console.log(`[NOTIFICATIONS] Support user ${supportUser.userName} notified about assigned ticket ${ticket.ticketId}`);
-
-    // In-app notification
-    if (global.io) {
-      global.io.to(`user_${supportUser._id}`).emit('ticket-assigned-to-me', {
-        type: 'ticket_assigned',
-        ticketId: ticket._id,
-        ticketNumber: ticket.ticketId,
-        subject: ticket.subject,
-        priority: ticket.priority,
-        assignedBy: assignedBy.userName,
-        dueDate: ticket.dueDate,
-        message: `You have been assigned to ticket ${ticket.ticketId}`
-      });
-    }
-
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error notifying support user:', error);
-  }
-}
-
-
-/**
- * Notify support manager when a ticket in their queue breaches SLA
- */
-async function notifySupportManagerSLABreach(ticket) {
-  try {
-    const client = await Client.findOne({ clientId: ticket.clientId });
-    
-    if (!client?.supportSection?.assignedSupportManagerId) {
-      return; // No support manager assigned
-    }
-
-    const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
-    if (!supportManager) {
-      return;
-    }
-
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    
-    const emailSubject = `🔴 SLA BREACH ALERT: ${ticket.ticketId} - ${ticket.subject}`;
-    
-    const emailBody = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background-color: #dc3545; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-          <h2 style="margin: 0;">⚠️ SLA BREACH ALERT</h2>
-        </div>
-        
-        <div style="border: 2px solid #dc3545; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
-          <p style="font-size: 16px; color: #dc3545; font-weight: bold;">
-            A ticket in your support queue has breached its SLA deadline!
-          </p>
-
-          <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Subject:</strong> ${ticket.subject}</p>
-            <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
-            <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
-            <p><strong>Status:</strong> ${ticket.status}</p>
-            <p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>
-            <p><strong>Time Overdue:</strong> ${Math.floor((Date.now() - ticket.dueDate.getTime()) / (1000 * 60 * 60))} hours</p>
-          </div>
-
-          ${ticket.assignedTo ? `
-            <div style="background-color: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 20px 0;">
-              <p style="margin: 0;">
-                <strong>Currently Assigned To:</strong> ${ticket.assignedTo.userName || 'Unknown'}
-              </p>
-            </div>
-          ` : `
-            <div style="background-color: #f8d7da; padding: 15px; border-left: 4px solid #dc3545; margin: 20px 0;">
-              <p style="margin: 0; color: #721c24;">
-                ⚠️ <strong>WARNING:</strong> This ticket is unassigned!
-              </p>
-            </div>
-          `}
-
-          <div style="margin: 30px 0; text-align: center;">
-            <a href="${ticketUrl}" style="background-color: #dc3545; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
-              View Ticket & Take Action
-            </a>
-          </div>
-
-          <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-            <p style="margin: 0; font-size: 12px; color: #6c757d;">
-              <strong>Recommended Actions:</strong>
-            </p>
-            <ul style="margin: 10px 0; padding-left: 20px; font-size: 12px; color: #6c757d;">
-              <li>Escalate to senior support or management</li>
-              <li>Reassign to available team member if needed</li>
-              <li>Contact client to provide status update</li>
-              <li>Review internal processes to prevent future breaches</li>
-            </ul>
-          </div>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
-        
-        <p style="font-size: 12px; color: #6c757d; text-align: center;">
-          Zero Carbon Platform - Automated SLA Monitoring<br>
-          This is an automated notification. Please do not reply to this email.
-        </p>
-      </div>
-    `;
-
-    await sendMail(supportManager.email, emailSubject, emailBody);
-    
-    console.log(`[NOTIFICATIONS] Support manager ${supportManager.userName} notified about SLA breach for ticket ${ticket.ticketId}`);
-
-    // Critical in-app notification
-    if (global.io) {
-      global.io.to(`user_${supportManager._id}`).emit('sla-breach-alert', {
-        type: 'sla_breach',
-        severity: 'critical',
-        ticketId: ticket._id,
-        ticketNumber: ticket.ticketId,
-        subject: ticket.subject,
-        priority: ticket.priority,
-        dueDate: ticket.dueDate,
-        hoursOverdue: Math.floor((Date.now() - ticket.dueDate.getTime()) / (1000 * 60 * 60)),
-        message: `URGENT: Ticket ${ticket.ticketId} has breached SLA deadline`
-      });
-    }
-
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error notifying support manager of SLA breach:', error);
-  }
-}
-
-
-
-/**
- * Get admin users who should be notified for escalations
- */
-async function getAdminTargets(clientId) {
-  const targets = new Set();
-
-  // Get client info
-  const client = await Client.findOne({ clientId });
-  if (!client) {
-    return [];
-  }
-
-  // Add consultant admin who created the lead
-  if (client.leadInfo?.createdBy) {
-    targets.add(client.leadInfo.createdBy.toString());
-  }
-
-  // Add assigned consultant
-  if (client.workflowTracking?.assignedConsultantId) {
-    targets.add(client.workflowTracking.assignedConsultantId.toString());
-  }
-
-  // Get all super admins
-  const superAdmins = await User.find({ 
-    userType: 'super_admin',
-    isActive: true 
-  }).select('_id');
-  
-  superAdmins.forEach(admin => {
-    targets.add(admin._id.toString());
-  });
-
-  return Array.from(targets);
-}
-
-/**
- * Create notification in database
- */
-async function createNotification(data) {
-  try {
-    const notification = new Notification({
-      title: data.title,
-      message: data.message,
-      priority: data.priority || 'medium',
-      createdBy: data.createdBy,
-      creatorType: data.creatorType,
-      targetUsers: data.targetUsers || [],
-      status: 'published',
-      publishedAt: new Date(),
-      isSystemNotification: true,
-      systemAction: data.systemAction || 'ticket_update',
-      relatedEntity: {
-        type: 'ticket',
-        id: data.ticketId
-      },
-      metadata: data.metadata || {}
+        createdBy: creator?._id,
+        isConsultantIssue: ticket.consultantContext?.isConsultantIssue || false
+      }
     });
 
     await notification.save();
 
-    // Broadcast via Socket.IO if available
-    if (global.broadcastNotification) {
-      await global.broadcastNotification(notification);
-    }
+    console.log(`[NOTIFICATION] Support manager ${supportManager.userName} notified about ticket ${ticket.ticketId}`);
 
-    return notification;
   } catch (error) {
-    console.error('[TICKET NOTIFICATION] Error creating notification:', error);
+    console.error('[NOTIFICATION] Error notifying support manager:', error);
     throw error;
   }
 }
 
 /**
- * Send email notification
+ * 🆕 Notify consultant admin about tickets from their clients
  */
-async function sendEmailNotification(recipients, subject, htmlContent, textContent) {
-  if (!recipients || recipients.length === 0) {
-    return;
-  }
-
-  try {
-    // Get recipient emails
-    const users = await User.find({
-      _id: { $in: recipients }
-    }).select('email userName');
-
-    for (const user of users) {
-      if (user.email) {
-        try {
-          await sendMail(user.email, subject, textContent, htmlContent);
-          console.log(`[TICKET EMAIL] Sent to ${user.email}: ${subject}`);
-        } catch (emailError) {
-          console.error(`[TICKET EMAIL] Failed to send to ${user.email}:`, emailError.message);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('[TICKET EMAIL] Error sending emails:', error);
-  }
-}
-
-/**
- * Build email HTML template
- */
-function buildEmailTemplate(content) {
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          line-height: 1.6;
-          color: #333;
-          max-width: 600px;
-          margin: 0 auto;
-          padding: 20px;
-        }
-        .header {
-          background-color: #4CAF50;
-          color: white;
-          padding: 20px;
-          text-align: center;
-          border-radius: 5px 5px 0 0;
-        }
-        .content {
-          background-color: #f9f9f9;
-          padding: 30px;
-          border: 1px solid #ddd;
-        }
-        .ticket-info {
-          background-color: white;
-          padding: 15px;
-          margin: 20px 0;
-          border-left: 4px solid #4CAF50;
-          border-radius: 4px;
-        }
-        .ticket-info strong {
-          color: #4CAF50;
-        }
-        .button {
-          display: inline-block;
-          padding: 12px 24px;
-          background-color: #4CAF50;
-          color: white;
-          text-decoration: none;
-          border-radius: 5px;
-          margin: 20px 0;
-        }
-        .footer {
-          text-align: center;
-          margin-top: 20px;
-          padding-top: 20px;
-          border-top: 1px solid #ddd;
-          font-size: 12px;
-          color: #666;
-        }
-        .priority-critical { color: #f44336; font-weight: bold; }
-        .priority-high { color: #ff9800; font-weight: bold; }
-        .priority-medium { color: #2196F3; }
-        .priority-low { color: #4CAF50; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>🎫 Zero Carbon Platform - Support Ticket</h1>
-      </div>
-      <div class="content">
-        ${content}
-      </div>
-      <div class="footer">
-        <p>This is an automated email from Zero Carbon Platform.</p>
-        <p>© ${new Date().getFullYear()} Zero Carbon Platform. All rights reserved.</p>
-      </div>
-    </body>
-    </html>
-  `;
-}
-
-/**
- * Get priority CSS class
- */
-function getPriorityClass(priority) {
-  return `priority-${priority}`;
-}
-
-// ===== NOTIFICATION FUNCTIONS =====
-
-/**
- * Notify when ticket is created
- */
-
-async function notifyTicketCreated(ticket, creator) {
+async function notifyConsultantAdminTicket(ticket, consultantAdmin, client) {
   try {
     const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    const client = await Client.findOne({ clientId: ticket.clientId });
     
-    // Notify client admins
-    const clientAdmins = await User.find({
-      clientId: ticket.clientId,
-      userType: 'client_admin',
-      isActive: true
-    });
+    const priorityEmoji = {
+      critical: '🔴',
+      high: '🟠',
+      medium: '🟡',
+      low: '🟢'
+    };
 
-    for (const admin of clientAdmins) {
-      if (admin._id.toString() === creator._id.toString()) continue; // Skip creator
-
-      const emailSubject = `New Ticket Created: ${ticket.ticketId}`;
-      const emailBody = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2>New Support Ticket Created</h2>
-          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-          <p><strong>Subject:</strong> ${ticket.subject}</p>
-          <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
-          <p><strong>Created By:</strong> ${creator.userName}</p>
-          <p><strong>Category:</strong> ${ticket.category}</p>
-          <div style="margin: 20px 0;">
-            <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-              View Ticket
-            </a>
-          </div>
-        </div>
-      `;
-
-      await sendMail(admin.email, emailSubject, emailBody);
-    }
-
-    // Notify consultant if assigned
-    if (client?.workflowTracking?.assignedConsultantId) {
-      const consultant = await User.findById(client.workflowTracking.assignedConsultantId);
-      if (consultant) {
-        const emailSubject = `New Ticket from ${client.leadInfo.companyName}: ${ticket.ticketId}`;
-        const emailBody = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>New Support Ticket</h2>
-            <p>A new ticket has been created by your client <strong>${client.leadInfo.companyName}</strong>.</p>
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Subject:</strong> ${ticket.subject}</p>
-            <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                View Ticket
-              </a>
-            </div>
-          </div>
-        `;
-        await sendMail(consultant.email, emailSubject, emailBody);
-      }
-    }
-
-    console.log(`[NOTIFICATIONS] Ticket created notifications sent for ${ticket.ticketId}`);
-
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketCreated:', error);
-  }
-}
-
-
-/**
- * Notify when ticket is assigned
- */
-async function notifyTicketAssigned(ticket, assignee, assignedBy) {
-  try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-
-    // Notify assignee
-    const emailSubject = `Ticket Assigned to You: ${ticket.ticketId}`;
+    const emailSubject = `${priorityEmoji[ticket.priority]} Client Ticket Alert: ${client?.leadInfo?.companyName || ticket.clientId}`;
+    
     const emailBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Ticket Assigned to You</h2>
-        <p>Hi ${assignee.userName},</p>
-        <p>A ticket has been assigned to you by ${assignedBy.userName}.</p>
-        <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-        <p><strong>Subject:</strong> ${ticket.subject}</p>
-        <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
-        <p><strong>Due Date:</strong> ${ticket.dueDate ? new Date(ticket.dueDate).toLocaleString() : 'Not set'}</p>
+        <h2 style="color: #2c3e50;">New Ticket from Your Client</h2>
+        
+        <div style="background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;">
+          <p style="margin: 0; font-size: 14px; color: #6c757d;">Your client has raised a support ticket</p>
+        </div>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
+          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+          <p><strong>Subject:</strong> ${ticket.subject}</p>
+          <p><strong>Priority:</strong> <span style="color: ${ticket.priority === 'critical' ? '#dc3545' : ticket.priority === 'high' ? '#ff6b6b' : ticket.priority === 'medium' ? '#ffa500' : '#28a745'};">${ticket.priority.toUpperCase()}</span></p>
+          <p><strong>Category:</strong> ${ticket.category}</p>
+        </div>
+
         <div style="margin: 20px 0;">
-          <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-            View Ticket
+          <p><strong>Description:</strong></p>
+          <p style="background-color: #f8f9fa; padding: 15px; border-radius: 4px;">${ticket.description}</p>
+        </div>
+
+        ${ticket.supportManagerId ? `
+        <div style="background-color: #fff; padding: 15px; border-left: 4px solid #28a745; margin: 20px 0;">
+          <p style="margin: 0;"><strong>Support Team:</strong> This ticket has been assigned to the support team for resolution</p>
+        </div>
+        ` : ''}
+
+        <div style="margin: 30px 0; text-align: center;">
+          <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
+            View Ticket Details
           </a>
+        </div>
+
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px;">
+          <p>You're receiving this notification because you're the consultant admin for this client. You can track the ticket's progress in your dashboard.</p>
         </div>
       </div>
     `;
 
-    await sendMail(assignee.email, emailSubject, emailBody);
-    console.log(`[NOTIFICATIONS] Assignment notification sent to ${assignee.userName} for ticket ${ticket.ticketId}`);
+    // Send email
+    await sendMail(consultantAdmin.email, emailSubject, emailBody);
+
+    // Create in-app notification
+    const notification = new Notification({
+      userId: consultantAdmin._id,
+      type: 'client_ticket_created',
+      title: `Client Ticket: ${client?.leadInfo?.companyName || ticket.clientId}`,
+      message: `Your client has raised a ${ticket.priority} priority ticket: ${ticket.subject}`,
+      relatedId: ticket._id,
+      relatedModel: 'Ticket',
+      metadata: {
+        ticketId: ticket.ticketId,
+        priority: ticket.priority,
+        category: ticket.category,
+        clientId: ticket.clientId
+      }
+    });
+
+    await notification.save();
+
+    console.log(`[NOTIFICATION] Consultant admin ${consultantAdmin.userName} notified about client ticket ${ticket.ticketId}`);
 
   } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketAssigned:', error);
+    console.error('[NOTIFICATION] Error notifying consultant admin:', error);
+    // Don't throw - this is a supplementary notification
+  }
+}
+
+/**
+ * 🆕 Notify consultant about tickets from their assigned clients
+ */
+async function notifyConsultantTicket(ticket, consultant, client) {
+  try {
+    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    
+    const priorityEmoji = {
+      critical: '🔴',
+      high: '🟠',
+      medium: '🟡',
+      low: '🟢'
+    };
+
+    const emailSubject = `${priorityEmoji[ticket.priority]} Assigned Client Ticket: ${client?.leadInfo?.companyName || ticket.clientId}`;
+    
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2c3e50;">New Ticket from Your Assigned Client</h2>
+        
+        <div style="background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;">
+          <p style="margin: 0; font-size: 14px; color: #6c757d;">A client you're managing has raised a support ticket</p>
+        </div>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
+          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+          <p><strong>Subject:</strong> ${ticket.subject}</p>
+          <p><strong>Priority:</strong> <span style="color: ${ticket.priority === 'critical' ? '#dc3545' : ticket.priority === 'high' ? '#ff6b6b' : ticket.priority === 'medium' ? '#ffa500' : '#28a745'};">${ticket.priority.toUpperCase()}</span></p>
+          <p><strong>Category:</strong> ${ticket.category}</p>
+        </div>
+
+        <div style="margin: 20px 0;">
+          <p><strong>Description:</strong></p>
+          <p style="background-color: #f8f9fa; padding: 15px; border-radius: 4px;">${ticket.description}</p>
+        </div>
+
+        ${ticket.supportManagerId ? `
+        <div style="background-color: #fff; padding: 15px; border-left: 4px solid #28a745; margin: 20px 0;">
+          <p style="margin: 0;"><strong>Support Status:</strong> This ticket has been routed to the support team</p>
+        </div>
+        ` : ''}
+
+        <div style="margin: 30px 0; text-align: center;">
+          <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
+            View Ticket
+          </a>
+        </div>
+
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px;">
+          <p>You're receiving this notification because this is one of your assigned clients. Monitor the ticket's progress and assist if needed.</p>
+        </div>
+      </div>
+    `;
+
+    // Send email
+    await sendMail(consultant.email, emailSubject, emailBody);
+
+    // Create in-app notification
+    const notification = new Notification({
+      userId: consultant._id,
+      type: 'assigned_client_ticket',
+      title: `Ticket from ${client?.leadInfo?.companyName || ticket.clientId}`,
+      message: `Your assigned client has raised a ${ticket.priority} priority ticket: ${ticket.subject}`,
+      relatedId: ticket._id,
+      relatedModel: 'Ticket',
+      metadata: {
+        ticketId: ticket.ticketId,
+        priority: ticket.priority,
+        category: ticket.category,
+        clientId: ticket.clientId
+      }
+    });
+
+    await notification.save();
+
+    console.log(`[NOTIFICATION] Consultant ${consultant.userName} notified about assigned client ticket ${ticket.ticketId}`);
+
+  } catch (error) {
+    console.error('[NOTIFICATION] Error notifying consultant:', error);
+    // Don't throw - this is a supplementary notification
+  }
+}
+
+/**
+ * Notify support user when assigned to a ticket
+ */
+async function notifySupportUserAssigned(ticket, supportUser) {
+  try {
+    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    
+    const client = await Client.findOne({ clientId: ticket.clientId });
+    
+    const priorityEmoji = {
+      critical: '🔴',
+      high: '🟠',
+      medium: '🟡',
+      low: '🟢'
+    };
+
+    const emailSubject = `${priorityEmoji[ticket.priority]} Ticket Assigned: ${ticket.subject}`;
+    
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2c3e50;">New Ticket Assigned to You</h2>
+        
+        <div style="background-color: #f0f7ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;">
+          <p style="margin: 0; font-size: 16px;"><strong>You've been assigned a support ticket</strong></p>
+        </div>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+          <p><strong>Subject:</strong> ${ticket.subject}</p>
+          <p><strong>Priority:</strong> <span style="color: ${ticket.priority === 'critical' ? '#dc3545' : ticket.priority === 'high' ? '#ff6b6b' : ticket.priority === 'medium' ? '#ffa500' : '#28a745'};">${ticket.priority.toUpperCase()}</span></p>
+          <p><strong>Category:</strong> ${ticket.category}</p>
+          <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
+          ${ticket.dueDate ? `<p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>` : ''}
+        </div>
+
+        <div style="margin: 20px 0;">
+          <p><strong>Description:</strong></p>
+          <p style="background-color: #f8f9fa; padding: 15px; border-radius: 4px;">${ticket.description}</p>
+        </div>
+
+        <div style="margin: 30px 0; text-align: center;">
+          <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
+            Start Working on Ticket
+          </a>
+        </div>
+
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #6c757d; font-size: 12px;">
+          <p>Please acknowledge this ticket and begin working on it as soon as possible.</p>
+        </div>
+      </div>
+    `;
+
+    await sendMail(supportUser.email, emailSubject, emailBody);
+
+    const notification = new Notification({
+      userId: supportUser._id,
+      type: 'ticket_assigned_to_me',
+      title: `Ticket Assigned: ${ticket.subject}`,
+      message: `You've been assigned a ${ticket.priority} priority ticket`,
+      relatedId: ticket._id,
+      relatedModel: 'Ticket',
+      metadata: {
+        ticketId: ticket.ticketId,
+        priority: ticket.priority,
+        category: ticket.category,
+        clientId: ticket.clientId
+      }
+    });
+
+    await notification.save();
+
+    console.log(`[NOTIFICATION] Support user ${supportUser.userName} notified about assignment to ticket ${ticket.ticketId}`);
+
+  } catch (error) {
+    console.error('[NOTIFICATION] Error notifying support user:', error);
+    throw error;
+  }
+}
+
+/**
+ * Notify when ticket is created (general notification)
+ */
+async function notifyTicketCreated(ticket, creator) {
+  try {
+    const targets = await getNotificationTargets(ticket, getUserId(creator));
+    
+    if (targets.length === 0) {
+      return;
+    }
+
+    const ticketUrl = getTicketUrl(ticket._id);
+    const client = await Client.findOne({ clientId: ticket.clientId });
+
+    // Create notifications for all targets
+  const notifications = targets.map(userId => ({
+  createdBy: creator._id,
+  creatorType: creator.userType,
+  targetUsers: [userId],
+  title: `New Ticket: ${ticket.subject}`,
+  message: `${creator.userName} created a new ticket for ${client?.leadInfo?.companyName || ticket.clientId}`,
+  priority: ticket.priority === 'critical' || ticket.priority === 'high' ? 'high' : 'medium',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_created',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
+
+    await Notification.insertMany(notifications);
+
+    console.log(`[NOTIFICATION] ${notifications.length} users notified about new ticket ${ticket.ticketId}`);
+
+  } catch (error) {
+    console.error('[NOTIFICATION] Error in notifyTicketCreated:', error);
+  }
+}
+
+/**
+ * Notify when ticket is assigned
+ */
+async function notifyTicketAssigned(ticket, assignee, assigner) {
+  try {
+    const targets = await getNotificationTargets(ticket, getUserId(assigner));
+    
+    const ticketUrl = getTicketUrl(ticket._id);
+
+    // Notify watchers
+    const notifications = targets.map(userId => ({
+  createdBy: assigner._id,
+  creatorType: assigner.userType,
+  targetUsers: [userId],
+  title: `Ticket Assigned: ${ticket.subject}`,
+  message: `${assigner.userName} assigned ticket ${ticket.ticketId} to ${assignee.userName}`,
+  priority: 'medium',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_assigned',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
+
+
+    await Notification.insertMany(notifications);
+
+    console.log(`[NOTIFICATION] Assignment notification sent for ticket ${ticket.ticketId}`);
+
+  } catch (error) {
+    console.error('[NOTIFICATION] Error in notifyTicketAssigned:', error);
+  }
+}
+
+/**
+ * Notify when ticket status changes
+ */
+async function notifyTicketStatusChanged(ticket, user, changes) {
+  try {
+    const targets = await getNotificationTargets(ticket, getUserId(user));
+    
+    if (targets.length === 0 || changes.length === 0) {
+      return;
+    }
+
+    const ticketUrl = getTicketUrl(ticket._id);
+
+    // Create change description
+    const changeDesc = changes.map(c => `${c.field}: ${c.oldValue} → ${c.newValue}`).join(', ');
+
+    const notifications = targets.map(userId => ({
+  createdBy: updater._id,
+  creatorType: updater.userType,
+  targetUsers: [userId],
+  title: `Ticket Status Changed: ${ticket.subject}`,
+  message: `${updater.userName} changed status of ticket ${ticket.ticketId} to ${newStatus}`,
+  priority: 'medium',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_status_changed',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
+
+    await Notification.insertMany(notifications);
+
+    console.log(`[NOTIFICATION] Status change notification sent for ticket ${ticket.ticketId}`);
+
+  } catch (error) {
+    console.error('[NOTIFICATION] Error in notifyTicketStatusChanged:', error);
   }
 }
 
@@ -655,136 +542,90 @@ async function notifyTicketAssigned(ticket, assignee, assignedBy) {
  */
 async function notifyTicketCommented(ticket, activity, commenter) {
   try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    
-    // Don't notify for internal comments (only support staff see these)
+    const targets = await getNotificationTargets(ticket, getUserId(commenter));
+    if (targets.length === 0) return;
+
+    let finalTargets = targets;
+
+    // Internal comments => only notify support/supportManager/super_admin
     if (activity.comment?.isInternal) {
-      return;
+      const supportUsers = await User.find({
+        _id: { $in: targets },
+        userType: { $in: ['support', 'supportManager', 'super_admin'] }
+      }).select('_id');
+
+      const supportUserIds = supportUsers.map(u => u._id.toString());
+      finalTargets = targets.filter(t => supportUserIds.includes(t));
+
+      if (finalTargets.length === 0) return;
     }
 
-    // Notify watchers
-    if (ticket.watchers && ticket.watchers.length > 0) {
-      const watchers = await User.find({
-        _id: { $in: ticket.watchers }
-      });
+    const ticketUrl = getTicketUrl(ticket._id);
 
-      for (const watcher of watchers) {
-        if (watcher._id.toString() === commenter._id.toString()) continue; // Skip commenter
+    const notifications = finalTargets.map(userId => ({
+  createdBy: commenter._id,
+  creatorType: commenter.userType,
+  targetUsers: [userId],
+  title: `New Comment: ${ticket.subject}`,
+  message: `${commenter.userName} added a comment to ticket ${ticket.ticketId}`,
+  priority: activity.comment?.isInternal ? 'low' : 'medium',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_commented',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
 
-        const emailSubject = `New Comment on Ticket: ${ticket.ticketId}`;
-        const emailBody = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>New Comment Added</h2>
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Subject:</strong> ${ticket.subject}</p>
-            <p><strong>Commented By:</strong> ${commenter.userName}</p>
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-              <p style="margin: 0;">${activity.comment.text}</p>
-            </div>
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+    await Notification.insertMany(notifications);
+
+    // Email mentioned users (keep as-is, or optionally restrict for internal comments)
+    if (activity.comment?.mentions?.length > 0) {
+      for (const mentionId of activity.comment.mentions) {
+        const mentionedUser = await User.findById(mentionId);
+        if (mentionedUser && mentionedUser.email) {
+          const emailSubject = `You were mentioned in ticket: ${ticket.subject}`;
+          const emailBody = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2>You were mentioned in a ticket</h2>
+              <p><strong>${commenter.userName}</strong> mentioned you in a comment on ticket <strong>${ticket.ticketId}</strong></p>
+              <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
+                <p>${activity.comment.text}</p>
+              </div>
+              <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
                 View Ticket
               </a>
             </div>
-          </div>
-        `;
-
-        await sendMail(watcher.email, emailSubject, emailBody);
+          `;
+          await sendMail(mentionedUser.email, emailSubject, emailBody);
+        }
       }
     }
 
-    // Notify mentioned users
-    if (activity.comment?.mentions && activity.comment.mentions.length > 0) {
-      const mentionedUsers = await User.find({
-        _id: { $in: activity.comment.mentions }
-      });
-
-      for (const user of mentionedUsers) {
-        if (user._id.toString() === commenter._id.toString()) continue; // Skip commenter
-
-        const emailSubject = `You were mentioned in Ticket: ${ticket.ticketId}`;
-        const emailBody = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>You Were Mentioned</h2>
-            <p><strong>${commenter.userName}</strong> mentioned you in ticket <strong>${ticket.ticketId}</strong>:</p>
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-              <p style="margin: 0;">${activity.comment.text}</p>
-            </div>
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                View Ticket
-              </a>
-            </div>
-          </div>
-        `;
-
-        await sendMail(user.email, emailSubject, emailBody);
-      }
-    }
-
-    console.log(`[NOTIFICATIONS] Comment notifications sent for ticket ${ticket.ticketId}`);
+    console.log(`[NOTIFICATION] Comment notification sent for ticket ${ticket.ticketId}`);
 
   } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketCommented:', error);
+    console.error('[NOTIFICATION] Error in notifyTicketCommented:', error);
   }
 }
 
-
-/**
- * Notify when ticket status changes
- */
-async function notifyTicketStatusChanged(ticket, oldStatus, newStatus, changedBy) {
-  try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
-    
-    // Notify watchers
-    if (ticket.watchers && ticket.watchers.length > 0) {
-      const watchers = await User.find({
-        _id: { $in: ticket.watchers }
-      });
-
-      for (const watcher of watchers) {
-        if (watcher._id.toString() === changedBy._id.toString()) continue; // Skip the person who made the change
-
-        const emailSubject = `Ticket Status Updated: ${ticket.ticketId}`;
-        const emailBody = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Ticket Status Updated</h2>
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Subject:</strong> ${ticket.subject}</p>
-            <p><strong>Status Changed:</strong> ${oldStatus} → ${newStatus}</p>
-            <p><strong>Changed By:</strong> ${changedBy.userName}</p>
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                View Ticket
-              </a>
-            </div>
-          </div>
-        `;
-
-        await sendMail(watcher.email, emailSubject, emailBody);
-      }
-    }
-
-    console.log(`[NOTIFICATIONS] Status change notifications sent for ticket ${ticket.ticketId}`);
-
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketStatusChanged:', error);
-  }
-}
 
 /**
  * Notify when ticket is escalated
  */
 async function notifyTicketEscalated(ticket, reason, escalatedBy) {
   try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    const ticketUrl = getTicketUrl(ticket._id);
+    
+    // Get client
     const client = await Client.findOne({ clientId: ticket.clientId });
 
-    // Notify consultant admin if exists
-    if (client?.leadInfo?.consultantAdminId) {
-      const consultantAdmin = await User.findById(client.leadInfo.consultantAdminId);
-      if (consultantAdmin) {
+    // Notify support manager
+    if (ticket.supportManagerId) {
+      const supportManager = await User.findById(ticket.supportManagerId);
+      if (supportManager) {
         const emailSubject = `🚨 Ticket Escalated: ${ticket.ticketId}`;
         const emailBody = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -794,7 +635,7 @@ async function notifyTicketEscalated(ticket, reason, escalatedBy) {
             <div style="border: 2px solid #ff6b6b; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
               <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
               <p><strong>Subject:</strong> ${ticket.subject}</p>
-              <p><strong>Client:</strong> ${client.leadInfo.companyName}</p>
+              <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
               <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
               <p><strong>Escalation Level:</strong> ${ticket.escalationLevel}</p>
               <p><strong>Reason:</strong> ${reason}</p>
@@ -808,69 +649,109 @@ async function notifyTicketEscalated(ticket, reason, escalatedBy) {
           </div>
         `;
 
-        await sendMail(consultantAdmin.email, emailSubject, emailBody);
-      }
-    }
-
-    // 🆕 Notify support manager if ticket is from their client
-    if (client?.supportSection?.assignedSupportManagerId) {
-      const supportManager = await User.findById(client.supportSection.assignedSupportManagerId);
-      if (supportManager) {
-        const emailSubject = `🚨 Ticket Escalated: ${ticket.ticketId}`;
-        const emailBody = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #ff6b6b;">Ticket Escalation Alert</h2>
-            <p>A ticket from your assigned client has been escalated.</p>
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Client:</strong> ${client.leadInfo.companyName}</p>
-            <p><strong>Escalation Level:</strong> ${ticket.escalationLevel}</p>
-            <p><strong>Reason:</strong> ${reason}</p>
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: #ff6b6b; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                Review Ticket
-              </a>
-            </div>
-          </div>
-        `;
         await sendMail(supportManager.email, emailSubject, emailBody);
       }
     }
 
-    console.log(`[NOTIFICATIONS] Escalation notifications sent for ticket ${ticket.ticketId}`);
+    // 🆕 Notify consultant admin if client ticket
+    if (client?.leadInfo?.consultantAdminId && !ticket.consultantContext?.isConsultantIssue) {
+      const consultantAdmin = await User.findById(client.leadInfo.consultantAdminId);
+      if (consultantAdmin) {
+        const emailSubject = `🚨 Client Ticket Escalated: ${ticket.ticketId}`;
+        const emailBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: #ff6b6b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+              <h2 style="margin: 0;">Client Ticket Escalated</h2>
+            </div>
+            <div style="border: 2px solid #ff6b6b; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+              <p>A ticket from your client has been escalated:</p>
+              <p><strong>Client:</strong> ${client.leadInfo.companyName}</p>
+              <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+              <p><strong>Subject:</strong> ${ticket.subject}</p>
+              <p><strong>Escalation Level:</strong> ${ticket.escalationLevel}</p>
+              <p><strong>Reason:</strong> ${reason}</p>
+              <div style="margin: 20px 0;">
+                <a href="${ticketUrl}" style="background-color: #ff6b6b; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                  View Ticket
+                </a>
+              </div>
+            </div>
+          </div>
+        `;
+
+        await sendMail(consultantAdmin.email, emailSubject, emailBody);
+      }
+    }
+
+    // Notify all watchers
+    const targets = await getNotificationTargets(ticket);
+    
+    const notifications = targets.map(userId => ({
+  createdBy: escalator._id,
+  creatorType: escalator.userType,
+  targetUsers: [userId],
+  title: `Ticket Escalated: ${ticket.subject}`,
+  message: `${escalator.userName} escalated ticket ${ticket.ticketId}. Reason: ${reason}`,
+  priority: 'high',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_escalated',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
+
+    await Notification.insertMany(notifications);
+
+    console.log(`[NOTIFICATION] Escalation notification sent for ticket ${ticket.ticketId}`);
 
   } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketEscalated:', error);
+    console.error('[NOTIFICATION] Error in notifyTicketEscalated:', error);
   }
 }
+
 /**
  * Notify when ticket is resolved
  */
 async function notifyTicketResolved(ticket, resolver) {
   try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    const targets = await getNotificationTargets(ticket, getUserId(resolver));
     
-    // Notify creator
+    if (targets.length === 0) {
+      return;
+    }
+
+    const ticketUrl = getTicketUrl(ticket._id);
+    const client = await Client.findOne({ clientId: ticket.clientId });
+
+    // Send emails to key stakeholders
     const creator = await User.findById(ticket.createdBy);
-    if (creator) {
-      const emailSubject = `Ticket Resolved: ${ticket.ticketId}`;
+    if (creator && creator.email) {
+      const emailSubject = `✅ Ticket Resolved: ${ticket.subject}`;
       const emailBody = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #28a745;">Ticket Resolved</h2>
-          <p>Your ticket has been resolved!</p>
-          <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-          <p><strong>Subject:</strong> ${ticket.subject}</p>
-          <p><strong>Resolved By:</strong> ${resolver.userName}</p>
-          ${ticket.resolution?.resolutionNotes ? `
-            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-              <p style="margin: 0;"><strong>Resolution Notes:</strong></p>
-              <p>${ticket.resolution.resolutionNotes}</p>
+          <div style="background-color: #28a745; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">Ticket Resolved</h2>
+          </div>
+          <div style="border: 2px solid #28a745; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+            <p>Your ticket has been resolved!</p>
+            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+            <p><strong>Subject:</strong> ${ticket.subject}</p>
+            <p><strong>Resolved By:</strong> ${resolver.userName}</p>
+            ${ticket.resolution?.resolutionNotes ? `
+              <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
+                <p><strong>Resolution Notes:</strong></p>
+                <p>${ticket.resolution.resolutionNotes}</p>
+              </div>
+            ` : ''}
+            <div style="margin: 20px 0;">
+              <a href="${ticketUrl}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                View Ticket & Provide Feedback
+              </a>
             </div>
-          ` : ''}
-          <p>Please review the resolution and close the ticket if you're satisfied.</p>
-          <div style="margin: 20px 0;">
-            <a href="${ticketUrl}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-              View & Close Ticket
-            </a>
+            <p style="font-size: 12px; color: #6c757d;">Please review the resolution and provide feedback if needed.</p>
           </div>
         </div>
       `;
@@ -878,47 +759,106 @@ async function notifyTicketResolved(ticket, resolver) {
       await sendMail(creator.email, emailSubject, emailBody);
     }
 
-    console.log(`[NOTIFICATIONS] Resolution notification sent for ticket ${ticket.ticketId}`);
+    // Create notifications
+    const notifications = targets.map(userId => ({
+  createdBy: resolver._id,
+  creatorType: resolver.userType,
+  targetUsers: [userId],
+  title: `Ticket Resolved: ${ticket.subject}`,
+  message: `${resolver.userName} resolved ticket ${ticket.ticketId}`,
+  priority: 'medium',
+  status: 'published',
+  isSystemNotification: true,
+  systemAction: 'ticket_resolved',
+  relatedEntity: {
+    type: 'Ticket',
+    id: ticket._id
+  },
+  publishDate: new Date()
+}));
+
+    await Notification.insertMany(notifications);
+
+    console.log(`[NOTIFICATION] Resolution notification sent for ticket ${ticket.ticketId}`);
 
   } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifyTicketResolved:', error);
+    console.error('[NOTIFICATION] Error in notifyTicketResolved:', error);
   }
 }
 
 /**
- * Notify about SLA breach or warning
+ * Notify about SLA warnings/breaches
  */
-async function notifySLAWarning(ticket, type = 'warning') {
+async function notifySLAWarning(ticket, type) {
   try {
-    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    const ticketUrl = getTicketUrl(ticket._id);
     const client = await Client.findOne({ clientId: ticket.clientId });
 
-    // Notify assignee if exists
-    if (ticket.assignedTo) {
-      const assignee = await User.findById(ticket.assignedTo);
-      if (assignee) {
-        const emailSubject = type === 'breach' 
-          ? `🔴 SLA BREACH: ${ticket.ticketId}` 
-          : `⚠️ SLA Warning: ${ticket.ticketId}`;
-        
+    let emailSubject = '';
+    let priority = '';
+    let bgColor = '';
+
+    if (type === 'warning') {
+      emailSubject = `⚠️ SLA Warning: ${ticket.ticketId}`;
+      priority = 'warning';
+      bgColor = '#ffa500';
+    } else {
+      emailSubject = `🚨 SLA Breach: ${ticket.ticketId}`;
+      priority = 'breach';
+      bgColor = '#dc3545';
+    }
+
+    // Notify support manager
+    if (ticket.supportManagerId) {
+      const supportManager = await User.findById(ticket.supportManagerId);
+      if (supportManager && supportManager.email) {
         const emailBody = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: ${type === 'breach' ? '#dc3545' : '#ffa500'};">
-              ${type === 'breach' ? 'SLA Deadline Breached' : 'SLA Deadline Approaching'}
-            </h2>
-            <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
-            <p><strong>Subject:</strong> ${ticket.subject}</p>
-            <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
-            <p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>
-            ${type === 'breach' ? `
-              <p style="color: #dc3545;"><strong>Status:</strong> OVERDUE</p>
-            ` : `
-              <p style="color: #ffa500;"><strong>Status:</strong> Due Soon (80% elapsed)</p>
-            `}
-            <div style="margin: 20px 0;">
-              <a href="${ticketUrl}" style="background-color: ${type === 'breach' ? '#dc3545' : '#ffa500'}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                View Ticket
-              </a>
+            <div style="background-color: ${bgColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+              <h2 style="margin: 0;">SLA ${type === 'warning' ? 'Warning' : 'Breach'}</h2>
+            </div>
+            <div style="border: 2px solid ${bgColor}; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+              <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+              <p><strong>Subject:</strong> ${ticket.subject}</p>
+              <p><strong>Client:</strong> ${client?.leadInfo?.companyName || ticket.clientId}</p>
+              <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
+              <p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>
+              <p><strong>Status:</strong> ${ticket.status}</p>
+              <div style="margin: 20px 0;">
+                <a href="${ticketUrl}" style="background-color: ${bgColor}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                  View Ticket
+                </a>
+              </div>
+              <p style="font-size: 12px; color: #6c757d;">
+                ${type === 'warning' ? 'This ticket is approaching its SLA deadline. Please prioritize.' : 'This ticket has breached its SLA deadline. Immediate action required.'}
+              </p>
+            </div>
+          </div>
+        `;
+
+        await sendMail(supportManager.email, emailSubject, emailBody);
+      }
+    }
+
+    // Notify assignee
+    if (ticket.assignedTo) {
+      const assignee = await User.findById(ticket.assignedTo);
+      if (assignee && assignee.email) {
+        const emailBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background-color: ${bgColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+              <h2 style="margin: 0;">SLA ${type === 'warning' ? 'Warning' : 'Breach'} - Action Required</h2>
+            </div>
+            <div style="border: 2px solid ${bgColor}; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+              <p>A ticket assigned to you ${type === 'warning' ? 'is approaching' : 'has breached'} its SLA deadline:</p>
+              <p><strong>Ticket ID:</strong> ${ticket.ticketId}</p>
+              <p><strong>Subject:</strong> ${ticket.subject}</p>
+              <p><strong>Due Date:</strong> ${new Date(ticket.dueDate).toLocaleString()}</p>
+              <div style="margin: 20px 0;">
+                <a href="${ticketUrl}" style="background-color: ${bgColor}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                  View Ticket
+                </a>
+              </div>
             </div>
           </div>
         `;
@@ -926,28 +866,25 @@ async function notifySLAWarning(ticket, type = 'warning') {
         await sendMail(assignee.email, emailSubject, emailBody);
       }
     }
-    // 🆕 Also notify support manager if ticket has breached SLA
-    if (type === 'breach') {
-      await notifySupportManagerSLABreach(ticket);
-    }
 
-    console.log(`[NOTIFICATIONS] SLA ${type} notification sent for ticket ${ticket.ticketId}`);
+    console.log(`[NOTIFICATION] SLA ${type} notification sent for ticket ${ticket.ticketId}`);
 
   } catch (error) {
-    console.error('[NOTIFICATIONS] Error in notifySLAWarning:', error);
+    console.error('[NOTIFICATION] Error in notifySLAWarning:', error);
   }
 }
 
 module.exports = {
- notifyTicketCreated,
+  notifyTicketCreated,
   notifyTicketAssigned,
   notifyTicketStatusChanged,
   notifyTicketCommented,
   notifyTicketEscalated,
   notifyTicketResolved,
-  notifySLAWarning,
-  // 🆕 NEW SUPPORT FUNCTIONS
   notifySupportManagerNewTicket,
   notifySupportUserAssigned,
-  notifySupportManagerSLABreach
+  notifySLAWarning,
+  // 🆕 New consultant notifications
+  notifyConsultantAdminTicket,
+  notifyConsultantTicket
 };

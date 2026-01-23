@@ -45,6 +45,10 @@ router.post(
  *   - limit: Items per page (default: 20)
  *   - sortBy: Sort field (default: updatedAt)
  *   - sortOrder: Sort order asc/desc (default: desc)
+ *   🆕 NEW PARAMS:
+ *   - consultantAdminId: Filter by consultant admin
+ *   - assignedConsultantId: Filter by assigned consultant
+ *   - isConsultantIssue: Filter consultant-specific issues (true/false)
  */
 router.get(
   '/',
@@ -58,10 +62,24 @@ router.get(
  *   - clientId: Filter by client
  *   - fromDate: Filter from date
  *   - toDate: Filter to date
+ *   🆕 NEW PARAMS:
+ *   - consultantAdminId: Filter by consultant admin
+ *   - assignedConsultantId: Filter by assigned consultant
  */
 router.get(
   '/stats',
   ticketController.getStats
+);
+
+/**
+ * 🆕 Get consultant-specific overview
+ * GET /api/tickets/consultant-overview
+ * Returns overview of consultant's own issues and client issues
+ * Only accessible by consultant and consultant_admin
+ */
+router.get(
+  '/consultant-overview',
+  ticketController.getConsultantOverview
 );
 
 /**
