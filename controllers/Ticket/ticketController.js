@@ -1914,7 +1914,11 @@ exports.addComment = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = getUserId(req.user);
-    const { text, isInternal = false, mentions = [] } = req.body;
+    const { 
+      text, 
+      isInternal = false, 
+      mentions = []  // Only for support manager mentions
+    } = req.body;
 
     if (!text || text.trim() === '') {
       return res.status(400).json({
@@ -1931,6 +1935,51 @@ exports.addComment = async (req, res) => {
       });
     }
 
+    // ✅ CHECK IF TICKET IS CLOSED/RESOLVED
+    if (['closed', 'resolved'].includes(ticket.status)) {
+      const lastActivity = await TicketActivity.findOne({
+        ticket: ticket._id,
+        activityType: { $in: ['resolution', 'status_change'] }
+      })
+      .sort({ createdAt: -1 })
+      .populate('createdBy', 'userName userType')
+      .lean();
+
+      let actionMessage = 'This ticket has been closed and cannot accept new comments.';
+      
+      if (lastActivity) {
+        const actionType = ticket.status === 'closed' ? 'Closed' : 'Resolved';
+        const actionBy = lastActivity.createdBy?.userName || 'System';
+        const actionDate = new Date(lastActivity.createdAt).toLocaleString();
+        
+        actionMessage = `
+          This ticket has been ${actionType.toLowerCase()} and cannot accept new comments.
+          
+          ${actionType} by: ${actionBy}
+          ${actionType} on: ${actionDate}
+          ${ticket.resolution?.resolutionNotes ? `
+Resolution Notes: ${ticket.resolution.resolutionNotes}` : ''}
+          
+          If you need to add more information, please reopen the ticket first.
+        `.trim();
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: 'Ticket is closed',
+        ticketStatus: ticket.status,
+        canComment: false,
+        actionDetails: actionMessage,
+        ticket: {
+          ticketId: ticket.ticketId,
+          status: ticket.status,
+          closedAt: ticket.closedAt,
+          resolvedAt: ticket.resolvedAt,
+          resolution: ticket.resolution
+        }
+      });
+    }
+
     // Check access
     const access = await canViewTicket(req.user, ticket);
     if (!access.allowed) {
@@ -1940,7 +1989,18 @@ exports.addComment = async (req, res) => {
       });
     }
 
-    // Handle attachments if present
+    // ✅ VALIDATE MENTIONS (ONLY SUPPORT MANAGER)
+    const validatedMentions = [];
+    if (mentions && mentions.length > 0) {
+      const supportManager = await User.findById(ticket.supportManagerId);
+      for (const mentionId of mentions) {
+        if (supportManager && mentionId === ticket.supportManagerId?.toString()) {
+          validatedMentions.push(mentionId);
+        }
+      }
+    }
+
+    // Handle attachments
     let attachments = [];
     if (req.files && req.files.length > 0) {
       attachments = await saveTicketAttachments(req, {
@@ -1958,7 +2018,7 @@ exports.addComment = async (req, res) => {
       comment: {
         text,
         isInternal,
-        mentions
+        mentions: validatedMentions
       },
       attachments,
       createdBy: userId,
@@ -1967,11 +2027,36 @@ exports.addComment = async (req, res) => {
 
     await activity.save();
 
-    // Update ticket's firstResponseAt if this is first response from support
+    // ✅ UPDATE ACTION HISTORY
+    if (!ticket.actionHistory) {
+      ticket.actionHistory = [];
+    }
+
+    ticket.actionHistory.push({
+      action: 'comment_added',
+      performedBy: userId,
+      performedByType: req.user.userType,
+      timestamp: new Date(),
+      details: {
+        commentId: activity._id,
+        isInternal,
+        hasAttachments: attachments.length > 0,
+        mentionedSupportManager: validatedMentions.length > 0
+      }
+    });
+
+    // First response tracking
     if (!ticket.firstResponseAt && ['support', 'supportManager'].includes(req.user.userType)) {
       ticket.firstResponseAt = new Date();
-      await ticket.save();
+      ticket.actionHistory.push({
+        action: 'first_response',
+        performedBy: userId,
+        performedByType: req.user.userType,
+        timestamp: new Date()
+      });
     }
+
+    await ticket.save();
 
     // Emit socket event
     emitTicketEvent('ticket-commented', {
@@ -1980,22 +2065,30 @@ exports.addComment = async (req, res) => {
       activity: activity.toObject()
     });
 
-    // Send notifications
+    // ✅ AUTOMATIC SUPPORT USER NOTIFICATION
     try {
-        const commenter = await User.findById(userId).select('_id userName email userType');
-    // notifyTicketCommented signature is: (ticket, activity, commenter)
-    await notifyTicketCommented(ticket, activity, commenter || req.user);
-
+      const commenter = await User.findById(userId).select('_id userName email userType');
+      await notifyTicketCommented(ticket, activity, commenter || req.user, validatedMentions);
     } catch (notifyError) {
       console.error('[TICKET] Error sending comment notifications:', notifyError);
     }
 
-    await activity.populate('createdBy', 'userName email userType');
+    await activity.populate([
+      { path: 'createdBy', select: 'userName email userType' },
+      { path: 'comment.mentions', select: 'userName email userType' }
+    ]);
 
     res.status(201).json({
       success: true,
       message: 'Comment added successfully',
-      activity
+      activity,
+      ticketContext: {
+        ticketId: ticket.ticketId,
+        subject: ticket.subject,
+        status: ticket.status,
+        priority: ticket.priority,
+        category: ticket.category
+      }
     });
 
   } catch (error) {
@@ -2003,6 +2096,234 @@ exports.addComment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to add comment',
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * 🆕 Get ticket activities with ticket context as first message
+ */
+exports.getTicketActivities = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { includeInternal = false } = req.query;
+
+    const ticket = await findTicketByIdOrTicketId(id);
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    const access = await canViewTicket(req.user, ticket);
+    if (!access.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: access.reason || 'Access denied'
+      });
+    }
+
+    const query = {
+      ticket: ticket._id,
+      isDeleted: false
+    };
+
+    const canViewInternal = ['super_admin', 'support', 'supportManager'].includes(req.user.userType);
+    
+    if (!canViewInternal || includeInternal === 'false') {
+      query['comment.isInternal'] = { $ne: true };
+    }
+
+    const activities = await TicketActivity.find(query)
+      .populate('createdBy', 'userName email userType')
+      .populate('comment.mentions', 'userName email userType')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // ✅ TICKET CONTEXT AS FIRST MESSAGE
+    const ticketMessage = {
+      _id: `ticket_${ticket._id}`,
+      messageType: 'ticket_initial',
+      ticket: ticket._id,
+      activityType: 'created',
+      ticketDetails: {
+        ticketId: ticket.ticketId,
+        subject: ticket.subject,
+        description: ticket.description,
+        category: ticket.category,
+        subCategory: ticket.subCategory,
+        priority: ticket.priority,
+        status: ticket.status,
+        tags: ticket.tags,
+        attachments: ticket.attachments,
+        createdAt: ticket.createdAt,
+        dueDate: ticket.dueDate
+      },
+      createdBy: ticket.createdBy,
+      createdByType: ticket.createdByType,
+      createdAt: ticket.createdAt,
+      isTicketContext: true
+    };
+
+    const ticketWithCreator = await ticket.populate('createdBy', 'userName email userType');
+    ticketMessage.createdBy = ticketWithCreator.createdBy;
+
+    const chatMessages = activities.map(activity => ({
+      _id: activity._id,
+      messageType: 'activity',
+      ticket: activity.ticket,
+      activityType: activity.activityType,
+      comment: activity.comment,
+      changes: activity.changes,
+      attachments: activity.attachments,
+      createdBy: activity.createdBy,
+      createdByType: activity.createdByType,
+      createdAt: activity.createdAt,
+      isEdited: activity.isEdited,
+      editedAt: activity.editedAt
+    }));
+
+    res.json({
+      success: true,
+      ticketId: ticket.ticketId,
+      messages: [ticketMessage, ...chatMessages],
+      totalMessages: chatMessages.length + 1,
+      canComment: !['closed', 'resolved'].includes(ticket.status),
+      ticketStatus: ticket.status
+    });
+
+  } catch (error) {
+    console.error('Error getting ticket activities:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activities',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * 🆕 Get ticket action history
+ */
+exports.getTicketHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const ticket = await findTicketByIdOrTicketId(id);
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    const access = await canViewTicket(req.user, ticket);
+    if (!access.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: access.reason || 'Access denied'
+      });
+    }
+
+    const ticketWithHistory = await Ticket.findById(ticket._id)
+      .select('+actionHistory')
+      .populate({
+        path: 'actionHistory.performedBy',
+        select: 'userName email userType'
+      })
+      .lean();
+
+    res.json({
+      success: true,
+      ticketId: ticket.ticketId,
+      history: ticketWithHistory.actionHistory || [],
+      totalActions: ticketWithHistory.actionHistory?.length || 0
+    });
+
+  } catch (error) {
+    console.error('Error getting ticket history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch ticket history',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * 🆕 Check if ticket can accept comments
+ */
+exports.checkCanComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const ticket = await findTicketByIdOrTicketId(id);
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    const access = await canViewTicket(req.user, ticket);
+    if (!access.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: access.reason || 'Access denied'
+      });
+    }
+
+    const canComment = !['closed', 'resolved'].includes(ticket.status);
+    let closureInfo = null;
+    
+    if (!canComment) {
+      const ticketInstance = new Ticket(ticket);
+      closureInfo = await ticketInstance.getClosureInfo();
+    }
+
+    const response = {
+      success: true,
+      canComment,
+      ticketStatus: ticket.status,
+      ticketId: ticket.ticketId
+    };
+
+    if (!canComment && closureInfo) {
+      const actionType = ticket.status === 'closed' ? 'Closed' : 'Resolved';
+      const actionBy = closureInfo.performedBy?.userName || 'System';
+      const actionDate = new Date(closureInfo.timestamp).toLocaleString();
+
+      response.message = `
+        This ticket has been ${actionType.toLowerCase()} and cannot accept new comments.
+        
+        ${actionType} by: ${actionBy}
+        ${actionType} on: ${actionDate}
+        ${ticket.resolution?.resolutionNotes ? `
+Resolution Notes: ${ticket.resolution.resolutionNotes}` : ''}
+        
+        If you need to add more information, please reopen the ticket first.
+      `.trim();
+      
+      response.closureDetails = {
+        action: ticket.status,
+        actionBy,
+        actionDate,
+        resolutionNotes: ticket.resolution?.resolutionNotes,
+        satisfactionRating: ticket.resolution?.satisfactionRating,
+        userFeedback: ticket.resolution?.userFeedback
+      };
+    }
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error checking comment permission:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check comment permission',
       error: error.message
     });
   }

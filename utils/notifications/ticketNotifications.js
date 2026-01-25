@@ -540,71 +540,173 @@ async function notifyTicketStatusChanged(ticket, user, changes) {
 /**
  * Notify when comment is added
  */
-async function notifyTicketCommented(ticket, activity, commenter) {
+async function notifyTicketCommented(ticket, activity, commenter, supportManagerMentions = []) {
   try {
-    const targets = await getNotificationTargets(ticket, getUserId(commenter));
-    if (targets.length === 0) return;
+    console.log(`[NOTIFICATION] Processing comment notification for ticket ${ticket.ticketId}`);
 
-    let finalTargets = targets;
+    const ticketUrl = `${getFrontendUrl()}/tickets/${ticket._id}`;
+    
+    // ✅ AUTOMATICALLY FIND ALL SUPPORT USERS
+    const supportUsersToNotify = new Set();
 
-    // Internal comments => only notify support/supportManager/super_admin
-    if (activity.comment?.isInternal) {
-      const supportUsers = await User.find({
-        _id: { $in: targets },
-        userType: { $in: ['support', 'supportManager', 'super_admin'] }
-      }).select('_id');
-
-      const supportUserIds = supportUsers.map(u => u._id.toString());
-      finalTargets = targets.filter(t => supportUserIds.includes(t));
-
-      if (finalTargets.length === 0) return;
+    // Add Support Manager
+    if (ticket.supportManagerId) {
+      supportUsersToNotify.add(ticket.supportManagerId.toString());
     }
 
-    const ticketUrl = getTicketUrl(ticket._id);
+    // Add Assigned Support User
+    if (ticket.assignedTo && 
+        ['support', 'supportManager'].includes(ticket.assignedToType)) {
+      supportUsersToNotify.add(ticket.assignedTo.toString());
+    }
 
-    const notifications = finalTargets.map(userId => ({
-  createdBy: commenter._id,
-  creatorType: commenter.userType,
-  targetUsers: [userId],
-  title: `New Comment: ${ticket.subject}`,
-  message: `${commenter.userName} added a comment to ticket ${ticket.ticketId}`,
-  priority: activity.comment?.isInternal ? 'low' : 'medium',
-  status: 'published',
-  isSystemNotification: true,
-  systemAction: 'ticket_commented',
-  relatedEntity: {
-    type: 'Ticket',
-    id: ticket._id
-  },
-  publishDate: new Date()
-}));
+    // Add Support Team Members
+    if (ticket.supportManagerId) {
+      const supportTeamMembers = await User.find({
+        userType: 'support',
+        supportManagerId: ticket.supportManagerId,
+        isActive: true
+      }).select('_id');
+
+      supportTeamMembers.forEach(member => {
+        supportUsersToNotify.add(member._id.toString());
+      });
+    }
+
+    // Don't notify commenter
+    const commenterId = commenter._id?.toString() || commenter.id?.toString();
+    if (commenterId) {
+      supportUsersToNotify.delete(commenterId);
+    }
+
+    let finalTargets = Array.from(supportUsersToNotify);
+
+    // ✅ HANDLE INTERNAL COMMENTS
+    if (activity.comment?.isInternal) {
+      const supportUsers = await User.find({
+        _id: { $in: finalTargets },
+        userType: { $in: ['support', 'supportManager', 'super_admin'] }
+      }).select('_id');
+      finalTargets = supportUsers.map(u => u._id.toString());
+    }
+
+    // ✅ ADD TICKET CREATOR/WATCHERS FOR EXTERNAL COMMENTS
+    if (!activity.comment?.isInternal) {
+      if (ticket.createdBy && ticket.createdBy.toString() !== commenterId) {
+        finalTargets.push(ticket.createdBy.toString());
+      }
+      if (ticket.watchers && ticket.watchers.length > 0) {
+        ticket.watchers.forEach(watcherId => {
+          const wId = watcherId.toString();
+          if (wId !== commenterId && !finalTargets.includes(wId)) {
+            finalTargets.push(wId);
+          }
+        });
+      }
+    }
+
+    // ✅ HANDLE SUPPORT MANAGER MENTIONS
+    const mentionedSupportManagers = new Set();
+    if (supportManagerMentions && supportManagerMentions.length > 0) {
+      for (const mentionId of supportManagerMentions) {
+        const mentioned = await User.findById(mentionId);
+        if (mentioned && mentioned.userType === 'supportManager') {
+          mentionedSupportManagers.add(mentionId.toString());
+          if (!finalTargets.includes(mentionId.toString())) {
+            finalTargets.push(mentionId.toString());
+          }
+        }
+      }
+    }
+
+    if (finalTargets.length === 0) {
+      console.log('[NOTIFICATION] No targets to notify');
+      return;
+    }
+
+    // ✅ CREATE NOTIFICATIONS
+    const isInternalBadge = activity.comment?.isInternal ? ' [INTERNAL]' : '';
+    
+    const notifications = finalTargets.map(userId => {
+      const isMentioned = mentionedSupportManagers.has(userId.toString());
+      
+      return {
+        createdBy: commenter._id,
+        creatorType: commenter.userType,
+        targetUsers: [userId],
+        title: isMentioned 
+          ? `You were mentioned: ${ticket.subject}${isInternalBadge}`
+          : `New Comment: ${ticket.subject}${isInternalBadge}`,
+        message: isMentioned
+          ? `${commenter.userName} mentioned you in ticket ${ticket.ticketId}`
+          : `${commenter.userName} added a comment to ticket ${ticket.ticketId}`,
+        priority: activity.comment?.isInternal ? 'high' : 'medium',
+        status: 'published',
+        isSystemNotification: true,
+        systemAction: isMentioned ? 'ticket_support_manager_mentioned' : 'ticket_commented',
+        relatedEntity: {
+          type: 'Ticket',
+          id: ticket._id
+        },
+        metadata: {
+          ticketId: ticket.ticketId,
+          commentId: activity._id,
+          isInternal: activity.comment?.isInternal || false,
+          isMentioned
+        },
+        publishDate: new Date()
+      };
+    });
 
     await Notification.insertMany(notifications);
 
-    // Email mentioned users (keep as-is, or optionally restrict for internal comments)
-    if (activity.comment?.mentions?.length > 0) {
-      for (const mentionId of activity.comment.mentions) {
+    // ✅ SEND EMAILS TO MENTIONED SUPPORT MANAGERS
+    if (mentionedSupportManagers.size > 0) {
+      for (const mentionId of mentionedSupportManagers) {
         const mentionedUser = await User.findById(mentionId);
         if (mentionedUser && mentionedUser.email) {
           const emailSubject = `You were mentioned in ticket: ${ticket.subject}`;
           const emailBody = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2>You were mentioned in a ticket</h2>
-              <p><strong>${commenter.userName}</strong> mentioned you in a comment on ticket <strong>${ticket.ticketId}</strong></p>
-              <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-                <p>${activity.comment.text}</p>
+              <div style="background-color: #007bff; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+                <h2 style="margin: 0;">You were mentioned in a ticket</h2>
               </div>
-              <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
-                View Ticket
-              </a>
+              
+              <div style="border: 2px solid #007bff; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+                <div style="background-color: #f0f7ff; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                  <p style="margin: 0;"><strong>${commenter.userName}</strong> mentioned you in ticket <strong>${ticket.ticketId}</strong></p>
+                </div>
+
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                  <h3 style="margin-top: 0; color: #2c3e50;">Ticket Details</h3>
+                  <p><strong>Subject:</strong> ${ticket.subject}</p>
+                  <p><strong>Category:</strong> ${ticket.category}</p>
+                  <p><strong>Priority:</strong> ${ticket.priority.toUpperCase()}</p>
+                  <p><strong>Status:</strong> ${ticket.status}</p>
+                </div>
+
+                <div style="margin: 20px 0;">
+                  <p><strong>Comment:</strong></p>
+                  <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; border-left: 4px solid #007bff;">
+                    <p style="margin: 0;">${activity.comment.text}</p>
+                  </div>
+                </div>
+
+                <div style="margin: 30px 0; text-align: center;">
+                  <a href="${ticketUrl}" style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                    View Ticket & Reply
+                  </a>
+                </div>
+              </div>
             </div>
           `;
+
           await sendMail(mentionedUser.email, emailSubject, emailBody);
         }
       }
     }
 
-    console.log(`[NOTIFICATION] Comment notification sent for ticket ${ticket.ticketId}`);
+    console.log(`[NOTIFICATION] Comment notification completed for ticket ${ticket.ticketId}`);
 
   } catch (error) {
     console.error('[NOTIFICATION] Error in notifyTicketCommented:', error);

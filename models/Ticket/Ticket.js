@@ -94,6 +94,67 @@ const consultantContextSchema = new Schema(
   { _id: false }
 );
 
+const actionHistorySchema = new Schema(
+  {
+    action: {
+      type: String,
+      required: true,
+      enum: [
+        'created',
+        'comment_added',
+        'status_changed',
+        'assigned',
+        'reassigned',
+        'escalated',
+        'resolved',
+        'closed',
+        'reopened',
+        'first_response',
+        'priority_changed',
+        'attachment_added',
+        'attachment_removed',
+        'watcher_added',
+        'watcher_removed',
+        'tag_updated',
+        'sla_warning',
+        'sla_breach',
+        'auto_escalated',
+        'mentioned_support_manager',
+        'internal_comment_added',
+        'external_comment_added'
+      ],
+      index: true
+    },
+    performedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    performedByType: {
+      type: String,
+      required: true,
+      enum: [
+        'super_admin', 'consultant_admin', 'consultant',
+        'client_admin', 'client_employee_head', 'employee',
+        'viewer', 'auditor', 'system', 'supportManager', 'support'
+      ]
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now,
+      required: true,
+      index: true
+    },
+    details: {
+      type: Schema.Types.Mixed,
+      default: {}
+    },
+    previousState: { type: Schema.Types.Mixed },
+    newState: { type: Schema.Types.Mixed }
+  },
+  { _id: true }
+);
+
 /**
  * Main Ticket Schema
  */
@@ -236,6 +297,12 @@ const ticketSchema = new Schema(
       default: "open",
       index: true,
     },
+  // 🆕 NEW FIELD
+  actionHistory: {
+    type: [actionHistorySchema],
+    default: [],
+    select: false  // Don't include by default
+  },
 
     // Related Entities
     relatedEntities: relatedEntitiesSchema,
@@ -437,7 +504,50 @@ ticketSchema.methods.recordView = function (userId) {
     }
   }
 };
+ticketSchema.methods.addAction = function(action, performedBy, performedByType, details = {}) {
+  if (!this.actionHistory) {
+    this.actionHistory = [];
+  }
+  const actionEntry = {
+    action,
+    performedBy,
+    performedByType,
+    timestamp: new Date(),
+    details
+  };
+  this.actionHistory.push(actionEntry);
+  return actionEntry;
+};
 
+ticketSchema.methods.getLastAction = function(actionType) {
+  if (!this.actionHistory || this.actionHistory.length === 0) return null;
+  const actions = actionType 
+    ? this.actionHistory.filter(a => a.action === actionType)
+    : this.actionHistory;
+  if (actions.length === 0) return null;
+  return actions[actions.length - 1];
+};
+
+ticketSchema.methods.getClosureInfo = async function() {
+  if (!['closed', 'resolved'].includes(this.status)) return null;
+  const closureAction = this.getLastAction(
+    this.status === 'closed' ? 'closed' : 'resolved'
+  );
+  if (!closureAction && this.resolution?.resolvedBy) {
+    await this.populate('resolution.resolvedBy', 'userName email userType');
+    return {
+      action: this.status === 'closed' ? 'closed' : 'resolved',
+      performedBy: this.resolution.resolvedBy,
+      timestamp: this.status === 'closed' ? this.closedAt : this.resolvedAt,
+      details: {
+        resolutionNotes: this.resolution.resolutionNotes,
+        satisfactionRating: this.resolution.satisfactionRating,
+        userFeedback: this.resolution.userFeedback
+      }
+    };
+  }
+  return closureAction;
+};
 // ===== MIDDLEWARE =====
 
 // assignedToType is required only when assignedTo is set

@@ -132,6 +132,7 @@ const canPostReply = (user, ticket) => {
 
 // ===== CONTROLLER METHODS =====
 
+
 /**
  * POST /api/tickets/:id/chat/comment
  * Create a new comment on a ticket

@@ -347,7 +347,7 @@ io.on('connection', (socket) => {
             
             socket.join(`summaries-${clientId}`);
             
-            const EmissionSummary = require('./models/EmissionSummary');
+            const EmissionSummary = require('./models/CalculationEmission/EmissionSummary');
             const summaries = {};
             
             for (const periodType of periodTypes) {

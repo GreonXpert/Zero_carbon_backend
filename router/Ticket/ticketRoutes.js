@@ -307,7 +307,32 @@ router.post(
   '/:id/chat/:chatId/read',
   ticketChatController.markAsRead
 );
+/**
+ * Get ticket activities with ticket context as first message
+ * GET /api/tickets/:id/activities
+ */
+router.get(
+  '/:id/activities',
+  ticketController.getTicketActivities
+);
 
+/**
+ * Get ticket action history
+ * GET /api/tickets/:id/history
+ */
+router.get(
+  '/:id/history',
+  ticketController.getTicketHistory
+);
+
+/**
+ * Check if ticket can accept comments
+ * GET /api/tickets/:id/can-comment
+ */
+router.get(
+  '/:id/can-comment',
+  ticketController.checkCanComment
+);
 // ===== END OF CHAT ROUTES =====
 
 /**
