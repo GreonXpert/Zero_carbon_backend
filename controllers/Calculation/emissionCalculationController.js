@@ -247,26 +247,24 @@ function getDefaultRecyclingRateFromScope(scope) {
 
 function getEquitySharePercentageFromScope(scope) {
   try {
-    const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const ai  = scope?.additionalInfo || {};
+    const cv1 = scope?.customValue || ai?.customValue || {};      // singular
+    const cv2 = scope?.customValues || ai?.customValues || {};    // ✅ plural (your DB)
 
-    // common keys we’ve seen in configs
     const candidates = [
       scope?.equitySharePercentage, scope?.equityShare, scope?.equity, scope?.sharePercentage,
-      ai?.equitySharePercentage,    ai?.equityShare,    ai?.equity,    ai?.sharePercentage,
-      cv?.equitySharePercentage,    cv?.equityShare,    cv?.equity,    cv?.sharePercentage
+
+      ai?.equitySharePercentage, ai?.equityShare, ai?.equity, ai?.sharePercentage,
+
+      cv1?.equitySharePercentage, cv1?.equityShare, cv1?.equity, cv1?.sharePercentage,
+
+      // ✅ THIS is what your DB uses:
+      cv2?.equitySharePercentage, cv2?.equityShare, cv2?.equity, cv2?.sharePercentage
     ];
 
-    for (let v of candidates) {
-      if (v == null) continue;
-      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
-      if (typeof v === 'number' && isFinite(v)) {
-        // normalize percent → fraction
-        if (v > 1) v = v / 100;
-        if (v < 0) v = 0;
-        if (v > 1) v = 1;
-        return v;
-      }
+    for (const v of candidates) {
+      const f = asFraction01(v); // 20 -> 0.2, "20%" -> 0.2
+      if (f != null) return f;
     }
     return null;
   } catch {
@@ -277,18 +275,27 @@ function getEquitySharePercentageFromScope(scope) {
 
 function getAverageLifetimeEnergyConsumptionFromScope(scope) {
   try {
-    const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const ai  = scope?.additionalInfo || {};
+    const cv1 = scope?.customValue  || ai?.customValue  || {};  // legacy
+    const cv2 = scope?.customValues || ai?.customValues || {};  // ✅ your DB
 
     const candidates = [
       scope?.averageLifetimeEnergyConsumption, scope?.avgLifetimeEnergyConsumption, scope?.averageLifetimeConsumption, scope?.avgLifetimeConsumption,
       ai?.averageLifetimeEnergyConsumption,    ai?.avgLifetimeEnergyConsumption,    ai?.averageLifetimeConsumption,    ai?.avgLifetimeConsumption,
-      cv?.averageLifetimeEnergyConsumption,    cv?.avgLifetimeEnergyConsumption,    cv?.averageLifetimeConsumption,    cv?.avgLifetimeConsumption,
+      cv1?.averageLifetimeEnergyConsumption,   cv1?.avgLifetimeEnergyConsumption,   cv1?.averageLifetimeConsumption,   cv1?.avgLifetimeConsumption,
+      cv2?.averageLifetimeEnergyConsumption,   cv2?.avgLifetimeEnergyConsumption,   cv2?.averageLifetimeConsumption,   cv2?.avgLifetimeConsumption,
     ];
+
     for (let v of candidates) {
       if (v == null) continue;
-      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
-      if (typeof v === 'number' && isFinite(v) && v >= 0) return v;
+      if (typeof v === "string") {
+        const cleaned = v.trim().replace(/,/g, "");
+        if (!cleaned) continue;
+        const n = Number(cleaned);
+        if (!Number.isFinite(n)) continue;
+        v = n;
+      }
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     }
     return null;
   } catch {
@@ -297,27 +304,30 @@ function getAverageLifetimeEnergyConsumptionFromScope(scope) {
 }
 
 
+// ✅ Tier-2 usePattern is NOT a percentage. It can be 1500 hours/year etc.
+// So DO NOT divide by 100 or clamp to [0,1].
 function getUsePatternFromScope(scope) {
   try {
-    const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const ai  = scope?.additionalInfo || {};
+    const cv1 = scope?.customValue  || ai?.customValue  || {};  // legacy
+    const cv2 = scope?.customValues || ai?.customValues || {};  // ✅ your DB
 
     const candidates = [
-      scope?.usePattern, ai?.usePattern, cv?.usePattern,
-      scope?.usagePattern, ai?.usagePattern, cv?.usagePattern,
-      scope?.pattern, ai?.pattern, cv?.pattern,
+      scope?.usePattern, ai?.usePattern, cv1?.usePattern, cv2?.usePattern,
+      scope?.usagePattern, ai?.usagePattern, cv1?.usagePattern, cv2?.usagePattern,
+      scope?.pattern, ai?.pattern, cv1?.pattern, cv2?.pattern,
     ];
+
     for (let v of candidates) {
       if (v == null) continue;
-      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
-      if (typeof v === 'number' && isFinite(v)) {
-        // normalize percent → fraction
-        let p = v;
-        if (p > 1) p = p / 100;
-        if (p < 0) p = 0;
-        if (p > 1) p = 1;
-        return p;
+      if (typeof v === "string") {
+        const cleaned = v.trim().replace(/,/g, "");
+        if (!cleaned) continue;
+        const n = Number(cleaned);
+        if (!Number.isFinite(n)) continue;
+        v = n;
       }
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     }
     return null;
   } catch {
@@ -328,18 +338,26 @@ function getUsePatternFromScope(scope) {
 
 function getEnergyEfficiencyFromScope(scope) {
   try {
-    const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const ai  = scope?.additionalInfo || {};
+    const cv1 = scope?.customValue  || ai?.customValue  || {};  // legacy
+    const cv2 = scope?.customValues || ai?.customValues || {};  // ✅ your DB
 
     const candidates = [
-      scope?.energyEfficiency, ai?.energyEfficiency, cv?.energyEfficiency,
-      scope?.efficiency,       ai?.efficiency,       cv?.efficiency,
-      scope?.deviceEfficiency, ai?.deviceEfficiency, cv?.deviceEfficiency,
+      scope?.energyEfficiency, ai?.energyEfficiency, cv1?.energyEfficiency, cv2?.energyEfficiency,
+      scope?.efficiency,       ai?.efficiency,       cv1?.efficiency,       cv2?.efficiency,
+      scope?.deviceEfficiency, ai?.deviceEfficiency, cv1?.deviceEfficiency, cv2?.deviceEfficiency,
     ];
+
     for (let v of candidates) {
       if (v == null) continue;
-      if (typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v))) v = Number(v);
-      if (typeof v === 'number' && isFinite(v) && v >= 0) return v;
+      if (typeof v === "string") {
+        const cleaned = v.trim().replace(/,/g, "");
+        if (!cleaned) continue;
+        const n = Number(cleaned);
+        if (!Number.isFinite(n)) continue;
+        v = n;
+      }
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     }
     return null;
   } catch {
@@ -351,13 +369,28 @@ function getEnergyEfficiencyFromScope(scope) {
 
 function asFraction01(v) {
   if (v == null) return null;
-  if (typeof v === 'string') {
-    const n = Number(v);
-    if (isNaN(n)) return null;
-    v = n;
+
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+
+    const hasPct = /%|percent/i.test(s);
+    const cleaned = s
+      .replace(/percent/ig, "")
+      .replace(/%/g, "")
+      .replace(/,/g, "")
+      .trim();
+
+    const n = Number(cleaned);
+    if (!Number.isFinite(n)) return null;
+
+    v = hasPct ? n / 100 : n; // "25%" -> 0.25
   }
-  if (!isFinite(v)) return null;
-  if (v > 1) v = v / 100;
+
+  if (!Number.isFinite(v)) return null;
+
+  // Numbers: allow 0–1 or 0–100
+  if (v > 1) v = v / 100; // 25 -> 0.25
   if (v < 0) v = 0;
   if (v > 1) v = 1;
   return v;
@@ -2051,8 +2084,8 @@ const cum = cumRev * ef * cumShr;
 
     if (act === 'investmentbased') {
      // Tier-2 investmentbased
-const s1 = dataValues.investeeScope1Emission ?? 0;
-const s2 = dataValues.investeeScope2Emission ?? 0;
+const s1 = Number(dataValues.investeeScope1Emission) || 0;
+const s2 = Number(dataValues.investeeScope2Emission) || 0;
 
 const payloadShareRaw =
   dataValues.equitySharePercentage ?? dataValues.equityShare ?? dataValues.equity ?? null;
