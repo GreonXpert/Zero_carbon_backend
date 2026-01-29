@@ -133,6 +133,17 @@ const DataEntrySchema = new mongoose.Schema({
     of: Number,
     default: () => new Map()
   },
+
+  // Total value + entry count tracking for this stream
+  // - incomingTotalValue: sum of numeric values in this entry's dataValues
+  // - cumulativeTotalValue: running total (previous cumulativeTotalValue + incomingTotalValue)
+  // - entryCount: total number of entries stored so far for this stream
+  dataEntryCumulative: {
+    incomingTotalValue: { type: Number, default: 0 },
+    cumulativeTotalValue: { type: Number, default: 0 },
+    entryCount: { type: Number, default: 0 },
+    lastUpdatedAt: { type: Date }
+  },
   // Monthly summary flag
   isSummary: {
     type: Boolean,
@@ -576,10 +587,16 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
   const highData = new Map();
   const lowData = new Map();
   const lastEnteredData = new Map();
+
+  // Track totals for this entry
+  let incomingTotalValue = 0;
   
   // Process each incoming value
   for (const [key, value] of this.dataValues) {
     const numValue = Number(value);
+
+    // Add to entry total
+    incomingTotalValue += numValue;
     
     // Store last entered
     lastEnteredData.set(key, numValue);
@@ -612,6 +629,16 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
     lowData.set(key, lowValue);
   }
   
+  // Build dataEntryCumulative (total sum + total count)
+  const prevCum = previousEntry?.dataEntryCumulative?.cumulativeTotalValue || 0;
+  const prevCount = previousEntry?.dataEntryCumulative?.entryCount || 0;
+  this.dataEntryCumulative = {
+    incomingTotalValue,
+    cumulativeTotalValue: prevCum + incomingTotalValue,
+    entryCount: prevCount + 1,
+    lastUpdatedAt: new Date()
+  };
+
   // Update the document
   this.cumulativeValues = cumulativeValues;
   this.highData = highData;
@@ -682,6 +709,7 @@ DataEntrySchema.statics.createMonthlySummary = async function(clientId, nodeId, 
     highData: lastEntry.highData, // Preserve all-time highs
     lowData: lastEntry.lowData, // Preserve all-time lows
     lastEnteredData: lastEntry.lastEnteredData, // Last value from the month
+    dataEntryCumulative: lastEntry.dataEntryCumulative, // Preserve all-time total/count tracking
     emissionFactor: lastEntry.emissionFactor,
     sourceDetails: {
       uploadedBy: lastEntry.sourceDetails?.uploadedBy,
@@ -982,7 +1010,8 @@ DataEntrySchema.statics.getLatestCumulative = async function(clientId, nodeId, s
     cumulativeValues: latest.cumulativeValues,
     highData: latest.highData,
     lowData: latest.lowData,
-    lastEnteredData: latest.lastEnteredData
+    lastEnteredData: latest.lastEnteredData,
+    dataEntryCumulative: latest.dataEntryCumulative || null
   };
 };
 

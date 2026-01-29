@@ -836,6 +836,7 @@ exports.getDataByUserNode = async (req, res) => {
 
 
 // Save API Data with cumulative tracking
+// Save API Data with cumulative tracking
 const saveAPIData = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -851,13 +852,16 @@ const saveAPIData = async (req, res) => {
         message: 'Cannot process API data: ' + validation.message
       });
     }
+
     // Find scope configuration
     const activeChart = await getActiveFlowchart(clientId);
     if (!activeChart) {
       return res.status(404).json({ message: 'No active flowchart found' });
     }
+
     const flowchart = activeChart.chart;
     let scopeConfig = validation.scopeConfig;
+
     for (const node of flowchart.nodes) {
       if (node.id === nodeId) {
         const scope = node.details.scopeDetails.find(
@@ -869,6 +873,7 @@ const saveAPIData = async (req, res) => {
         }
       }
     }
+
     if (!scopeConfig) {
       return res.status(400).json({ message: 'Invalid API scope configuration' });
     }
@@ -885,25 +890,32 @@ const saveAPIData = async (req, res) => {
       });
     }
     // ---- END GATE ----
+
     // Process date/time
     const rawDate = date || moment().format('DD/MM/YYYY');
     const rawTime = time || moment().format('HH:mm:ss');
+
     let dateMoment = moment(rawDate, 'DD/MM/YYYY', true);
     if (!dateMoment.isValid()) {
       dateMoment = moment(rawDate, 'YYYY-MM-DD', true); // allow alternate format
     }
+
     const timeMoment = moment(rawTime, 'HH:mm:ss', true);
     if (!dateMoment.isValid() || !timeMoment.isValid()) {
       return res.status(400).json({ message: 'Invalid date/time format' });
     }
+
     const formattedDate = dateMoment.format('DD:MM:YYYY');
     const formattedTime = timeMoment.format('HH:mm:ss');
+
     const [day, month, year] = formattedDate.split(':').map(Number);
     const [hour, minute, second] = formattedTime.split(':').map(Number);
     const timestamp = new Date(year, month - 1, day, hour, minute, second);
+
     // Process API data into dataValues format
     const apiData = dataValues || data; // Check for dataValues first, then data
     const processedData = normalizeDataPayload(apiData, scopeConfig, 'API');
+
     // Ensure dataValues is a Map
     let dataMap;
     try {
@@ -914,6 +926,7 @@ const saveAPIData = async (req, res) => {
         error: error.message
       });
     }
+
     // Create entry (cumulative values will be calculated in pre-save hook)
     const entry = new DataEntry({
       clientId,
@@ -934,9 +947,12 @@ const saveAPIData = async (req, res) => {
       isEditable: false,
       processingStatus: 'pending'
     });
+
     await entry.save();
+
     // Trigger emission calculation
     await triggerEmissionCalculation(entry);
+
     // Update collection config
     const collectionConfig = await DataCollectionConfig.findOneAndUpdate(
       { clientId, nodeId, scopeIdentifier },
@@ -949,20 +965,35 @@ const saveAPIData = async (req, res) => {
       },
       { upsert: true, new: true }
     );
+
     collectionConfig.updateCollectionStatus(entry._id, timestamp);
     await collectionConfig.save();
+
     // after you save entry and have entry.calculatedEmissions populated:
     const {
       incoming: incomingMap,
       cumulative: cumulativeMap,
       metadata
     } = entry.calculatedEmissions || {};
+
     // helper to safely turn a Map into a POJO
     function mapToObject(m) {
       return m instanceof Map
         ? Object.fromEntries(m)
         : (m || {});
     }
+
+    // ✅ NEW helper (safe object for response/emit)
+    const dataEntryCumulative =
+      entry.dataEntryCumulative
+        ? {
+            incomingTotalValue: Number(entry.dataEntryCumulative.incomingTotalValue || 0),
+            cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
+            entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
+            lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
+          }
+        : null;
+
     // Emit real-time update
     emitDataUpdate('api-data-saved', {
       clientId,
@@ -975,6 +1006,10 @@ const saveAPIData = async (req, res) => {
       highData: Object.fromEntries(entry.highData),
       lowData: Object.fromEntries(entry.lowData),
       lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+
+      // ✅ NEW: send dataEntryCumulative
+      dataEntryCumulative,
+
       calculatedEmissions: {
         incoming: mapToObject(incomingMap),
         cumulative: mapToObject(cumulativeMap),
@@ -982,12 +1017,10 @@ const saveAPIData = async (req, res) => {
       }
     });
 
-    
     // 🔁 NEW: push updated data-completion stats for this client
     if (global.broadcastDataCompletionUpdate) {
       global.broadcastDataCompletionUpdate(clientId);
     }
-
 
     res.status(201).json({
       message: 'API data saved successfully',
@@ -996,6 +1029,10 @@ const saveAPIData = async (req, res) => {
       highData: Object.fromEntries(entry.highData),
       lowData: Object.fromEntries(entry.lowData),
       lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+
+      // ✅ NEW: return dataEntryCumulative
+      dataEntryCumulative,
+
       calculatedEmissions: {
         incoming: mapToObject(incomingMap),
         cumulative: mapToObject(cumulativeMap),
@@ -1012,6 +1049,8 @@ const saveAPIData = async (req, res) => {
 };
 
 
+
+// Save IoT Data with cumulative tracking
 // Save IoT Data with cumulative tracking
 const saveIoTData = async (req, res) => {
   try {
@@ -1139,6 +1178,17 @@ const saveIoTData = async (req, res) => {
     const { incoming: inMap, cumulative: cumMap, metadata } = entry.calculatedEmissions || {};
     const mapToObject = m => (m instanceof Map ? Object.fromEntries(m) : (m || {}));
 
+    // ✅ NEW: attach dataEntryCumulative (already computed by model pre-save hook)
+    const dataEntryCumulative =
+      entry.dataEntryCumulative
+        ? {
+            incomingTotalValue: Number(entry.dataEntryCumulative.incomingTotalValue || 0),
+            cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
+            entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
+            lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
+          }
+        : null;
+
     // 11) Emit a real-time update
     emitDataUpdate('iot-data-saved', {
       clientId,
@@ -1151,6 +1201,10 @@ const saveIoTData = async (req, res) => {
       highData: Object.fromEntries(entry.highData),
       lowData: Object.fromEntries(entry.lowData),
       lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+
+      // ✅ NEW: emit dataEntryCumulative
+      dataEntryCumulative,
+
       calculatedEmissions: {
         incoming: mapToObject(inMap),
         cumulative: mapToObject(cumMap),
@@ -1171,6 +1225,10 @@ const saveIoTData = async (req, res) => {
       highData: Object.fromEntries(entry.highData),
       lowData: Object.fromEntries(entry.lowData),
       lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+
+      // ✅ NEW: return dataEntryCumulative
+      dataEntryCumulative,
+
       calculatedEmissions: {
         incoming: mapToObject(inMap),
         cumulative: mapToObject(cumMap),
@@ -1186,6 +1244,7 @@ const saveIoTData = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -1563,22 +1622,47 @@ async function saveOneEntry({
  *  - { entries: [ {...}, {...} ] }
  * Compatible with your earlier "entries" multi-payload format.
  */
+/**
+ * POST /api/data-collection/manual/:clientId/:nodeId/:scopeIdentifier
+ * Body supports:
+ *  - { singleEntry: {...} }
+ *  - { entries: [ {...}, {...} ] }
+ * Compatible with your earlier "entries" multi-payload format.
+ */
 const saveManualData = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     const { entries, singleEntry } = req.body || {};
 
+    // ✅ helper: safe normalize for response (does NOT change model save logic)
+    const toDataEntryCumulative = (dec) => {
+      if (!dec) return null;
+      return {
+        incomingTotalValue: Number(dec.incomingTotalValue || 0),
+        cumulativeTotalValue: Number(dec.cumulativeTotalValue || 0),
+        entryCount: Number(dec.entryCount || 0),
+        lastUpdatedAt: dec.lastUpdatedAt || null
+      };
+    };
+
     // Locate chart/node/scope
     const located = await findNodeAndScope(clientId, nodeId, scopeIdentifier);
     if (!located) {
-      return res.status(404).json({ success: false, message: 'Node/scope not found in flowchart or process flowchart' });
+      return res.status(404).json({
+        success: false,
+        message: 'Node/scope not found in flowchart or process flowchart'
+      });
     }
     const { node, scope } = located;
 
     // Permission
     const perm = await canWriteManualOrCSV(req.user, clientId, node, scope);
     if (!perm.allowed) {
-      return res.status(403).json({ success: false, message: 'Permission denied', reason: perm.reason });
+      return res.status(403).json({
+        success: false,
+        message: 'Permission denied',
+        reason: perm.reason
+      });
     }
 
     // Validate prerequisites before accepting data
@@ -1597,49 +1681,85 @@ const saveManualData = async (req, res) => {
       : (singleEntry ? [singleEntry] : [req.body]); // backward compatibility for old shape
 
     const saved = [];
-const errors = [];
+    const errors = [];
 
-for (let i = 0; i < rows.length; i++) {
-  try {
-    const { entry, calcResult } = await saveOneEntry({
-      req, clientId, nodeId, scopeIdentifier, scope, node,
-      inputSource: 'MANUAL',
-      row: rows[i]
-    });
-    saved.push({
-      dataEntryId: entry._id,
-      emissionCalculationStatus: entry.emissionCalculationStatus,
-      calculatedEmissions: entry.calculatedEmissions || null,
-      calculationResponse: calcResult?.data || null
-    });
-  } catch (err) {
-    errors.push({ index: i, error: err.message });
-  }
-}
+    for (let i = 0; i < rows.length; i++) {
+      try {
+        const { entry, calcResult } = await saveOneEntry({
+          req,
+          clientId,
+          nodeId,
+          scopeIdentifier,
+          scope,
+          node,
+          inputSource: 'MANUAL',
+          row: rows[i]
+        });
+
+        saved.push({
+          dataEntryId: entry._id,
+          emissionCalculationStatus: entry.emissionCalculationStatus,
+          calculatedEmissions: entry.calculatedEmissions || null,
+          calculationResponse: calcResult?.data || null,
+
+          // ✅ NEW: include dataEntryCumulative for each saved entry
+          dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
+        });
+      } catch (err) {
+        errors.push({ index: i, error: err.message });
+      }
+    }
+
     // 🔁 NEW: only broadcast if we actually saved something
     if (saved.length > 0 && global.broadcastDataCompletionUpdate) {
       global.broadcastDataCompletionUpdate(clientId);
     }
 
+    const ok = errors.length === 0;
 
-const ok = errors.length === 0;
-return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
-  success: ok,
-  message: ok
-    ? 'Manual data saved'
-    : (saved.length ? 'Manual data partially saved' : 'Manual data failed'),
-  savedCount: saved.length,
-  failedCount: errors.length,
-  results: saved,
-  errors
-});
+    // ✅ NEW: also return latest cumulative snapshot (from last saved entry)
+    const latestDataEntryCumulative =
+      saved.length > 0 ? saved[saved.length - 1].dataEntryCumulative : null;
+
+    return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
+      success: ok,
+      message: ok
+        ? 'Manual data saved'
+        : (saved.length ? 'Manual data partially saved' : 'Manual data failed'),
+      savedCount: saved.length,
+      failedCount: errors.length,
+      results: saved,
+      errors,
+
+      // ✅ NEW: top-level latest snapshot (easy for frontend)
+      dataEntryCumulative: latestDataEntryCumulative
+    });
   } catch (error) {
     console.error('saveManualData error:', error);
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
   }
 };
 
 
+
+/**
+ * POST /api/data-collection/csv/:clientId/:nodeId/:scopeIdentifier
+ *
+ * ACCEPTS:
+ *  - multipart CSV (memory multer → req.file.buffer)
+ *  - raw CSV text (req.body.csvText)
+ *  - parsed JSON rows (req.body.rows)
+ *
+ * ✅ Uploads ORIGINAL payload to S3:
+ *    clientId/nodeId/scopeIdentifier/{timestamp}_{fileName}
+ *
+ * ❌ No local disk usage
+ * ❌ No temp files
+ */
 /**
  * POST /api/data-collection/csv/:clientId/:nodeId/:scopeIdentifier
  *
@@ -1657,6 +1777,18 @@ return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
 const uploadCSVData = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
+
+    // ✅ helper: normalize dataEntryCumulative safely for response
+    // (model pre-save hook already SAVES it; this just RETURNS it)
+    const toDataEntryCumulative = (dec) => {
+      if (!dec) return null;
+      return {
+        incomingTotalValue: Number(dec.incomingTotalValue || 0),
+        cumulativeTotalValue: Number(dec.cumulativeTotalValue || 0),
+        entryCount: Number(dec.entryCount || 0),
+        lastUpdatedAt: dec.lastUpdatedAt || null
+      };
+    };
 
     /* -------------------------------------------------- */
     /* 1) Locate node + scope                              */
@@ -1717,14 +1849,14 @@ const uploadCSVData = async (req, res) => {
         req.file.buffer.toString('utf8')
       );
 
-    /* ---------- CASE B: Raw CSV text ---------- */
+      /* ---------- CASE B: Raw CSV text ---------- */
     } else if (req.body?.csvText) {
       fileName = req.body.fileName || 'uploaded.csv';
       rawBuffer = Buffer.from(String(req.body.csvText), 'utf8');
 
       rows = await csvtojson().fromString(req.body.csvText);
 
-    /* ---------- CASE C: JSON rows ---------- */
+      /* ---------- CASE C: JSON rows ---------- */
     } else if (Array.isArray(req.body?.rows)) {
       fileName = req.body.fileName || 'rows.json';
       rawContentType = 'application/json';
@@ -1782,7 +1914,10 @@ const uploadCSVData = async (req, res) => {
           dataEntryId: entry._id,
           emissionCalculationStatus: entry.emissionCalculationStatus,
           calculatedEmissions: entry.calculatedEmissions || null,
-          calculationResponse: calcResult?.data || null
+          calculationResponse: calcResult?.data || null,
+
+          // ✅ NEW: include dataEntryCumulative per saved row
+          dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
       } catch (err) {
         errors.push({
@@ -1801,6 +1936,10 @@ const uploadCSVData = async (req, res) => {
 
     const ok = errors.length === 0;
 
+    // ✅ NEW: latest cumulative snapshot (last saved entry)
+    const latestDataEntryCumulative =
+      saved.length > 0 ? saved[saved.length - 1].dataEntryCumulative : null;
+
     return res.status(ok ? 201 : saved.length ? 207 : 400).json({
       success: ok,
       message: ok
@@ -1818,7 +1957,10 @@ const uploadCSVData = async (req, res) => {
       savedCount: saved.length,
       failedCount: errors.length,
       results: saved,
-      errors
+      errors,
+
+      // ✅ NEW: top-level snapshot for frontend
+      dataEntryCumulative: latestDataEntryCumulative
     });
 
   } catch (error) {
@@ -1830,6 +1972,7 @@ const uploadCSVData = async (req, res) => {
     });
   }
 };
+
 
 
 // // Save Manual Data Entry (with support for multiple entries with different dates)
@@ -2457,27 +2600,28 @@ const handleDataChange = async (entry) => {
 
   try {
     // 1. Re-trigger emission calculation for the specific entry
-    // This ensures the entry itself has the latest emission data.
     await triggerEmissionCalculation(entry);
     console.log(`Emission calculation re-triggered for entry: ${entry._id}`);
 
     // 2. Invalidate or update monthly/quarterly summaries for the period.
-    // (This is a placeholder for your summary update logic)
-    // For example:
-    // await SummaryModel.updateSummaryForPeriod(entry.clientId, entry.timestamp);
     console.log(`Summary update triggered for period of entry: ${entry._id}`);
 
-
     // 3. Potentially update dashboard analytics or other aggregated views.
-    // (This is a placeholder for your analytics update logic)
-    // For example:
-    // await AnalyticsModel.refreshDashboard(entry.clientId);
     console.log(`Analytics refresh triggered for client: ${entry.clientId}`);
 
+    // ✅ NEW: rebuild cumulative chain (includes dataEntryCumulative)
+    await rebuildStreamCumulatives({
+      clientId: entry.clientId,
+      nodeId: entry.nodeId,
+      scopeIdentifier: entry.scopeIdentifier,
+      inputType: entry.inputType
+    });
+    console.log(
+      `Cumulative chain rebuilt for stream: ${entry.clientId}/${entry.nodeId}/${entry.scopeIdentifier}/${entry.inputType}`
+    );
   } catch (error) {
     console.error(`Error in handleDataChange for entry ${entry._id}:`, error);
-    // It's important not to throw here, as this is a background process.
-    // Log the error for monitoring.
+    // Don't throw; background-safe
   }
 };
 
@@ -2522,7 +2666,106 @@ async function hasManualEditRights(user, entry) {
 
   return false;
 }
+/**
+ * ✅ Rebuild cumulativeValues + high/low + lastEntered + dataEntryCumulative
+ * for ALL entries in the same stream (clientId+nodeId+scopeIdentifier+inputType)
+ * sorted by timestamp ascending.
+ *
+ * This is required after EDIT because changing an old row affects all later cumulative rows.
+ */
+const rebuildStreamCumulatives = async ({ clientId, nodeId, scopeIdentifier, inputType }) => {
+  const filter = {
+    clientId,
+    nodeId,
+    scopeIdentifier,
+    inputType,
+    isSummary: false
+  };
 
+  const entries = await DataEntry.find(filter).sort({ timestamp: 1 });
+
+  if (!entries || entries.length === 0) return;
+
+  // running state
+  const runningCum = new Map();
+  const runningHigh = new Map();
+  const runningLow = new Map();
+
+  let runningTotal = 0;
+  let runningCount = 0;
+
+  const now = new Date();
+  const ops = [];
+
+  for (const e of entries) {
+    const cumulativeValues = new Map();
+    const highData = new Map();
+    const lowData = new Map();
+    const lastEnteredData = new Map();
+
+    // incomingTotalValue = sum of numeric values in this row
+    let incomingTotalValue = 0;
+
+    for (const [key, rawVal] of (e.dataValues || new Map())) {
+      const numValue = Number(rawVal);
+      const v = Number.isFinite(numValue) ? numValue : 0;
+
+      incomingTotalValue += v;
+
+      // last entered for this key
+      lastEnteredData.set(key, v);
+
+      // cumulative per key
+      const prevKeyCum = runningCum.get(key) || 0;
+      const nextKeyCum = prevKeyCum + v;
+      cumulativeValues.set(key, nextKeyCum);
+
+      // high/low per key
+      const prevHigh = runningHigh.has(key) ? runningHigh.get(key) : undefined;
+      const prevLow = runningLow.has(key) ? runningLow.get(key) : undefined;
+
+      const nextHigh = prevHigh === undefined ? v : Math.max(prevHigh, v);
+      const nextLow = prevLow === undefined ? v : Math.min(prevLow, v);
+
+      highData.set(key, nextHigh);
+      lowData.set(key, nextLow);
+
+      // update running state per key
+      runningCum.set(key, nextKeyCum);
+      runningHigh.set(key, nextHigh);
+      runningLow.set(key, nextLow);
+    }
+
+    runningTotal += incomingTotalValue;
+    runningCount += 1;
+
+    const dataEntryCumulative = {
+      incomingTotalValue,
+      cumulativeTotalValue: runningTotal,
+      entryCount: runningCount,
+      lastUpdatedAt: now
+    };
+
+    ops.push({
+      updateOne: {
+        filter: { _id: e._id },
+        update: {
+          $set: {
+            cumulativeValues: Object.fromEntries(cumulativeValues),
+            highData: Object.fromEntries(highData),
+            lowData: Object.fromEntries(lowData),
+            lastEnteredData: Object.fromEntries(lastEnteredData),
+            dataEntryCumulative
+          }
+        }
+      }
+    });
+  }
+
+  if (ops.length) {
+    await DataEntry.bulkWrite(ops, { ordered: true });
+  }
+};
 
 
 // Edit Manual Data Entry
@@ -2555,7 +2798,9 @@ const editManualData = async (req, res) => {
       if (!allowedByFallback) {
         return res.status(403).json({
           message: 'Permission denied',
-          reason: permission.reason || 'User is not client admin, node employee head, assigned to this scope, or the creator of this entry'
+          reason:
+            permission.reason ||
+            'User is not client admin, node employee head, assigned to this scope, or the creator of this entry'
         });
       }
     }
@@ -2569,24 +2814,25 @@ const editManualData = async (req, res) => {
       const rawTime = rawTimeInput || entry.time;
 
       const dateMoment = moment(rawDate, ['DD/MM/YYYY', 'DD-MM-YYYY'], true);
-      const timeMoment = moment(rawTime, ['HH:mm:ss','HH:mm','H:mm','H:mm:ss'], true);
-
+      const timeMoment = moment(rawTime, ['HH:mm:ss', 'HH:mm', 'H:mm', 'H:mm:ss'], true);
 
       if (!dateMoment.isValid() || !timeMoment.isValid()) {
         return res.status(400).json({ message: 'Invalid date/time format' });
       }
 
       const formattedDate = dateMoment.format('DD:MM:YYYY');
-const formattedTime = timeMoment.format('HH:mm:ss');
+      const formattedTime = timeMoment.format('HH:mm:ss');
 
-entry.date = formattedDate;
-entry.time = formattedTime;
+      entry.date = formattedDate;
+      entry.time = formattedTime;
 
-// ✅ Compute IST-based timestamp
-const computed = buildISTTimestampFromDateTime(formattedDate, formattedTime);
-if (!computed) return res.status(400).json({ message: 'Failed to build timestamp from date/time' });
+      // ✅ Compute IST-based timestamp
+      const computed = buildISTTimestampFromDateTime(formattedDate, formattedTime);
+      if (!computed) {
+        return res.status(400).json({ message: 'Failed to build timestamp from date/time' });
+      }
 
-entry.timestamp = computed;
+      entry.timestamp = computed;
     }
 
     // Update data values if provided
@@ -2605,29 +2851,51 @@ entry.timestamp = computed;
 
     await entry.save();
 
-    // Recalculate summaries / emissions
+    // ✅ Recalculate summaries / emissions + ALSO rebuild cumulative chain (including dataEntryCumulative)
     await handleDataChange(entry);
 
-    // Emit real-time update
+    // ✅ Re-fetch updated entry (after rebuildStreamCumulatives finishes)
+    const updatedEntry = await DataEntry.findById(entry._id);
+
+    // Emit real-time update (ADD dataEntryCumulative)
     emitDataUpdate('manual-data-edited', {
-      clientId: entry.clientId,
-      nodeId: entry.nodeId,
-      scopeIdentifier: entry.scopeIdentifier,
-      dataId: entry._id,
-      timestamp: entry.timestamp,
-      dataValues: Object.fromEntries(entry.dataValues)
+      clientId: updatedEntry.clientId,
+      nodeId: updatedEntry.nodeId,
+      scopeIdentifier: updatedEntry.scopeIdentifier,
+      dataId: updatedEntry._id,
+      timestamp: updatedEntry.timestamp,
+      dataValues: Object.fromEntries(updatedEntry.dataValues),
+
+      // ✅ NEW: include updated cumulative snapshot for UI
+      dataEntryCumulative: updatedEntry.dataEntryCumulative
+        ? {
+            incomingTotalValue: Number(updatedEntry.dataEntryCumulative.incomingTotalValue || 0),
+            cumulativeTotalValue: Number(updatedEntry.dataEntryCumulative.cumulativeTotalValue || 0),
+            entryCount: Number(updatedEntry.dataEntryCumulative.entryCount || 0),
+            lastUpdatedAt: updatedEntry.dataEntryCumulative.lastUpdatedAt || null
+          }
+        : null
     });
 
-       // 🔁 NEW: broadcast updated completion stats for this client
+    // 🔁 broadcast updated completion stats for this client
     if (global.broadcastDataCompletionUpdate) {
-      global.broadcastDataCompletionUpdate(entry.clientId);
+      global.broadcastDataCompletionUpdate(updatedEntry.clientId);
     }
 
     res.status(200).json({
       message: 'Data entry updated successfully',
-      dataId: entry._id
-    });
+      dataId: updatedEntry._id,
 
+      // ✅ NEW: return updated dataEntryCumulative
+      dataEntryCumulative: updatedEntry.dataEntryCumulative
+        ? {
+            incomingTotalValue: Number(updatedEntry.dataEntryCumulative.incomingTotalValue || 0),
+            cumulativeTotalValue: Number(updatedEntry.dataEntryCumulative.cumulativeTotalValue || 0),
+            entryCount: Number(updatedEntry.dataEntryCumulative.entryCount || 0),
+            lastUpdatedAt: updatedEntry.dataEntryCumulative.lastUpdatedAt || null
+          }
+        : null
+    });
   } catch (error) {
     console.error('Edit manual data error:', error);
     if (error.name === 'ValidationError') {
@@ -2975,6 +3243,7 @@ if (targetUsers.length > 0) {
 
 
 // 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)
+// 🔧 helper to format JS Date -> 'YYYY-MM-DD' (for period filters)
 const formatDateToYMD = (d) => {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -2989,15 +3258,50 @@ const buildDataEntryFilters = (req) => {
   // Basic required filter: always by clientId
   const filter = { clientId };
 
-  // Optional path params
-  if (nodeId) {
-    filter.nodeId = nodeId;
-  }
-  if (scopeIdentifier) {
-    filter.scopeIdentifier = scopeIdentifier;
+  // ✅ Helper: convert "a,b,c" OR ["a","b"] to array
+  const toArray = (val) => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val.map(String).map(v => v.trim()).filter(Boolean);
+    return String(val).split(",").map(v => v.trim()).filter(Boolean);
+  };
+
+  // ✅ Helper: apply $in or single value
+  const applyMulti = (field, values) => {
+    if (!values || values.length === 0) return;
+    filter[field] = values.length === 1 ? values[0] : { $in: values };
+  };
+
+  // ----------------------------------------------------
+  // ✅ MULTI NODE + MULTI SCOPE SUPPORT
+  // ----------------------------------------------------
+  const queryNodeIds = toArray(req.query.nodeIds); // nodeIds=n1,n2
+  const paramNodeIds = toArray(nodeId);            // /:nodeId can also be "n1,n2"
+  const allNodeIds = [...new Set([...paramNodeIds, ...queryNodeIds])];
+
+  const queryScopeIds = toArray(req.query.scopeIdentifiers); // scopeIdentifiers=s1,s2
+  const paramScopeIds = toArray(scopeIdentifier);            // /:scopeIdentifier can also be "s1,s2"
+  const allScopeIds = [...new Set([...paramScopeIds, ...queryScopeIds])];
+
+  // If both were provided (param + query), keep intersection (optional but safest)
+  const intersection = (a, b) => a.filter(x => new Set(b).has(x));
+
+  // Node filter
+  if (paramNodeIds.length && queryNodeIds.length) {
+    applyMulti("nodeId", intersection(paramNodeIds, queryNodeIds));
+  } else {
+    applyMulti("nodeId", allNodeIds);
   }
 
-  // Query params for filtering
+  // Scope filter
+  if (paramScopeIds.length && queryScopeIds.length) {
+    applyMulti("scopeIdentifier", intersection(paramScopeIds, queryScopeIds));
+  } else {
+    applyMulti("scopeIdentifier", allScopeIds);
+  }
+
+  // ----------------------------------------------------
+  // Existing query params for filtering
+  // ----------------------------------------------------
   const {
     inputType,
     scopeType,
@@ -3010,19 +3314,27 @@ const buildDataEntryFilters = (req) => {
     tags,
     search,
 
-    // date / time filters
     startDate,
     endDate,
     startTime,
     endTime,
-    period // e.g. today, last_7_days, this_month
+    period,
+
+    // ✅ NEW: dataEntryCumulative filters
+    minIncomingTotalValue,
+    maxIncomingTotalValue,
+    minCumulativeTotalValue,
+    maxCumulativeTotalValue,
+    minEntryCount,
+    maxEntryCount,
+    cumulativeFrom, // date string or ISO for lastUpdatedAt
+    cumulativeTo    // date string or ISO for lastUpdatedAt
   } = req.query;
 
   // ---------- SIMPLE EQUALITY / LIST FILTERS ----------
-
   const buildListFilter = (value) => {
     if (!value) return undefined;
-    const values = value.split(',').map(v => v.trim()).filter(Boolean);
+    const values = String(value).split(",").map(v => v.trim()).filter(Boolean);
     return values.length > 1 ? { $in: values } : values[0];
   };
 
@@ -3042,40 +3354,32 @@ const buildDataEntryFilters = (req) => {
   if (validationStatusFilter) filter.validationStatus = validationStatusFilter;
   if (processingStatusFilter) filter.processingStatus = processingStatusFilter;
 
-  if (typeof isSummary !== 'undefined') {
-    if (isSummary === 'true')  filter.isSummary = true;
-    if (isSummary === 'false') filter.isSummary = false;
+  if (typeof isSummary !== "undefined") {
+    if (isSummary === "true")  filter.isSummary = true;
+    if (isSummary === "false") filter.isSummary = false;
   }
 
   // Tags filter: tags=tag1,tag2
   if (tags) {
-    const tagArray = tags.split(',').map(t => t.trim()).filter(Boolean);
-    if (tagArray.length) {
-      filter.tags = { $in: tagArray };
-    }
+    const tagArray = String(tags).split(",").map(t => t.trim()).filter(Boolean);
+    if (tagArray.length) filter.tags = { $in: tagArray };
   }
 
-  // ---------- DATE / TIME FILTERS (BASED ON `date` FIELD) ----------
-
-  // IMPORTANT CHANGE:
-  // Previously: we built a range on `timestamp`.
-  // Now: we build the range on `date` (string 'YYYY-MM-DD' saved from user).
-
+  // ---------- DATE FILTERS (based on `date` field) ----------
   const dateRange = {};
 
-  // 1) Period shortcuts only when explicit start/endDate are NOT provided
   if (period && !startDate && !endDate) {
     const now = new Date();
     let fromDate, toDate;
 
-    if (period === 'today') {
+    if (period === "today") {
       fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       toDate   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    } else if (period === 'last_7_days') {
+    } else if (period === "last_7_days") {
       toDate   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       fromDate = new Date(toDate);
-      fromDate.setDate(fromDate.getDate() - 6); // last 7 days including today
-    } else if (period === 'this_month') {
+      fromDate.setDate(fromDate.getDate() - 6);
+    } else if (period === "this_month") {
       fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
       toDate   = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     }
@@ -3088,44 +3392,101 @@ const buildDataEntryFilters = (req) => {
     }
   }
 
-  // 2) Explicit startDate / endDate override period if provided
-  if (startDate) {
-    dateRange.$gte = startDate; // 'YYYY-MM-DD' string
-  }
-
-  if (endDate) {
-    dateRange.$lte = endDate;   // 'YYYY-MM-DD' string
-  }
+  if (startDate) dateRange.$gte = startDate;
+  if (endDate)   dateRange.$lte = endDate;
 
   if (Object.keys(dateRange).length > 0) {
-    // filter by `date` field (NOT timestamp)
     filter.date = dateRange;
   }
 
-  // (Optional) very simple same-day time range filter if you want:
-  // only makes sense when startDate === endDate.
+  // Same-day time range filter
   if ((startTime || endTime) && startDate && endDate && startDate === endDate) {
     const timeRange = {};
-    if (startTime) timeRange.$gte = startTime; // 'HH:mm:ss'
+    if (startTime) timeRange.$gte = startTime;
     if (endTime)   timeRange.$lte = endTime;
     filter.time = timeRange;
   }
 
-  // ---------- TEXT SEARCH ----------
+  // ----------------------------------------------------
+  // ✅ NEW: dataEntryCumulative FILTERS
+  // ----------------------------------------------------
+  const toNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
 
-  if (search && search.trim()) {
-    const regex = new RegExp(search.trim(), 'i');
+  const incomingRange = {};
+  const cumRange = {};
+  const entryCountRange = {};
+
+  const minIn = toNum(minIncomingTotalValue);
+  const maxIn = toNum(maxIncomingTotalValue);
+  if (minIn !== null) incomingRange.$gte = minIn;
+  if (maxIn !== null) incomingRange.$lte = maxIn;
+  if (Object.keys(incomingRange).length) {
+    filter["dataEntryCumulative.incomingTotalValue"] = incomingRange;
+  }
+
+  const minCum = toNum(minCumulativeTotalValue);
+  const maxCum = toNum(maxCumulativeTotalValue);
+  if (minCum !== null) cumRange.$gte = minCum;
+  if (maxCum !== null) cumRange.$lte = maxCum;
+  if (Object.keys(cumRange).length) {
+    filter["dataEntryCumulative.cumulativeTotalValue"] = cumRange;
+  }
+
+  const minCnt = toNum(minEntryCount);
+  const maxCnt = toNum(maxEntryCount);
+  if (minCnt !== null) entryCountRange.$gte = minCnt;
+  if (maxCnt !== null) entryCountRange.$lte = maxCnt;
+  if (Object.keys(entryCountRange).length) {
+    filter["dataEntryCumulative.entryCount"] = entryCountRange;
+  }
+
+  // lastUpdatedAt range
+  if (cumulativeFrom || cumulativeTo) {
+    const dtRange = {};
+    const from = cumulativeFrom ? new Date(cumulativeFrom) : null;
+    const to = cumulativeTo ? new Date(cumulativeTo) : null;
+
+    if (from && !isNaN(from.getTime())) dtRange.$gte = from;
+    if (to && !isNaN(to.getTime())) dtRange.$lte = to;
+
+    if (Object.keys(dtRange).length) {
+      filter["dataEntryCumulative.lastUpdatedAt"] = dtRange;
+    }
+  }
+
+  // ---------- TEXT SEARCH ----------
+  if (search && String(search).trim()) {
+    const s = String(search).trim();
+    const regex = new RegExp(s, "i");
+
+    // If search looks numeric, also allow numeric match on dataEntryCumulative fields
+    const asNumber = Number(s);
+    const isNumericSearch = Number.isFinite(asNumber);
+
     filter.$or = [
       { scopeIdentifier: regex },
       { nodeId: regex },
       { notes: regex },
       { externalId: regex },
-      { 'sourceDetails.dataSource': regex }
+      { "sourceDetails.dataSource": regex }
     ];
+
+    if (isNumericSearch) {
+      // exact match on numeric cumulative fields (simple + useful)
+      filter.$or.push(
+        { "dataEntryCumulative.incomingTotalValue": asNumber },
+        { "dataEntryCumulative.cumulativeTotalValue": asNumber },
+        { "dataEntryCumulative.entryCount": asNumber }
+      );
+    }
   }
 
   return filter;
 };
+
 
 // ⬇️ Helper: Build sort object
 const buildDataEntrySort = (req) => {
@@ -3141,7 +3502,13 @@ const buildDataEntrySort = (req) => {
     'nodeType',
     'approvalStatus',
     'validationStatus',
-    'processingStatus'
+    'processingStatus',
+
+    // ✅ NEW: dataEntryCumulative sort support
+    'dataEntryCumulative.incomingTotalValue',
+    'dataEntryCumulative.cumulativeTotalValue',
+    'dataEntryCumulative.entryCount',
+    'dataEntryCumulative.lastUpdatedAt'
   ];
 
   if (!allowedSortFields.includes(sortBy)) {
@@ -3151,7 +3518,6 @@ const buildDataEntrySort = (req) => {
   const order = sortOrder === 'asc' ? 1 : -1;
   return { [sortBy]: order };
 };
-
 
 
 // Get Data Entries with enhanced authorization and strict client isolation
@@ -3178,7 +3544,7 @@ const getDataEntries = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Data entries fetched successfully',
-      data: entries,
+      data: entries, // ✅ includes dataEntryCumulative because we .lean() the whole doc
       filtersApplied: filters,
       sort,
       pagination: {
@@ -3199,6 +3565,7 @@ const getDataEntries = async (req, res) => {
     });
   }
 };
+
 
 
 // Get Collection Status with enhanced authorization and strict client isolation

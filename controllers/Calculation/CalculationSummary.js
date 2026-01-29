@@ -1532,6 +1532,134 @@ const getMultipleSummaries = async (req, res) => {
   }
 };
 
+//New Update function
+// const getMultipleSummaries = async (req, res) => {
+//   try {
+//     const { clientId } = req.params;
+//     const {
+//       periodType = "monthly",
+//       startYear,
+//       startMonth,
+//       endYear,
+//       endMonth,
+//       limit = 12,
+//       type = "both",
+//       projectIds // ✅ add
+//     } = req.query;
+
+//     if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
+//       return res.status(400).json({ success: false, message: "Invalid period type" });
+//     }
+
+//     const list = String(projectIds || "")
+//       .split(",")
+//       .map(s => s.trim())
+//       .filter(Boolean);
+
+//     const query = { clientId, "period.type": periodType };
+
+//     if (startYear && endYear) {
+//       query["period.year"] = { $gte: parseInt(startYear), $lte: parseInt(endYear) };
+//     }
+//     if (startMonth) {
+//       query["period.month"] = { ...(query["period.month"] || {}), $gte: parseInt(startMonth) };
+//     }
+//     if (endMonth) {
+//       query["period.month"] = { ...(query["period.month"] || {}), $lte: parseInt(endMonth) };
+//     }
+
+//     // ✅ Optional DB-level prefilter (keeps only months where selected projects appear)
+//     // If you want ALL months (including 0 months), remove this and do only in-memory filtering.
+//     if (type === "reduction" || type === "both") {
+//       if (list.length) query["reductionSummary.byProject.projectId"] = { $in: list };
+//     }
+
+//     const summaries = await EmissionSummary.find(query)
+//       .sort({ "period.year": -1, "period.month": -1 })
+//       .limit(parseInt(limit))
+//       .lean();
+
+//     const deepConvert = (value) => {
+//       if (value instanceof Map) {
+//         return Object.fromEntries([...value.entries()].map(([k, v]) => [k, deepConvert(v)]));
+//       }
+//       if (Array.isArray(value)) return value.map(deepConvert);
+//       if (value && typeof value === "object" && !(value instanceof Date)) {
+//         const out = {};
+//         for (const k of Object.keys(value)) out[k] = deepConvert(value[k]);
+//         return out;
+//       }
+//       return value;
+//     };
+
+//     const filterReductionByProjects = (reductionSummary) => {
+//       if (!list.length) return reductionSummary;
+
+//       const rs = reductionSummary || {};
+//       const byProject = Array.isArray(rs.byProject) ? rs.byProject : [];
+
+//       const filteredByProject = byProject.filter(p => list.includes(p.projectId));
+
+//       const totalNetReduction = filteredByProject.reduce((s, p) => s + Number(p.totalNetReduction || 0), 0);
+//       const entriesCount = filteredByProject.reduce((s, p) => s + Number(p.entriesCount || 0), 0);
+
+//       // Also filter trendChart arrays to only selected projects
+//       const cs = rs.calculationSummary || {};
+//       const tc = cs.trendChart || {};
+//       const pick = (arr) => (Array.isArray(arr) ? arr.filter(x => list.includes(x.projectId)) : []);
+
+//       return {
+//         ...rs,
+//         totalNetReduction,
+//         entriesCount,
+//         byProject: filteredByProject,
+//         calculationSummary: {
+//           ...cs,
+//           totalNetReduction, // keep KPI consistent with selected projects
+//           trendChart: {
+//             ...tc,
+//             monthly: pick(tc.monthly),
+//             quarterly: pick(tc.quarterly),
+//             yearly: pick(tc.yearly),
+//           }
+//         }
+//       };
+//     };
+
+//     const formatted = summaries.map((doc) => {
+//       const emissionSummary  = deepConvert(doc.emissionSummary || {});
+//       let reductionSummary   = deepConvert(doc.reductionSummary || {});
+//       reductionSummary = filterReductionByProjects(reductionSummary);
+
+//       const metadata = doc.metadata || {};
+
+//       if (type === "emission") {
+//         return { clientId: doc.clientId, period: doc.period, emissionSummary, metadata };
+//       }
+
+//       if (type === "reduction") {
+//         return { clientId: doc.clientId, period: doc.period, reductionSummary, metadata };
+//       }
+
+//       return { clientId: doc.clientId, period: doc.period, emissionSummary, reductionSummary, metadata };
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       type,
+//       count: formatted.length,
+//       data: formatted
+//     });
+
+//   } catch (error) {
+//     console.error("❌ Error getting multiple summaries:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Failed to get multiple summaries",
+//       error: error.message
+//     });
+//   }
+// };
 
 
 
