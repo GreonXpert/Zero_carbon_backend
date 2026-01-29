@@ -3527,7 +3527,7 @@ const getDataEntries = async (req, res) => {
     const sort = buildDataEntrySort(req);
 
     const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit, 10) || 500));
     const skip  = (page - 1) * limit;
 
     const [entries, total] = await Promise.all([
