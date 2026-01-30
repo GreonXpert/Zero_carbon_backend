@@ -403,6 +403,52 @@ const asObject = (val, fieldName) => {
   throw new Error(`Invalid type for "${fieldName}". Expected object/JSON string.`);
 };
 
+
+// --- Team-based visibility helpers (ONLY affects client_employee_head + employee reads) ---
+const getLoggedInUserId = (req) =>
+  String(req.user?.id || req.user?._id || req.user?.userId || "");
+
+const applyTeamVisibilityToListFilter = (filters, role, userId) => {
+  if (!userId) return;
+
+  // Employee Head sees ONLY projects where they are the assigned head
+  if (role === "client_employee_head") {
+    filters["assignedTeam.employeeHeadId"] = userId;
+    return;
+  }
+
+  // Employee sees ONLY projects where they are assigned (or defensive: also if they are head)
+  if (role === "employee") {
+    filters.$and = filters.$and || [];
+    filters.$and.push({
+      $or: [
+        { "assignedTeam.employeeIds": userId },
+        { "assignedTeam.employeeHeadId": userId },
+      ],
+    });
+  }
+};
+
+const hasAssignedAccessToSingleProject = (doc, role, userId) => {
+  if (!userId) return false;
+
+  const headId = doc?.assignedTeam?.employeeHeadId
+    ? String(doc.assignedTeam.employeeHeadId)
+    : null;
+
+  const empIds = Array.isArray(doc?.assignedTeam?.employeeIds)
+    ? doc.assignedTeam.employeeIds.map((x) => String(x))
+    : [];
+
+  if (role === "client_employee_head") return headId === userId;
+  if (role === "employee") return headId === userId || empIds.includes(userId);
+
+  // other roles unchanged
+  return true;
+};
+
+
+
 exports.createReduction = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -584,7 +630,7 @@ exports.getReduction = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Permission denied",
-        reason: access.reason
+        reason: access.reason,
       });
     }
 
@@ -594,14 +640,31 @@ exports.getReduction = async (req, res) => {
     const doc = await Reduction.findOne({
       clientId,
       projectId,
-      isDeleted: false
+      isDeleted: false,
     }).lean(); // lean → plain JSON
 
     if (!doc) {
       return res.status(404).json({
         success: false,
-        message: "Reduction project not found"
+        message: "Reduction project not found",
       });
+    }
+
+    // -------------------------------------------------
+    // ✅ 2.5️⃣ TEAM VISIBILITY CHECK (ONLY for employeeHead + employee)
+    // -------------------------------------------------
+    const role = req.user?.userType;
+    const userId = getLoggedInUserId(req);
+
+    if (role === "client_employee_head" || role === "employee") {
+      const allowed = hasAssignedAccessToSingleProject(doc, role, userId);
+
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: You are not assigned to this project",
+        });
+      }
     }
 
     // -------------------------------------------------
@@ -611,8 +674,7 @@ exports.getReduction = async (req, res) => {
     // --- M1 ---
     if (doc.calculationMethodology === "methodology1") {
       doc.m1 = doc.m1 || {};
-      doc.m1.emissionReductionRate =
-        doc.m1.emissionReductionRate ?? 0;
+      doc.m1.emissionReductionRate = doc.m1.emissionReductionRate ?? 0;
     }
 
     // --- M2 ---
@@ -639,23 +701,18 @@ exports.getReduction = async (req, res) => {
     // -------------------------------------------------
     // 4️⃣ 🔥 IMAGE URL FIX (CRITICAL)
     // -------------------------------------------------
-    // RULE:
-    // - If S3 url exists → USE AS IS
-    // - Only build server URL if url is missing but path exists
-
     const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
 
     // ---- Cover Image ----
     if (doc.coverImage) {
       if (!doc.coverImage.url && doc.coverImage.path && BASE) {
-        doc.coverImage.url =
-          `${BASE}/${doc.coverImage.path.replace(/\\/g, "/")}`;
+        doc.coverImage.url = `${BASE}/${doc.coverImage.path.replace(/\\/g, "/")}`;
       }
     }
 
     // ---- Gallery Images ----
     if (Array.isArray(doc.images)) {
-      doc.images = doc.images.map(img => {
+      doc.images = doc.images.map((img) => {
         // ✅ Keep S3 URL untouched
         if (img.url) return img;
 
@@ -663,7 +720,7 @@ exports.getReduction = async (req, res) => {
         if (!img.url && img.path && BASE) {
           return {
             ...img,
-            url: `${BASE}/${img.path.replace(/\\/g, "/")}`
+            url: `${BASE}/${img.path.replace(/\\/g, "/")}`,
           };
         }
 
@@ -676,15 +733,14 @@ exports.getReduction = async (req, res) => {
     // -------------------------------------------------
     return res.status(200).json({
       success: true,
-      data: doc
+      data: doc,
     });
-
   } catch (err) {
     console.error("getReduction error:", err);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch reduction",
-      error: err.message
+      error: err.message,
     });
   }
 };
@@ -701,17 +757,17 @@ exports.getAllReductions = async (req, res) => {
       limit = 20,
       clientId: clientIdFilter,
       q,
-      includeDeleted = 'false',
-      sort = '-createdAt'
+      includeDeleted = "false",
+      sort = "-createdAt",
     } = req.query;
 
     const role = req.user?.userType;
-    const userId = req.user?.id;
+    const userId = getLoggedInUserId(req);
 
     if (!role || !userId) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized'
+        message: "Unauthorized",
       });
     }
 
@@ -720,16 +776,13 @@ exports.getAllReductions = async (req, res) => {
     // =====================================================
     const filter = {};
 
-    if (includeDeleted !== 'true') {
-      filter.$or = [
-        { isDeleted: { $exists: false } },
-        { isDeleted: false }
-      ];
+    if (includeDeleted !== "true") {
+      filter.$or = [{ isDeleted: { $exists: false } }, { isDeleted: false }];
     }
 
     if (q && String(q).trim()) {
       filter.projectName = {
-        $regex: new RegExp(String(q).trim(), 'i')
+        $regex: new RegExp(String(q).trim(), "i"),
       };
     }
 
@@ -742,69 +795,64 @@ exports.getAllReductions = async (req, res) => {
     // =====================================================
     // ROLE-BASED ACCESS
     // =====================================================
-    if (role === 'super_admin') {
+    if (role === "super_admin") {
       applyClientFilter(clientIdFilter);
-    }
-
-    else if (role === 'consultant_admin') {
+    } else if (role === "consultant_admin") {
       const teamConsultants = await User.find({
-        userType: 'consultant',
+        userType: "consultant",
         consultantAdminId: userId,
-        isActive: true
-      }).select('_id');
+        isActive: true,
+      }).select("_id");
 
-      const ids = [userId, ...teamConsultants.map(u => u._id)];
-      filter.$and = (filter.$and || []).concat([
-        { createdBy: { $in: ids } }
-      ]);
+      const ids = [userId, ...teamConsultants.map((u) => u._id)];
+
+      filter.$and = (filter.$and || []).concat([{ createdBy: { $in: ids } }]);
 
       applyClientFilter(clientIdFilter);
-    }
-
-    else if (role === 'consultant') {
+    } else if (role === "consultant") {
       const myClients = await Client.find({
         $or: [
-          { 'leadInfo.assignedConsultantId': userId },
-          { 'workflowTracking.assignedConsultantId': userId }
-        ]
-      }).select('clientId');
+          { "leadInfo.assignedConsultantId": userId },
+          { "workflowTracking.assignedConsultantId": userId },
+        ],
+      }).select("clientId");
 
-      const myClientIds = myClients.map(c => c.clientId);
+      const myClientIds = myClients.map((c) => c.clientId);
 
       const orList = [{ createdBy: userId }];
       if (myClientIds.length) {
         orList.push({ clientId: { $in: myClientIds } });
       }
 
-      filter.$and = (filter.$and || []).concat([
-        { $or: orList }
-      ]);
+      filter.$and = (filter.$and || []).concat([{ $or: orList }]);
 
       applyClientFilter(clientIdFilter);
-    }
-
-    else if (
-      role === 'client_admin' ||
-      role === 'client_employee_head' ||
-      role === 'employee' ||
-      role === 'viewer' ||
-      role === 'auditor'
+    } else if (
+      role === "client_admin" ||
+      role === "client_employee_head" ||
+      role === "employee" ||
+      role === "viewer" ||
+      role === "auditor"
     ) {
       if (!req.user.clientId) {
         return res.status(403).json({
           success: false,
-          message: 'No client scope for this user'
+          message: "No client scope for this user",
         });
       }
       filter.clientId = req.user.clientId;
-    }
-
-    else {
+    } else {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden role'
+        message: "Forbidden role",
       });
     }
+
+    // =====================================================
+    // ✅ TEAM VISIBILITY (ONLY employeeHead + employee)
+    // Put it HERE so it doesn't affect other role logic.
+    // =====================================================
+    applyTeamVisibilityToListFilter(filter, role, userId);
 
     // =====================================================
     // PAGINATION
@@ -816,66 +864,62 @@ exports.getAllReductions = async (req, res) => {
       .sort(sort)
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .populate('createdBy', 'userName userType email')
+      .populate("createdBy", "userName userType email")
       .lean();
 
     const [items, total] = await Promise.all([
       query,
-      Reduction.countDocuments(filter)
+      Reduction.countDocuments(filter),
     ]);
 
     // =====================================================
     // CLEAN + IMAGE SAFE NORMALIZATION
     // =====================================================
-    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, '');
+    const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
 
-    const cleanedItems = items.map(r => {
-
+    const cleanedItems = items.map((r) => {
       // ---------------- METHODOLOGY SAFETY ----------------
-      if (r.calculationMethodology === 'methodology3') {
+      if (r.calculationMethodology === "methodology3") {
         r.m3 = r.m3 || {};
-        r.m3.baselineEmissions = Array.isArray(r.m3.baselineEmissions) ? r.m3.baselineEmissions : [];
-        r.m3.projectEmissions  = Array.isArray(r.m3.projectEmissions)  ? r.m3.projectEmissions  : [];
-        r.m3.leakageEmissions  = Array.isArray(r.m3.leakageEmissions)  ? r.m3.leakageEmissions  : [];
+        r.m3.baselineEmissions = Array.isArray(r.m3.baselineEmissions)
+          ? r.m3.baselineEmissions
+          : [];
+        r.m3.projectEmissions = Array.isArray(r.m3.projectEmissions)
+          ? r.m3.projectEmissions
+          : [];
+        r.m3.leakageEmissions = Array.isArray(r.m3.leakageEmissions)
+          ? r.m3.leakageEmissions
+          : [];
         r.m3.buffer = r.m3.buffer ?? 0;
       }
 
-      if (r.calculationMethodology === 'methodology2') {
+      if (r.calculationMethodology === "methodology2") {
         r.m2 = r.m2 || {};
         r.m2.formulaRef = r.m2.formulaRef || {};
       }
 
-      if (r.calculationMethodology === 'methodology1') {
+      if (r.calculationMethodology === "methodology1") {
         r.m1 = r.m1 || {};
-        r.m1.emissionReductionRate =
-          r.m1.emissionReductionRate ?? 0;
+        r.m1.emissionReductionRate = r.m1.emissionReductionRate ?? 0;
       }
 
       // ---------------- 🔥 IMAGE FIX ----------------
-
-      // Cover image
       if (r.coverImage) {
         // ✅ keep S3 url
         if (!r.coverImage.url && r.coverImage.path && BASE) {
-          r.coverImage.url =
-            `${BASE}/${r.coverImage.path.replace(/\\/g, '/')}`;
+          r.coverImage.url = `${BASE}/${r.coverImage.path.replace(/\\/g, "/")}`;
         }
       }
 
-      // Gallery images
       if (Array.isArray(r.images)) {
-        r.images = r.images.map(img => {
-          // ✅ S3 url already exists
+        r.images = r.images.map((img) => {
           if (img.url) return img;
-
-          // ⚠ legacy local image
           if (!img.url && img.path && BASE) {
             return {
               ...img,
-              url: `${BASE}/${img.path.replace(/\\/g, '/')}`
+              url: `${BASE}/${img.path.replace(/\\/g, "/")}`,
             };
           }
-
           return img;
         });
       }
@@ -891,17 +935,14 @@ exports.getAllReductions = async (req, res) => {
       total,
       page: pageNum,
       limit: limitNum,
-      data: cleanedItems
+      data: cleanedItems,
     });
-
   } catch (err) {
-    console.error('getAllReductions error:', err);
+    console.error("getAllReductions error:", err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch reductions',
-      error: process.env.NODE_ENV === 'development'
-        ? err.message
-        : undefined
+      message: "Failed to fetch reductions",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
@@ -1881,8 +1922,20 @@ exports.getClientReductionWorkflowStatus = async (req, res) => {
 };
 
 
+exports.getMyAssignedReductions = async (req, res) => {
+  const role = req.user.userType;
 
+  if (!["client_employee_head", "employee"].includes(role)) {
+    return res.status(403).json({
+      success: false,
+      message: "Only Employee Head / Employee can use this endpoint",
+    });
+  }
 
+  // reuse existing getAll logic safely
+  req.params.clientId = req.user.clientId;
+  return exports.getAllReductions(req, res);
+};
 
 
 

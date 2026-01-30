@@ -2827,7 +2827,7 @@ const editManualData = async (req, res) => {
       entry.time = formattedTime;
 
       // ✅ Compute IST-based timestamp
-      const computed = buildISTTimestampFromDateTime(formattedDate, formattedTime);
+      const computed = buildISTTimestamp(formattedDate, formattedTime);
       if (!computed) {
         return res.status(400).json({ message: 'Failed to build timestamp from date/time' });
       }

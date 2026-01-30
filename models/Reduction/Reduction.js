@@ -488,6 +488,11 @@ const reductionSchema = new mongoose.Schema({
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+
+reductionSchema.index({ clientId: 1, "assignedTeam.employeeHeadId": 1 });
+reductionSchema.index({ clientId: 1, "assignedTeam.employeeIds": 1 });
+
+
 // ---------- helpers ----------
 function round6(n){ return Math.round((Number(n)||0)*1e6)/1e6; }
 
