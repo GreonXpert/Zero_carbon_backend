@@ -12,6 +12,7 @@ const {
   getReductionSummaryHierarchy,
      getSbtiProgress,
   getReductionSummariesByProjects,
+  getScopeIdentifierHierarchyOfProcessEmissionSummary
 
   
   
@@ -140,7 +141,7 @@ router.get(
   getReductionSummariesByProjects
 );
 
-
+router.get("/:clientId/scope-identifiers/hierarchy/process",getScopeIdentifierHierarchyOfProcessEmissionSummary)
 
 
 module.exports = router;

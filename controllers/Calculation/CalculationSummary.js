@@ -477,6 +477,63 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       s3: emissionSummary.byScope["Scope 3"].CO2e
     });
 
+
+    // ============================================================
+    // 🆕 CALCULATE PROCESS EMISSION SUMMARY
+    // ============================================================
+    let processEmissionSummary = null;
+    
+    try {
+      console.log("📊🔍 Calculating process emission summary...");
+      processEmissionSummary = await calculateProcessEmissionSummaryPrecise(
+        clientId,
+        periodType,
+        year,
+        month,
+        week,
+        day,
+        userId
+      );
+      console.log(`✅ Process emission summary calculated: ${processEmissionSummary.byNode.size} nodes`);
+    } catch (procErr) {
+      console.error('❌ Error calculating process emission summary:', procErr);
+      emissionSummary.metadata.errors.push(`Process summary error: ${procErr.message}`);
+      
+      // Create empty process emission summary on error
+      processEmissionSummary = {
+        period: emissionSummary.period,
+        totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+        byScope: {
+          'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+        },
+        byCategory: new Map(),
+        byActivity: new Map(),
+        byNode: new Map(),
+        byDepartment: new Map(),
+        byLocation: new Map(),
+        byInputType: {
+          manual: { CO2e: 0, dataPointCount: 0 },
+          API: { CO2e: 0, dataPointCount: 0 },
+          IOT: { CO2e: 0, dataPointCount: 0 }
+        },
+        byEmissionFactor: new Map(),
+        trends: {},
+        metadata: {
+          totalDataPoints: 0,
+          dataEntriesIncluded: [],
+          lastCalculated: new Date(),
+          calculatedBy: userId,
+          version: 1,
+          isComplete: false,
+          hasErrors: true,
+          errors: [`Process summary error: ${procErr.message}`],
+          calculationDuration: 0
+        }
+      };
+    }
+
     // ============================================================
     // RETURN FULL DOCUMENT STRUCTURE
     // ============================================================
@@ -484,6 +541,7 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       clientId,
       period: emissionSummary.period,
       emissionSummary,
+      processEmissionSummary,
       metadata: {
         lastCalculated: new Date(),
         isComplete: true,
@@ -497,6 +555,370 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     throw error;
   }
 };
+/**
+ * ============================================================================
+ * 🆕 CALCULATE PROCESS EMISSION SUMMARY (PRECISE)
+ * ============================================================================
+ * 
+ * This function calculates a filtered emission summary based on ProcessFlowchart.
+ * It provides scopeIdentifier-level precision by re-aggregating from DataEntry records.
+ * 
+ * KEY FEATURES:
+ * - Only includes nodes that exist in ProcessFlowchart
+ * - Only includes scopeIdentifiers that exist in those nodes (filtered by fromOtherChart and isDeleted)
+ * - Provides same structure as emissionSummary for consistency
+ * 
+ * FILTERING RULES:
+ * 1. Load ProcessFlowchart where isDeleted = false
+ * 2. For each node, only include scopeDetails where:
+ *    - isDeleted !== true
+ *    - fromOtherChart !== true
+ * 3. Re-aggregate emissions from DataEntry matching (clientId, nodeId, scopeIdentifier)
+ * 
+ * OUTPUT STRUCTURE (matches emissionDetailsSchema):
+ * {
+ *   period: { type, year, month, week, day, from, to },
+ *   totalEmissions: { CO2e, CO2, CH4, N2O, uncertainty },
+ *   byScope: { 'Scope 1': {...}, 'Scope 2': {...}, 'Scope 3': {...} },
+ *   byCategory: Map<categoryName, {...}>,
+ *   byActivity: Map<activityName, {...}>,
+ *   byNode: Map<nodeId, {...}>,
+ *   byDepartment: Map<department, {...}>,
+ *   byLocation: Map<location, {...}>,
+ *   byInputType: { manual: {...}, API: {...}, IOT: {...} },
+ *   byEmissionFactor: Map<source, {...}>,
+ *   trends: { ... },
+ *   metadata: { totalDataPoints, dataEntriesIncluded, lastCalculated, ... }
+ * }
+ * 
+ * @param {string} clientId - Client identifier
+ * @param {string} periodType - Period type ('daily', 'monthly', 'yearly', 'all-time')
+ * @param {number} year - Year
+ * @param {number} month - Month (1-12)
+ * @param {number} week - Week number
+ * @param {number} day - Day of month
+ * @param {string} userId - User ID performing the calculation
+ * @returns {object} Process emission summary object matching emissionDetailsSchema structure
+ */
+const calculateProcessEmissionSummaryPrecise = async (
+  clientId,
+  periodType,
+  year,
+  month,
+  week,
+  day,
+  userId = null
+) => {
+  const startedAt = Date.now();
+
+  try {
+    console.log(`📊🔍 Calculating PRECISE process emission summary for client: ${clientId}`);
+
+    // ============================================================
+    // STEP 1: LOAD PROCESSFLOWCHART
+    // ============================================================
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
+    }).lean();
+
+    const { from, to } = buildDateRange(periodType, year, month, week, day);
+
+    // Return empty structure if no ProcessFlowchart
+    if (!processFlowchart || !Array.isArray(processFlowchart.nodes) || processFlowchart.nodes.length === 0) {
+      return {
+        period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
+        totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+        byScope: {
+          "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+        },
+        byCategory: new Map(),
+        byActivity: new Map(),
+        byNode: new Map(),
+        byDepartment: new Map(),
+        byLocation: new Map(),
+        byInputType: {
+          manual: { CO2e: 0, dataPointCount: 0 },
+          API: { CO2e: 0, dataPointCount: 0 },
+          IOT: { CO2e: 0, dataPointCount: 0 }
+        },
+        byEmissionFactor: new Map(),
+        trends: {},
+        metadata: {
+          totalDataPoints: 0,
+          dataEntriesIncluded: [],
+          lastCalculated: new Date(startedAt),
+          calculatedBy: userId,
+          version: 1,
+          isComplete: true,
+          hasErrors: true,
+          errors: ["No ProcessFlowchart found"],
+          calculationDuration: 0
+        }
+      };
+    }
+
+    const normalizeScopeIdentifier = (v) => (typeof v === "string" ? v.trim() : "");
+
+    // ============================================================
+    // STEP 2: BUILD scopeIdentifier → processNode mapping
+    // ============================================================
+    // DataEntry.nodeId and ProcessFlowchart.node.id may differ, so we match by scopeIdentifier only.
+    const scopeIndex = new Map(); // scopeIdentifier -> array of { processNodeId, nodeMeta, scopeMeta }
+
+    for (const node of processFlowchart.nodes) {
+      const processNodeId = node.id || null;
+
+      const nodeMeta = {
+        label: node.label || "Unknown Node",
+        department: node.details?.department || "Unknown",
+        location: node.details?.location || "Unknown"
+      };
+
+      const scopeDetails = Array.isArray(node.details?.scopeDetails) ? node.details.scopeDetails : [];
+      const validScopes = scopeDetails.filter(s => normalizeScopeIdentifier(s.scopeIdentifier) && s.isDeleted !== true);
+
+      for (const s of validScopes) {
+        const sid = normalizeScopeIdentifier(s.scopeIdentifier);
+        if (!scopeIndex.has(sid)) scopeIndex.set(sid, []);
+        scopeIndex.get(sid).push({
+          processNodeId,
+          nodeMeta,
+          scopeMeta: {
+            scopeIdentifier: sid,
+            scopeType: s.scopeType,
+            categoryName: s.categoryName,
+            activity: s.activity
+          }
+        });
+      }
+    }
+
+    if (scopeIndex.size === 0) {
+      return {
+        period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
+        totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+        byScope: {
+          "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+        },
+        byCategory: new Map(),
+        byActivity: new Map(),
+        byNode: new Map(),
+        byDepartment: new Map(),
+        byLocation: new Map(),
+        byInputType: {
+          manual: { CO2e: 0, dataPointCount: 0 },
+          API: { CO2e: 0, dataPointCount: 0 },
+          IOT: { CO2e: 0, dataPointCount: 0 }
+        },
+        byEmissionFactor: new Map(),
+        trends: {},
+        metadata: {
+          totalDataPoints: 0,
+          dataEntriesIncluded: [],
+          lastCalculated: new Date(startedAt),
+          calculatedBy: userId,
+          version: 1,
+          isComplete: true,
+          hasErrors: true,
+          errors: ["No valid scopeIdentifiers in ProcessFlowchart"],
+          calculationDuration: 0
+        }
+      };
+    }
+
+    // ============================================================
+    // STEP 3: QUERY DATAENTRY RECORDS FOR THIS PERIOD
+    // ============================================================
+    const dataEntries = await DataEntry.find({
+      clientId,
+      processingStatus: "processed",
+      timestamp: { $gte: from, $lte: to }
+    }).lean();
+
+    // ============================================================
+    // STEP 4: INIT SUMMARY
+    // ============================================================
+    const processEmissionSummary = {
+      period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
+      totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+      byScope: {
+        "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+      },
+      byCategory: new Map(),
+      byActivity: new Map(),
+      byNode: new Map(),
+      byDepartment: new Map(),
+      byLocation: new Map(),
+      byInputType: {
+        manual: { CO2e: 0, dataPointCount: 0 },
+        API: { CO2e: 0, dataPointCount: 0 },
+        IOT: { CO2e: 0, dataPointCount: 0 }
+      },
+      byEmissionFactor: new Map(),
+      trends: {},
+      metadata: {
+        totalDataPoints: 0,
+        dataEntriesIncluded: [],
+        lastCalculated: new Date(startedAt),
+        calculatedBy: userId,
+        version: 1,
+        isComplete: true,
+        hasErrors: false,
+        errors: [],
+        calculationDuration: 0
+      }
+    };
+
+    // ============================================================
+    // STEP 5: FILTER by scopeIdentifier, ATTRIBUTE to process node
+    // ============================================================
+    let includedCount = 0;
+    let filteredCount = 0;
+
+    for (const entry of dataEntries) {
+      const sid = normalizeScopeIdentifier(entry.scopeIdentifier);
+      if (!sid) { filteredCount++; continue; }
+
+      const matches = scopeIndex.get(sid);
+      if (!matches || matches.length === 0) { filteredCount++; continue; }
+
+      // If duplicate scopeIdentifier exists in multiple process nodes, choose deterministically
+      let match = matches[0];
+      if (matches.length > 1) {
+        // Prefer nodeId match if it happens to match, else first
+        match = matches.find(m => m.processNodeId === entry.nodeId) || matches[0];
+        processEmissionSummary.metadata.errors.push(
+          `Ambiguous scopeIdentifier "${sid}" in multiple process nodes; entry ${entry._id} assigned to ${match.processNodeId}`
+        );
+        processEmissionSummary.metadata.hasErrors = true;
+      }
+
+      const emissionValues = extractEmissionValues(entry.calculatedEmissions);
+      if (emissionValues.CO2e === 0) continue;
+
+      includedCount++;
+
+      const scopeType = entry.scopeType || match.scopeMeta.scopeType || "Unknown";
+      const categoryName = match.scopeMeta.categoryName || "Unknown Category";
+      const activity = match.scopeMeta.activity || sid;
+
+      // TOTAL
+      addEmissionValues(processEmissionSummary.totalEmissions, emissionValues);
+
+      // BY SCOPE
+      if (processEmissionSummary.byScope[scopeType]) {
+        addEmissionValues(processEmissionSummary.byScope[scopeType], emissionValues);
+        processEmissionSummary.byScope[scopeType].dataPointCount += 1;
+      }
+
+      // BY CATEGORY
+      const cat = ensureMapEntry(processEmissionSummary.byCategory, categoryName, { scopeType, activities: new Map() });
+      addEmissionValues(cat, emissionValues);
+      const catAct = ensureMapEntry(cat.activities, activity);
+      addEmissionValues(catAct, emissionValues);
+
+      // BY ACTIVITY
+      const act = ensureMapEntry(processEmissionSummary.byActivity, activity, { scopeType, categoryName });
+      addEmissionValues(act, emissionValues);
+
+      // BY NODE (process node id)
+      const processNodeId = match.processNodeId || `unknown-process-node::${sid}`;
+      const nodeBucket = ensureMapEntry(processEmissionSummary.byNode, processNodeId, {
+        nodeLabel: match.nodeMeta.label,
+        department: match.nodeMeta.department,
+        location: match.nodeMeta.location,
+        byScope: {
+          "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+          "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+        }
+      });
+      addEmissionValues(nodeBucket, emissionValues);
+      if (nodeBucket.byScope[scopeType]) {
+        addEmissionValues(nodeBucket.byScope[scopeType], emissionValues);
+        nodeBucket.byScope[scopeType].dataPointCount += 1;
+      }
+
+      // BY DEPARTMENT
+      const dept = ensureMapEntry(processEmissionSummary.byDepartment, match.nodeMeta.department);
+      addEmissionValues(dept, emissionValues);
+
+      // BY LOCATION
+      const loc = ensureMapEntry(processEmissionSummary.byLocation, match.nodeMeta.location);
+      addEmissionValues(loc, emissionValues);
+
+      // BY INPUT TYPE
+      if (processEmissionSummary.byInputType[entry.inputType]) {
+        processEmissionSummary.byInputType[entry.inputType].CO2e += emissionValues.CO2e;
+        processEmissionSummary.byInputType[entry.inputType].dataPointCount += 1;
+      }
+
+      // BY EMISSION FACTOR
+      const eff = ensureMapEntry(
+        processEmissionSummary.byEmissionFactor,
+        entry.emissionFactor || "Unknown",
+        { scopeTypes: { "Scope 1": 0, "Scope 2": 0, "Scope 3": 0 } }
+      );
+      addEmissionValues(eff, emissionValues);
+      eff.scopeTypes[scopeType] += 1;
+
+      processEmissionSummary.metadata.dataEntriesIncluded.push(entry._id);
+    }
+
+    processEmissionSummary.metadata.totalDataPoints = includedCount;
+    processEmissionSummary.metadata.calculationDuration = Date.now() - startedAt;
+
+    console.log(`📊 Process summary: ${includedCount} included, ${filteredCount} filtered`);
+
+    return processEmissionSummary;
+
+  } catch (err) {
+    console.error("❌ Error calculating processEmissionSummary:", err);
+    return {
+      period: { type: periodType, year, month, week, day, date: periodType === "daily" ? buildDateRange(periodType, year, month, week, day).from : null,
+               from: buildDateRange(periodType, year, month, week, day).from,
+               to: buildDateRange(periodType, year, month, week, day).to },
+      totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+      byScope: {
+        "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        "Scope 3": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+      },
+      byCategory: new Map(),
+      byActivity: new Map(),
+      byNode: new Map(),
+      byDepartment: new Map(),
+      byLocation: new Map(),
+      byInputType: {
+        manual: { CO2e: 0, dataPointCount: 0 },
+        API: { CO2e: 0, dataPointCount: 0 },
+        IOT: { CO2e: 0, dataPointCount: 0 }
+      },
+      byEmissionFactor: new Map(),
+      trends: {},
+      metadata: {
+        totalDataPoints: 0,
+        dataEntriesIncluded: [],
+        lastCalculated: new Date(),
+        calculatedBy: userId,
+        version: 1,
+        isComplete: false,
+        hasErrors: true,
+        errors: [err.message],
+        calculationDuration: 0
+      }
+    };
+  }
+};
+
+
 
 
 /**
@@ -1054,6 +1476,66 @@ async function saveEmissionSummary(summaryData) {
   };
 
   // ------------------------------------------------------------------
+  // 🆕 2B) Build processEmissionSummary (nested object) - NEW
+  // ------------------------------------------------------------------
+  let processEmissionSummaryToSave = null;
+  
+  if (summaryData.processEmissionSummary) {
+    const pes = summaryData.processEmissionSummary;
+    
+    processEmissionSummaryToSave = {
+      period: normalizedPeriod,
+      totalEmissions: pes.totalEmissions || {
+        CO2e: 0,
+        CO2: 0,
+        CH4: 0,
+        N2O: 0,
+        uncertainty: 0,
+      },
+      
+      byScope: mapToObj(pes.byScope),
+      byCategory: mapToObj(pes.byCategory),
+      byActivity: mapToObj(pes.byActivity),
+      byNode: mapToObj(pes.byNode),
+      byDepartment: mapToObj(pes.byDepartment),
+      byLocation: mapToObj(pes.byLocation),
+      byInputType: pes.byInputType || {
+        manual: { CO2e: 0, dataPointCount: 0 },
+        API: { CO2e: 0, dataPointCount: 0 },
+        IOT: { CO2e: 0, dataPointCount: 0 }
+      },
+      byEmissionFactor: mapToObj(pes.byEmissionFactor),
+      
+      trends: pes.trends || {
+        totalEmissionsChange: { value: 0, percentage: 0, direction: "same" },
+        scopeChanges: {
+          "Scope 1": { value: 0, percentage: 0, direction: "same" },
+          "Scope 2": { value: 0, percentage: 0, direction: "same" },
+          "Scope 3": { value: 0, percentage: 0, direction: "same" },
+        },
+      },
+      
+      metadata: {
+        ...(pes.metadata || {}),
+        totalDataPoints:
+          pes.metadata?.totalDataPoints ??
+          (Array.isArray(pes.metadata?.dataEntriesIncluded)
+            ? pes.metadata.dataEntriesIncluded.length
+            : 0),
+        dataEntriesIncluded: pes.metadata?.dataEntriesIncluded || [],
+        lastCalculated: pes.metadata?.lastCalculated || new Date(),
+        calculationDuration: pes.metadata?.calculationDuration ?? 0,
+        calculatedBy: pes.metadata?.calculatedBy ?? null,
+        isComplete: pes.metadata?.isComplete ?? true,
+        hasErrors: pes.metadata?.hasErrors ?? false,
+        errors: pes.metadata?.errors || [],
+        version: (existing?.processEmissionSummary?.metadata?.version || 0) + 1,
+      },
+    };
+  }
+
+
+  // ------------------------------------------------------------------
   // 3) ROOT metadata (mirror)
   // ------------------------------------------------------------------
   const rootMetadata = {
@@ -1081,6 +1563,7 @@ async function saveEmissionSummary(summaryData) {
     clientId,
     period: normalizedPeriod,
     emissionSummary: emissionSummaryToSave,
+    processEmissionSummary: processEmissionSummaryToSave, // 🆕 Process emission summary
     metadata: rootMetadata,
   };
 
@@ -1234,7 +1717,7 @@ const getEmissionSummary = async (req, res) => {
       day,
       recalculate = "false",
       preferLatest = "true",
-      type = "both" // "emission" | "reduction" | "both"
+      type = "both" // "emission" | "reduction" | "process" | "both"
     } = req.query;
 
     if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
@@ -1256,15 +1739,7 @@ const getEmissionSummary = async (req, res) => {
     // 1) Load or recalculate summary
     // ----------------------------------------------------
     if (recalculate === "true") {
-      summary = await recalculateAndSaveSummary(
-        clientId,
-        periodType,
-        y,
-        m,
-        w,
-        d,
-        req.user?._id
-      );
+      summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
     } else {
       if (noParts) {
         summary = await EmissionSummary.findOne(baseQuery)
@@ -1314,7 +1789,7 @@ const getEmissionSummary = async (req, res) => {
     }
 
     // ----------------------------------------------------
-    // 2) Normalise Maps → plain objects for emissionSummary
+    // 2) Normalise Maps → plain objects
     // ----------------------------------------------------
     const convertMap = (value) => {
       if (value instanceof Map) return Object.fromEntries(value);
@@ -1330,6 +1805,9 @@ const getEmissionSummary = async (req, res) => {
     };
 
     const emissionSummary = convertMap(summary.emissionSummary || {});
+
+    const processEmissionSummary = convertMap(summary.processEmissionSummary || {}); // ✅ ADD
+
     const reductionSummary = summary.reductionSummary || {
       totalNetReduction: 0,
       entriesCount: 0,
@@ -1345,6 +1823,7 @@ const getEmissionSummary = async (req, res) => {
       clientId: summary.clientId,
       period: summary.period,
       emissionSummary,
+      processEmissionSummary, // ✅ ADD
       reductionSummary,
       metadata: summary.metadata || {}
     };
@@ -1360,6 +1839,19 @@ const getEmissionSummary = async (req, res) => {
           clientId: baseResponse.clientId,
           period: baseResponse.period,
           emissionSummary: baseResponse.emissionSummary,
+          metadata: baseResponse.metadata
+        }
+      });
+    }
+
+    if (type === "process") {
+      return res.status(200).json({
+        success: true,
+        type: "process",
+        data: {
+          clientId: baseResponse.clientId,
+          period: baseResponse.period,
+          processEmissionSummary: baseResponse.processEmissionSummary,
           metadata: baseResponse.metadata
         }
       });
@@ -1397,6 +1889,7 @@ const getEmissionSummary = async (req, res) => {
 
 
 
+
 const getMultipleSummaries = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -1407,7 +1900,7 @@ const getMultipleSummaries = async (req, res) => {
       endYear,
       endMonth,
       limit = 12,
-      type = "both"
+      type = "both" // "emission" | "process" | "reduction" | "both"
     } = req.query;
 
     // Validate
@@ -1475,7 +1968,8 @@ const getMultipleSummaries = async (req, res) => {
     // 4) FORMAT EACH SUMMARY
     // ---------------------------------------------
     const formatted = summaries.map((doc) => {
-      const emissionSummary  = deepConvert(doc.emissionSummary || {});
+      const emissionSummary = deepConvert(doc.emissionSummary || {});
+      const processEmissionSummary = deepConvert(doc.processEmissionSummary || {}); // ✅ ADD
       const reductionSummary = deepConvert(doc.reductionSummary || {});
 
       const metadata = doc.metadata || {};
@@ -1486,6 +1980,16 @@ const getMultipleSummaries = async (req, res) => {
           clientId: doc.clientId,
           period: doc.period,
           emissionSummary,
+          metadata
+        };
+      }
+
+      // PROCESS ONLY
+      if (type === "process") {
+        return {
+          clientId: doc.clientId,
+          period: doc.period,
+          processEmissionSummary,
           metadata
         };
       }
@@ -1501,11 +2005,12 @@ const getMultipleSummaries = async (req, res) => {
         };
       }
 
-      // BOTH
+      // BOTH (now includes processEmissionSummary as well)
       return {
         clientId: doc.clientId,
         period: doc.period,
         emissionSummary,
+        processEmissionSummary, // ✅ ADD
         reductionSummary,
         netReductions: doc.netReductions || { totalNetReduction: reductionSummary.totalNetReduction },
         metadata
@@ -1531,6 +2036,7 @@ const getMultipleSummaries = async (req, res) => {
     });
   }
 };
+
 
 //New Update function
 // const getMultipleSummaries = async (req, res) => {
@@ -1673,9 +2179,10 @@ const getMultipleSummaries = async (req, res) => {
  * Filtered Summary (Advanced + Legacy)
  * Supports:
  *  - emissionSummary (emissions)
+ *  - processEmissionSummary (process emissions)
  *  - reductionSummary (net reduction)
  *
- * Use query ?summaryKind=emission|reduction (or summaryType=...)
+ * Use query ?summaryKind=emission|process|reduction (or summaryType=...)
  * Default = "emission"
  */
 const getFilteredSummary = async (req, res) => {
@@ -1726,7 +2233,8 @@ const getFilteredSummary = async (req, res) => {
     const normalizeArray = (val) => {
       if (!val) return [];
       if (Array.isArray(val)) {
-        return val.flatMap((v) => String(v).split(","))
+        return val
+          .flatMap((v) => String(v).split(","))
           .map((v) => v.trim())
           .filter(Boolean);
       }
@@ -1740,7 +2248,7 @@ const getFilteredSummary = async (req, res) => {
 
     const toLowerSet = (arr) => new Set((arr || []).map((x) => String(x).toLowerCase()));
 
-    const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase(); // emission|reduction|both
+    const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase(); // emission|process|reduction|both
 
     // -------------------------------------------
     // 1) Load summary doc (exact period or latest)
@@ -1770,13 +2278,18 @@ const getFilteredSummary = async (req, res) => {
     // 2) Normalize data
     // -------------------------------------------
     const es = fullSummary.emissionSummary || {};
+    const ps = fullSummary.processEmissionSummary || {};
     const rs = fullSummary.reductionSummary || {};
 
-    const byNode = es.byNode || {};
-    const byScope = es.byScope || {};
-    const totalEmissions = es.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
+    // Choose which emission-like summary to use for node filtering/aggregation
+    const activeEmissionSummary = summaryKind === "process" ? ps : es;
 
-    // Build node rows (main emission “records”)
+    const byNode = activeEmissionSummary.byNode || {};
+    const byScope = activeEmissionSummary.byScope || {};
+    const totalEmissions =
+      activeEmissionSummary.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
+
+    // Build node rows (main emission/process “records”)
     let nodes = Object.entries(byNode).map(([id, n]) => {
       const s1 = safeNum(n?.byScope?.["Scope 1"]?.CO2e);
       const s2 = safeNum(n?.byScope?.["Scope 2"]?.CO2e);
@@ -1797,17 +2310,19 @@ const getFilteredSummary = async (req, res) => {
     });
 
     // Build project rows (main reduction “records”)
-    let projects = Array.isArray(rs.byProject) ? rs.byProject.map((p) => ({
-      projectId: p.projectId,
-      projectName: p.projectName || p.projectId,
-      scope: p.scope || "",
-      category: p.category || "",
-      location: p.location || "",
-      methodology: p.methodology || "",
-      projectActivity: p.projectActivity || "",
-      totalNetReduction: safeNum(p.totalNetReduction),
-      entriesCount: p.entriesCount || 0,
-    })) : [];
+    let projects = Array.isArray(rs.byProject)
+      ? rs.byProject.map((p) => ({
+          projectId: p.projectId,
+          projectName: p.projectName || p.projectId,
+          scope: p.scope || "",
+          category: p.category || "",
+          location: p.location || "",
+          methodology: p.methodology || "",
+          projectActivity: p.projectActivity || "",
+          totalNetReduction: safeNum(p.totalNetReduction),
+          entriesCount: p.entriesCount || 0,
+        }))
+      : [];
 
     // -------------------------------------------
     // 3) Parse filters
@@ -1841,7 +2356,7 @@ const getFilteredSummary = async (req, res) => {
     const sortDirection = direction === "asc" || direction === "low" ? "asc" : "desc";
 
     // -------------------------------------------
-    // 4) Filter EMISSION nodes
+    // 4) Filter EMISSION/PROCESS nodes
     // -------------------------------------------
     if (selectedNodeIds.length) {
       nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
@@ -1890,7 +2405,7 @@ const getFilteredSummary = async (req, res) => {
     };
     nodes.sort(nodeSort);
 
-    // Compute emission aggregates from filtered nodes
+    // Compute emission/process aggregates from filtered nodes
     const emissionAgg = {
       totalFilteredEmissions: {
         CO2e: nodes.reduce((s, n) => s + safeNum(n.selectedScopeCO2e), 0),
@@ -2013,15 +2528,25 @@ const getFilteredSummary = async (req, res) => {
     }
 
     const facetsReduction = {
-      scopes: Object.entries(reductionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      locations: Object.entries(reductionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      categories: Object.entries(reductionAgg.byCategory).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      activities: Object.entries(reductionAgg.byProjectActivity).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      methodologies: Object.entries(reductionAgg.byMethodology).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      scopes: Object.entries(reductionAgg.byScope)
+        .map(([k, v]) => ({ value: k, ...v }))
+        .sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      locations: Object.entries(reductionAgg.byLocation)
+        .map(([k, v]) => ({ value: k, ...v }))
+        .sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      categories: Object.entries(reductionAgg.byCategory)
+        .map(([k, v]) => ({ value: k, ...v }))
+        .sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      activities: Object.entries(reductionAgg.byProjectActivity)
+        .map(([k, v]) => ({ value: k, ...v }))
+        .sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      methodologies: Object.entries(reductionAgg.byMethodology)
+        .map(([k, v]) => ({ value: k, ...v }))
+        .sort((a, b) => b.totalNetReduction - a.totalNetReduction),
     };
 
     // -------------------------------------------
-    // 6) Response (emission / reduction / both)
+    // 6) Response (emission / process / reduction / both)
     // -------------------------------------------
     const response = {
       success: true,
@@ -2043,6 +2568,19 @@ const getFilteredSummary = async (req, res) => {
       return res.status(200).json(response);
     }
 
+    if (summaryKind === "process") {
+      response.summaryKind = "process";
+      response.data = {
+        totalEmissions,
+        byScope, // original period totals (not filtered) for process summary
+        nodes,
+        primary: nodesPrimary,
+        aggregates: emissionAgg,
+        facets: facetsEmission,
+      };
+      return res.status(200).json(response);
+    }
+
     if (summaryKind === "reduction") {
       response.summaryKind = "reduction";
       response.data = {
@@ -2055,12 +2593,30 @@ const getFilteredSummary = async (req, res) => {
       return res.status(200).json(response);
     }
 
-    // both
+    // both (kept as emission + reduction, unchanged)
     response.summaryKind = "both";
     response.data = {
       emission: {
-        totalEmissions,
-        nodes,
+        totalEmissions: (es.totalEmissions ||
+          { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 }),
+        nodes: Object.entries(es.byNode || {}).map(([id, n]) => {
+          const s1 = safeNum(n?.byScope?.["Scope 1"]?.CO2e);
+          const s2 = safeNum(n?.byScope?.["Scope 2"]?.CO2e);
+          const s3 = safeNum(n?.byScope?.["Scope 3"]?.CO2e);
+
+          return {
+            nodeId: id,
+            nodeLabel: n?.nodeLabel || "",
+            department: n?.department || "",
+            location: n?.location || "",
+            byScope: { "Scope 1": s1, "Scope 2": s2, "Scope 3": s3 },
+            CO2e: safeNum(n?.CO2e),
+            CO2: safeNum(n?.CO2),
+            CH4: safeNum(n?.CH4),
+            N2O: safeNum(n?.N2O),
+            uncertainty: safeNum(n?.uncertainty),
+          };
+        }),
         primary: nodesPrimary,
         aggregates: emissionAgg,
         facets: facetsEmission,
@@ -2084,6 +2640,7 @@ const getFilteredSummary = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -2424,8 +2981,9 @@ const getLatestScope12Total = async (req, res) => {
  * GET /api/summaries/:clientId/top-low-stats
  *
  * Supports:
- *    ➤ Emission Summary   (?summaryKind=emission)
- *    ➤ Reduction Summary  (?summaryKind=reduction)
+ *    ➤ Emission Summary        (?summaryKind=emission)
+ *    ➤ Process Emission Summary (?summaryKind=process)
+ *    ➤ Reduction Summary       (?summaryKind=reduction)
  *
  * Default = emission
  */
@@ -2498,6 +3056,7 @@ const getTopLowEmissionStats = async (req, res) => {
     const period =
       fullSummary.period ||
       fullSummary.emissionSummary?.period ||
+      fullSummary.processEmissionSummary?.period || // ✅ ADD
       fullSummary.reductionSummary?.period ||
       null;
 
@@ -2626,6 +3185,165 @@ const getTopLowEmissionStats = async (req, res) => {
       return res.status(200).json({
         success: true,
         summaryKind: "emission",
+        data: {
+          clientId,
+          period,
+          totalEmissions,
+
+          categories: {
+            top: topCategories,
+            bottom: bottomCategories,
+          },
+
+          scopes: {
+            highest: highestScope,
+            lowest: lowestScope,
+            all: scopeList,
+          },
+
+          activities: {
+            top: topActivities,
+            bottom: bottomActivities,
+          },
+
+          departments: {
+            top: topDepartments,
+            bottom: bottomDepartments,
+          },
+
+          emissionSources: {
+            top: topSources,
+            bottom: bottomSources,
+          },
+        },
+      });
+    }
+
+    // ======================================================
+    // MODE 1B: PROCESS EMISSION SUMMARY
+    // ======================================================
+    if (summaryKind === "process") {
+      // Extract process emission paths
+      const totalEmissions =
+        fullSummary.totalEmissions ||
+        fullSummary.processEmissionSummary?.totalEmissions ||
+        { CO2e: 0 };
+
+      const totalCO2e = safeNum(totalEmissions.CO2e);
+
+      const byCategory = normalize(fullSummary.byCategory, fullSummary.processEmissionSummary?.byCategory);
+      const byScope = normalize(fullSummary.byScope, fullSummary.processEmissionSummary?.byScope);
+      const byActivity = normalize(fullSummary.byActivity, fullSummary.processEmissionSummary?.byActivity);
+      const byDepartment = normalize(fullSummary.byDepartment, fullSummary.processEmissionSummary?.byDepartment);
+      const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.processEmissionSummary?.byEmissionFactor);
+
+      // ----------------------------------------------------
+      // Categories
+      // ----------------------------------------------------
+      const categoryEntries = toEntries(byCategory);
+      const categoryList = categoryEntries.map(([name, val]) => {
+        const co2e = safeNum(val?.CO2e);
+        return {
+          categoryName: name,
+          scopeType: val?.scopeType || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Scope-level Stats
+      // ----------------------------------------------------
+      const scopeOrder = ["Scope 1", "Scope 2", "Scope 3"];
+      const scopeList = [];
+
+      for (const s of scopeOrder) {
+        const val = byScope[s];
+        if (!val) continue;
+
+        const co2e = safeNum(val.CO2e);
+        scopeList.push({
+          scopeType: s,
+          CO2e: co2e,
+          breakdown: val,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        });
+      }
+
+      const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
+      const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
+
+      // ----------------------------------------------------
+      // Activities
+      // ----------------------------------------------------
+      const activityEntriesList = toEntries(byActivity);
+      const activityList = activityEntriesList.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          activityName: name,
+          scopeType: data?.scopeType || null,
+          categoryName: data?.categoryName || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...activityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Departments
+      // ----------------------------------------------------
+      const deptEntries = toEntries(byDepartment);
+      const deptList = deptEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          departmentName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomDepartments = [...deptList]
+        .filter(d => d.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Emission Sources (EF-based)
+      // ----------------------------------------------------
+      const srcEntries = toEntries(byEmissionFactor);
+      const srcList = srcEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          sourceName: name,
+          CO2e: co2e,
+          dataPointCount: safeNum(data?.dataPointCount),
+          scopeTypes: Array.isArray(data?.scopeTypes) ? data.scopeTypes : [],
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomSources = [...srcList]
+        .filter(s => s.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "process",
         data: {
           clientId,
           period,
@@ -2793,7 +3511,7 @@ const getTopLowEmissionStats = async (req, res) => {
     // If summaryKind is invalid:
     return res.status(400).json({
       success: false,
-      message: `Invalid summaryKind '${summaryKind}'. Use 'emission' or 'reduction'`,
+      message: `Invalid summaryKind '${summaryKind}'. Use 'emission', 'process' or 'reduction'`,
     });
 
   } catch (error) {
@@ -2805,6 +3523,7 @@ const getTopLowEmissionStats = async (req, res) => {
     });
   }
 };
+
 
 
 /**
@@ -3154,7 +3873,12 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
  */
 /**
  * GET /api/summaries/:clientId/scope-identifiers/hierarchy
- * Supports filters and returns "wrapped" hierarchy when filters like location/department are used.
+ *
+ * Supports:
+ *  - summaryKind=emission (default): resolves meta from org Flowchart (nodeId::scopeIdentifier) + DataEntry fallbacks
+ *  - summaryKind=process: resolves meta ONLY from ProcessFlowchart by scopeIdentifier (nodeId mismatch-safe)
+ *
+ * Filters and returns "wrapped" hierarchy when filters like location/department are used.
  */
 const getScopeIdentifierHierarchy = async (req, res) => {
   try {
@@ -3179,7 +3903,12 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
       // NEW (optional): force the top-level grouping
       groupBy, // location | department | node | scopeType | category | activity | scopeIdentifier
+
+      // NEW (optional): choose data source semantics
+      summaryKind = "emission", // emission | process
     } = req.query;
+
+    summaryKind = String(summaryKind || "emission").toLowerCase();
 
     if (!clientId) {
       return res.status(400).json({ success: false, message: "clientId is required" });
@@ -3232,52 +3961,13 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       endDate = moment.utc({ year: y, month: m - 1 }).endOf("month");
     }
 
-    // ---------------------------- LOAD DATAENTRY (DB-level filters where possible) ----------------------------
-    const findQuery = {
-      clientId,
-      timestamp: { $gte: startDate.toDate(), $lte: endDate.toDate() },
-      processingStatus: "processed",
-    };
-
-    // only safe filters (exist in DataEntry directly)
-    if (nodeFilter.length) findQuery.nodeId = { $in: nodeFilter };
-    if (sidFilter.length) findQuery.scopeIdentifier = { $in: sidFilter };
-    if (scopeTypeFilter.length) findQuery.scopeType = { $in: scopeTypeFilter };
-
-    const entries = await DataEntry.find(findQuery).lean();
-
-    if (!entries.length) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          clientId,
-          period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
-          totals: { totalEntries: 0, totalCO2e: 0 },
-          scopeIdentifierHierarchy: { list: [] },
-          nodeHierarchy: { list: [] },
-          locationHierarchy: { list: [] },
-          departmentHierarchy: { list: [] },
-          scopeTypeHierarchy: { list: [] },
-          filtersApplied: {
-            location: locFilter,
-            department: deptFilter,
-            nodeId: nodeFilter,
-            scopeIdentifier: sidFilter,
-            scopeType: scopeTypeFilter,
-            category: categoryFilter,
-            activity: activityFilter,
-          },
-        },
-        message: "No summary found for this period",
-      });
-    }
-
     // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
     const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
     const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
 
-    const allNodes = {};
-    const allScopes = {};
+    // Org-style lookup: nodeId::scopeIdentifier -> { scopeType, categoryName, activity }
+    const allNodes = {};  // nodeId -> { label, department, location }
+    const allScopes = {}; // `${nodeId}::${scopeIdentifier}` -> { scopeType, categoryName, activity }
 
     const ingestChart = (chart) => {
       if (!chart?.nodes) return;
@@ -3299,7 +3989,90 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     };
 
     ingestChart(orgChart);
-    ingestChart(processChart);
+    ingestChart(processChart); // harmless for emission mode; process mode uses separate index below
+
+    // Process-style lookup (nodeId mismatch-safe):
+    // scopeIdentifier -> array of { processNodeId, nodeLabel, department, location, scopeType, categoryName, activity }
+    const normalizeSid = (v) => (typeof v === "string" ? v.trim() : "");
+    const processSidIndex = new Map();
+
+    if (processChart?.nodes?.length) {
+      for (const node of processChart.nodes) {
+        const nodeMeta = {
+          processNodeId: node.id,
+          nodeLabel: node.label || "Unknown Node",
+          department: node.details?.department || "Unknown Department",
+          location: node.details?.location || "Unknown Location",
+        };
+
+        const scopes = Array.isArray(node.details?.scopeDetails) ? node.details.scopeDetails : [];
+        for (const s of scopes) {
+          const sid = normalizeSid(s.scopeIdentifier);
+          if (!sid) continue;
+
+          if (!processSidIndex.has(sid)) processSidIndex.set(sid, []);
+          processSidIndex.get(sid).push({
+            ...nodeMeta,
+            scopeType: s.scopeType || null,
+            categoryName: s.categoryName || null,
+            activity: s.activity || null,
+          });
+        }
+      }
+    }
+
+    const pickProcessMatch = (sid, entryNodeId) => {
+      const arr = processSidIndex.get(sid);
+      if (!arr || !arr.length) return null;
+      // deterministic pick: prefer processNodeId that equals entry.nodeId (rare), else first
+      return arr.find((x) => x.processNodeId === entryNodeId) || arr[0];
+    };
+
+    // ---------------------------- LOAD DATAENTRY (DB-level filters where possible) ----------------------------
+    const findQuery = {
+      clientId,
+      timestamp: { $gte: startDate.toDate(), $lte: endDate.toDate() },
+      processingStatus: "processed",
+    };
+
+    // only safe DB filters (exist in DataEntry directly) AND are valid for the selected mode
+    // NOTE: in process mode nodeId refers to process node id (different), so we must NOT DB-filter by entry.nodeId
+    if (summaryKind !== "process") {
+      if (nodeFilter.length) findQuery.nodeId = { $in: nodeFilter };
+      if (scopeTypeFilter.length) findQuery.scopeType = { $in: scopeTypeFilter };
+    }
+
+    if (sidFilter.length) findQuery.scopeIdentifier = { $in: sidFilter };
+
+    const entries = await DataEntry.find(findQuery).lean();
+
+    if (!entries.length) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          clientId,
+          period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
+          totals: { totalEntries: 0, totalCO2e: 0 },
+          scopeIdentifierHierarchy: { list: [] },
+          nodeHierarchy: { list: [] },
+          locationHierarchy: { list: [] },
+          departmentHierarchy: { list: [] },
+          scopeTypeHierarchy: { list: [] },
+          groupByApplied: groupBy || null,
+          summaryKind,
+          filtersApplied: {
+            location: locFilter,
+            department: deptFilter,
+            nodeId: nodeFilter,
+            scopeIdentifier: sidFilter,
+            scopeType: scopeTypeFilter,
+            category: categoryFilter,
+            activity: activityFilter,
+          },
+        },
+        message: "No summary found for this period",
+      });
+    }
 
     // ---------------------------- AGGREGATION MAPS ----------------------------
     const nodeMap = new Map();
@@ -3346,8 +4119,10 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     };
 
     const pushSum = (map, key, label, emissions) => {
-      if (!map.has(key)) map.set(key, { id: key, label, CO2e: 0, CO2: 0, CH4: 0, N2O: 0 });
-      const x = map.get(key);
+      const k = key || "Unknown";
+      const l = label || k;
+      if (!map.has(k)) map.set(k, { id: k, label: l, CO2e: 0, CO2: 0, CH4: 0, N2O: 0 });
+      const x = map.get(k);
       x.CO2e += emissions.CO2e;
       x.CO2 += emissions.CO2;
       x.CH4 += emissions.CH4;
@@ -3361,7 +4136,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       resolvedCategory,
       resolvedActivity,
       nodeLabel,
-      nodeId,
+      resolvedNodeId,
       sid,
     }) => {
       switch (inferredGroupBy) {
@@ -3370,7 +4145,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         case "department":
           return { key: resolvedDepartment || "Unknown Department", label: resolvedDepartment || "Unknown Department" };
         case "node":
-          return { key: nodeId || "Unknown Node", label: nodeLabel || "Unknown Node" };
+          return { key: resolvedNodeId || "Unknown Node", label: nodeLabel || "Unknown Node" };
         case "category":
           return { key: resolvedCategory || "Uncategorized", label: resolvedCategory || "Uncategorized" };
         case "activity":
@@ -3450,25 +4225,53 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       const emissions = sumFromEntry(entry);
       if (!emissions.CO2e) continue;
 
-      // Extract metadata from Flowchart
-      const scopeKey = `${entry.nodeId}::${entry.scopeIdentifier}`;
-      const meta = allScopes[scopeKey] || {};
+      const sid = normalizeSid(entry.scopeIdentifier);
+      if (!sid) continue;
 
-      const resolvedScopeType = meta.scopeType || entry.scopeType || "Unknown Scope";
-      const resolvedCategory = meta.categoryName || "Uncategorized";
-      const resolvedActivity = meta.activity || "Unspecified";
+      // -------------------- RESOLVE METADATA (emission vs process) --------------------
+      let resolvedScopeType = entry.scopeType || "Unknown Scope";
+      let resolvedCategory = "Uncategorized";
+      let resolvedActivity = "Unspecified";
 
-      const nodeMeta = allNodes[entry.nodeId] || {};
-      const nodeLabel = nodeMeta.label || "Unknown Node";
-      const resolvedDepartment = nodeMeta.department || "Unknown Department";
-      const resolvedLocation = nodeMeta.location || "Unknown Location";
+      let nodeLabel = "Unknown Node";
+      let resolvedDepartment = "Unknown Department";
+      let resolvedLocation = "Unknown Location";
+      let resolvedNodeId = entry.nodeId; // emission mode uses entry.nodeId; process mode will replace
+
+      if (summaryKind === "process") {
+        // Only include SIDs that exist in ProcessFlowchart
+        const pm = pickProcessMatch(sid, entry.nodeId);
+        if (!pm) continue;
+
+        resolvedScopeType = pm.scopeType || entry.scopeType || "Unknown Scope";
+        resolvedCategory = pm.categoryName || "Uncategorized";
+        resolvedActivity = pm.activity || "Unspecified";
+
+        resolvedNodeId = pm.processNodeId || "Unknown Node";
+        nodeLabel = pm.nodeLabel || "Unknown Node";
+        resolvedDepartment = pm.department || "Unknown Department";
+        resolvedLocation = pm.location || "Unknown Location";
+      } else {
+        // emission mode: resolve by nodeId::scopeIdentifier when available
+        const scopeKey = `${entry.nodeId}::${sid}`;
+        const meta = allScopes[scopeKey] || {};
+
+        resolvedScopeType = meta.scopeType || entry.scopeType || "Unknown Scope";
+        resolvedCategory = meta.categoryName || "Uncategorized";
+        resolvedActivity = meta.activity || "Unspecified";
+
+        const nodeMeta = allNodes[entry.nodeId] || {};
+        nodeLabel = nodeMeta.label || "Unknown Node";
+        resolvedDepartment = nodeMeta.department || "Unknown Department";
+        resolvedLocation = nodeMeta.location || "Unknown Location";
+      }
 
       // ---- APPLY FILTERS (based on resolved values) ----
       if (!matches(resolvedLocation, locFilter)) continue;
       if (!matches(resolvedDepartment, deptFilter)) continue;
-      if (!matches(entry.nodeId, nodeFilter)) continue;
-      if (!matches(entry.scopeIdentifier, sidFilter)) continue;
-      if (!matches(resolvedScopeType, scopeTypeFilter)) continue;
+      if (!matches(resolvedNodeId, nodeFilter)) continue;         // IMPORTANT: node filter matches resolved node id
+      if (!matches(sid, sidFilter)) continue;
+      if (!matches(resolvedScopeType, scopeTypeFilter)) continue; // IMPORTANT: scopeType filter matches resolved value
       if (!matches(resolvedCategory, categoryFilter)) continue;
       if (!matches(resolvedActivity, activityFilter)) continue;
 
@@ -3484,8 +4287,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         resolvedCategory,
         resolvedActivity,
         nodeLabel,
-        nodeId: entry.nodeId,
-        sid: entry.scopeIdentifier,
+        resolvedNodeId,
+        sid,
       });
 
       const scopeTree = getScopeTreeForGroup(g.key, g.label);
@@ -3507,7 +4310,6 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       scopeNode.N2O += emissions.N2O;
 
       // aggregate leaf per scopeIdentifier
-      const sid = entry.scopeIdentifier || "Unknown Scope Identifier";
       if (!actNode.scopeIds.has(sid)) {
         actNode.scopeIds.set(sid, {
           id: `${resolvedScopeType}::${resolvedCategory}::${resolvedActivity}::${sid}`,
@@ -3525,7 +4327,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       leaf.N2O += emissions.N2O;
 
       // ---- flat hierarchies ----
-      pushSum(nodeMap, entry.nodeId, nodeLabel, emissions);
+      pushSum(nodeMap, resolvedNodeId, nodeLabel, emissions);
       pushSum(locMap, resolvedLocation, resolvedLocation, emissions);
       pushSum(deptMap, resolvedDepartment, resolvedDepartment, emissions);
       pushSum(scopeTypeMap, resolvedScopeType, resolvedScopeType, emissions);
@@ -3543,6 +4345,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
           locationHierarchy: { list: [] },
           departmentHierarchy: { list: [] },
           scopeTypeHierarchy: { list: [] },
+          groupByApplied: inferredGroupBy,
+          summaryKind,
           filtersApplied: {
             location: locFilter,
             department: deptFilter,
@@ -3593,7 +4397,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
     const sortFlat = (arr) => arr.sort((a, b) => b.CO2e - a.CO2e);
 
-    // ---- NEW: if wrapped, scopeIdentifierHierarchy becomes group-rooted ----
+    // ---- if wrapped, scopeIdentifierHierarchy becomes group-rooted ----
     let finalHierarchyList;
     if (!wrapHierarchy) {
       finalHierarchyList = buildScopeList(globalScopeTree);
@@ -3622,7 +4426,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
         totals: { totalEntries: usedCount, totalCO2e: grandTotal },
 
-        // This is what your frontend uses for the “tree”
+        // tree
         scopeIdentifierHierarchy: { list: finalHierarchyList },
 
         // flat lists
@@ -3631,8 +4435,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         departmentHierarchy: { list: sortFlat(Array.from(deptMap.values())) },
         scopeTypeHierarchy: { list: sortFlat(Array.from(scopeTypeMap.values())) },
 
-        // helpful for UI debug
         groupByApplied: inferredGroupBy,
+        summaryKind,
 
         filtersApplied: {
           location: locFilter,
@@ -3650,6 +4454,18 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Optional wrapper if you want a dedicated route for process hierarchy:
+ * GET /api/summaries/:clientId/scope-identifiers/hierarchy/process
+ *
+ * It reuses the same controller style by forcing summaryKind=process.
+ */
+const getScopeIdentifierHierarchyOfProcessEmissionSummary = async (req, res) => {
+  req.query.summaryKind = "process";
+  return getScopeIdentifierHierarchy(req, res);
+};
+
 
 
 
@@ -4184,6 +5000,8 @@ module.exports = {
   getSbtiProgress,
   getReductionSummaryHierarchy,
   getReductionSummariesByProjects,
+  calculateProcessEmissionSummaryPrecise,
+  getScopeIdentifierHierarchyOfProcessEmissionSummary,
     
 
 };

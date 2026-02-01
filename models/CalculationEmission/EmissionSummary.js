@@ -283,6 +283,31 @@ const emissionSummarySchema = new mongoose.Schema(
     },
 
     /**
+     * 🆕 PROCESS EMISSION SUMMARY
+     * Filtered emission summary based on ProcessFlowchart nodes and scopes.
+     * Only includes nodes and scopeIdentifiers that exist in the client's ProcessFlowchart.
+     * This provides process-level emissions tracking separate from organization-level.
+     * 
+     * Structure mirrors emissionSummary for consistency:
+     * - period: Time period matching root period
+     * - totalEmissions: Total emissions from ProcessFlowchart nodes only
+     * - byScope: Breakdown by Scope 1/2/3 (filtered)
+     * - byCategory: Categories from ProcessFlowchart nodes only
+     * - byActivity: Activities from ProcessFlowchart nodes only
+     * - byNode: Only nodes that exist in ProcessFlowchart with allowed scopes
+     * - byDepartment: Departments from ProcessFlowchart nodes only
+     * - byLocation: Locations from ProcessFlowchart nodes only
+     * - byInputType: Input type breakdown (filtered)
+     * - byEmissionFactor: Emission factor breakdown (filtered)
+     * - trends: Period-over-period comparison
+     * - metadata: Calculation metadata specific to process emissions
+     */
+    processEmissionSummary: {
+      type: emissionDetailsSchema,
+      default: {}
+    },
+
+    /**
      * Global metadata for the summary document.
      * We KEEP this because it’s already used for:
      *  - metadata.lastCalculated (indexes)
