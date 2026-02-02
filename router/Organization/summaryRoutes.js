@@ -12,7 +12,8 @@ const {
   getReductionSummaryHierarchy,
      getSbtiProgress,
   getReductionSummariesByProjects,
-  getScopeIdentifierHierarchyOfProcessEmissionSummary
+  getScopeIdentifierHierarchyOfProcessEmissionSummary,
+  compareSummarySelections 
 
   
   
@@ -141,7 +142,14 @@ router.get(
   getReductionSummariesByProjects
 );
 
-router.get("/:clientId/scope-identifiers/hierarchy/process",getScopeIdentifierHierarchyOfProcessEmissionSummary)
+router.get("/:clientId/scope-identifiers/hierarchy/process",getScopeIdentifierHierarchyOfProcessEmissionSummary);
+
+/**
+ * @route   POST /api/summaries/:clientId/compare
+ * @desc    Compare Selection A vs Selection B for emission/process with full filters
+ */
+router.post("/:clientId/compare", checkSummaryPermission, compareSummarySelections);
+
 
 
 module.exports = router;
