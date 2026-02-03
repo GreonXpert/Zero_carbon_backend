@@ -143,6 +143,8 @@ const emissionDetailsSchema = new mongoose.Schema(
       }
     },
 
+    
+
     // Emissions by department
     byDepartment: {
       type: Map,
@@ -237,7 +239,11 @@ const emissionDetailsSchema = new mongoose.Schema(
       isComplete: { type: Boolean, default: false },
       hasErrors: { type: Boolean, default: false },
       errors: [String],
-      calculationDuration: Number // in milliseconds
+      calculationDuration: Number, // in milliseconds
+      // 🆕 Allocation metadata
+    allocationApplied: { type: Boolean, default: false },
+    sharedScopeIdentifiers: { type: Number, default: 0 },
+    allocationWarnings: [String]
     }
   },
   { _id: false }

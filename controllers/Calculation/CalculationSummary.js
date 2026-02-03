@@ -18,7 +18,12 @@ const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection
 
 const { 
   getEffectiveAllocationPct, 
-  applyAllocation 
+  applyAllocation,
+  addEmissionValues,
+  ensureMapEntry,
+  buildAllocationBreakdown,
+  finalizeAllocationBreakdowns,
+  extractEmissionValues
 } = require('../../utils/allocation/allocationHelpers');
 
 // Import socket.io instance
@@ -74,87 +79,87 @@ function convertKgToTonnes(valueInKg) {
   return valueInKg / 1000;
 }
 
-function extractEmissionValues(calculatedEmissions) {
-  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+// function extractEmissionValues(calculatedEmissions) {
+//   const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
-  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
-    return totals;
-  }
+//   if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
+//     return totals;
+//   }
 
-  const addBucket = (bucketObj) => {
-    if (!bucketObj || typeof bucketObj !== "object") return;
+//   const addBucket = (bucketObj) => {
+//     if (!bucketObj || typeof bucketObj !== "object") return;
 
-    // Handle Map (if it comes from mongoose as a Map) or Object
-    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
+//     // Handle Map (if it comes from mongoose as a Map) or Object
+//     const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
 
-    for (const bucketKey of keys) {
-      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
+//     for (const bucketKey of keys) {
+//       const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
       
-      if (!item || typeof item !== "object") continue;
+//       if (!item || typeof item !== "object") continue;
 
-      const co2e =
-        Number(item.CO2e ??
-              item.emission ??
-              item.CO2eWithUncertainty ??
-              item.emissionWithUncertainty) || 0;
+//       const co2e =
+//         Number(item.CO2e ??
+//               item.emission ??
+//               item.CO2eWithUncertainty ??
+//               item.emissionWithUncertainty) || 0;
 
-      totals.CO2e += co2e;
-      totals.CO2 += Number(item.CO2) || 0;
-      totals.CH4 += Number(item.CH4) || 0;
-      totals.N2O += Number(item.N2O) || 0;
-    }
-  };
+//       totals.CO2e += co2e;
+//       totals.CO2 += Number(item.CO2) || 0;
+//       totals.CH4 += Number(item.CH4) || 0;
+//       totals.N2O += Number(item.N2O) || 0;
+//     }
+//   };
 
-  // 🔴 FIX: Only add INCOMING emissions. 
-  // Do NOT add cumulative, or you will double-count historical data.
-  addBucket(calculatedEmissions.incoming);
+//   // 🔴 FIX: Only add INCOMING emissions. 
+//   // Do NOT add cumulative, or you will double-count historical data.
+//   addBucket(calculatedEmissions.incoming);
   
-  // REMOVED: addBucket(calculatedEmissions.cumulative); 
+//   // REMOVED: addBucket(calculatedEmissions.cumulative); 
 
-  return totals;
-}
+//   return totals;
+// }
 
 
 
-/**
- * Helper function to add emission values to a target object
- * Values should already be in tonnes
- */
-function addEmissionValues(target, source) {
-  target.CO2e += source.CO2e;
-  target.CO2 += source.CO2;
-  target.CH4 += source.CH4;
-  target.N2O += source.N2O;
-}
+// /**
+//  * Helper function to add emission values to a target object
+//  * Values should already be in tonnes
+//  */
+// function addEmissionValues(target, source) {
+//   target.CO2e += source.CO2e;
+//   target.CO2 += source.CO2;
+//   target.CH4 += source.CH4;
+//   target.N2O += source.N2O;
+// }
 
-function ensureMapEntry(map, key, defaultValue = {}) {
-  if (!map.has(key)) {
-    map.set(key, {
-      CO2e: 0,
-      CO2: 0,
-      CH4: 0,
-      N2O: 0,
-      dataPointCount: 0,
-      ...defaultValue
-    });
-  }
-  return map.get(key);
-}
+// function ensureMapEntry(map, key, defaultValue = {}) {
+//   if (!map.has(key)) {
+//     map.set(key, {
+//       CO2e: 0,
+//       CO2: 0,
+//       CH4: 0,
+//       N2O: 0,
+//       dataPointCount: 0,
+//       ...defaultValue
+//     });
+//   }
+//   return map.get(key);
+// }
 
 /**
  * Helper function to ensure Map structure exists
  */
-function ensureMapEntry(map, key, defaultValue = {}) {
-  const sanitizedKey = sanitizeMapKey(key); // Sanitize the key before using it
-  if (!map.has(sanitizedKey)) {
-    map.set(sanitizedKey, { 
-      CO2e: 0, CO2: 0, CH4: 0, N2O: 0, 
-      uncertainty: 0, dataPointCount: 0,
-      ...defaultValue 
-    });
-  }
-  return map.get(sanitizedKey);
-}
+// function ensureMapEntry(map, key, defaultValue = {}) {
+//   const sanitizedKey = sanitizeMapKey(key); // Sanitize the key before using it
+//   if (!map.has(sanitizedKey)) {
+//     map.set(sanitizedKey, { 
+//       CO2e: 0, CO2: 0, CH4: 0, N2O: 0, 
+//       uncertainty: 0, dataPointCount: 0,
+//       ...defaultValue 
+//     });
+//   }
+//   return map.get(sanitizedKey);
+// }
 
 
 
@@ -516,6 +521,7 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
         byCategory: new Map(),
         byActivity: new Map(),
         byNode: new Map(),
+        byScopeIdentifier: mapToObj(pes.byScopeIdentifier),
         byDepartment: new Map(),
         byLocation: new Map(),
         byInputType: {
@@ -590,6 +596,15 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
  * - When scopeIdentifier appears in MULTIPLE nodes → emissions split by allocationPct
  * - If allocationPct is missing/undefined → treated as 100 (backward compatible)
  */
+
+/**
+ * 🆕 ENHANCED: Calculate Process Emission Summary with Allocation Breakdown
+ * 
+ * This function now provides:
+ * - Raw emissions for each scopeIdentifier (100%)
+ * - Allocated emissions breakdown per node
+ * - Unallocated emissions (if total allocation < 100%)
+ */
 const calculateProcessEmissionSummaryPrecise = async (
   clientId,
   periodType,
@@ -602,7 +617,7 @@ const calculateProcessEmissionSummaryPrecise = async (
   const startedAt = Date.now();
 
   try {
-    console.log(`📊🔍 Calculating PRECISE process emission summary (with allocation) for client: ${clientId}`);
+    console.log(`📊🔍 Calculating PRECISE process emission summary (with allocation breakdown) for client: ${clientId}`);
 
     // ============================================================
     // STEP 1: LOAD PROCESSFLOWCHART
@@ -616,7 +631,16 @@ const calculateProcessEmissionSummaryPrecise = async (
 
     // Helper to create empty summary
     const createEmptySummary = (errorMessage) => ({
-      period: { type: periodType, year, month, week, day, date: periodType === "daily" ? from : null, from, to },
+      period: { 
+        type: periodType, 
+        year, 
+        month, 
+        week, 
+        day, 
+        date: periodType === "daily" ? from : null, 
+        from, 
+        to 
+      },
       totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
       byScope: {
         "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
@@ -660,7 +684,7 @@ const calculateProcessEmissionSummaryPrecise = async (
     const normalizeScopeIdentifier = (v) => (typeof v === "string" ? v.trim() : "");
 
     // ============================================================
-    // 🆕 STEP 2: BUILD scopeIdentifier → processNode mapping WITH ALLOCATION
+    // STEP 2: BUILD scopeIdentifier → processNode mapping WITH ALLOCATION
     // ============================================================
     const scopeIndex = new Map(); // scopeIdentifier -> array of { processNodeId, nodeMeta, scopeMeta, allocationPct }
 
@@ -684,7 +708,7 @@ const calculateProcessEmissionSummaryPrecise = async (
       for (const s of validScopes) {
         const sid = normalizeScopeIdentifier(s.scopeIdentifier);
         
-        // 🆕 Get allocation percentage (defaults to 100 for backward compatibility)
+        // Get allocation percentage (defaults to 100 for backward compatibility)
         const allocationPct = getEffectiveAllocationPct(s);
         
         if (!scopeIndex.has(sid)) scopeIndex.set(sid, []);
@@ -716,6 +740,8 @@ const calculateProcessEmissionSummaryPrecise = async (
       timestamp: { $gte: from, $lte: to }
     }).lean();
 
+    console.log(`📊 Found ${dataEntries.length} data entries for the period`);
+
     // ============================================================
     // STEP 4: INITIALIZE SUMMARY STRUCTURE
     // ============================================================
@@ -739,7 +765,7 @@ const calculateProcessEmissionSummaryPrecise = async (
       byCategory: new Map(),
       byActivity: new Map(),
       byNode: new Map(),
-      byScopeIdentifier: new Map(), // 🆕 NEW: Detailed breakdown by scopeIdentifier
+      byScopeIdentifier: new Map(), // 🆕 Will store allocation breakdown
       byDepartment: new Map(),
       byLocation: new Map(),
       byInputType: {
@@ -759,7 +785,7 @@ const calculateProcessEmissionSummaryPrecise = async (
         hasErrors: false,
         errors: [],
         calculationDuration: 0,
-        // 🆕 Allocation metadata
+        // Allocation metadata
         allocationApplied: true,
         sharedScopeIdentifiers: 0,
         allocationWarnings: []
@@ -767,7 +793,7 @@ const calculateProcessEmissionSummaryPrecise = async (
     };
 
     // ============================================================
-    // 🆕 STEP 5: FILTER by scopeIdentifier AND APPLY ALLOCATION
+    // STEP 5: FILTER by scopeIdentifier AND APPLY ALLOCATION
     // ============================================================
     let includedCount = 0;
     let filteredCount = 0;
@@ -776,18 +802,24 @@ const calculateProcessEmissionSummaryPrecise = async (
 
     for (const entry of dataEntries) {
       const sid = normalizeScopeIdentifier(entry.scopeIdentifier);
-      if (!sid) { filteredCount++; continue; }
+      if (!sid) { 
+        filteredCount++; 
+        continue; 
+      }
 
       const matches = scopeIndex.get(sid);
-      if (!matches || matches.length === 0) { filteredCount++; continue; }
+      if (!matches || matches.length === 0) { 
+        filteredCount++; 
+        continue; 
+      }
 
-      // Get raw emission values from entry
+      // Get RAW emission values from entry (before allocation)
       const rawEmissionValues = extractEmissionValues(entry.calculatedEmissions);
       if (rawEmissionValues.CO2e === 0) continue;
 
       const scopeType = entry.scopeType || matches[0].scopeMeta.scopeType || "Unknown";
       
-      // 🆕 ALLOCATION LOGIC
+      // Allocation logic
       const isSharedScope = matches.length > 1;
       
       if (isSharedScope && !sharedScopeSet.has(sid)) {
@@ -795,15 +827,54 @@ const calculateProcessEmissionSummaryPrecise = async (
         processEmissionSummary.metadata.sharedScopeIdentifiers++;
       }
 
+      // ============================================================
+      // 🆕 ENHANCED: BY SCOPE IDENTIFIER - WITH RAW EMISSIONS TRACKING
+      // ============================================================
+      const scopeIdBucket = ensureMapEntry(processEmissionSummary.byScopeIdentifier, sid, {
+        scopeType,
+        categoryName: matches[0].scopeMeta.categoryName || "Unknown Category",
+        activity: matches[0].scopeMeta.activity || sid,
+        isShared: isSharedScope,
+        
+        // 🆕 NEW: Raw emissions tracking (accumulated from all entries)
+        rawEmissions: {
+          CO2e: 0,
+          CO2: 0,
+          CH4: 0,
+          N2O: 0,
+          uncertainty: 0
+        },
+        
+        // 🆕 NEW: Total allocation percentage (will be calculated)
+        totalAllocatedPct: 0,
+        
+        // Node-level breakdown
+        nodes: new Map(),
+        
+        dataPointCount: 0,
+        
+        // 🆕 NEW: Will be populated in finalization step
+        allocationBreakdown: null
+      });
+
+      // 🆕 ACCUMULATE RAW EMISSIONS (before allocation)
+      addEmissionValues(scopeIdBucket.rawEmissions, rawEmissionValues);
+      scopeIdBucket.dataPointCount += 1;
+
+      // ============================================================
       // Process each node that has this scopeIdentifier
+      // ============================================================
       for (const match of matches) {
         const allocationPct = match.allocationPct;
         
-        // 🆕 Apply allocation to emission values
+        // Apply allocation to emission values
         const emissionValues = applyAllocation(rawEmissionValues, allocationPct);
         
         // Skip if allocated value is negligible
         if (emissionValues.CO2e < 0.0001) continue;
+
+        // ✅ IMPORTANT: store "considered/allocated" totals per scopeIdentifier
+        addEmissionValues(scopeIdBucket, emissionValues);
 
         includedCount++;
 
@@ -836,12 +907,12 @@ const calculateProcessEmissionSummaryPrecise = async (
         });
         addEmissionValues(act, emissionValues);
 
-        // 🆕 BY NODE with allocation info
+        // 🆕 ENHANCED: BY NODE with scopeIdentifier tracking
         const nodeBucket = ensureMapEntry(processEmissionSummary.byNode, processNodeId, {
           nodeLabel: match.nodeMeta.label,
           department: match.nodeMeta.department,
           location: match.nodeMeta.location,
-          scopeIdentifiers: new Map(), // 🆕 Track scopeIdentifiers and their allocations
+          scopeIdentifiers: new Map(),
           byScope: {
             "Scope 1": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
             "Scope 2": { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
@@ -855,7 +926,7 @@ const calculateProcessEmissionSummaryPrecise = async (
           nodeBucket.byScope[scopeType].dataPointCount += 1;
         }
         
-        // 🆕 Track scopeIdentifier details within node
+        // Track scopeIdentifier details within node
         if (!nodeBucket.scopeIdentifiers.has(sid)) {
           nodeBucket.scopeIdentifiers.set(sid, {
             allocationPct,
@@ -868,31 +939,27 @@ const calculateProcessEmissionSummaryPrecise = async (
         nodeScope.CO2e += emissionValues.CO2e;
         nodeScope.dataPointCount += 1;
 
-        // 🆕 BY SCOPE IDENTIFIER (new breakdown)
-        const scopeIdBucket = ensureMapEntry(processEmissionSummary.byScopeIdentifier, sid, {
-          scopeType,
-          categoryName,
-          activity,
-          isShared: isSharedScope,
-          totalCO2e: 0,
-          nodes: new Map(),
-          dataPointCount: 0
-        });
-        
+        // 🆕 ENHANCED: Track node allocation in scopeIdBucket
         if (!scopeIdBucket.nodes.has(processNodeId)) {
           scopeIdBucket.nodes.set(processNodeId, {
             nodeLabel: match.nodeMeta.label,
+            department: match.nodeMeta.department,
+            location: match.nodeMeta.location,
             allocationPct,
-            CO2e: 0,
+            allocatedEmissions: {
+              CO2e: 0,
+              CO2: 0,
+              CH4: 0,
+              N2O: 0,
+              uncertainty: 0
+            },
             dataPointCount: 0
           });
         }
-        const nodeInScope = scopeIdBucket.nodes.get(processNodeId);
-        nodeInScope.CO2e += emissionValues.CO2e;
-        nodeInScope.dataPointCount += 1;
         
-        scopeIdBucket.totalCO2e += emissionValues.CO2e;
-        scopeIdBucket.dataPointCount += 1;
+        const nodeInScope = scopeIdBucket.nodes.get(processNodeId);
+        addEmissionValues(nodeInScope.allocatedEmissions, emissionValues);
+        nodeInScope.dataPointCount += 1;
 
         // BY DEPARTMENT (allocated)
         const dept = ensureMapEntry(processEmissionSummary.byDepartment, match.nodeMeta.department);
@@ -925,11 +992,33 @@ const calculateProcessEmissionSummaryPrecise = async (
       }
     }
 
+    // ============================================================
+    // 🆕 STEP 6: FINALIZE ALLOCATION BREAKDOWN FOR EACH SCOPE IDENTIFIER
+    // ============================================================
+    console.log("📊 Finalizing allocation breakdowns...");
+    
+    const finalizationStats = finalizeAllocationBreakdowns(
+      processEmissionSummary.byScopeIdentifier,
+      processEmissionSummary.metadata.allocationWarnings
+    );
+
+    console.log(`📊 Allocation Finalization Stats:`);
+    console.log(`   - Total scopes processed: ${finalizationStats.totalScopesProcessed}`);
+    console.log(`   - Fully allocated: ${finalizationStats.totalFullyAllocatedScopes}`);
+    console.log(`   - With unallocated: ${finalizationStats.totalUnallocatedScopes}`);
+    console.log(`   - Coverage: ${finalizationStats.allocationCoverage}%`);
+
+    // ============================================================
+    // STEP 7: FINALIZE METADATA
+    // ============================================================
     processEmissionSummary.metadata.totalDataPoints = includedCount;
     processEmissionSummary.metadata.calculationDuration = Date.now() - startedAt;
 
-    console.log(`📊 Process summary (with allocation): ${includedCount} allocated entries, ${filteredCount} filtered`);
-    console.log(`📊 Shared scopeIdentifiers: ${processEmissionSummary.metadata.sharedScopeIdentifiers}`);
+    console.log(`📊 Process summary (with allocation breakdown):`);
+    console.log(`   - ${includedCount} allocated entries`);
+    console.log(`   - ${filteredCount} filtered entries`);
+    console.log(`   - ${processEmissionSummary.metadata.sharedScopeIdentifiers} shared scopeIdentifiers`);
+    console.log(`   - ${processEmissionSummary.metadata.allocationWarnings.length} allocation warnings`);
 
     return processEmissionSummary;
 
@@ -973,6 +1062,26 @@ const calculateProcessEmissionSummaryPrecise = async (
     };
   }
 };
+
+/**
+ * Helper function to build date range
+ */
+function buildDateRange(periodType, year, month, week, day) {
+  // Implementation depends on your existing code
+  // This is just a placeholder
+  let from, to;
+  
+  if (periodType === 'daily') {
+    from = new Date(year, month - 1, day, 0, 0, 0);
+    to = new Date(year, month - 1, day, 23, 59, 59);
+  } else if (periodType === 'monthly') {
+    from = new Date(year, month - 1, 1, 0, 0, 0);
+    to = new Date(year, month, 0, 23, 59, 59);
+  }
+  // Add other period types as needed
+  
+  return { from, to };
+}
 
 
 

@@ -152,4 +152,319 @@ router.post("/:clientId/compare", checkSummaryPermission, compareSummarySelectio
 
 
 
+/**
+ * GET /api/emission-summary/allocation-details
+ * 
+ * Retrieve allocation breakdown for process emissions
+ * 
+ * Query Parameters:
+ * - clientId: Client identifier (required)
+ * - periodType: 'daily' | 'monthly' | 'quarterly' | 'yearly' (required)
+ * - year: Year (required)
+ * - month: Month (optional, required for monthly/daily)
+ * - day: Day (optional, required for daily)
+ * 
+ * Returns:
+ * - Allocation breakdown for each scopeIdentifier
+ * - Raw emissions, allocated emissions, unallocated emissions
+ */
+router.get('/allocation-details',  async (req, res) => {
+  try {
+    const { clientId, periodType, year, month, day } = req.query;
+
+    // Validation
+    if (!clientId || !periodType || !year) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: clientId, periodType, year'
+      });
+    }
+
+    // Build query based on period type
+    const query = {
+      clientId,
+      'period.type': periodType,
+      'period.year': parseInt(year)
+    };
+
+    if (month) {
+      query['period.month'] = parseInt(month);
+    }
+
+    if (day) {
+      query['period.day'] = parseInt(day);
+    }
+
+    // Find the emission summary
+    const emissionSummary = await EmissionSummary.findOne(query)
+      .select('period processEmissionSummary metadata')
+      .lean();
+
+    if (!emissionSummary) {
+      return res.status(404).json({
+        success: false,
+        message: 'Emission summary not found for the specified period'
+      });
+    }
+
+    // Extract allocation data from processEmissionSummary
+    const allocationData = {
+      period: emissionSummary.period,
+      scopeIdentifiers: {},
+      summary: {
+        totalScopeIdentifiers: 0,
+        sharedScopeIdentifiers: emissionSummary.processEmissionSummary?.metadata?.sharedScopeIdentifiers || 0,
+        fullyAllocated: 0,
+        partiallyAllocated: 0,
+        warnings: emissionSummary.processEmissionSummary?.metadata?.allocationWarnings || []
+      }
+    };
+
+    // Convert byScopeIdentifier from Map/Object to structured format
+    const byScopeIdentifier = emissionSummary.processEmissionSummary?.byScopeIdentifier || {};
+    
+    for (const [scopeId, data] of Object.entries(byScopeIdentifier)) {
+      allocationData.totalScopeIdentifiers++;
+      
+      // Check if fully or partially allocated
+      if (data.allocationBreakdown?.unallocatedEmissions?.hasUnallocated) {
+        allocationData.summary.partiallyAllocated++;
+      } else {
+        allocationData.summary.fullyAllocated++;
+      }
+      
+      // Format allocation data for this scopeIdentifier
+      allocationData.scopeIdentifiers[scopeId] = {
+        scopeType: data.scopeType,
+        categoryName: data.categoryName,
+        activity: data.activity,
+        isShared: data.isShared,
+        dataPointCount: data.dataPointCount,
+        
+        // Allocation breakdown
+        allocationBreakdown: data.allocationBreakdown || {
+          rawEmissions: data.rawEmissions || {},
+          allocatedEmissions: {
+            totalAllocatedPct: 0,
+            allocations: []
+          },
+          unallocatedEmissions: {
+            unallocatedPct: 100,
+            emissions: data.rawEmissions || {},
+            hasUnallocated: true
+          }
+        }
+      };
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: allocationData
+    });
+
+  } catch (error) {
+    console.error('Error retrieving allocation details:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/emission-summary/allocation-details/:scopeIdentifier
+ * 
+ * Retrieve allocation breakdown for a specific scopeIdentifier
+ * 
+ * Path Parameters:
+ * - scopeIdentifier: The scope identifier to get details for
+ * 
+ * Query Parameters:
+ * - clientId: Client identifier (required)
+ * - periodType: 'daily' | 'monthly' | 'quarterly' | 'yearly' (required)
+ * - year: Year (required)
+ * - month: Month (optional)
+ * - day: Day (optional)
+ */
+router.get('/allocation-details/:scopeIdentifier',  async (req, res) => {
+  try {
+    const { scopeIdentifier } = req.params;
+    const { clientId, periodType, year, month, day } = req.query;
+
+    // Validation
+    if (!clientId || !periodType || !year) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: clientId, periodType, year'
+      });
+    }
+
+    // Build query
+    const query = {
+      clientId,
+      'period.type': periodType,
+      'period.year': parseInt(year)
+    };
+
+    if (month) query['period.month'] = parseInt(month);
+    if (day) query['period.day'] = parseInt(day);
+
+    // Find emission summary
+    const emissionSummary = await EmissionSummary.findOne(query)
+      .select('period processEmissionSummary')
+      .lean();
+
+    if (!emissionSummary) {
+      return res.status(404).json({
+        success: false,
+        message: 'Emission summary not found'
+      });
+    }
+
+    // Extract specific scopeIdentifier data
+    const byScopeIdentifier = emissionSummary.processEmissionSummary?.byScopeIdentifier || {};
+    const scopeData = byScopeIdentifier[scopeIdentifier];
+
+    if (!scopeData) {
+      return res.status(404).json({
+        success: false,
+        message: `ScopeIdentifier "${scopeIdentifier}" not found in emission summary`
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        period: emissionSummary.period,
+        scopeIdentifier,
+        scopeType: scopeData.scopeType,
+        categoryName: scopeData.categoryName,
+        activity: scopeData.activity,
+        isShared: scopeData.isShared,
+        dataPointCount: scopeData.dataPointCount,
+        allocationBreakdown: scopeData.allocationBreakdown || {
+          rawEmissions: scopeData.rawEmissions || {},
+          allocatedEmissions: {
+            totalAllocatedPct: 0,
+            allocations: []
+          },
+          unallocatedEmissions: {
+            unallocatedPct: 100,
+            emissions: scopeData.rawEmissions || {},
+            hasUnallocated: true
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error retrieving scope allocation details:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/emission-summary/unallocated-emissions
+ * 
+ * Retrieve list of scopeIdentifiers with unallocated emissions
+ * 
+ * Query Parameters:
+ * - clientId: Client identifier (required)
+ * - periodType: 'daily' | 'monthly' | 'quarterly' | 'yearly' (required)
+ * - year: Year (required)
+ * - month: Month (optional)
+ * - day: Day (optional)
+ * - minUnallocatedPct: Minimum unallocated percentage to include (default: 0.01)
+ */
+router.get('/unallocated-emissions',  async (req, res) => {
+  try {
+    const { clientId, periodType, year, month, day, minUnallocatedPct = 0.01 } = req.query;
+
+    // Validation
+    if (!clientId || !periodType || !year) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: clientId, periodType, year'
+      });
+    }
+
+    // Build query
+    const query = {
+      clientId,
+      'period.type': periodType,
+      'period.year': parseInt(year)
+    };
+
+    if (month) query['period.month'] = parseInt(month);
+    if (day) query['period.day'] = parseInt(day);
+
+    // Find emission summary
+    const emissionSummary = await EmissionSummary.findOne(query)
+      .select('period processEmissionSummary')
+      .lean();
+
+    if (!emissionSummary) {
+      return res.status(404).json({
+        success: false,
+        message: 'Emission summary not found'
+      });
+    }
+
+    // Extract unallocated scopes
+    const byScopeIdentifier = emissionSummary.processEmissionSummary?.byScopeIdentifier || {};
+    const unallocatedScopes = [];
+
+    for (const [scopeId, data] of Object.entries(byScopeIdentifier)) {
+      const breakdown = data.allocationBreakdown;
+      
+      if (breakdown?.unallocatedEmissions?.hasUnallocated) {
+        const unallocatedPct = breakdown.unallocatedEmissions.unallocatedPct;
+        
+        if (unallocatedPct >= parseFloat(minUnallocatedPct)) {
+          unallocatedScopes.push({
+            scopeIdentifier: scopeId,
+            scopeType: data.scopeType,
+            categoryName: data.categoryName,
+            activity: data.activity,
+            unallocatedPct,
+            unallocatedEmissions: breakdown.unallocatedEmissions.emissions,
+            rawEmissions: breakdown.rawEmissions,
+            allocatedPct: breakdown.allocatedEmissions.totalAllocatedPct
+          });
+        }
+      }
+    }
+
+    // Sort by unallocated CO2e (descending)
+    unallocatedScopes.sort((a, b) => 
+      (b.unallocatedEmissions?.CO2e || 0) - (a.unallocatedEmissions?.CO2e || 0)
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        period: emissionSummary.period,
+        totalUnallocatedScopes: unallocatedScopes.length,
+        totalUnallocatedCO2e: unallocatedScopes.reduce((sum, s) => 
+          sum + (s.unallocatedEmissions?.CO2e || 0), 0
+        ),
+        unallocatedScopes
+      }
+    });
+
+  } catch (error) {
+    console.error('Error retrieving unallocated emissions:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

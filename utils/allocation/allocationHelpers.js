@@ -294,6 +294,184 @@ const autoDistributeAllocation = (nodes, scopeIdentifier) => {
   };
 
 };
+
+
+/**
+ * Build allocation breakdown with raw and unallocated emissions
+ * 
+ * @param {Array} matches - Array of node matches for a scopeIdentifier
+ * @param {Object} rawEmissionValues - Raw emission values before allocation
+ * @returns {Object} Allocation breakdown structure
+ */
+const buildAllocationBreakdown = (matches, rawEmissionValues) => {
+  // Calculate total allocation percentage
+  const totalAllocatedPct = matches.reduce((sum, m) => sum + (m.allocationPct || 0), 0);
+  
+  // Build allocations array with calculated emissions
+  const allocations = matches.map(match => ({
+    nodeId: match.processNodeId,
+    nodeLabel: match.nodeMeta.label,
+    department: match.nodeMeta.department,
+    location: match.nodeMeta.location,
+    allocationPct: match.allocationPct,
+    allocatedEmissions: applyAllocation(rawEmissionValues, match.allocationPct)
+  }));
+  
+  // Calculate unallocated portion
+  const unallocatedPct = Math.max(0, 100 - totalAllocatedPct);
+  const unallocatedEmissions = applyAllocation(rawEmissionValues, unallocatedPct);
+  
+  return {
+    rawEmissions: { ...rawEmissionValues },
+    allocatedEmissions: {
+      totalAllocatedPct,
+      allocations
+    },
+    unallocatedEmissions: {
+      unallocatedPct,
+      emissions: unallocatedEmissions,
+      hasUnallocated: unallocatedPct > 0
+    }
+  };
+};
+
+/**
+ * 🆕 NEW FUNCTION: Add emission values from source to target
+ * Helper to accumulate emissions across multiple entries
+ * 
+ * @param {Object} target - Target emission object to add to
+ * @param {Object} source - Source emission object to add from
+ */
+const addEmissionValues = (target, source) => {
+  target.CO2e = (target.CO2e || 0) + (source.CO2e || 0);
+  target.CO2 = (target.CO2 || 0) + (source.CO2 || 0);
+  target.CH4 = (target.CH4 || 0) + (source.CH4 || 0);
+  target.N2O = (target.N2O || 0) + (source.N2O || 0);
+  target.uncertainty = (target.uncertainty || 0) + (source.uncertainty || 0);
+};
+
+/**
+ * 🆕 NEW FUNCTION: Ensure a Map entry exists, creating it with default value if not
+ * 
+ * @param {Map} map - The Map to check
+ * @param {string} key - The key to check/create
+ * @param {Object} defaultValue - Default values to merge with base structure
+ * @returns {Object} The existing or newly created entry
+ */
+const ensureMapEntry = (map, key, defaultValue = {}) => {
+  if (!map.has(key)) {
+    map.set(key, {
+      CO2e: 0,
+      CO2: 0,
+      CH4: 0,
+      N2O: 0,
+      uncertainty: 0,
+      dataPointCount: 0,
+      ...defaultValue
+    });
+  }
+  return map.get(key);
+};
+
+
+/**
+ * 🆕 NEW FUNCTION: Finalize allocation breakdown for all scopeIdentifiers
+ * 
+ * This function processes the byScopeIdentifier map and adds allocation breakdown
+ * to each entry. It should be called after all data entries have been processed.
+ * 
+ * @param {Map} byScopeIdentifierMap - The byScopeIdentifier Map from emission summary
+ * @param {Array} allocationWarnings - Array to store warnings
+ * @returns {Object} Summary statistics
+ */
+const finalizeAllocationBreakdowns = (byScopeIdentifierMap, allocationWarnings = []) => {
+  let totalScopesProcessed = 0;
+  let totalUnallocatedScopes = 0;
+  let totalFullyAllocatedScopes = 0;
+  
+  for (const [sid, scopeIdBucket] of byScopeIdentifierMap.entries()) {
+    totalScopesProcessed++;
+    
+    // Calculate total allocated percentage from all nodes
+    let totalAllocatedPct = 0;
+    const allocationsArray = [];
+    
+    for (const [nodeId, nodeData] of scopeIdBucket.nodes.entries()) {
+      totalAllocatedPct += nodeData.allocationPct;
+      allocationsArray.push({
+        nodeId,
+        nodeLabel: nodeData.nodeLabel,
+        department: nodeData.department,
+        location: nodeData.location,
+        allocationPct: nodeData.allocationPct,
+        allocatedEmissions: { ...nodeData.allocatedEmissions },
+        dataPointCount: nodeData.dataPointCount
+      });
+    }
+    
+    // Calculate unallocated portion
+    const unallocatedPct = Math.max(0, 100 - totalAllocatedPct);
+    const unallocatedEmissions = applyAllocation(scopeIdBucket.rawEmissions, unallocatedPct);
+    
+    // Store allocation breakdown
+    scopeIdBucket.allocationBreakdown = {
+      rawEmissions: { ...scopeIdBucket.rawEmissions },
+      allocatedEmissions: {
+        totalAllocatedPct: Math.round(totalAllocatedPct * 100) / 100,
+        allocations: allocationsArray
+      },
+      unallocatedEmissions: {
+        unallocatedPct: Math.round(unallocatedPct * 100) / 100,
+        emissions: unallocatedEmissions,
+        hasUnallocated: unallocatedPct > 0.01  // Consider <0.01% as effectively zero
+      }
+    };
+    
+    // Update totalAllocatedPct field
+    scopeIdBucket.totalAllocatedPct = totalAllocatedPct;
+    
+    // Track statistics
+    if (unallocatedPct > 0.01) {
+      totalUnallocatedScopes++;
+      
+      // Add warning if significant unallocated portion exists
+      const warningMsg = `ScopeIdentifier "${sid}" has ${unallocatedPct.toFixed(2)}% unallocated emissions (${unallocatedEmissions.CO2e.toFixed(2)} tCO2e)`;
+      if (!allocationWarnings.includes(warningMsg)) {
+        allocationWarnings.push(warningMsg);
+      }
+    } else {
+      totalFullyAllocatedScopes++;
+    }
+  }
+  
+  return {
+    totalScopesProcessed,
+    totalUnallocatedScopes,
+    totalFullyAllocatedScopes,
+    allocationCoverage: totalScopesProcessed > 0 
+      ? Math.round((totalFullyAllocatedScopes / totalScopesProcessed) * 100)
+      : 0
+  };
+};
+
+/**
+ * 🆕 NEW FUNCTION: Extract emission values from calculatedEmissions object
+ * Helper to safely extract emission values from various formats
+ * 
+ * @param {Object} calculatedEmissions - The calculatedEmissions object from DataEntry
+ * @returns {Object} Standardized emission values
+ */
+const extractEmissionValues = (calculatedEmissions) => {
+  return {
+    CO2e: calculatedEmissions?.totalGHGEmission?.CO2e || 0,
+    CO2: calculatedEmissions?.totalGHGEmission?.CO2 || 0,
+    CH4: calculatedEmissions?.totalGHGEmission?.CH4 || 0,
+    N2O: calculatedEmissions?.totalGHGEmission?.N2O || 0,
+    uncertainty: calculatedEmissions?.totalGHGEmission?.uncertainty || 0
+  };
+};
+
+
 const calculateProcessEmissionSummaryPrecise = async (
   clientId,
   periodType,
@@ -686,4 +864,9 @@ module.exports = {
   getAllocationSummary,
   formatValidationError,
   autoDistributeAllocation,
+   buildAllocationBreakdown,
+   finalizeAllocationBreakdowns,
+   addEmissionValues,
+   ensureMapEntry,
+   extractEmissionValues,
   calculateProcessEmissionSummaryPrecise };
