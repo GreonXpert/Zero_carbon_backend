@@ -25,7 +25,12 @@ const {
 const {autoUpdateProcessFlowchartStatus}  = require('../../utils/Workflow/workflow');
 const {canManageProcessFlowchart, canAssignHeadToNode, getNormalizedLevels, canAccessProcess} = require('../../utils/Permissions/permissions');
 
-
+const {
+  validateAllocations,
+  buildAllocationIndex,
+  getAllocationSummary,
+  formatValidationError
+} = require('../../utils/allocation/allocationHelpers');
 
 // Enhanced validation for scope details (excerpt from flowchartController.js)
 // const validateScopeDetails = (scopeDetails, nodeId) => {
@@ -161,6 +166,8 @@ const {canManageProcessFlowchart, canAssignHeadToNode, getNormalizedLevels, canA
 //   };
 // };
 
+
+
 // Save or update process flowchart
 const saveProcessFlowchart = async (req, res) => {
   try {
@@ -234,13 +241,56 @@ const saveProcessFlowchart = async (req, res) => {
     // 6) Normalize nodes based on assessmentLevel
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
     
-    // ⬇️ ADD THIS
+    // Add CEF comments to nodes
     const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
     // 7) Normalize edges - The schema allows for many edges per node.
     const normalizedEdges = normalizeEdges(flowchartData.edges);
 
+    // ============================================================================
+    // 🆕 VALIDATE ALLOCATION PERCENTAGES
+    // ============================================================================
+    // When scopeIdentifiers are shared across multiple nodes, their allocations
+    // must sum to 100%. This validation ensures data integrity and prevents
+    // double-counting of emissions in processEmissionSummary.
+    //
+    // RULES:
+    // - If scopeIdentifier appears in ONLY ONE node: allocationPct defaults to 100
+    // - If scopeIdentifier appears in MULTIPLE nodes: sum must equal 100% (±0.01%)
+    // ============================================================================
+    const allocationValidation = validateAllocations(normalizedNodesWithComments, {
+      includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
+      includeDeleted: false          // Exclude soft-deleted scopes
+    });
+
+    if (!allocationValidation.isValid) {
+      const errorResponse = formatValidationError(allocationValidation);
+      return res.status(400).json({
+        message: 'Allocation validation failed',
+        code: 'ALLOCATION_VALIDATION_FAILED',
+        details: errorResponse,
+        hint: 'When a scopeIdentifier appears in multiple nodes, the sum of allocationPct across all nodes must equal 100%',
+        affectedScopeIdentifiers: allocationValidation.errors.map(e => ({
+          scopeIdentifier: e.scopeIdentifier,
+          currentSum: e.currentSum,
+          expectedSum: 100,
+          nodes: e.entries.map(en => ({
+            nodeId: en.nodeId,
+            nodeLabel: en.nodeLabel,
+            allocationPct: en.allocationPct
+          }))
+        }))
+      });
+    }
+
+    // Log warnings but allow save to proceed
+    if (allocationValidation.warnings.length > 0) {
+      console.warn('⚠️ Allocation warnings for client', clientId, ':', allocationValidation.warnings);
+    }
+
+    // ============================================================================
     // 8) Find existing or create new
+    // ============================================================================
     let processFlowchart = await ProcessFlowchart.findOne({ 
       clientId, 
       isDeleted: false 
@@ -250,7 +300,8 @@ const saveProcessFlowchart = async (req, res) => {
 
     if (processFlowchart) {
       // Update existing
-      processFlowchart.nodes = normalizedNodes;
+      // 🆕 Use normalizedNodesWithComments (includes allocation data)
+      processFlowchart.nodes = normalizedNodesWithComments;
       processFlowchart.edges = normalizedEdges;
       processFlowchart.lastModifiedBy = userId;
       processFlowchart.version = (processFlowchart.version || 0) + 1;
@@ -259,7 +310,8 @@ const saveProcessFlowchart = async (req, res) => {
       isNew = true;
       processFlowchart = new ProcessFlowchart({
         clientId,
-        nodes: normalizedNodes,
+        // 🆕 Use normalizedNodesWithComments (includes allocation data)
+        nodes: normalizedNodesWithComments,
         edges: normalizedEdges,
         createdBy: userId,
         creatorType: req.user.userType,
@@ -660,6 +712,26 @@ const getAllProcessFlowcharts = async (req, res) => {
   }
 };
 
+/**
+ * ============================================================================
+ * READY-TO-COPY: Updated updateProcessFlowchartNode Function
+ * ============================================================================
+ * 
+ * Replace the existing updateProcessFlowchartNode function in:
+ * controllers/Organization/processflowController.js
+ * 
+ * ALSO ADD this import at the top of the file (after other imports):
+ * 
+ * const {
+ *   validateAllocations,
+ *   buildAllocationIndex,
+ *   getAllocationSummary,
+ *   formatValidationError
+ * } = require('../../utils/allocation/allocationHelpers');
+ * 
+ * ============================================================================
+ */
+
 // Update process flowchart node
 // controllers/processflowController.js – PATCH /:clientId/node/:nodeId
 const updateProcessFlowchartNode = async (req, res) => {
@@ -780,6 +852,17 @@ const updateProcessFlowchartNode = async (req, res) => {
       if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
       if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
 
+      // ──────────────────────────────────────────────────────────────
+      // 🆕 PRESERVE ALLOCATION PERCENTAGE
+      // ──────────────────────────────────────────────────────────────
+      // If incoming has allocationPct, use it; otherwise keep existing
+      if (incomingScope.allocationPct !== undefined) {
+        mergedTop.allocationPct = incomingScope.allocationPct;
+      } else if (existingScope.allocationPct !== undefined) {
+        mergedTop.allocationPct = existingScope.allocationPct;
+      }
+      // Note: If neither has it, the schema default (100) will be used
+
       // ── Merge customValues (optional) ─────────────────────────────
       const incCV  = incomingScope.customValues || incomingScope.customValue || {};
       const prevCV = existingScope.customValues || {};
@@ -789,11 +872,11 @@ const updateProcessFlowchartNode = async (req, res) => {
         defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null ),
         equitySharePercentage: numOrNull( incCV.equitySharePercentage ?? incCV.EquitySharePercentage ?? prevCV.equitySharePercentage ?? null ),
         averageLifetimeEnergyConsumption: numOrNull( incCV.averageLifetimeEnergyConsumption ?? incCV.AverageLifetimeEnergyConsumption ?? prevCV.averageLifetimeEnergyConsumption ?? null ),
-                  usePattern: numOrNull( incCV.usePattern ?? incCV.UsePattern ?? prevCV.usePattern ?? null ),
-                  energyEfficiency: numOrNull( incCV.energyEfficiency ?? incCV.EnergyEfficiency ?? prevCV.energyEfficiency ?? null ),
-         toIncineration:    numOrNull( incCV.toIncineration ?? incCV.ToIncineration ?? prevCV.toIncineration ?? null ),
-                  toLandfill:        numOrNull( incCV.toLandfill ?? incCV.ToLandfill ?? prevCV.toLandfill ?? null ),
-                  toDisposal:       numOrNull( incCV.toDisposal ?? incCV.ToRecycling ?? prevCV.toDisposal ?? null ),          
+        usePattern: numOrNull( incCV.usePattern ?? incCV.UsePattern ?? prevCV.usePattern ?? null ),
+        energyEfficiency: numOrNull( incCV.energyEfficiency ?? incCV.EnergyEfficiency ?? prevCV.energyEfficiency ?? null ),
+        toIncineration:    numOrNull( incCV.toIncineration ?? incCV.ToIncineration ?? prevCV.toIncineration ?? null ),
+        toLandfill:        numOrNull( incCV.toLandfill ?? incCV.ToLandfill ?? prevCV.toLandfill ?? null ),
+        toDisposal:       numOrNull( incCV.toDisposal ?? incCV.ToRecycling ?? prevCV.toDisposal ?? null ),          
       };
       if (
         mergedCV.assetLifetime != null ||
@@ -909,8 +992,56 @@ const updateProcessFlowchartNode = async (req, res) => {
       mergedNode.details.scopeDetails = mergedScopes;
     }
 
-    // Save back
+    // ============================================================================
+    // 🆕 VALIDATE ALLOCATION PERCENTAGES BEFORE SAVE
+    // ============================================================================
+    // When a scopeIdentifier appears in multiple nodes, the sum of allocationPct
+    // across all nodes must equal 100% (with ±0.01% tolerance for rounding).
+    // 
+    // This validation ensures:
+    // - No double-counting of emissions
+    // - Proper split of emissions across nodes sharing a scopeIdentifier
+    // - Clear error messages when allocations are invalid
+    // ============================================================================
+    
+    // Update the node in the array first (so validation sees the updated state)
     processFlowchart.nodes[nodeIndex] = mergedNode;
+    
+    // Import validation function (ensure this is imported at top of file)
+    // const { validateAllocations, formatValidationError } = require('../../utils/allocation/allocationHelpers');
+    
+    const allocationValidation = validateAllocations(processFlowchart.nodes, {
+      includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
+      includeDeleted: false          // Exclude soft-deleted scopes
+    });
+
+    if (!allocationValidation.isValid) {
+      const errorResponse = formatValidationError(allocationValidation);
+      return res.status(400).json({
+        message: 'Allocation validation failed',
+        code: 'ALLOCATION_VALIDATION_FAILED',
+        details: errorResponse,
+        hint: 'When a scopeIdentifier appears in multiple nodes, the sum of allocationPct across all nodes must equal 100%',
+        affectedScopeIdentifiers: allocationValidation.errors.map(e => ({
+          scopeIdentifier: e.scopeIdentifier,
+          currentSum: e.currentSum,
+          nodes: e.entries.map(en => ({
+            nodeId: en.nodeId,
+            nodeLabel: en.nodeLabel,
+            allocationPct: en.allocationPct
+          }))
+        }))
+      });
+    }
+
+    // Log warnings but allow save to proceed
+    if (allocationValidation.warnings.length > 0) {
+      console.warn('⚠️ Allocation warnings for client', clientId, ':', allocationValidation.warnings);
+    }
+
+    // ============================================================================
+    // SAVE TO DATABASE
+    // ============================================================================
     processFlowchart.markModified('nodes'); // ensure Mongoose tracks deep nested changes
     processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
 
@@ -925,6 +1056,7 @@ const updateProcessFlowchartNode = async (req, res) => {
     return res.status(500).json({ message: 'Failed to update node', error: error.message });
   }
 };
+
 
 
 // Delete process flowchart (soft delete)
@@ -1532,7 +1664,241 @@ const hardDeleteProcessScopeDetail = async (req, res) => {
 };
 
 
+/**
+ * GET /api/process-flowchart/:clientId/allocations
+ * 
+ * Returns a summary of all scopeIdentifier allocations in the ProcessFlowchart.
+ * Useful for debugging and displaying allocation information in the UI.
+ */
+const getAllocations = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Permission check
+    const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+    const { canAccessProcess, getNormalizedLevels } = require('../../utils/Permissions/permissions');
+    const Client = require('../../models/CMS/Client');
+    
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
+    }
+    
+    const levels = getNormalizedLevels(client);
+    if (!canAccessProcess(client)) {
+      return res.status(403).json({
+        message: 'Process flowchart is not available for this client',
+        assessmentLevel: levels
+      });
+    }
+    
+    // Load ProcessFlowchart
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
+    }).lean();
+    
+    if (!processFlowchart) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
+    }
+    
+    // Import helpers
+    const { buildAllocationIndex, getAllocationSummary, validateAllocationIndex } = require('../../utils/allocation/allocationHelpers');
+    
+    // Build allocation index and summary
+    const allocationIndex = buildAllocationIndex(processFlowchart, {
+      includeFromOtherChart: false,
+      includeDeleted: false
+    });
+    
+    const summary = getAllocationSummary(allocationIndex);
+    const validation = validateAllocationIndex(allocationIndex);
+    
+    return res.status(200).json({
+      success: true,
+      clientId,
+      allocations: summary,
+      validation: {
+        isValid: validation.isValid,
+        errorCount: validation.errors.length,
+        warningCount: validation.warnings.length,
+        errors: validation.errors,
+        warnings: validation.warnings
+      }
+    });
+    
+  } catch (error) {
+    console.error('Get allocations error:', error);
+    return res.status(500).json({
+      message: 'Failed to get allocations',
+      error: error.message
+    });
+  }
+};
 
+/**
+ * PATCH /api/process-flowchart/:clientId/allocations
+ * 
+ * Update allocation percentages for one or more scopeIdentifiers.
+ * 
+ * Request body:
+ * {
+ *   "allocations": [
+ *     {
+ *       "scopeIdentifier": "Electricity_Main",
+ *       "nodeAllocations": [
+ *         { "nodeId": "node-1", "allocationPct": 30 },
+ *         { "nodeId": "node-2", "allocationPct": 70 }
+ *       ]
+ *     }
+ *   ]
+ * }
+ */
+const updateAllocations = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { allocations } = req.body;
+    
+    if (!allocations || !Array.isArray(allocations) || allocations.length === 0) {
+      return res.status(400).json({
+        message: 'Request body must contain an "allocations" array'
+      });
+    }
+    
+    // Permission check
+    const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+    const { canManageProcessFlowchart } = require('../../utils/Permissions/permissions');
+    
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) {
+      return res.status(403).json({
+        message: 'You do not have permission to manage this process flowchart'
+      });
+    }
+    
+    // Load ProcessFlowchart
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
+    });
+    
+    if (!processFlowchart) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
+    }
+    
+    // Validate each allocation update
+    const updateErrors = [];
+    const updates = [];
+    
+    for (const alloc of allocations) {
+      const { scopeIdentifier, nodeAllocations } = alloc;
+      
+      if (!scopeIdentifier || !nodeAllocations || !Array.isArray(nodeAllocations)) {
+        updateErrors.push({
+          scopeIdentifier: scopeIdentifier || 'UNKNOWN',
+          error: 'Invalid allocation format: must have scopeIdentifier and nodeAllocations array'
+        });
+        continue;
+      }
+      
+      // Validate sum = 100
+      const sum = nodeAllocations.reduce((s, na) => s + (na.allocationPct || 0), 0);
+      if (Math.abs(sum - 100) > 0.01) {
+        updateErrors.push({
+          scopeIdentifier,
+          error: `Allocations must sum to 100%, got ${sum.toFixed(2)}%`,
+          nodeAllocations
+        });
+        continue;
+      }
+      
+      // Validate each node allocation
+      for (const na of nodeAllocations) {
+        if (!na.nodeId) {
+          updateErrors.push({
+            scopeIdentifier,
+            error: 'Each nodeAllocation must have a nodeId'
+          });
+          continue;
+        }
+        
+        if (na.allocationPct < 0 || na.allocationPct > 100) {
+          updateErrors.push({
+            scopeIdentifier,
+            nodeId: na.nodeId,
+            error: `allocationPct must be between 0 and 100, got ${na.allocationPct}`
+          });
+          continue;
+        }
+        
+        updates.push({
+          scopeIdentifier,
+          nodeId: na.nodeId,
+          allocationPct: na.allocationPct
+        });
+      }
+    }
+    
+    if (updateErrors.length > 0) {
+      return res.status(400).json({
+        message: 'Allocation validation errors',
+        errors: updateErrors
+      });
+    }
+    
+    // Apply updates
+    let updatedCount = 0;
+    
+    for (const update of updates) {
+      for (const node of processFlowchart.nodes) {
+        if (node.id !== update.nodeId) continue;
+        
+        const scopeDetails = node.details?.scopeDetails || [];
+        for (const scope of scopeDetails) {
+          if (scope.scopeIdentifier === update.scopeIdentifier && !scope.isDeleted) {
+            scope.allocationPct = update.allocationPct;
+            updatedCount++;
+          }
+        }
+      }
+    }
+    
+    // Mark as modified and save
+    processFlowchart.markModified('nodes');
+    processFlowchart.lastModifiedBy = req.user._id || req.user.id;
+    await processFlowchart.save();
+    
+    // Import helpers for response
+    const { buildAllocationIndex, getAllocationSummary, validateAllocationIndex } = require('../../utils/allocation/allocationHelpers');
+    
+    const allocationIndex = buildAllocationIndex(processFlowchart, {
+      includeFromOtherChart: false,
+      includeDeleted: false
+    });
+    
+    const summary = getAllocationSummary(allocationIndex);
+    const validation = validateAllocationIndex(allocationIndex);
+    
+    return res.status(200).json({
+      success: true,
+      message: `Updated ${updatedCount} allocation(s)`,
+      updatedCount,
+      allocations: summary,
+      validation: {
+        isValid: validation.isValid,
+        errorCount: validation.errors.length,
+        warningCount: validation.warnings.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('Update allocations error:', error);
+    return res.status(500).json({
+      message: 'Failed to update allocations',
+      error: error.message
+    });
+  }
+};
 
 module.exports = {
   saveProcessFlowchart,
@@ -1546,5 +1912,7 @@ module.exports = {
   assignOrUnassignEmployeeHeadToNode,
   assignScopeToProcessNode,
   removeAssignmentProcess,  
-  hardDeleteProcessScopeDetail  
+  hardDeleteProcessScopeDetail,
+  getAllocations,
+  updateAllocations  
 };

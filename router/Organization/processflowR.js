@@ -15,7 +15,10 @@ const {
   assignScopeToProcessNode,
   removeAssignmentProcess,  
  
-  hardDeleteProcessScopeDetail
+  hardDeleteProcessScopeDetail,
+  // 🆕 NEW: Allocation endpoints
+  getAllocations,
+  updateAllocations
 } = require('../../controllers/Organization/processflowController');
 
 const router = express.Router();
@@ -53,6 +56,12 @@ router.delete(
 
 // Hard delete a scopeDetail (process)
 router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteProcessScopeDetail);
+
+// Get allocation summary for a client's process flowchart
+router.get('/:clientId/allocations', getAllocations);
+
+// Update allocations for specific scopeIdentifiers
+router.patch('/:clientId/allocations', checkRole(...editRoles), updateAllocations);
 
 
 module.exports = router;

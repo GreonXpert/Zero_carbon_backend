@@ -437,6 +437,33 @@ lastAssignedAt: { type: Date },
 isDeleted: { type: Boolean, default: false },
 deletedAt: { type: Date },
 deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+// ============================================================================
+  // 🆕 ALLOCATION PERCENTAGE FOR SHARED SCOPES
+  // ============================================================================
+  // When the same scopeIdentifier appears in multiple nodes, this field defines 
+  // what percentage of emissions should be attributed to this node.
+  // 
+  // RULES:
+  // - Default: 100 (for backward compatibility)
+  // - Range: 0 < allocationPct <= 100
+  // - If scopeIdentifier appears in multiple nodes, sum of allocationPct across
+  //   all nodes must equal 100% (validated in controller)
+  // 
+  // EXAMPLE:
+  // - Node A has scopeIdentifier "Electricity_Main" with allocationPct: 30
+  // - Node B has scopeIdentifier "Electricity_Main" with allocationPct: 70
+  // - In processEmissionSummary, emissions for "Electricity_Main" will be split:
+  //   - Node A gets 30% of the calculated emissions
+  //   - Node B gets 70% of the calculated emissions
+  //
+  allocationPct: {
+    type: Number,
+    default: 100,
+    min: [0, 'Allocation percentage must be greater than 0'],
+    max: [100, 'Allocation percentage cannot exceed 100'],
+    description: 'Percentage of emissions to allocate to this node for shared scopeIdentifiers (default: 100%)'
+  },
 });
 
 
