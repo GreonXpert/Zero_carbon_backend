@@ -3142,6 +3142,7 @@ const getLatestScope12Total = async (req, res) => {
 
 
 
+
 /**
  * GET /api/summaries/:clientId/top-low-stats
  *
@@ -3191,6 +3192,25 @@ const getTopLowEmissionStats = async (req, res) => {
       return {};
     };
 
+    // ✅ Reduction helper (Map/Object wrapper + supports { breakdown } wrappers)
+    const extractFromMapOrObj = (value) => {
+      if (!value) return { breakdown: {} };
+
+      // if stored as { breakdown: Map|Object }
+      if (value && typeof value === "object" && value.breakdown) {
+        const b = value.breakdown;
+        if (b instanceof Map) return { breakdown: Object.fromEntries(b.entries()) };
+        if (typeof b === "object") return { breakdown: b };
+        return { breakdown: {} };
+      }
+
+      // direct Map/Object
+      if (value instanceof Map) return { breakdown: Object.fromEntries(value.entries()) };
+      if (typeof value === "object") return { breakdown: value };
+
+      return { breakdown: {} };
+    };
+
     // -------------------------------------------------------
     // Step 1: Fetch correct summary document
     // -------------------------------------------------------
@@ -3221,7 +3241,7 @@ const getTopLowEmissionStats = async (req, res) => {
     const period =
       fullSummary.period ||
       fullSummary.emissionSummary?.period ||
-      fullSummary.processEmissionSummary?.period || // ✅ ADD
+      fullSummary.processEmissionSummary?.period ||
       fullSummary.reductionSummary?.period ||
       null;
 
@@ -3242,6 +3262,7 @@ const getTopLowEmissionStats = async (req, res) => {
       const byActivity = normalize(fullSummary.byActivity, fullSummary.emissionSummary?.byActivity);
       const byDepartment = normalize(fullSummary.byDepartment, fullSummary.emissionSummary?.byDepartment);
       const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.emissionSummary?.byEmissionFactor);
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.emissionSummary?.byLocation);
 
       // ----------------------------------------------------
       // Categories
@@ -3344,6 +3365,26 @@ const getTopLowEmissionStats = async (req, res) => {
       const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomSources = [...srcList]
         .filter(s => s.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // ✅ Locations (TOP / LOW)
+      // ----------------------------------------------------
+      const locationEntries = toEntries(byLocation);
+      const locationList = locationEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          locationName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocation = [...locationList]
+        .filter(l => l.CO2e > 0)
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
@@ -3380,6 +3421,12 @@ const getTopLowEmissionStats = async (req, res) => {
             top: topSources,
             bottom: bottomSources,
           },
+
+          // ✅ ADDED (fixed undefined vars)
+          byLocation: {
+            top: topLocation,
+            bottom: bottomLocation,
+          },
         },
       });
     }
@@ -3401,6 +3448,9 @@ const getTopLowEmissionStats = async (req, res) => {
       const byActivity = normalize(fullSummary.byActivity, fullSummary.processEmissionSummary?.byActivity);
       const byDepartment = normalize(fullSummary.byDepartment, fullSummary.processEmissionSummary?.byDepartment);
       const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.processEmissionSummary?.byEmissionFactor);
+
+      // ✅ ADD location normalization for process summary
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.processEmissionSummary?.byLocation);
 
       // ----------------------------------------------------
       // Categories
@@ -3506,6 +3556,26 @@ const getTopLowEmissionStats = async (req, res) => {
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
+      // ----------------------------------------------------
+      // ✅ Locations (TOP / LOW) - PROCESS
+      // ----------------------------------------------------
+      const locationEntries = toEntries(byLocation);
+      const locationList = locationEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          locationName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocation = [...locationList]
+        .filter(l => l.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
       return res.status(200).json({
         success: true,
         summaryKind: "process",
@@ -3538,6 +3608,12 @@ const getTopLowEmissionStats = async (req, res) => {
           emissionSources: {
             top: topSources,
             bottom: bottomSources,
+          },
+
+          // ✅ ADDED
+          byLocation: {
+            top: topLocation,
+            bottom: bottomLocation,
           },
         },
       });
@@ -3688,6 +3764,7 @@ const getTopLowEmissionStats = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -5691,6 +5768,201 @@ const compareSummarySelections = async (req, res) => {
   }
 };
 
+/**
+ * Recalculate all emission summaries for a client after allocation update.
+ * Called when ProcessFlowchart allocations are updated.
+ */
+const recalculateSummariesOnAllocationUpdate = async (
+  clientId,
+  affectedScopeIdentifiers = [],
+  user = null
+) => {
+  try {
+    console.log(`🔄 Recalculating emission summaries for client ${clientId} after allocation update`);
+    console.log(`📌 Affected scopeIdentifiers:`, affectedScopeIdentifiers);
+
+    const startTime = Date.now();
+    const userId = user?._id || user?.id || null;
+
+    // Find all existing summaries for this client
+    const existingSummaries = await EmissionSummary.find({
+      clientId,
+      'period.type': { $in: ['daily', 'monthly', 'yearly', 'all-time'] }
+    })
+    .select('period')
+    .lean();
+
+    if (existingSummaries.length === 0) {
+      console.log(`ℹ️ No existing summaries found for client ${clientId}`);
+      return {
+        success: true,
+        clientId,
+        recalculatedCount: 0,
+        message: 'No existing summaries to recalculate'
+      };
+    }
+
+    console.log(`📊 Found ${existingSummaries.length} existing summaries to recalculate`);
+
+    // Group summaries by period type
+    const summariesByType = {
+      daily: [],
+      monthly: [],
+      yearly: [],
+      'all-time': []
+    };
+
+    for (const summary of existingSummaries) {
+      const { type, year, month, week, day } = summary.period;
+      summariesByType[type].push({ type, year, month, week, day });
+    }
+
+    const recalculationResults = {
+      success: [],
+      failed: []
+    };
+
+    // Recalculate daily summaries
+    for (const period of summariesByType.daily) {
+      try {
+        await recalculateAndSaveSummary(
+          clientId,
+          'daily',
+          period.year,
+          period.month,
+          period.week,
+          period.day,
+          userId
+        );
+        recalculationResults.success.push({
+          type: 'daily',
+          year: period.year,
+          month: period.month,
+          day: period.day
+        });
+      } catch (error) {
+        console.error(`❌ Failed to recalculate daily summary:`, error);
+        recalculationResults.failed.push({
+          type: 'daily',
+          year: period.year,
+          month: period.month,
+          day: period.day,
+          error: error.message
+        });
+      }
+    }
+
+    // Recalculate monthly summaries
+    for (const period of summariesByType.monthly) {
+      try {
+        await recalculateAndSaveSummary(
+          clientId,
+          'monthly',
+          period.year,
+          period.month,
+          null,
+          null,
+          userId
+        );
+        recalculationResults.success.push({
+          type: 'monthly',
+          year: period.year,
+          month: period.month
+        });
+      } catch (error) {
+        console.error(`❌ Failed to recalculate monthly summary:`, error);
+        recalculationResults.failed.push({
+          type: 'monthly',
+          year: period.year,
+          month: period.month,
+          error: error.message
+        });
+      }
+    }
+
+    // Recalculate yearly summaries
+    for (const period of summariesByType.yearly) {
+      try {
+        await recalculateAndSaveSummary(
+          clientId,
+          'yearly',
+          period.year,
+          null,
+          null,
+          null,
+          userId
+        );
+        recalculationResults.success.push({
+          type: 'yearly',
+          year: period.year
+        });
+      } catch (error) {
+        console.error(`❌ Failed to recalculate yearly summary:`, error);
+        recalculationResults.failed.push({
+          type: 'yearly',
+          year: period.year,
+          error: error.message
+        });
+      }
+    }
+
+    // Recalculate all-time summary
+    if (summariesByType['all-time'].length > 0) {
+      try {
+        await recalculateAndSaveSummary(
+          clientId,
+          'all-time',
+          null,
+          null,
+          null,
+          null,
+          userId
+        );
+        recalculationResults.success.push({
+          type: 'all-time'
+        });
+      } catch (error) {
+        console.error(`❌ Failed to recalculate all-time summary:`, error);
+        recalculationResults.failed.push({
+          type: 'all-time',
+          error: error.message
+        });
+      }
+    }
+
+    // Emit real-time update to connected clients
+    if (io) {
+      emitSummaryUpdate('allocation_update', {
+        clientId,
+        affectedScopeIdentifiers,
+        recalculatedCount: recalculationResults.success.length,
+        failedCount: recalculationResults.failed.length,
+        timestamp: new Date()
+      });
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`✅ Allocation update recalculation completed in ${duration}ms`);
+    console.log(`   - Successful: ${recalculationResults.success.length}`);
+    console.log(`   - Failed: ${recalculationResults.failed.length}`);
+
+    return {
+      success: true,
+      clientId,
+      affectedScopeIdentifiers,
+      recalculatedCount: recalculationResults.success.length,
+      failedCount: recalculationResults.failed.length,
+      duration,
+      details: recalculationResults
+    };
+
+  } catch (error) {
+    console.error(`❌ Error in recalculateSummariesOnAllocationUpdate:`, error);
+    throw error;
+  }
+};
+
+
 
 
 module.exports = {
@@ -5712,6 +5984,7 @@ module.exports = {
   calculateProcessEmissionSummaryPrecise,
   getScopeIdentifierHierarchyOfProcessEmissionSummary,
   compareSummarySelections,
+   recalculateSummariesOnAllocationUpdate,
     
 
 };
