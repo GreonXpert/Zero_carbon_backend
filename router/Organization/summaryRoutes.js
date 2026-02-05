@@ -21,7 +21,8 @@ const {
 const { auth } = require('../../middleware/auth');
 const { checkSummaryPermission } = require('../../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
 
-
+// Add to router/Organization/summaryRoutes.js at line 3:
+const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 
 /**
  * @route   GET /api/summaries/:clientId/scope12-total

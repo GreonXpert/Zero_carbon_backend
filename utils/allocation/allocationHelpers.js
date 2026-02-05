@@ -375,10 +375,13 @@ const ensureMapEntry = (map, key, defaultValue = {}) => {
 
 
 /**
- * 🆕 NEW FUNCTION: Finalize allocation breakdown for all scopeIdentifiers
+ * 🆕 ENHANCED: Finalize allocation breakdown for all scopeIdentifiers
  * 
- * This function processes the byScopeIdentifier map and adds allocation breakdown
- * to each entry. It should be called after all data entries have been processed.
+ * This function processes the byScopeIdentifier map and adds comprehensive
+ * allocation breakdown to each entry, showing both total and allocated emissions
+ * for all gas types (CO2e, CO2, CH4, N2O, uncertainty).
+ * 
+ * It should be called after all data entries have been processed.
  * 
  * @param {Map} byScopeIdentifierMap - The byScopeIdentifier Map from emission summary
  * @param {Array} allocationWarnings - Array to store warnings
@@ -392,50 +395,131 @@ const finalizeAllocationBreakdowns = (byScopeIdentifierMap, allocationWarnings =
   for (const [sid, scopeIdBucket] of byScopeIdentifierMap.entries()) {
     totalScopesProcessed++;
     
-    // Calculate total allocated percentage from all nodes
+    // ================================================================
+    // STEP 1: Calculate total allocated percentage and build allocations array
+    // ================================================================
     let totalAllocatedPct = 0;
     const allocationsArray = [];
     
+    // Initialize total allocated emissions accumulator
+    const totalAllocatedEmissions = {
+      CO2e: 0,
+      CO2: 0,
+      CH4: 0,
+      N2O: 0,
+      uncertainty: 0
+    };
+    
     for (const [nodeId, nodeData] of scopeIdBucket.nodes.entries()) {
       totalAllocatedPct += nodeData.allocationPct;
+      
+      // Accumulate total allocated emissions
+      totalAllocatedEmissions.CO2e += (nodeData.allocatedEmissions?.CO2e || 0);
+      totalAllocatedEmissions.CO2 += (nodeData.allocatedEmissions?.CO2 || 0);
+      totalAllocatedEmissions.CH4 += (nodeData.allocatedEmissions?.CH4 || 0);
+      totalAllocatedEmissions.N2O += (nodeData.allocatedEmissions?.N2O || 0);
+      totalAllocatedEmissions.uncertainty += (nodeData.allocatedEmissions?.uncertainty || 0);
+      
       allocationsArray.push({
         nodeId,
         nodeLabel: nodeData.nodeLabel,
         department: nodeData.department,
         location: nodeData.location,
         allocationPct: nodeData.allocationPct,
-        allocatedEmissions: { ...nodeData.allocatedEmissions },
+        allocatedEmissions: {
+          CO2e: nodeData.allocatedEmissions?.CO2e || 0,
+          CO2: nodeData.allocatedEmissions?.CO2 || 0,
+          CH4: nodeData.allocatedEmissions?.CH4 || 0,
+          N2O: nodeData.allocatedEmissions?.N2O || 0,
+          uncertainty: nodeData.allocatedEmissions?.uncertainty || 0
+        },
         dataPointCount: nodeData.dataPointCount
       });
     }
     
-    // Calculate unallocated portion
+    // ================================================================
+    // STEP 2: Calculate unallocated portion
+    // ================================================================
     const unallocatedPct = Math.max(0, 100 - totalAllocatedPct);
     const unallocatedEmissions = applyAllocation(scopeIdBucket.rawEmissions, unallocatedPct);
     
-    // Store allocation breakdown
+    // ================================================================
+    // STEP 3: Store top-level emission summaries
+    // ================================================================
+    
+    // 🆕 Add total emissions (same as rawEmissions)
+    scopeIdBucket.totalEmissions = {
+      CO2e: scopeIdBucket.rawEmissions?.CO2e || 0,
+      CO2: scopeIdBucket.rawEmissions?.CO2 || 0,
+      CH4: scopeIdBucket.rawEmissions?.CH4 || 0,
+      N2O: scopeIdBucket.rawEmissions?.N2O || 0,
+      uncertainty: scopeIdBucket.rawEmissions?.uncertainty || 0
+    };
+    
+    // 🆕 Add total allocated emissions (sum of all node allocations)
+    scopeIdBucket.totalAllocatedEmissions = {
+      CO2e: Math.round(totalAllocatedEmissions.CO2e * 10000) / 10000,
+      CO2: Math.round(totalAllocatedEmissions.CO2 * 10000) / 10000,
+      CH4: Math.round(totalAllocatedEmissions.CH4 * 10000) / 10000,
+      N2O: Math.round(totalAllocatedEmissions.N2O * 10000) / 10000,
+      uncertainty: Math.round(totalAllocatedEmissions.uncertainty * 10000) / 10000
+    };
+    
+    // ================================================================
+    // STEP 4: Store comprehensive allocation breakdown
+    // ================================================================
     scopeIdBucket.allocationBreakdown = {
-      rawEmissions: { ...scopeIdBucket.rawEmissions },
+      // Raw emissions before allocation
+      rawEmissions: {
+        CO2e: scopeIdBucket.rawEmissions?.CO2e || 0,
+        CO2: scopeIdBucket.rawEmissions?.CO2 || 0,
+        CH4: scopeIdBucket.rawEmissions?.CH4 || 0,
+        N2O: scopeIdBucket.rawEmissions?.N2O || 0,
+        uncertainty: scopeIdBucket.rawEmissions?.uncertainty || 0
+      },
+      
+      // Allocated emissions with detailed breakdown
       allocatedEmissions: {
         totalAllocatedPct: Math.round(totalAllocatedPct * 100) / 100,
+        
+        // 🆕 Total allocated emissions (sum of all allocations)
+        total: {
+          CO2e: Math.round(totalAllocatedEmissions.CO2e * 10000) / 10000,
+          CO2: Math.round(totalAllocatedEmissions.CO2 * 10000) / 10000,
+          CH4: Math.round(totalAllocatedEmissions.CH4 * 10000) / 10000,
+          N2O: Math.round(totalAllocatedEmissions.N2O * 10000) / 10000,
+          uncertainty: Math.round(totalAllocatedEmissions.uncertainty * 10000) / 10000
+        },
+        
+        // Individual node allocations
         allocations: allocationsArray
       },
+      
+      // Unallocated emissions
       unallocatedEmissions: {
         unallocatedPct: Math.round(unallocatedPct * 100) / 100,
-        emissions: unallocatedEmissions,
+        emissions: {
+          CO2e: Math.round(unallocatedEmissions.CO2e * 10000) / 10000,
+          CO2: Math.round(unallocatedEmissions.CO2 * 10000) / 10000,
+          CH4: Math.round(unallocatedEmissions.CH4 * 10000) / 10000,
+          N2O: Math.round(unallocatedEmissions.N2O * 10000) / 10000,
+          uncertainty: Math.round(unallocatedEmissions.uncertainty * 10000) / 10000
+        },
         hasUnallocated: unallocatedPct > 0.01  // Consider <0.01% as effectively zero
       }
     };
     
     // Update totalAllocatedPct field
-    scopeIdBucket.totalAllocatedPct = totalAllocatedPct;
+    scopeIdBucket.totalAllocatedPct = Math.round(totalAllocatedPct * 100) / 100;
     
-    // Track statistics
+    // ================================================================
+    // STEP 5: Track statistics and warnings
+    // ================================================================
     if (unallocatedPct > 0.01) {
       totalUnallocatedScopes++;
       
       // Add warning if significant unallocated portion exists
-      const warningMsg = `ScopeIdentifier "${sid}" has ${unallocatedPct.toFixed(2)}% unallocated emissions (${unallocatedEmissions.CO2e.toFixed(2)} tCO2e)`;
+      const warningMsg = `ScopeIdentifier "${sid}" has ${unallocatedPct.toFixed(2)}% unallocated emissions (CO2e: ${unallocatedEmissions.CO2e.toFixed(4)} tCO2e, CO2: ${unallocatedEmissions.CO2.toFixed(4)}, CH4: ${unallocatedEmissions.CH4.toFixed(4)}, N2O: ${unallocatedEmissions.N2O.toFixed(4)})`;
       if (!allocationWarnings.includes(warningMsg)) {
         allocationWarnings.push(warningMsg);
       }
@@ -856,11 +940,62 @@ const calculateProcessEmissionSummaryPrecise = async (
   }
 };
 
+/**
+ * Validate allocation index (wrapper around validateAllocations)
+ * @param {Map} allocationIndex - Map from buildAllocationIndex
+ * @returns {Object} Validation result with isValid, errors, warnings
+ */
+const validateAllocationIndex = (allocationIndex) => {
+  const result = {
+    isValid: true,
+    errors: [],
+    warnings: []
+  };
+  
+  // Check each scopeIdentifier
+  for (const [scopeId, entries] of allocationIndex) {
+    if (entries.length <= 1) continue; // Single occurrence - no validation needed
+    
+    const totalPct = entries.reduce((sum, e) => sum + e.allocationPct, 0);
+    
+    // Allow small tolerance for floating point errors
+    if (Math.abs(totalPct - 100) > 0.01) {
+      result.isValid = false;
+      result.errors.push({
+        scopeIdentifier: scopeId,
+        type: 'ALLOCATION_SUM_MISMATCH',
+        currentSum: totalPct,
+        expectedSum: 100,
+        entries: entries.map(e => ({
+          nodeId: e.nodeId,
+          nodeLabel: e.nodeLabel,
+          allocationPct: e.allocationPct
+        })),
+        message: `Allocation for "${scopeId}" sums to ${totalPct.toFixed(2)}%, expected 100%`
+      });
+    }
+    
+    // Warn if any entry has exactly 100% when shared
+    const hasDefault = entries.some(e => e.allocationPct === 100);
+    if (hasDefault && entries.length > 1) {
+      result.warnings.push({
+        scopeIdentifier: scopeId,
+        type: 'DEFAULT_ALLOCATION_IN_SHARED',
+        message: `Shared scopeIdentifier "${scopeId}" has default 100% allocation - may cause double counting`
+      });
+    }
+  }
+  
+  return result;
+};
+
+
 module.exports = { 
   getEffectiveAllocationPct,
   applyAllocation,
   validateAllocations,
   buildAllocationIndex,
+  validateAllocationIndex,
   getAllocationSummary,
   formatValidationError,
   autoDistributeAllocation,

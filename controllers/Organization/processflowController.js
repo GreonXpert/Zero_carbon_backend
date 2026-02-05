@@ -248,11 +248,10 @@ const saveProcessFlowchart = async (req, res) => {
     const normalizedEdges = normalizeEdges(flowchartData.edges);
 
     // ============================================================================
-    // 🆕 VALIDATE ALLOCATION PERCENTAGES
+    // 🆕 VALIDATE ALLOCATION PERCENTAGES (COMPLETE FLOWCHART STATE)
     // ============================================================================
-    // When scopeIdentifiers are shared across multiple nodes, their allocations
-    // must sum to 100%. This validation ensures data integrity and prevents
-    // double-counting of emissions in processEmissionSummary.
+    // When saving the complete flowchart, we validate that shared scopeIdentifiers
+    // have allocations that sum to 100%. This ensures data integrity.
     //
     // RULES:
     // - If scopeIdentifier appears in ONLY ONE node: allocationPct defaults to 100
@@ -402,6 +401,7 @@ const saveProcessFlowchart = async (req, res) => {
     });
   }
 };
+
 
 
 // -------------------------------------------------------
@@ -993,10 +993,10 @@ const updateProcessFlowchartNode = async (req, res) => {
     }
 
     // ============================================================================
-    // 🆕 VALIDATE ALLOCATION PERCENTAGES BEFORE SAVE
+    // 🆕 VALIDATE ALLOCATION PERCENTAGES BEFORE SAVE (COMPLETE FLOWCHART STATE)
     // ============================================================================
-    // When a scopeIdentifier appears in multiple nodes, the sum of allocationPct
-    // across all nodes must equal 100% (with ±0.01% tolerance for rounding).
+    // After updating this node, we validate the COMPLETE flowchart to ensure
+    // that allocations for shared scopeIdentifiers sum to 100%.
     // 
     // This validation ensures:
     // - No double-counting of emissions
@@ -1006,9 +1006,6 @@ const updateProcessFlowchartNode = async (req, res) => {
     
     // Update the node in the array first (so validation sees the updated state)
     processFlowchart.nodes[nodeIndex] = mergedNode;
-    
-    // Import validation function (ensure this is imported at top of file)
-    // const { validateAllocations, formatValidationError } = require('../../utils/allocation/allocationHelpers');
     
     const allocationValidation = validateAllocations(processFlowchart.nodes, {
       includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
@@ -1056,6 +1053,7 @@ const updateProcessFlowchartNode = async (req, res) => {
     return res.status(500).json({ message: 'Failed to update node', error: error.message });
   }
 };
+
 
 
 
@@ -1703,17 +1701,19 @@ const getAllocations = async (req, res) => {
     }
     
     // Import helpers
-    const { buildAllocationIndex, getAllocationSummary, validateAllocationIndex } = require('../../utils/allocation/allocationHelpers');
-    
-    // Build allocation index and summary
-    const allocationIndex = buildAllocationIndex(processFlowchart, {
-      includeFromOtherChart: false,
-      includeDeleted: false
-    });
-    
-    const summary = getAllocationSummary(allocationIndex);
-    const validation = validateAllocationIndex(allocationIndex);
-    
+    const { buildAllocationIndex, getAllocationSummary, validateAllocations } = require('../../utils/allocation/allocationHelpers');
+
+// Build allocation index and summary
+const allocationIndex = buildAllocationIndex(processFlowchart, {
+  includeFromOtherChart: false,
+  includeDeleted: false
+});
+
+const summary = getAllocationSummary(allocationIndex);
+const validation = validateAllocations(processFlowchart.nodes, {
+  includeFromOtherChart: false,
+  includeDeleted: false
+});
     return res.status(200).json({
       success: true,
       clientId,
@@ -1739,7 +1739,10 @@ const getAllocations = async (req, res) => {
 /**
  * PATCH /api/process-flowchart/:clientId/allocations
  * 
- * Update allocation percentages for one or more scopeIdentifiers.
+ * Update allocation percentages for scopeIdentifiers across nodes.
+ * 
+ * Conceptual model: When a scopeIdentifier appears in multiple nodes,
+ * we allocate what percentage of that scope's emissions belong to each node.
  * 
  * Request body:
  * {
@@ -1749,6 +1752,12 @@ const getAllocations = async (req, res) => {
  *       "nodeAllocations": [
  *         { "nodeId": "node-1", "allocationPct": 30 },
  *         { "nodeId": "node-2", "allocationPct": 70 }
+ *       ]
+ *     },
+ *     {
+ *       "scopeIdentifier": "Natural_Gas",
+ *       "nodeAllocations": [
+ *         { "nodeId": "node-3", "allocationPct": 100 }
  *       ]
  *     }
  *   ]
@@ -1766,9 +1775,6 @@ const updateAllocations = async (req, res) => {
     }
     
     // Permission check
-    const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
-    const { canManageProcessFlowchart } = require('../../utils/Permissions/permissions');
-    
     const canManage = await canManageProcessFlowchart(req.user, clientId);
     if (!canManage) {
       return res.status(403).json({
@@ -1786,13 +1792,16 @@ const updateAllocations = async (req, res) => {
       return res.status(404).json({ message: 'Process flowchart not found' });
     }
     
-    // Validate each allocation update
+    // ============================================================================
+    // VALIDATE AND PREPARE UPDATES (scopeIdentifier-centric)
+    // ============================================================================
     const updateErrors = [];
-    const updates = [];
+    const scopeIdentifierUpdates = new Map(); // Map<scopeIdentifier, Map<nodeId, allocationPct>>
     
     for (const alloc of allocations) {
       const { scopeIdentifier, nodeAllocations } = alloc;
       
+      // Validate structure
       if (!scopeIdentifier || !nodeAllocations || !Array.isArray(nodeAllocations)) {
         updateErrors.push({
           scopeIdentifier: scopeIdentifier || 'UNKNOWN',
@@ -1801,24 +1810,39 @@ const updateAllocations = async (req, res) => {
         continue;
       }
       
-      // Validate sum = 100
-      const sum = nodeAllocations.reduce((s, na) => s + (na.allocationPct || 0), 0);
-      if (Math.abs(sum - 100) > 0.01) {
-        updateErrors.push({
-          scopeIdentifier,
-          error: `Allocations must sum to 100%, got ${sum.toFixed(2)}%`,
-          nodeAllocations
-        });
-        continue;
-      }
+      // ============================================================================
+      // 🆕 REMOVED: 100% sum validation
+      // ============================================================================
+      // OLD CODE (removed):
+      // const sum = nodeAllocations.reduce((s, na) => s + (na.allocationPct || 0), 0);
+      // if (Math.abs(sum - 100) > 0.01) { ... }
+      //
+      // NEW BEHAVIOR: You can now update individual nodes without requiring
+      // all nodes with the same scopeIdentifier to be included in the request.
+      // ============================================================================
       
       // Validate each node allocation
+      const nodeMap = new Map();
+      let hasErrors = false;
+      
       for (const na of nodeAllocations) {
         if (!na.nodeId) {
           updateErrors.push({
             scopeIdentifier,
             error: 'Each nodeAllocation must have a nodeId'
           });
+          hasErrors = true;
+          continue;
+        }
+        
+        // Validate percentage is in valid range (0-100)
+        if (na.allocationPct === undefined || na.allocationPct === null) {
+          updateErrors.push({
+            scopeIdentifier,
+            nodeId: na.nodeId,
+            error: 'allocationPct is required'
+          });
+          hasErrors = true;
           continue;
         }
         
@@ -1828,14 +1852,26 @@ const updateAllocations = async (req, res) => {
             nodeId: na.nodeId,
             error: `allocationPct must be between 0 and 100, got ${na.allocationPct}`
           });
+          hasErrors = true;
           continue;
         }
         
-        updates.push({
-          scopeIdentifier,
-          nodeId: na.nodeId,
-          allocationPct: na.allocationPct
-        });
+        // Check for duplicate nodeId for same scopeIdentifier
+        if (nodeMap.has(na.nodeId)) {
+          updateErrors.push({
+            scopeIdentifier,
+            nodeId: na.nodeId,
+            error: `Duplicate nodeId in allocations for scopeIdentifier "${scopeIdentifier}"`
+          });
+          hasErrors = true;
+          continue;
+        }
+        
+        nodeMap.set(na.nodeId, na.allocationPct);
+      }
+      
+      if (!hasErrors) {
+        scopeIdentifierUpdates.set(scopeIdentifier, nodeMap);
       }
     }
     
@@ -1846,21 +1882,65 @@ const updateAllocations = async (req, res) => {
       });
     }
     
-    // Apply updates
+    // ============================================================================
+    // APPLY UPDATES (scopeIdentifier-centric approach)
+    // ============================================================================
     let updatedCount = 0;
+    const updateSummary = [];
     
-    for (const update of updates) {
-      for (const node of processFlowchart.nodes) {
-        if (node.id !== update.nodeId) continue;
+    // Process each scopeIdentifier
+    for (const [scopeIdentifier, nodeAllocations] of scopeIdentifierUpdates) {
+      const scopeUpdateInfo = {
+        scopeIdentifier,
+        nodesUpdated: [],
+        nodesNotFound: []
+      };
+      
+      // For each node where this scopeIdentifier should have an allocation
+      for (const [nodeId, allocationPct] of nodeAllocations) {
+        let foundAndUpdated = false;
         
+        // Find the node in the flowchart
+        const node = processFlowchart.nodes.find(n => n.id === nodeId);
+        
+        if (!node) {
+          scopeUpdateInfo.nodesNotFound.push({
+            nodeId,
+            reason: 'Node not found in flowchart'
+          });
+          continue;
+        }
+        
+        // Find all scopes with this scopeIdentifier in this node (should typically be 1)
         const scopeDetails = node.details?.scopeDetails || [];
+        let previousAllocationPct = null;
+        
         for (const scope of scopeDetails) {
-          if (scope.scopeIdentifier === update.scopeIdentifier && !scope.isDeleted) {
-            scope.allocationPct = update.allocationPct;
+          if (scope.scopeIdentifier === scopeIdentifier && !scope.isDeleted) {
+            previousAllocationPct = scope.allocationPct;
+            scope.allocationPct = allocationPct;
+            foundAndUpdated = true;
             updatedCount++;
           }
         }
+        
+        if (foundAndUpdated) {
+          scopeUpdateInfo.nodesUpdated.push({
+            nodeId,
+            nodeLabel: node.label || node.id,
+            previousAllocationPct,
+            newAllocationPct: allocationPct
+          });
+        } else {
+          scopeUpdateInfo.nodesNotFound.push({
+            nodeId,
+            nodeLabel: node.label || node.id,
+            reason: `scopeIdentifier "${scopeIdentifier}" not found in this node`
+          });
+        }
       }
+      
+      updateSummary.push(scopeUpdateInfo);
     }
     
     // Mark as modified and save
@@ -1868,27 +1948,90 @@ const updateAllocations = async (req, res) => {
     processFlowchart.lastModifiedBy = req.user._id || req.user.id;
     await processFlowchart.save();
     
-    // Import helpers for response
-    const { buildAllocationIndex, getAllocationSummary, validateAllocationIndex } = require('../../utils/allocation/allocationHelpers');
+    console.log(`✅ Allocations saved successfully for ${scopeIdentifierUpdates.size} scopeIdentifier(s)`);
     
-    const allocationIndex = buildAllocationIndex(processFlowchart, {
-      includeFromOtherChart: false,
-      includeDeleted: false
-    });
+    // ============================================================================
+    // BUILD RESPONSE WITH ALLOCATION SUMMARY
+    // ============================================================================
+    const { buildAllocationIndex, getAllocationSummary, validateAllocations } = require('../../utils/allocation/allocationHelpers');
+
+const allocationIndex = buildAllocationIndex(processFlowchart, {
+  includeFromOtherChart: false,
+  includeDeleted: false
+});
+
+const summary = getAllocationSummary(allocationIndex);
+const validation = validateAllocations(processFlowchart.nodes, {
+  includeFromOtherChart: false,
+  includeDeleted: false
+});
     
-    const summary = getAllocationSummary(allocationIndex);
-    const validation = validateAllocationIndex(allocationIndex);
+    // ============================================================================
+    // 🆕 TRIGGER AUTOMATIC EMISSION SUMMARY RECALCULATION
+    // ============================================================================
+    const affectedScopeIdentifiers = Array.from(scopeIdentifierUpdates.keys());
     
+    let recalculationStatus = {
+      triggered: false,
+      status: 'not_attempted',
+      message: null
+    };
+    
+    try {
+      console.log(`🔄 Triggering emission summary recalculation for client ${clientId}...`);
+      
+      // Import the recalculation function
+      const { recalculateSummariesOnAllocationUpdate } = require('../Calculation/CalculationSummary');
+      
+      // Trigger recalculation asynchronously (don't wait for it to complete)
+      // This prevents the allocation update response from being delayed
+      recalculateSummariesOnAllocationUpdate(
+        clientId,
+        affectedScopeIdentifiers,
+        req.user
+      ).then((result) => {
+        console.log(`✅ Background recalculation completed:`, result);
+      }).catch((error) => {
+        console.error(`❌ Background recalculation failed:`, error);
+      });
+      
+      recalculationStatus = {
+        triggered: true,
+        status: 'in_progress',
+        message: 'Emission summary recalculation started in background',
+        affectedScopeIdentifiers
+      };
+      
+    } catch (recalcError) {
+      // Log the error but don't fail the allocation update
+      console.error('❌ Failed to trigger emission summary recalculation:', recalcError);
+      
+      recalculationStatus = {
+        triggered: false,
+        status: 'failed',
+        message: 'Failed to trigger emission summary recalculation',
+        error: recalcError.message
+      };
+    }
+    
+    // ============================================================================
+    // RETURN SUCCESS RESPONSE
+    // ============================================================================
     return res.status(200).json({
       success: true,
-      message: `Updated ${updatedCount} allocation(s)`,
-      updatedCount,
-      allocations: summary,
+      message: `Updated allocations for ${scopeIdentifierUpdates.size} scopeIdentifier(s)`,
+      scopeIdentifiersUpdated: scopeIdentifierUpdates.size,
+      totalScopesUpdated: updatedCount,
+      updateDetails: updateSummary,
+      currentAllocations: summary,
       validation: {
         isValid: validation.isValid,
         errorCount: validation.errors.length,
-        warningCount: validation.warnings.length
-      }
+        warningCount: validation.warnings.length,
+        errors: validation.errors,
+        warnings: validation.warnings
+      },
+      recalculation: recalculationStatus
     });
     
   } catch (error) {
