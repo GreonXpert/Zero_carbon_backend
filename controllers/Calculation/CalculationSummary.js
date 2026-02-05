@@ -1875,7 +1875,7 @@ const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
     const {
-      periodType = "monthly",
+      periodType = "yearly",
       year,
       month,
       week,
