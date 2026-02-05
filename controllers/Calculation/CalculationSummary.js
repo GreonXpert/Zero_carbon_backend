@@ -1871,7 +1871,6 @@ const recalculateAndSaveSummary = async (
 
 // ========== API Controllers ==========
 
-// ========== API Controllers ==========
  
 const getEmissionSummary = async (req, res) => {
   try {
@@ -1928,13 +1927,23 @@ const getEmissionSummary = async (req, res) => {
         if (day) exactQuery["period.day"] = d;
  
         summary = await EmissionSummary.findOne(exactQuery).lean();
+
+        // 🆕 ADD THIS:
+const preventRecalc = summary?.metadata?.preventAutoRecalculation || 
+                     summary?.metadata?.migratedData || 
+                     false;
+
+
  
-        const stale =
-          summary &&
-          summary.metadata &&
-          (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
+        // const stale =
+        //   summary &&
+        //   summary.metadata &&
+        //   (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
  
-        if (!summary || stale) {
+       if (!summary || (stale && !preventRecalc)) { // Added preventRecalc check
+  if (preventRecalc) {
+    console.log(`🔒 Summary protected from auto-recalculation`);
+  } else {
           const recomputed = await recalculateAndSaveSummary(
             clientId,
             periodType,
@@ -1954,6 +1963,7 @@ const getEmissionSummary = async (req, res) => {
           }
         }
       }
+    }
     }
  
     if (!summary) {
@@ -2334,7 +2344,7 @@ const getMultipleSummaries = async (req, res) => {
 // const EmissionSummary = require("../../models/CalculationEmission/EmissionSummary");
 
 /**
- * Filtered Summary (Advanced + Legacy)
+ * Filtered Summary (Advanced + Legacy Safe)
  * Supports:
  *  - emissionSummary (emissions)
  *  - processEmissionSummary (process emissions)
@@ -2388,6 +2398,18 @@ const getFilteredSummary = async (req, res) => {
       maxCO2e: maxCO2eRaw,
     } = req.query;
 
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "clientId is required" });
+    }
+
+    // -----------------------------
+    // Helpers
+    // -----------------------------
+    const safeNum = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
     const normalizeArray = (val) => {
       if (!val) return [];
       if (Array.isArray(val)) {
@@ -2399,12 +2421,66 @@ const getFilteredSummary = async (req, res) => {
       return String(val).split(",").map((v) => v.trim()).filter(Boolean);
     };
 
-    const safeNum = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
+    const toLowerSet = (arr) => new Set((arr || []).map((x) => String(x).toLowerCase()));
+
+    const scopeUniverse = ["Scope 1", "Scope 2", "Scope 3"];
+
+    const normalizeScopeLabel = (s) => {
+      const t = String(s || "").trim().toLowerCase();
+      if (!t) return "";
+      // allow: "1", "s1", "scope1", "scope 1", "Scope 1"
+      if (t === "1" || t === "s1" || t === "scope1" || t === "scope 1") return "Scope 1";
+      if (t === "2" || t === "s2" || t === "scope2" || t === "scope 2") return "Scope 2";
+      if (t === "3" || t === "s3" || t === "scope3" || t === "scope 3") return "Scope 3";
+
+      const m = t.match(/scope\s*([123])/);
+      if (m) return `Scope ${m[1]}`;
+
+      // if someone already passed "Scope 1"
+      const t2 = String(s || "").trim();
+      return t2;
     };
 
-    const toLowerSet = (arr) => new Set((arr || []).map((x) => String(x).toLowerCase()));
+    const normalizeScopes = (arr) => {
+      const out = [];
+      for (const x of (arr || [])) {
+        const n = normalizeScopeLabel(x);
+        if (scopeUniverse.includes(n)) out.push(n);
+      }
+      return Array.from(new Set(out));
+    };
+
+    // Read a scope metric from either:
+    // - object: byScope["Scope 1"] = {CO2e: 12}
+    // - object: byScope["Scope 1"] = 12
+    // - Map: byScope.get("Scope 1") = {CO2e: 12} or 12
+    const readScopeMetric = (byScopeObj, scopeKey, metric = "CO2e") => {
+      if (!byScopeObj) return 0;
+
+      let v;
+      if (typeof byScopeObj.get === "function") v = byScopeObj.get(scopeKey);
+      else v = byScopeObj[scopeKey];
+
+      if (v == null) return 0;
+
+      if (typeof v === "number") return safeNum(v);
+      if (typeof v === "object") {
+        // common cases: {CO2e: 10} OR { CO2e: "10" }
+        if (v[metric] != null) return safeNum(v[metric]);
+        // sometimes stored as {co2e: 10}
+        const lowerKey = metric.toLowerCase();
+        if (v[lowerKey] != null) return safeNum(v[lowerKey]);
+      }
+      return 0;
+    };
+
+    const entriesOf = (maybeMapOrObj) => {
+      if (!maybeMapOrObj) return [];
+      if (typeof maybeMapOrObj.entries === "function" && typeof maybeMapOrObj.get === "function") {
+        return Array.from(maybeMapOrObj.entries());
+      }
+      return Object.entries(maybeMapOrObj);
+    };
 
     const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase(); // emission|process|reduction|both
 
@@ -2439,53 +2515,17 @@ const getFilteredSummary = async (req, res) => {
     const ps = fullSummary.processEmissionSummary || {};
     const rs = fullSummary.reductionSummary || {};
 
-    // Choose which emission-like summary to use for node filtering/aggregation
     const activeEmissionSummary = summaryKind === "process" ? ps : es;
 
-    const byNode = activeEmissionSummary.byNode || {};
-    const byScope = activeEmissionSummary.byScope || {};
     const totalEmissions =
       activeEmissionSummary.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
 
-    // Build node rows (main emission/process “records”)
-    let nodes = Object.entries(byNode).map(([id, n]) => {
-      const s1 = safeNum(n?.byScope?.["Scope 1"]?.CO2e);
-      const s2 = safeNum(n?.byScope?.["Scope 2"]?.CO2e);
-      const s3 = safeNum(n?.byScope?.["Scope 3"]?.CO2e);
-
-      return {
-        nodeId: id,
-        nodeLabel: n?.nodeLabel || "",
-        department: n?.department || "",
-        location: n?.location || "",
-        byScope: { "Scope 1": s1, "Scope 2": s2, "Scope 3": s3 },
-        CO2e: safeNum(n?.CO2e),
-        CO2: safeNum(n?.CO2),
-        CH4: safeNum(n?.CH4),
-        N2O: safeNum(n?.N2O),
-        uncertainty: safeNum(n?.uncertainty),
-      };
-    });
-
-    // Build project rows (main reduction “records”)
-    let projects = Array.isArray(rs.byProject)
-      ? rs.byProject.map((p) => ({
-          projectId: p.projectId,
-          projectName: p.projectName || p.projectId,
-          scope: p.scope || "",
-          category: p.category || "",
-          location: p.location || "",
-          methodology: p.methodology || "",
-          projectActivity: p.projectActivity || "",
-          totalNetReduction: safeNum(p.totalNetReduction),
-          entriesCount: p.entriesCount || 0,
-        }))
-      : [];
+    const byScopeOriginal = activeEmissionSummary.byScope || {}; // original (not filtered)
 
     // -------------------------------------------
     // 3) Parse filters
     // -------------------------------------------
-    const selectedScopes = normalizeArray(scopes || scope);
+    const selectedScopesRaw = normalizeArray(scopes || scope);
     const selectedLocations = normalizeArray(locations || location);
     const selectedDepartments = normalizeArray(departments || department);
     const selectedNodeIds = normalizeArray(nodeIds || nodeId);
@@ -2494,6 +2534,14 @@ const getFilteredSummary = async (req, res) => {
     const selectedCategories = normalizeArray(categories || category);
     const selectedActivities = normalizeArray(activities || activity);
     const selectedMethodologies = normalizeArray(methodologies || methodology);
+
+    const normalizedSelectedScopes = normalizeScopes(selectedScopesRaw);
+
+    // treat "Scope 1,Scope 2,Scope 3" as NO explicit filter
+    const hasExplicitScopeFilter =
+      normalizedSelectedScopes.length > 0 && normalizedSelectedScopes.length < scopeUniverse.length;
+
+    const scopesForSum = hasExplicitScopeFilter ? normalizedSelectedScopes : scopeUniverse;
 
     const locSet = toLowerSet(selectedLocations);
     const deptSet = toLowerSet(selectedDepartments);
@@ -2507,33 +2555,53 @@ const getFilteredSummary = async (req, res) => {
     const minCO2e = minCO2eRaw != null ? Number(minCO2eRaw) : null;
     const maxCO2e = maxCO2eRaw != null ? Number(maxCO2eRaw) : null;
 
-    const limit = limitRaw ? parseInt(limitRaw) : null;
+    const limit = limitRaw ? Math.max(1, parseInt(limitRaw)) : null;
 
     const sortBy = (sortByRaw || "co2e").toLowerCase();
     const direction = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
     const sortDirection = direction === "asc" || direction === "low" ? "asc" : "desc";
 
     // -------------------------------------------
-    // 4) Filter EMISSION/PROCESS nodes
+    // 4) Build node rows (EMISSION/PROCESS)
     // -------------------------------------------
-    if (selectedNodeIds.length) {
-      nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
-    }
-    if (selectedLocations.length) {
-      nodes = nodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
-    }
-    if (selectedDepartments.length) {
-      nodes = nodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
-    }
+    const byNodeRaw = activeEmissionSummary.byNode || {};
+    let nodes = entriesOf(byNodeRaw).map(([id, n]) => {
+      // robust per-scope extraction
+      const nodeByScope = {};
+      for (const sc of scopeUniverse) {
+        nodeByScope[sc] = readScopeMetric(n?.byScope, sc, "CO2e");
+      }
 
-    // Scope selection affects “selectedScopeCO2e”
-    const scopeUniverse = ["Scope 1", "Scope 2", "Scope 3"];
-    const scopesForSum = selectedScopes.length ? selectedScopes : scopeUniverse;
+      const scopeTotal = scopeUniverse.reduce((s, sc) => s + safeNum(nodeByScope[sc]), 0);
 
-    nodes = nodes.map((n) => ({
-      ...n,
-      selectedScopeCO2e: scopesForSum.reduce((sum, sc) => sum + safeNum(n.byScope?.[sc]), 0),
-    }));
+      // selectedScopeCO2e is what UI uses for "filtered CO2e"
+      // If no explicit scope filter, fallback to node.CO2e when scope split is missing.
+      const selectedScopeSum = scopesForSum.reduce((sum, sc) => sum + safeNum(nodeByScope[sc]), 0);
+      const nodeTotalCO2e = safeNum(n?.CO2e);
+      const selectedScopeCO2e =
+        hasExplicitScopeFilter ? selectedScopeSum : (scopeTotal > 0 ? scopeTotal : nodeTotalCO2e);
+
+      return {
+        nodeId: id,
+        nodeLabel: n?.nodeLabel || "",
+        department: n?.department || "",
+        location: n?.location || "",
+        byScope: nodeByScope, // CO2e split per scope (numbers)
+        CO2e: nodeTotalCO2e,
+        CO2: safeNum(n?.CO2),
+        CH4: safeNum(n?.CH4),
+        N2O: safeNum(n?.N2O),
+        uncertainty: safeNum(n?.uncertainty),
+        selectedScopeCO2e, // ✅ THIS now won’t be 0 if scope split is missing (no scope filter)
+      };
+    });
+
+    // -------------------------------------------
+    // 4.1) Apply node filters
+    // -------------------------------------------
+    if (selectedNodeIds.length) nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
+    if (selectedLocations.length) nodes = nodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
+    if (selectedDepartments.length) nodes = nodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
 
     if (minCO2e != null) nodes = nodes.filter((n) => n.selectedScopeCO2e >= minCO2e);
     if (maxCO2e != null) nodes = nodes.filter((n) => n.selectedScopeCO2e <= maxCO2e);
@@ -2556,17 +2624,22 @@ const getFilteredSummary = async (req, res) => {
       const va = val(a);
       const vb = val(b);
 
-      if (typeof va === "string" || typeof vb === "string") {
-        return va.localeCompare(vb) * dir;
-      }
+      if (typeof va === "string" || typeof vb === "string") return va.localeCompare(vb) * dir;
       return (va - vb) * dir;
     };
     nodes.sort(nodeSort);
 
-    // Compute emission/process aggregates from filtered nodes
+    let nodesPrimary = nodes;
+    if (limit) nodesPrimary = nodes.slice(0, limit);
+
+    // -------------------------------------------
+    // 4.2) Compute emission aggregates + facets
+    // -------------------------------------------
+    const totalFilteredCO2e = nodes.reduce((s, n) => s + safeNum(n.selectedScopeCO2e), 0);
+
     const emissionAgg = {
       totalFilteredEmissions: {
-        CO2e: nodes.reduce((s, n) => s + safeNum(n.selectedScopeCO2e), 0),
+        CO2e: totalFilteredCO2e,
         CO2: nodes.reduce((s, n) => s + safeNum(n.CO2), 0),
         CH4: nodes.reduce((s, n) => s + safeNum(n.CH4), 0),
         N2O: nodes.reduce((s, n) => s + safeNum(n.N2O), 0),
@@ -2577,13 +2650,43 @@ const getFilteredSummary = async (req, res) => {
       byDepartment: {},
     };
 
-    for (const sc of scopesForSum) {
+    // byScope sums from node splits
+    const scopeSums = {};
+    for (const sc of scopeUniverse) {
+      scopeSums[sc] = nodes.reduce((s, n) => s + safeNum(n.byScope?.[sc]), 0);
+    }
+
+    // If per-node scope split is missing (all 0) but we have total CO2e,
+    // fill byScope using the overall summary scope ratios (prevents 0 scopes facet).
+    const sumScopeSums = scopeUniverse.reduce((s, sc) => s + safeNum(scopeSums[sc]), 0);
+    let usedScopeRatioFallback = false;
+
+    if (!hasExplicitScopeFilter && totalFilteredCO2e > 0 && sumScopeSums === 0) {
+      const baseTotal = scopeUniverse.reduce(
+        (s, sc) => s + safeNum(byScopeOriginal?.[sc]?.CO2e ?? byScopeOriginal?.[sc]),
+        0
+      );
+
+      if (baseTotal > 0) {
+        usedScopeRatioFallback = true;
+        for (const sc of scopeUniverse) {
+          const base = safeNum(byScopeOriginal?.[sc]?.CO2e ?? byScopeOriginal?.[sc]);
+          const ratio = base / baseTotal;
+          scopeSums[sc] = totalFilteredCO2e * ratio;
+        }
+      }
+    }
+
+    for (const sc of scopeUniverse) {
       emissionAgg.byScope[sc] = {
-        CO2e: nodes.reduce((s, n) => s + safeNum(n.byScope?.[sc]), 0),
-        nodeCount: nodes.filter((n) => safeNum(n.byScope?.[sc]) > 0).length,
+        CO2e: safeNum(scopeSums[sc]),
+        nodeCount: usedScopeRatioFallback
+          ? nodes.length
+          : nodes.filter((n) => safeNum(n.byScope?.[sc]) > 0).length,
       };
     }
 
+    // byLocation / byDepartment based on selectedScopeCO2e
     for (const n of nodes) {
       const lk = n.location || "Unknown";
       if (!emissionAgg.byLocation[lk]) emissionAgg.byLocation[lk] = { CO2e: 0, nodeCount: 0 };
@@ -2596,7 +2699,6 @@ const getFilteredSummary = async (req, res) => {
       emissionAgg.byDepartment[dk].nodeCount += 1;
     }
 
-    // Facets for cascading UI filters
     const facetsEmission = {
       locations: Object.entries(emissionAgg.byLocation)
         .map(([k, v]) => ({ value: k, ...v }))
@@ -2609,30 +2711,32 @@ const getFilteredSummary = async (req, res) => {
         .sort((a, b) => b.CO2e - a.CO2e),
     };
 
-    let nodesPrimary = nodes;
-    if (limit) nodesPrimary = nodes.slice(0, limit);
+    // -------------------------------------------
+    // 5) Build project rows (REDUCTION)
+    // -------------------------------------------
+    let projects = Array.isArray(rs.byProject)
+      ? rs.byProject.map((p) => ({
+          projectId: p.projectId,
+          projectName: p.projectName || p.projectId,
+          scope: p.scope || "",
+          category: p.category || "",
+          location: p.location || "",
+          methodology: p.methodology || "",
+          projectActivity: p.projectActivity || "",
+          totalNetReduction: safeNum(p.totalNetReduction),
+          entriesCount: p.entriesCount || 0,
+        }))
+      : [];
 
-    // -------------------------------------------
-    // 5) Filter REDUCTION projects (multi-stage)
-    // -------------------------------------------
-    if (selectedProjectIds.length) {
-      projects = projects.filter((p) => projSet.has(p.projectId));
-    }
-    if (selectedLocations.length) {
-      projects = projects.filter((p) => locSet.has(String(p.location).toLowerCase()));
-    }
-    if (selectedCategories.length) {
-      projects = projects.filter((p) => catSet.has(String(p.category).toLowerCase()));
-    }
-    if (selectedActivities.length) {
-      projects = projects.filter((p) => actSet.has(String(p.projectActivity).toLowerCase()));
-    }
-    if (selectedMethodologies.length) {
-      projects = projects.filter((p) => methSet.has(String(p.methodology).toLowerCase()));
-    }
-    if (selectedScopes.length) {
-      const sSet = toLowerSet(selectedScopes);
-      projects = projects.filter((p) => sSet.has(String(p.scope).toLowerCase()));
+    // reduction filters
+    if (selectedProjectIds.length) projects = projects.filter((p) => projSet.has(p.projectId));
+    if (selectedLocations.length) projects = projects.filter((p) => locSet.has(String(p.location).toLowerCase()));
+    if (selectedCategories.length) projects = projects.filter((p) => catSet.has(String(p.category).toLowerCase()));
+    if (selectedActivities.length) projects = projects.filter((p) => actSet.has(String(p.projectActivity).toLowerCase()));
+    if (selectedMethodologies.length) projects = projects.filter((p) => methSet.has(String(p.methodology).toLowerCase()));
+    if (normalizedSelectedScopes.length) {
+      const sSet = new Set(normalizedSelectedScopes.map((x) => x.toLowerCase()));
+      projects = projects.filter((p) => sSet.has(String(normalizeScopeLabel(p.scope)).toLowerCase()));
     }
 
     if (minCO2e != null) projects = projects.filter((p) => p.totalNetReduction >= minCO2e);
@@ -2640,19 +2744,14 @@ const getFilteredSummary = async (req, res) => {
 
     const projectSort = (a, b) => {
       const dir = sortDirection === "asc" ? 1 : -1;
-
       const val = (x) => {
         if (sortBy === "projectname") return String(x.projectName || "").toLowerCase();
         if (sortBy === "entriescount") return safeNum(x.entriesCount);
         return safeNum(x.totalNetReduction);
       };
-
       const va = val(a);
       const vb = val(b);
-
-      if (typeof va === "string" || typeof vb === "string") {
-        return va.localeCompare(vb) * dir;
-      }
+      if (typeof va === "string" || typeof vb === "string") return va.localeCompare(vb) * dir;
       return (va - vb) * dir;
     };
     projects.sort(projectSort);
@@ -2704,7 +2803,7 @@ const getFilteredSummary = async (req, res) => {
     };
 
     // -------------------------------------------
-    // 6) Response (emission / process / reduction / both)
+    // 6) Response
     // -------------------------------------------
     const response = {
       success: true,
@@ -2717,7 +2816,7 @@ const getFilteredSummary = async (req, res) => {
       response.summaryKind = "emission";
       response.data = {
         totalEmissions,
-        byScope, // original period totals (not filtered)
+        byScope: byScopeOriginal, // original period totals (not filtered)
         nodes,
         primary: nodesPrimary,
         aggregates: emissionAgg,
@@ -2730,7 +2829,7 @@ const getFilteredSummary = async (req, res) => {
       response.summaryKind = "process";
       response.data = {
         totalEmissions,
-        byScope, // original period totals (not filtered) for process summary
+        byScope: byScopeOriginal,
         nodes,
         primary: nodesPrimary,
         aggregates: emissionAgg,
@@ -2751,30 +2850,12 @@ const getFilteredSummary = async (req, res) => {
       return res.status(200).json(response);
     }
 
-    // both (kept as emission + reduction, unchanged)
+    // both
     response.summaryKind = "both";
     response.data = {
       emission: {
-        totalEmissions: (es.totalEmissions ||
-          { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 }),
-        nodes: Object.entries(es.byNode || {}).map(([id, n]) => {
-          const s1 = safeNum(n?.byScope?.["Scope 1"]?.CO2e);
-          const s2 = safeNum(n?.byScope?.["Scope 2"]?.CO2e);
-          const s3 = safeNum(n?.byScope?.["Scope 3"]?.CO2e);
-
-          return {
-            nodeId: id,
-            nodeLabel: n?.nodeLabel || "",
-            department: n?.department || "",
-            location: n?.location || "",
-            byScope: { "Scope 1": s1, "Scope 2": s2, "Scope 3": s3 },
-            CO2e: safeNum(n?.CO2e),
-            CO2: safeNum(n?.CO2),
-            CH4: safeNum(n?.CH4),
-            N2O: safeNum(n?.N2O),
-            uncertainty: safeNum(n?.uncertainty),
-          };
-        }),
+        totalEmissions: es.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+        nodes,
         primary: nodesPrimary,
         aggregates: emissionAgg,
         facets: facetsEmission,
@@ -2788,7 +2869,6 @@ const getFilteredSummary = async (req, res) => {
       },
     };
     return res.status(200).json(response);
-
   } catch (error) {
     console.error("❌ Error in getFilteredSummary:", error);
     return res.status(500).json({

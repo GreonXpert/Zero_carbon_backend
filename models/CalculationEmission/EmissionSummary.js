@@ -243,7 +243,11 @@ const emissionDetailsSchema = new mongoose.Schema(
       // 🆕 Allocation metadata
     allocationApplied: { type: Boolean, default: false },
     sharedScopeIdentifiers: { type: Number, default: 0 },
-    allocationWarnings: [String]
+    allocationWarnings: [String],
+    // 🆕 ADD THESE:
+  migratedData: { type: Boolean, default: false },
+  preventAutoRecalculation: { type: Boolean, default: false }
+
     }
   },
   { _id: false }
