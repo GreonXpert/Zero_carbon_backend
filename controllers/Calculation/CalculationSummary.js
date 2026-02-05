@@ -1871,6 +1871,8 @@ const recalculateAndSaveSummary = async (
 
 // ========== API Controllers ==========
 
+// ========== API Controllers ==========
+ 
 const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -1882,74 +1884,57 @@ const getEmissionSummary = async (req, res) => {
       day,
       recalculate = "false",
       preferLatest = "true",
-      type = "both", // "emission" | "reduction" | "process" | "both"
-      skipZero = "true" // NEW: Skip documents with 0 emissions
+      type = "both" // "emission" | "reduction" | "both"
     } = req.query;
-
+ 
     if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
       return res.status(400).json({ success: false, message: "Invalid period type." });
     }
-
+ 
     const y = year ? parseInt(year) : moment.utc().year();
     const m = month ? parseInt(month) : moment.utc().month() + 1;
     const w = week ? parseInt(week) : moment.utc().isoWeek();
     const d = day ? parseInt(day) : moment.utc().date();
-
+ 
     const noParts = !year && !month && !week && !day;
-
+ 
     const baseQuery = { clientId, "period.type": periodType };
-
+ 
     let summary;
-
+ 
     // ----------------------------------------------------
     // 1) Load or recalculate summary
     // ----------------------------------------------------
     if (recalculate === "true") {
-      console.log(`[getEmissionSummary] Forcing recalculation for ${clientId}`);
-      summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
+      summary = await recalculateAndSaveSummary(
+        clientId,
+        periodType,
+        y,
+        m,
+        w,
+        d,
+        req.user?._id
+      );
     } else {
       if (noParts) {
-        console.log(`[getEmissionSummary] No period parts specified, finding most recent with skipZero=${skipZero}`);
-        
-        // ✅ FIX: When skipZero is true, filter out documents with 0 emissions
-        if (skipZero === "true") {
-          // Find most recent document with non-zero emissions
-          summary = await EmissionSummary.findOne({
-            ...baseQuery,
-            $or: [
-              { "emissionSummary.totalEmissions.CO2e": { $gt: 0 } },
-              { "totalEmissions.CO2e": { $gt: 0 } } // Check both nested and root level
-            ]
-          })
-            .sort({ "period.to": -1, updatedAt: -1 })
-            .lean();
-          
-          console.log(`[getEmissionSummary] Found non-zero summary: ${summary?._id || 'none'}`);
-        } else {
-          // Original behavior - get most recent regardless of values
-          summary = await EmissionSummary.findOne(baseQuery)
-            .sort({ "period.to": -1, updatedAt: -1 })
-            .lean();
-        }
+        summary = await EmissionSummary.findOne(baseQuery)
+          .sort({ "period.to": -1, updatedAt: -1 })
+          .lean();
       } else {
         const exactQuery = { ...baseQuery };
         if (year) exactQuery["period.year"] = y;
         if (month) exactQuery["period.month"] = m;
         if (week) exactQuery["period.week"] = w;
         if (day) exactQuery["period.day"] = d;
-
-        console.log(`[getEmissionSummary] Exact query:`, exactQuery);
+ 
         summary = await EmissionSummary.findOne(exactQuery).lean();
-
+ 
         const stale =
           summary &&
           summary.metadata &&
           (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
-
-        console.log(`[getEmissionSummary] Summary found: ${!!summary}, stale: ${stale}`);
-
+ 
         if (!summary || stale) {
-          console.log(`[getEmissionSummary] Triggering recalculation`);
           const recomputed = await recalculateAndSaveSummary(
             clientId,
             periodType,
@@ -1959,113 +1944,28 @@ const getEmissionSummary = async (req, res) => {
             d,
             req.user?._id
           );
-
+ 
           if (recomputed) {
             summary = recomputed;
           } else if (preferLatest === "true") {
-            console.log(`[getEmissionSummary] Recalculation failed, falling back to latest`);
-            
-            // ✅ FIX: Also apply skipZero logic in fallback
-            if (skipZero === "true") {
-              summary = await EmissionSummary.findOne({
-                ...baseQuery,
-                $or: [
-                  { "emissionSummary.totalEmissions.CO2e": { $gt: 0 } },
-                  { "totalEmissions.CO2e": { $gt: 0 } }
-                ]
-              })
-                .sort({ "period.to": -1, updatedAt: -1 })
-                .lean();
-            } else {
-              summary = await EmissionSummary.findOne(baseQuery)
-                .sort({ "period.to": -1, updatedAt: -1 })
-                .lean();
-            }
+            summary = await EmissionSummary.findOne(baseQuery)
+              .sort({ "period.to": -1, updatedAt: -1 })
+              .lean();
           }
         }
       }
     }
-
+ 
     if (!summary) {
       return res.status(404).json({
         success: false,
         message: "No data found for the specified period."
       });
     }
-
-    console.log(`[getEmissionSummary] Found summary ${summary._id}`);
-    console.log(`[getEmissionSummary] Period: ${summary.period?.type} ${summary.period?.year}-${summary.period?.month || 'all'}-${summary.period?.day || 'all'}`);
-
+ 
     // ----------------------------------------------------
-    // 2) ✅ IMPROVED: Smart data extraction with logging
+    // 2) Normalise Maps → plain objects for emissionSummary
     // ----------------------------------------------------
-    
-    /**
-     * Extracts data from either root level or nested structure
-     * with comprehensive fallback logic
-     */
-    const extractSummaryData = (doc, summaryType) => {
-      console.log(`[Extract] Starting extraction for ${summaryType}`);
-      
-      // Log document structure for debugging
-      if (summaryType === 'emissionSummary') {
-        console.log(`[Extract] Document keys:`, Object.keys(doc).join(', '));
-        console.log(`[Extract] Has nested ${summaryType}:`, !!doc[summaryType]);
-        console.log(`[Extract] Has root totalEmissions:`, !!doc.totalEmissions);
-      }
-      
-      // Try nested first (most common case)
-      if (doc[summaryType] && typeof doc[summaryType] === 'object') {
-        const nested = doc[summaryType];
-        
-        // Check if nested data has actual values
-        if (summaryType === 'emissionSummary' || summaryType === 'processEmissionSummary') {
-          const co2e = nested.totalEmissions?.CO2e || 0;
-          const dataPoints = nested.metadata?.totalDataPoints || 0;
-          console.log(`[Extract] Found ${summaryType} at nested level - CO2e: ${co2e}, dataPoints: ${dataPoints}`);
-          
-          // ⚠️ WARNING: Check if nested data shows calculation failure
-          if (dataPoints > 0 && co2e === 0) {
-            console.warn(`[Extract] ⚠️  CALCULATION FAILURE DETECTED: ${dataPoints} data points but 0 CO2e!`);
-          }
-          
-          return nested;
-        }
-        
-        console.log(`[Extract] Found ${summaryType} at nested level`);
-        return nested;
-      }
-      
-      // Try root level fields
-      if (summaryType === 'emissionSummary') {
-        // Check if data is at root level
-        if (doc.totalEmissions || doc.byScope || doc.byCategory) {
-          console.log(`[Extract] Found emission data at root level`);
-          const co2e = doc.totalEmissions?.CO2e || 0;
-          console.log(`[Extract] Root level CO2e: ${co2e}`);
-          
-          return {
-            totalEmissions: doc.totalEmissions,
-            byScope: doc.byScope,
-            byCategory: doc.byCategory,
-            byActivity: doc.byActivity,
-            byNode: doc.byNode,
-            byDepartment: doc.byDepartment,
-            byLocation: doc.byLocation,
-            byEmissionFactor: doc.byEmissionFactor,
-            byInputType: doc.byInputType,
-            trends: doc.trends,
-          };
-        }
-      }
-      
-      console.log(`[Extract] No ${summaryType} found, returning null`);
-      return null;
-    };
-
-    /**
-     * Converts Map to plain object recursively
-     */
     const convertMap = (value) => {
       if (value instanceof Map) return Object.fromEntries(value);
       if (Array.isArray(value)) return value.map(convertMap);
@@ -2078,52 +1978,9 @@ const getEmissionSummary = async (req, res) => {
       }
       return value;
     };
-
-    // Extract emission summary data
-    const rawEmissionSummary = extractSummaryData(summary, 'emissionSummary');
-    const emissionSummary = rawEmissionSummary ? convertMap(rawEmissionSummary) : {
-      totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-      byScope: {},
-      byCategory: {},
-      byActivity: {},
-      byNode: {},
-      byDepartment: {},
-      byLocation: {},
-      byEmissionFactor: {},
-      byInputType: {},
-      trends: {}
-    };
-
-    // Log extracted CO2e for debugging
-    const co2e = emissionSummary?.totalEmissions?.CO2e || 0;
-    const dataPoints = summary.metadata?.totalDataPoints || emissionSummary?.metadata?.totalDataPoints || 0;
-    console.log(`[Extract] Final Emission CO2e: ${co2e}, dataPoints: ${dataPoints}`);
-    
-    // ⚠️ Detection: Alert if calculation seems to have failed
-    if (dataPoints > 0 && co2e === 0) {
-      console.error(`[ERROR] ⚠️  EMISSION CALCULATION FAILURE: Document has ${dataPoints} data points but 0 CO2e!`);
-      console.error(`[ERROR] Document ID: ${summary._id}, Period: ${summary.period?.type} ${summary.period?.year}`);
-      console.error(`[ERROR] This suggests the recalculateAndSaveSummary function is not properly aggregating emissions.`);
-    }
-
-    // Extract process emission summary data
-    const rawProcessEmissionSummary = extractSummaryData(summary, 'processEmissionSummary');
-    const processEmissionSummary = rawProcessEmissionSummary ? convertMap(rawProcessEmissionSummary) : {
-      totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-      byScope: {},
-      byCategory: {},
-      byActivity: {},
-      byNode: {},
-      byDepartment: {},
-      byLocation: {},
-      byEmissionFactor: {},
-      byInputType: {},
-      trends: {}
-    };
-
-    // Extract reduction summary (usually at nested level)
-    const rawReductionSummary = summary.reductionSummary || extractSummaryData(summary, 'reductionSummary');
-    const reductionSummary = rawReductionSummary ? convertMap(rawReductionSummary) : {
+ 
+    const emissionSummary = convertMap(summary.emissionSummary || {});
+    const reductionSummary = summary.reductionSummary || {
       totalNetReduction: 0,
       entriesCount: 0,
       byProject: [],
@@ -2133,20 +1990,17 @@ const getEmissionSummary = async (req, res) => {
       byProjectActivity: {},
       byMethodology: {}
     };
-
+ 
     const baseResponse = {
       clientId: summary.clientId,
       period: summary.period,
       emissionSummary,
-      processEmissionSummary,
       reductionSummary,
       metadata: summary.metadata || {}
     };
-
-    console.log(`[Success] Returning ${type} summary with CO2e: ${co2e}, dataPoints: ${dataPoints}`);
-
+ 
     // ----------------------------------------------------
-    // 3) Type-based responses
+    // 3) type-based responses
     // ----------------------------------------------------
     if (type === "emission") {
       return res.status(200).json({
@@ -2160,20 +2014,7 @@ const getEmissionSummary = async (req, res) => {
         }
       });
     }
-
-    if (type === "process") {
-      return res.status(200).json({
-        success: true,
-        type: "process",
-        data: {
-          clientId: baseResponse.clientId,
-          period: baseResponse.period,
-          processEmissionSummary: baseResponse.processEmissionSummary,
-          metadata: baseResponse.metadata
-        }
-      });
-    }
-
+ 
     if (type === "reduction") {
       return res.status(200).json({
         success: true,
@@ -2186,14 +2027,13 @@ const getEmissionSummary = async (req, res) => {
         }
       });
     }
-
+ 
     // both
     return res.status(200).json({
       success: true,
       type: "both",
       data: baseResponse
     });
-
   } catch (error) {
     console.error("❌ Error getting emission summary:", error);
     return res.status(500).json({
@@ -2203,8 +2043,7 @@ const getEmissionSummary = async (req, res) => {
     });
   }
 };
-
-
+ 
 
 
 
@@ -3340,24 +3179,17 @@ const getTopLowEmissionStats = async (req, res) => {
       return [];
     };
 
-    // ✅ IMPROVED: More robust normalize with logging
-    const normalize = (rootValue, groupedValue, fieldName) => {
-      const result = rootValue || groupedValue || {};
-      
-      // Debug logging (can be removed in production)
-      if (process.env.DEBUG_TOP_LOW_STATS === 'true') {
-        const source = rootValue ? 'root' : (groupedValue ? 'grouped' : 'default');
-        const count = Object.keys(result).length;
-        console.log(`[normalize] ${fieldName}: source=${source}, entries=${count}`);
-      }
-      
-      return result;
+    const normalize = (rootValue, groupedValue) => {
+      if (rootValue) return rootValue;
+      if (groupedValue) return groupedValue;
+      return {};
     };
 
-    // Reduction helper
+    // ✅ Reduction helper (Map/Object wrapper + supports { breakdown } wrappers)
     const extractFromMapOrObj = (value) => {
       if (!value) return { breakdown: {} };
 
+      // if stored as { breakdown: Map|Object }
       if (value && typeof value === "object" && value.breakdown) {
         const b = value.breakdown;
         if (b instanceof Map) return { breakdown: Object.fromEntries(b.entries()) };
@@ -3365,6 +3197,7 @@ const getTopLowEmissionStats = async (req, res) => {
         return { breakdown: {} };
       }
 
+      // direct Map/Object
       if (value instanceof Map) return { breakdown: Object.fromEntries(value.entries()) };
       if (typeof value === "object") return { breakdown: value };
 
@@ -3385,99 +3218,44 @@ const getTopLowEmissionStats = async (req, res) => {
       if (week) query["period.week"] = Number(week);
 
       fullSummary = await EmissionSummary.findOne(query).lean();
-      
-      console.log(`[Query] With filters:`, query);
     } else {
       fullSummary = await EmissionSummary.findOne({ clientId })
         .sort({ "period.to": -1 })
         .lean();
-      
-      console.log(`[Query] Latest summary for clientId: ${clientId}`);
     }
 
     if (!fullSummary) {
-      console.log(`[Error] No summary found for query:`, query);
       return res.status(404).json({
         success: false,
-        message: "No summary found for the specified criteria",
-        query,
+        message: "No summary found",
       });
     }
 
-    console.log(`[Found] Summary ID: ${fullSummary._id}, Period: ${fullSummary.period?.type}`);
-
-    // ✅ IMPROVED: Better period extraction
-    const period = fullSummary.period || null;
-    
-    if (!period) {
-      console.log('[Warning] No period information in summary');
-    }
+    const period =
+      fullSummary.period ||
+      fullSummary.emissionSummary?.period ||
+      fullSummary.processEmissionSummary?.period ||
+      fullSummary.reductionSummary?.period ||
+      null;
 
     // ======================================================
     // MODE 1: EMISSION SUMMARY
     // ======================================================
     if (summaryKind === "emission") {
-      console.log('[Mode] Emission Summary');
-      
-      // ✅ IMPROVED: Try multiple paths for totalEmissions
-      let totalEmissions = null;
-      
-      if (fullSummary.totalEmissions && fullSummary.totalEmissions.CO2e !== undefined) {
-        totalEmissions = fullSummary.totalEmissions;
-        console.log('[Found] totalEmissions at root level');
-      } else if (fullSummary.emissionSummary?.totalEmissions) {
-        totalEmissions = fullSummary.emissionSummary.totalEmissions;
-        console.log('[Found] totalEmissions at emissionSummary.totalEmissions');
-      } else {
-        console.log('[Warning] No totalEmissions found, using default');
-        totalEmissions = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
-      }
+      // Extract emission paths
+      const totalEmissions =
+        fullSummary.totalEmissions ||
+        fullSummary.emissionSummary?.totalEmissions ||
+        { CO2e: 0 };
 
       const totalCO2e = safeNum(totalEmissions.CO2e);
-      console.log(`[Total] CO2e: ${totalCO2e}`);
 
-      if (totalCO2e === 0) {
-        console.log('[Warning] Total CO2e is 0 - checking if data exists in breakdown...');
-      }
-
-      // ✅ Extract with improved normalize
-      const byCategory = normalize(
-        fullSummary.byCategory, 
-        fullSummary.emissionSummary?.byCategory,
-        'byCategory'
-      );
-      const byScope = normalize(
-        fullSummary.byScope, 
-        fullSummary.emissionSummary?.byScope,
-        'byScope'
-      );
-      const byActivity = normalize(
-        fullSummary.byActivity, 
-        fullSummary.emissionSummary?.byActivity,
-        'byActivity'
-      );
-      const byDepartment = normalize(
-        fullSummary.byDepartment, 
-        fullSummary.emissionSummary?.byDepartment,
-        'byDepartment'
-      );
-      const byEmissionFactor = normalize(
-        fullSummary.byEmissionFactor, 
-        fullSummary.emissionSummary?.byEmissionFactor,
-        'byEmissionFactor'
-      );
-      const byLocation = normalize(
-        fullSummary.byLocation, 
-        fullSummary.emissionSummary?.byLocation,
-        'byLocation'
-      );
-
-      // Debug: Log what we actually got
-      console.log('[Data] byCategory entries:', Object.keys(byCategory).length);
-      console.log('[Data] byScope entries:', Object.keys(byScope).length);
-      console.log('[Data] byActivity entries:', Object.keys(byActivity).length);
-      console.log('[Data] byDepartment entries:', Object.keys(byDepartment).length);
-      console.log('[Data] byLocation entries:', Object.keys(byLocation).length);
+      const byCategory = normalize(fullSummary.byCategory, fullSummary.emissionSummary?.byCategory);
+      const byScope = normalize(fullSummary.byScope, fullSummary.emissionSummary?.byScope);
+      const byActivity = normalize(fullSummary.byActivity, fullSummary.emissionSummary?.byActivity);
+      const byDepartment = normalize(fullSummary.byDepartment, fullSummary.emissionSummary?.byDepartment);
+      const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.emissionSummary?.byEmissionFactor);
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.emissionSummary?.byLocation);
 
       // ----------------------------------------------------
       // Categories
@@ -3492,11 +3270,6 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-
-      console.log(`[Categories] Found ${categoryList.length} categories`);
-      if (categoryList.length > 0) {
-        console.log(`[Categories] Top: ${categoryList[0].categoryName} (${categoryList[0].CO2e} CO2e)`);
-      }
 
       const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomCategories = [...categoryList]
@@ -3523,8 +3296,6 @@ const getTopLowEmissionStats = async (req, res) => {
         });
       }
 
-      console.log(`[Scopes] Found ${scopeList.length} scopes`);
-
       const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
       const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
 
@@ -3542,8 +3313,6 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-
-      console.log(`[Activities] Found ${activityList.length} activities`);
 
       const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomActivities = [...activityList]
@@ -3564,8 +3333,6 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-
-      console.log(`[Departments] Found ${deptList.length} departments`);
 
       const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomDepartments = [...deptList]
@@ -3588,8 +3355,6 @@ const getTopLowEmissionStats = async (req, res) => {
         };
       });
 
-      console.log(`[Sources] Found ${srcList.length} emission sources`);
-
       const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomSources = [...srcList]
         .filter(s => s.CO2e > 0)
@@ -3597,7 +3362,7 @@ const getTopLowEmissionStats = async (req, res) => {
         .slice(0, limit);
 
       // ----------------------------------------------------
-      // Locations
+      // ✅ Locations (TOP / LOW)
       // ----------------------------------------------------
       const locationEntries = toEntries(byLocation);
       const locationList = locationEntries.map(([name, data]) => {
@@ -3610,15 +3375,11 @@ const getTopLowEmissionStats = async (req, res) => {
         };
       });
 
-      console.log(`[Locations] Found ${locationList.length} locations`);
-
       const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
       const bottomLocation = [...locationList]
         .filter(l => l.CO2e > 0)
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
-
-      console.log('[Success] Returning emission summary stats');
 
       return res.status(200).json({
         success: true,
@@ -3654,6 +3415,7 @@ const getTopLowEmissionStats = async (req, res) => {
             bottom: bottomSources,
           },
 
+          // ✅ ADDED (fixed undefined vars)
           byLocation: {
             top: topLocation,
             bottom: bottomLocation,
@@ -3666,60 +3428,26 @@ const getTopLowEmissionStats = async (req, res) => {
     // MODE 1B: PROCESS EMISSION SUMMARY
     // ======================================================
     if (summaryKind === "process") {
-      console.log('[Mode] Process Emission Summary');
-      
       // Extract process emission paths
-      let totalEmissions = null;
-      
-      if (fullSummary.totalEmissions && fullSummary.totalEmissions.CO2e !== undefined) {
-        totalEmissions = fullSummary.totalEmissions;
-        console.log('[Found] totalEmissions at root level');
-      } else if (fullSummary.processEmissionSummary?.totalEmissions) {
-        totalEmissions = fullSummary.processEmissionSummary.totalEmissions;
-        console.log('[Found] totalEmissions at processEmissionSummary.totalEmissions');
-      } else {
-        console.log('[Warning] No totalEmissions found, using default');
-        totalEmissions = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
-      }
+      const totalEmissions =
+        fullSummary.totalEmissions ||
+        fullSummary.processEmissionSummary?.totalEmissions ||
+        { CO2e: 0 };
 
       const totalCO2e = safeNum(totalEmissions.CO2e);
-      console.log(`[Total] CO2e: ${totalCO2e}`);
 
-      const byCategory = normalize(
-        fullSummary.byCategory, 
-        fullSummary.processEmissionSummary?.byCategory,
-        'byCategory'
-      );
-      const byScope = normalize(
-        fullSummary.byScope, 
-        fullSummary.processEmissionSummary?.byScope,
-        'byScope'
-      );
-      const byActivity = normalize(
-        fullSummary.byActivity, 
-        fullSummary.processEmissionSummary?.byActivity,
-        'byActivity'
-      );
-      const byDepartment = normalize(
-        fullSummary.byDepartment, 
-        fullSummary.processEmissionSummary?.byDepartment,
-        'byDepartment'
-      );
-      const byEmissionFactor = normalize(
-        fullSummary.byEmissionFactor, 
-        fullSummary.processEmissionSummary?.byEmissionFactor,
-        'byEmissionFactor'
-      );
-      const byLocation = normalize(
-        fullSummary.byLocation, 
-        fullSummary.processEmissionSummary?.byLocation,
-        'byLocation'
-      );
+      const byCategory = normalize(fullSummary.byCategory, fullSummary.processEmissionSummary?.byCategory);
+      const byScope = normalize(fullSummary.byScope, fullSummary.processEmissionSummary?.byScope);
+      const byActivity = normalize(fullSummary.byActivity, fullSummary.processEmissionSummary?.byActivity);
+      const byDepartment = normalize(fullSummary.byDepartment, fullSummary.processEmissionSummary?.byDepartment);
+      const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.processEmissionSummary?.byEmissionFactor);
 
-      console.log('[Data] byCategory entries:', Object.keys(byCategory).length);
-      console.log('[Data] byScope entries:', Object.keys(byScope).length);
+      // ✅ ADD location normalization for process summary
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.processEmissionSummary?.byLocation);
 
+      // ----------------------------------------------------
       // Categories
+      // ----------------------------------------------------
       const categoryEntries = toEntries(byCategory);
       const categoryList = categoryEntries.map(([name, val]) => {
         const co2e = safeNum(val?.CO2e);
@@ -3732,14 +3460,21 @@ const getTopLowEmissionStats = async (req, res) => {
       });
 
       const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomCategories = [...categoryList].filter(c => c.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
 
-      // Scopes
+      // ----------------------------------------------------
+      // Scope-level Stats
+      // ----------------------------------------------------
       const scopeOrder = ["Scope 1", "Scope 2", "Scope 3"];
       const scopeList = [];
+
       for (const s of scopeOrder) {
         const val = byScope[s];
         if (!val) continue;
+
         const co2e = safeNum(val.CO2e);
         scopeList.push({
           scopeType: s,
@@ -3748,10 +3483,13 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         });
       }
+
       const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
       const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
 
+      // ----------------------------------------------------
       // Activities
+      // ----------------------------------------------------
       const activityEntriesList = toEntries(byActivity);
       const activityList = activityEntriesList.map(([name, data]) => {
         const co2e = safeNum(data?.CO2e);
@@ -3763,10 +3501,16 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-      const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomActivities = [...activityList].filter(a => a.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
+      const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...activityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
       // Departments
+      // ----------------------------------------------------
       const deptEntries = toEntries(byDepartment);
       const deptList = deptEntries.map(([name, data]) => {
         const co2e = safeNum(data?.CO2e);
@@ -3777,10 +3521,16 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-      const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomDepartments = [...deptList].filter(d => d.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
-      // Emission Sources
+      const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomDepartments = [...deptList]
+        .filter(d => d.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Emission Sources (EF-based)
+      // ----------------------------------------------------
       const srcEntries = toEntries(byEmissionFactor);
       const srcList = srcEntries.map(([name, data]) => {
         const co2e = safeNum(data?.CO2e);
@@ -3792,10 +3542,16 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-      const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomSources = [...srcList].filter(s => s.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
-      // Locations
+      const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomSources = [...srcList]
+        .filter(s => s.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // ✅ Locations (TOP / LOW) - PROCESS
+      // ----------------------------------------------------
       const locationEntries = toEntries(byLocation);
       const locationList = locationEntries.map(([name, data]) => {
         const co2e = safeNum(data?.CO2e);
@@ -3806,10 +3562,12 @@ const getTopLowEmissionStats = async (req, res) => {
           percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
         };
       });
-      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomLocation = [...locationList].filter(l => l.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
-      console.log('[Success] Returning process emission summary stats');
+      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocation = [...locationList]
+        .filter(l => l.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
 
       return res.status(200).json({
         success: true,
@@ -3845,6 +3603,7 @@ const getTopLowEmissionStats = async (req, res) => {
             bottom: bottomSources,
           },
 
+          // ✅ ADDED
           byLocation: {
             top: topLocation,
             bottom: bottomLocation,
@@ -3857,57 +3616,77 @@ const getTopLowEmissionStats = async (req, res) => {
     // MODE 2: REDUCTION SUMMARY
     // ======================================================
     if (summaryKind === "reduction") {
-      console.log('[Mode] Reduction Summary');
-      
       const RS = fullSummary.reductionSummary || {};
 
       const totalNetReduction = safeNum(RS.totalNetReduction);
-      const total = totalNetReduction > 0 ? totalNetReduction : 1;
+      const total = totalNetReduction > 0 ? totalNetReduction : 1; // avoid /0
 
-      console.log(`[Total] Net Reduction: ${totalNetReduction}`);
-
-      // Categories
+      // ----------------------------------------------------
+      //  Categories
+      // ----------------------------------------------------
       const { breakdown: catBreak } = extractFromMapOrObj(RS.byCategory);
       const categoryList = Object.entries(catBreak).map(([name, co2e]) => ({
         categoryName: name,
         CO2e: safeNum(co2e),
         percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
       }));
-      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomCategories = [...categoryList].filter(c => c.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
+      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
       // Scopes
+      // ----------------------------------------------------
       const { breakdown: scopeBreak } = extractFromMapOrObj(RS.byScope);
       const scopeList = Object.entries(scopeBreak).map(([name, co2e]) => ({
         scopeType: name,
         CO2e: safeNum(co2e),
         percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
       }));
+
       const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
       const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
 
+      // ----------------------------------------------------
       // Locations
+      // ----------------------------------------------------
       const { breakdown: locBreak } = extractFromMapOrObj(RS.byLocation);
       const locationList = Object.entries(locBreak).map(([name, co2e]) => ({
         locationName: name,
         CO2e: safeNum(co2e),
         percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
       }));
-      const topLocations = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomLocations = [...locationList].filter(a => a.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
+      const topLocations = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocations = [...locationList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
       // Project Activity Breakdown
+      // ----------------------------------------------------
       const { breakdown: actBreak } = extractFromMapOrObj(RS.byProjectActivity);
       const projectActivityList = Object.entries(actBreak).map(([name, co2e]) => ({
         projectActivity: name,
         CO2e: safeNum(co2e),
         percentage: Number(((safeNum(co2e) / total) * 100).toFixed(2)),
       }));
-      const topActivities = [...projectActivityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomActivities = [...projectActivityList].filter(a => a.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
+      const topActivities = [...projectActivityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...projectActivityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
       // Projects
+      // ----------------------------------------------------
       const byProject = Array.isArray(RS.byProject) ? RS.byProject : [];
+
       const projectList = byProject.map(p => ({
         projectId: p.projectId,
         projectName: p.projectName,
@@ -3919,10 +3698,12 @@ const getTopLowEmissionStats = async (req, res) => {
         entriesCount: p.entriesCount || 0,
         percentage: Number(((safeNum(p.totalNetReduction) / total) * 100).toFixed(2)),
       }));
-      const topProjects = [...projectList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
-      const bottomProjects = [...projectList].filter(a => a.CO2e > 0).sort((a, b) => a.CO2e - b.CO2e).slice(0, limit);
 
-      console.log('[Success] Returning reduction summary stats');
+      const topProjects = [...projectList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomProjects = [...projectList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
 
       return res.status(200).json({
         success: true,
@@ -3961,23 +3742,21 @@ const getTopLowEmissionStats = async (req, res) => {
       });
     }
 
-    // Invalid summaryKind
+    // If summaryKind is invalid:
     return res.status(400).json({
       success: false,
       message: `Invalid summaryKind '${summaryKind}'. Use 'emission', 'process' or 'reduction'`,
     });
 
   } catch (error) {
-    console.error("[Error] getTopLowEmissionStats:", error);
+    console.error("Error in getTopLowEmissionStats:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to get top/low stats",
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
-
 
 
 
