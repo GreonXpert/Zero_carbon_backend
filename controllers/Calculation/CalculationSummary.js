@@ -1227,7 +1227,7 @@ const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
     const {
-      periodType = "yearly",
+      periodType = "monthly",
       year,
       month,
       week,
@@ -2424,8 +2424,9 @@ const getLatestScope12Total = async (req, res) => {
  * GET /api/summaries/:clientId/top-low-stats
  *
  * Supports:
- *    ➤ Emission Summary   (?summaryKind=emission)
- *    ➤ Reduction Summary  (?summaryKind=reduction)
+ *    ➤ Emission Summary        (?summaryKind=emission)
+ *    ➤ Process Emission Summary (?summaryKind=process)
+ *    ➤ Reduction Summary       (?summaryKind=reduction)
  *
  * Default = emission
  */
@@ -2468,6 +2469,25 @@ const getTopLowEmissionStats = async (req, res) => {
       return {};
     };
 
+    // ✅ Reduction helper (Map/Object wrapper + supports { breakdown } wrappers)
+    const extractFromMapOrObj = (value) => {
+      if (!value) return { breakdown: {} };
+
+      // if stored as { breakdown: Map|Object }
+      if (value && typeof value === "object" && value.breakdown) {
+        const b = value.breakdown;
+        if (b instanceof Map) return { breakdown: Object.fromEntries(b.entries()) };
+        if (typeof b === "object") return { breakdown: b };
+        return { breakdown: {} };
+      }
+
+      // direct Map/Object
+      if (value instanceof Map) return { breakdown: Object.fromEntries(value.entries()) };
+      if (typeof value === "object") return { breakdown: value };
+
+      return { breakdown: {} };
+    };
+
     // -------------------------------------------------------
     // Step 1: Fetch correct summary document
     // -------------------------------------------------------
@@ -2498,6 +2518,7 @@ const getTopLowEmissionStats = async (req, res) => {
     const period =
       fullSummary.period ||
       fullSummary.emissionSummary?.period ||
+      fullSummary.processEmissionSummary?.period ||
       fullSummary.reductionSummary?.period ||
       null;
 
@@ -2518,6 +2539,7 @@ const getTopLowEmissionStats = async (req, res) => {
       const byActivity = normalize(fullSummary.byActivity, fullSummary.emissionSummary?.byActivity);
       const byDepartment = normalize(fullSummary.byDepartment, fullSummary.emissionSummary?.byDepartment);
       const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.emissionSummary?.byEmissionFactor);
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.emissionSummary?.byLocation);
 
       // ----------------------------------------------------
       // Categories
@@ -2623,6 +2645,26 @@ const getTopLowEmissionStats = async (req, res) => {
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
+      // ----------------------------------------------------
+      // ✅ Locations (TOP / LOW)
+      // ----------------------------------------------------
+      const locationEntries = toEntries(byLocation);
+      const locationList = locationEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          locationName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocation = [...locationList]
+        .filter(l => l.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
       return res.status(200).json({
         success: true,
         summaryKind: "emission",
@@ -2655,6 +2697,200 @@ const getTopLowEmissionStats = async (req, res) => {
           emissionSources: {
             top: topSources,
             bottom: bottomSources,
+          },
+
+          // ✅ ADDED (fixed undefined vars)
+          byLocation: {
+            top: topLocation,
+            bottom: bottomLocation,
+          },
+        },
+      });
+    }
+
+    // ======================================================
+    // MODE 1B: PROCESS EMISSION SUMMARY
+    // ======================================================
+    if (summaryKind === "process") {
+      // Extract process emission paths
+      const totalEmissions =
+        fullSummary.totalEmissions ||
+        fullSummary.processEmissionSummary?.totalEmissions ||
+        { CO2e: 0 };
+
+      const totalCO2e = safeNum(totalEmissions.CO2e);
+
+      const byCategory = normalize(fullSummary.byCategory, fullSummary.processEmissionSummary?.byCategory);
+      const byScope = normalize(fullSummary.byScope, fullSummary.processEmissionSummary?.byScope);
+      const byActivity = normalize(fullSummary.byActivity, fullSummary.processEmissionSummary?.byActivity);
+      const byDepartment = normalize(fullSummary.byDepartment, fullSummary.processEmissionSummary?.byDepartment);
+      const byEmissionFactor = normalize(fullSummary.byEmissionFactor, fullSummary.processEmissionSummary?.byEmissionFactor);
+
+      // ✅ ADD location normalization for process summary
+      const byLocation = normalize(fullSummary.byLocation, fullSummary.processEmissionSummary?.byLocation);
+
+      // ----------------------------------------------------
+      // Categories
+      // ----------------------------------------------------
+      const categoryEntries = toEntries(byCategory);
+      const categoryList = categoryEntries.map(([name, val]) => {
+        const co2e = safeNum(val?.CO2e);
+        return {
+          categoryName: name,
+          scopeType: val?.scopeType || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topCategories = [...categoryList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomCategories = [...categoryList]
+        .filter(c => c.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Scope-level Stats
+      // ----------------------------------------------------
+      const scopeOrder = ["Scope 1", "Scope 2", "Scope 3"];
+      const scopeList = [];
+
+      for (const s of scopeOrder) {
+        const val = byScope[s];
+        if (!val) continue;
+
+        const co2e = safeNum(val.CO2e);
+        scopeList.push({
+          scopeType: s,
+          CO2e: co2e,
+          breakdown: val,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        });
+      }
+
+      const highestScope = [...scopeList].sort((a, b) => b.CO2e - a.CO2e)[0] || null;
+      const lowestScope = scopeList.find(s => s.CO2e > 0) || null;
+
+      // ----------------------------------------------------
+      // Activities
+      // ----------------------------------------------------
+      const activityEntriesList = toEntries(byActivity);
+      const activityList = activityEntriesList.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          activityName: name,
+          scopeType: data?.scopeType || null,
+          categoryName: data?.categoryName || null,
+          CO2e: co2e,
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topActivities = [...activityList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomActivities = [...activityList]
+        .filter(a => a.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Departments
+      // ----------------------------------------------------
+      const deptEntries = toEntries(byDepartment);
+      const deptList = deptEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          departmentName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topDepartments = [...deptList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomDepartments = [...deptList]
+        .filter(d => d.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // Emission Sources (EF-based)
+      // ----------------------------------------------------
+      const srcEntries = toEntries(byEmissionFactor);
+      const srcList = srcEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          sourceName: name,
+          CO2e: co2e,
+          dataPointCount: safeNum(data?.dataPointCount),
+          scopeTypes: Array.isArray(data?.scopeTypes) ? data.scopeTypes : [],
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topSources = [...srcList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomSources = [...srcList]
+        .filter(s => s.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      // ----------------------------------------------------
+      // ✅ Locations (TOP / LOW) - PROCESS
+      // ----------------------------------------------------
+      const locationEntries = toEntries(byLocation);
+      const locationList = locationEntries.map(([name, data]) => {
+        const co2e = safeNum(data?.CO2e);
+        return {
+          locationName: name,
+          CO2e: co2e,
+          nodeCount: safeNum(data?.nodeCount),
+          percentage: totalCO2e > 0 ? Number(((co2e / totalCO2e) * 100).toFixed(2)) : 0,
+        };
+      });
+
+      const topLocation = [...locationList].sort((a, b) => b.CO2e - a.CO2e).slice(0, limit);
+      const bottomLocation = [...locationList]
+        .filter(l => l.CO2e > 0)
+        .sort((a, b) => a.CO2e - b.CO2e)
+        .slice(0, limit);
+
+      return res.status(200).json({
+        success: true,
+        summaryKind: "process",
+        data: {
+          clientId,
+          period,
+          totalEmissions,
+
+          categories: {
+            top: topCategories,
+            bottom: bottomCategories,
+          },
+
+          scopes: {
+            highest: highestScope,
+            lowest: lowestScope,
+            all: scopeList,
+          },
+
+          activities: {
+            top: topActivities,
+            bottom: bottomActivities,
+          },
+
+          departments: {
+            top: topDepartments,
+            bottom: bottomDepartments,
+          },
+
+          emissionSources: {
+            top: topSources,
+            bottom: bottomSources,
+          },
+
+          // ✅ ADDED
+          byLocation: {
+            top: topLocation,
+            bottom: bottomLocation,
           },
         },
       });
@@ -2793,7 +3029,7 @@ const getTopLowEmissionStats = async (req, res) => {
     // If summaryKind is invalid:
     return res.status(400).json({
       success: false,
-      message: `Invalid summaryKind '${summaryKind}'. Use 'emission' or 'reduction'`,
+      message: `Invalid summaryKind '${summaryKind}'. Use 'emission', 'process' or 'reduction'`,
     });
 
   } catch (error) {
