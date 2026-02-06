@@ -143,8 +143,6 @@ const emissionDetailsSchema = new mongoose.Schema(
       }
     },
 
-    
-
     // Emissions by department
     byDepartment: {
       type: Map,
@@ -239,15 +237,7 @@ const emissionDetailsSchema = new mongoose.Schema(
       isComplete: { type: Boolean, default: false },
       hasErrors: { type: Boolean, default: false },
       errors: [String],
-      calculationDuration: Number, // in milliseconds
-      // 🆕 Allocation metadata
-    allocationApplied: { type: Boolean, default: false },
-    sharedScopeIdentifiers: { type: Number, default: 0 },
-    allocationWarnings: [String],
-    // 🆕 ADD THESE:
-  migratedData: { type: Boolean, default: false },
-  preventAutoRecalculation: { type: Boolean, default: false }
-
+      calculationDuration: Number // in milliseconds
     }
   },
   { _id: false }
@@ -288,31 +278,6 @@ const emissionSummarySchema = new mongoose.Schema(
      *  byEmissionFactor, trends, metadata (emission related).
      */
     emissionSummary: {
-      type: emissionDetailsSchema,
-      default: {}
-    },
-
-    /**
-     * 🆕 PROCESS EMISSION SUMMARY
-     * Filtered emission summary based on ProcessFlowchart nodes and scopes.
-     * Only includes nodes and scopeIdentifiers that exist in the client's ProcessFlowchart.
-     * This provides process-level emissions tracking separate from organization-level.
-     * 
-     * Structure mirrors emissionSummary for consistency:
-     * - period: Time period matching root period
-     * - totalEmissions: Total emissions from ProcessFlowchart nodes only
-     * - byScope: Breakdown by Scope 1/2/3 (filtered)
-     * - byCategory: Categories from ProcessFlowchart nodes only
-     * - byActivity: Activities from ProcessFlowchart nodes only
-     * - byNode: Only nodes that exist in ProcessFlowchart with allowed scopes
-     * - byDepartment: Departments from ProcessFlowchart nodes only
-     * - byLocation: Locations from ProcessFlowchart nodes only
-     * - byInputType: Input type breakdown (filtered)
-     * - byEmissionFactor: Emission factor breakdown (filtered)
-     * - trends: Period-over-period comparison
-     * - metadata: Calculation metadata specific to process emissions
-     */
-    processEmissionSummary: {
       type: emissionDetailsSchema,
       default: {}
     },

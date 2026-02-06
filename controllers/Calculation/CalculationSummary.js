@@ -79,31 +79,32 @@ function extractEmissionValues(calculatedEmissions) {
   const addBucket = (bucketObj) => {
     if (!bucketObj || typeof bucketObj !== "object") return;
 
-    // Handle both Map and Object
-    const keys = (bucketObj instanceof Map) 
-      ? Array.from(bucketObj.keys()) 
-      : Object.keys(bucketObj);
+    // Handle Map (if it comes from mongoose as a Map) or Object
+    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
 
     for (const bucketKey of keys) {
-      const item = (bucketObj instanceof Map) 
-        ? bucketObj.get(bucketKey) 
-        : bucketObj[bucketKey];
+      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
       
       if (!item || typeof item !== "object") continue;
 
-      // Extract emission values
-      totals.CO2e += Number(item.CO2e) || 0;
+      const co2e =
+        Number(item.CO2e ??
+              item.emission ??
+              item.CO2eWithUncertainty ??
+              item.emissionWithUncertainty) || 0;
+
+      totals.CO2e += co2e;
       totals.CO2 += Number(item.CO2) || 0;
       totals.CH4 += Number(item.CH4) || 0;
       totals.N2O += Number(item.N2O) || 0;
     }
   };
 
-  // ✅ CRITICAL FIX: Only use incoming bucket!
-  if (calculatedEmissions.incoming) {
-    addBucket(calculatedEmissions.incoming);
-  }
-  // ❌ DO NOT process cumulative bucket!
+  // 🔴 FIX: Only add INCOMING emissions. 
+  // Do NOT add cumulative, or you will double-count historical data.
+  addBucket(calculatedEmissions.incoming);
+  
+  // REMOVED: addBucket(calculatedEmissions.cumulative); 
 
   return totals;
 }
@@ -326,23 +327,10 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
         const emissionValues = extractEmissionValues(entry.calculatedEmissions);
         if (emissionValues.CO2e === 0) continue;
 
-        // ✅ FIX: Use fallback values instead of skipping entries with missing nodes
-        let nodeContext = nodeMap.get(entry.nodeId);
+        const nodeContext = nodeMap.get(entry.nodeId);
         if (!nodeContext) {
-          // Create fallback context from entry data
-          nodeContext = {
-            id: entry.nodeId,
-            label: entry.nodeId, // Use nodeId as label
-            department: entry.department || "Unknown",
-            location: entry.location || "Unknown",
-            scopeDetails: []
-          };
-          
-          // Log warning but don't skip the entry
-          if (!emissionSummary.metadata.warnings) {
-            emissionSummary.metadata.warnings = [];
-          }
-          emissionSummary.metadata.warnings.push(`Node ${entry.nodeId} not in flowchart - using fallback data`);
+          emissionSummary.metadata.errors.push(`Node ${entry.nodeId} not found`);
+          continue;
         }
 
         const scopeDetail = nodeContext.scopeDetails.find(s => s.scopeIdentifier === entry.scopeIdentifier);
@@ -946,85 +934,6 @@ function mapToObj(value) {
 }
 
 
-/**
- * IMPROVED: Calculate trends with proper edge case handling
- * 
- * FIXES:
- * - Handles zero/very small previous values
- * - Caps percentages at reasonable limits
- * - Properly handles data types
- * - Rounds to 2 decimal places
- */
-function calculateTrends(currentSummary, previousSummary) {
-  const trends = {};
-  
-  // Helper function to safely get numeric value
-  const safeNum = (val) => {
-    const num = Number(val);
-    return Number.isFinite(num) ? num : 0;
-  };
-  
-  // Helper function to calculate trend for any metric
-  const calcTrend = (currentVal, previousVal, minThreshold = 0.01) => {
-    const current = safeNum(currentVal);
-    const previous = safeNum(previousVal);
-    const diff = current - previous;
-    
-    // If previous value is zero or very small
-    if (Math.abs(previous) < minThreshold) {
-      return {
-        value: Math.round(diff * 100) / 100,
-        percentage: 0,  // Set to 0 instead of Infinity
-        direction: current > previous ? 'up' : 
-                  current < previous ? 'down' : 'same'
-      };
-    }
-    
-    // Normal calculation
-    let percentChange = (diff / previous) * 100;
-    
-    // Cap at reasonable limits to prevent UI issues
-    percentChange = Math.min(Math.max(percentChange, -999), 999);
-    
-    // Round to 2 decimals
-    percentChange = Math.round(percentChange * 100) / 100;
-    
-    return {
-      value: Math.round(diff * 100) / 100,
-      percentage: percentChange,
-      direction: current > previous ? 'up' : 
-                current < previous ? 'down' : 'same'
-    };
-  };
-  
-  // =========================================================================
-  // TOTAL EMISSIONS TREND
-  // =========================================================================
-  trends.total = calcTrend(
-    currentSummary.totalEmissions?.CO2e,
-    previousSummary.totalEmissions?.CO2e
-  );
-  
-  // =========================================================================
-  // SCOPE TRENDS
-  // =========================================================================
-  trends['Scope 1'] = calcTrend(
-    currentSummary.byScope?.['Scope 1']?.CO2e,
-    previousSummary.byScope?.['Scope 1']?.CO2e
-  );
-  
-  trends['Scope 2'] = calcTrend(
-    currentSummary.byScope?.['Scope 2']?.CO2e,
-    previousSummary.byScope?.['Scope 2']?.CO2e
-  );
-  
-  trends['Scope 3'] = calcTrend(
-    currentSummary.byScope?.['Scope 3']?.CO2e,
-    previousSummary.byScope?.['Scope 3']?.CO2e
-  );
-  
-  return trends;
-}
 
 
 
@@ -1318,7 +1227,7 @@ const getEmissionSummary = async (req, res) => {
   try {
     const { clientId } = req.params;
     const {
-      periodType = "yearly",
+      periodType = "monthly",
       year,
       month,
       week,
