@@ -12,6 +12,7 @@ const {
   getReductionSummaryHierarchy,
      getSbtiProgress,
   getReductionSummariesByProjects,
+  compareSummarySelections,
 
   
   
@@ -141,6 +142,6 @@ router.get(
 );
 
 
-
+router.post('/:clientId/compare', compareSummarySelections)
 
 module.exports = router;

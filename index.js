@@ -161,6 +161,11 @@ app.use('/api/iot', iotRouter);
 app.use('/api', apiKeyRoutes);
 app.use('/api/tickets', ticketRoutes);
 
+// In your main app.js or routes/index.js
+const debugRoutes = require('./router/debug');
+
+// Add this line with your other routes
+app.use('/api/debug', debugRoutes);
 // ============================================================================
 // 🔐 HELPER FUNCTIONS (MUST BE OUTSIDE CONNECTION HANDLER)
 // ============================================================================
