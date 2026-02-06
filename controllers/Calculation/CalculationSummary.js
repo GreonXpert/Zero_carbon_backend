@@ -19,11 +19,9 @@ const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection
 const { 
   getEffectiveAllocationPct, 
   applyAllocation,
-  addEmissionValues,
-  ensureMapEntry,
+  
   buildAllocationBreakdown,
   finalizeAllocationBreakdowns,
-  extractEmissionValues
 } = require('../../utils/allocation/allocationHelpers');
 
 // Import socket.io instance
@@ -79,45 +77,45 @@ function convertKgToTonnes(valueInKg) {
   return valueInKg / 1000;
 }
 
-// function extractEmissionValues(calculatedEmissions) {
-//   const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+function extractEmissionValues(calculatedEmissions) {
+  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
-//   if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
-//     return totals;
-//   }
+  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
+    return totals;
+  }
 
-//   const addBucket = (bucketObj) => {
-//     if (!bucketObj || typeof bucketObj !== "object") return;
+  const addBucket = (bucketObj) => {
+    if (!bucketObj || typeof bucketObj !== "object") return;
 
-//     // Handle Map (if it comes from mongoose as a Map) or Object
-//     const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
+    // Handle Map (if it comes from mongoose as a Map) or Object
+    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
 
-//     for (const bucketKey of keys) {
-//       const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
+    for (const bucketKey of keys) {
+      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
       
-//       if (!item || typeof item !== "object") continue;
+      if (!item || typeof item !== "object") continue;
 
-//       const co2e =
-//         Number(item.CO2e ??
-//               item.emission ??
-//               item.CO2eWithUncertainty ??
-//               item.emissionWithUncertainty) || 0;
+      const co2e =
+        Number(item.CO2e ??
+              item.emission ??
+              item.CO2eWithUncertainty ??
+              item.emissionWithUncertainty) || 0;
 
-//       totals.CO2e += co2e;
-//       totals.CO2 += Number(item.CO2) || 0;
-//       totals.CH4 += Number(item.CH4) || 0;
-//       totals.N2O += Number(item.N2O) || 0;
-//     }
-//   };
+      totals.CO2e += co2e;
+      totals.CO2 += Number(item.CO2) || 0;
+      totals.CH4 += Number(item.CH4) || 0;
+      totals.N2O += Number(item.N2O) || 0;
+    }
+  };
 
-//   // 🔴 FIX: Only add INCOMING emissions. 
-//   // Do NOT add cumulative, or you will double-count historical data.
-//   addBucket(calculatedEmissions.incoming);
+  // 🔴 FIX: Only add INCOMING emissions. 
+  // Do NOT add cumulative, or you will double-count historical data.
+  addBucket(calculatedEmissions.incoming);
   
-//   // REMOVED: addBucket(calculatedEmissions.cumulative); 
+  // REMOVED: addBucket(calculatedEmissions.cumulative); 
 
-//   return totals;
-// }
+  return totals;
+}
 
 
 
@@ -125,43 +123,78 @@ function convertKgToTonnes(valueInKg) {
 //  * Helper function to add emission values to a target object
 //  * Values should already be in tonnes
 //  */
-// function addEmissionValues(target, source) {
-//   target.CO2e += source.CO2e;
-//   target.CO2 += source.CO2;
-//   target.CH4 += source.CH4;
-//   target.N2O += source.N2O;
-// }
+function addEmissionValues(target, source) {
+  target.CO2e += source.CO2e;
+  target.CO2 += source.CO2;
+  target.CH4 += source.CH4;
+  target.N2O += source.N2O;
+}
 
-// function ensureMapEntry(map, key, defaultValue = {}) {
-//   if (!map.has(key)) {
-//     map.set(key, {
-//       CO2e: 0,
-//       CO2: 0,
-//       CH4: 0,
-//       N2O: 0,
-//       dataPointCount: 0,
-//       ...defaultValue
-//     });
-//   }
-//   return map.get(key);
-// }
+function ensureMapEntry(map, key, defaultValue = {}) {
+  if (!map.has(key)) {
+    map.set(key, {
+      CO2e: 0,
+      CO2: 0,
+      CH4: 0,
+      N2O: 0,
+      dataPointCount: 0,
+      ...defaultValue
+    });
+  }
+  return map.get(key);
+}
 
 /**
  * Helper function to ensure Map structure exists
  */
-// function ensureMapEntry(map, key, defaultValue = {}) {
-//   const sanitizedKey = sanitizeMapKey(key); // Sanitize the key before using it
-//   if (!map.has(sanitizedKey)) {
-//     map.set(sanitizedKey, { 
-//       CO2e: 0, CO2: 0, CH4: 0, N2O: 0, 
-//       uncertainty: 0, dataPointCount: 0,
-//       ...defaultValue 
-//     });
-//   }
-//   return map.get(sanitizedKey);
-// }
+function ensureMapEntry(map, key, defaultValue = {}) {
+  const sanitizedKey = sanitizeMapKey(key); // Sanitize the key before using it
+  if (!map.has(sanitizedKey)) {
+    map.set(sanitizedKey, { 
+      CO2e: 0, CO2: 0, CH4: 0, N2O: 0, 
+      uncertainty: 0, dataPointCount: 0,
+      ...defaultValue 
+    });
+  }
+  return map.get(sanitizedKey);
+}
 
+/**
+ * Check if a summary is protected from auto-recalculation
+ * @param {string} clientId - Client ID
+ * @param {string} periodType - Period type (daily, monthly, yearly, all-time)
+ * @param {number} year - Year (optional)
+ * @param {number} month - Month (optional)
+ * @param {number} day - Day (optional)
+ * @returns {Promise<boolean>} - True if protected, false otherwise
+ */
+const isSummaryProtected = async (clientId, periodType, year = null, month = null, day = null) => {
+  const query = {
+    clientId,
+    'period.type': periodType
+  };
+  
+  if (year) query['period.year'] = year;
+  if (month) query['period.month'] = month;
+  if (day) query['period.day'] = day;
 
+  const existingSummary = await EmissionSummary.findOne(query)
+    .select('metadata.preventAutoRecalculation metadata.migratedData')
+    .lean();
+
+  if (existingSummary) {
+    const isProtected = 
+      existingSummary.metadata?.preventAutoRecalculation || 
+      existingSummary.metadata?.migratedData;
+    
+    if (isProtected) {
+      console.log(`🔒 Summary ${periodType} is protected from auto-recalculation`);
+      return true;
+    }
+  }
+  
+  return false;
+};
 
 
 /**
@@ -1771,29 +1804,81 @@ const updateSummariesOnDataChange = async (dataEntry) => {
     const { clientId } = dataEntry;
     const entryDate = moment.utc(dataEntry.timestamp);
 
+    // 🔒 CHECK FOR PROTECTION FLAGS BEFORE RECALCULATION
+    const checkProtection = async (periodType, year, month, day) => {
+      const query = {
+        clientId,
+        'period.type': periodType
+      };
+      
+      if (year) query['period.year'] = year;
+      if (month) query['period.month'] = month;
+      if (day) query['period.day'] = day;
+
+      const existingSummary = await EmissionSummary.findOne(query)
+        .select('metadata.preventAutoRecalculation metadata.migratedData')
+        .lean();
+
+      if (existingSummary) {
+        const isProtected = 
+          existingSummary.metadata?.preventAutoRecalculation || 
+          existingSummary.metadata?.migratedData;
+        
+        if (isProtected) {
+          console.log(`🔒 Skipping ${periodType} recalculation - summary is protected from auto-recalculation`);
+          return true; // Protected
+        }
+      }
+      return false; // Not protected
+    };
+
     // DAILY
-    await recalculateAndSaveSummary(
-      clientId,
-      'daily',
-      entryDate.year(),
-      entryDate.month() + 1,
-      null,
+    const dailyProtected = await checkProtection(
+      'daily', 
+      entryDate.year(), 
+      entryDate.month() + 1, 
       entryDate.date()
     );
+    if (!dailyProtected) {
+      await recalculateAndSaveSummary(
+        clientId,
+        'daily',
+        entryDate.year(),
+        entryDate.month() + 1,
+        null,
+        entryDate.date()
+      );
+    }
 
     // MONTHLY
-    await recalculateAndSaveSummary(
-      clientId,
+    const monthlyProtected = await checkProtection(
       'monthly',
       entryDate.year(),
       entryDate.month() + 1
     );
+    if (!monthlyProtected) {
+      await recalculateAndSaveSummary(
+        clientId,
+        'monthly',
+        entryDate.year(),
+        entryDate.month() + 1
+      );
+    }
 
     // YEARLY
-    await recalculateAndSaveSummary(clientId, 'yearly', entryDate.year());
+    const yearlyProtected = await checkProtection(
+      'yearly',
+      entryDate.year()
+    );
+    if (!yearlyProtected) {
+      await recalculateAndSaveSummary(clientId, 'yearly', entryDate.year());
+    }
 
     // ALL-TIME
-    await recalculateAndSaveSummary(clientId, 'all-time');
+    const allTimeProtected = await checkProtection('all-time');
+    if (!allTimeProtected) {
+      await recalculateAndSaveSummary(clientId, 'all-time');
+    }
 
     console.log(`✅ Successfully updated summaries for client: ${clientId}`);
 
@@ -1935,10 +2020,9 @@ const preventRecalc = summary?.metadata?.preventAutoRecalculation ||
 
 
  
-        // const stale =
-        //   summary &&
-        //   summary.metadata &&
-        //   (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
+        const stale = summary?.metadata?.lastCalculated
+  ? (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000
+  : false;
  
        if (!summary || (stale && !preventRecalc)) { // Added preventRecalc check
   if (preventRecalc) {
@@ -2562,40 +2646,43 @@ const getFilteredSummary = async (req, res) => {
     const sortDirection = direction === "asc" || direction === "low" ? "asc" : "desc";
 
     // -------------------------------------------
-    // 4) Build node rows (EMISSION/PROCESS)
-    // -------------------------------------------
-    const byNodeRaw = activeEmissionSummary.byNode || {};
-    let nodes = entriesOf(byNodeRaw).map(([id, n]) => {
-      // robust per-scope extraction
-      const nodeByScope = {};
-      for (const sc of scopeUniverse) {
-        nodeByScope[sc] = readScopeMetric(n?.byScope, sc, "CO2e");
-      }
+// 4) Build node rows (EMISSION/PROCESS)
+// -------------------------------------------
+const byNodeRaw = activeEmissionSummary.byNode || {};
+let nodes = entriesOf(byNodeRaw).map(([id, n]) => {
+  // robust per-scope extraction
+  const nodeByScope = {};
+  for (const sc of scopeUniverse) {
+    nodeByScope[sc] = readScopeMetric(n?.byScope, sc, "CO2e");
+  }
 
-      const scopeTotal = scopeUniverse.reduce((s, sc) => s + safeNum(nodeByScope[sc]), 0);
+  const scopeTotal = scopeUniverse.reduce((s, sc) => s + safeNum(nodeByScope[sc]), 0);
 
-      // selectedScopeCO2e is what UI uses for "filtered CO2e"
-      // If no explicit scope filter, fallback to node.CO2e when scope split is missing.
-      const selectedScopeSum = scopesForSum.reduce((sum, sc) => sum + safeNum(nodeByScope[sc]), 0);
-      const nodeTotalCO2e = safeNum(n?.CO2e);
-      const selectedScopeCO2e =
-        hasExplicitScopeFilter ? selectedScopeSum : (scopeTotal > 0 ? scopeTotal : nodeTotalCO2e);
+  // selectedScopeCO2e is what UI uses for "filtered CO2e"
+  // If no explicit scope filter, fallback to node.CO2e when scope split is missing.
+  const selectedScopeSum = scopesForSum.reduce((sum, sc) => sum + safeNum(nodeByScope[sc]), 0);
+  const nodeTotalCO2e = safeNum(n?.CO2e);
+  
+  // ✅ CRITICAL FIX: Fallback chain ensures we use node.CO2e when scopes are all 0
+  const selectedScopeCO2e =
+    hasExplicitScopeFilter 
+      ? selectedScopeSum 
+      : (scopeTotal > 0 ? scopeTotal : nodeTotalCO2e);
 
-      return {
-        nodeId: id,
-        nodeLabel: n?.nodeLabel || "",
-        department: n?.department || "",
-        location: n?.location || "",
-        byScope: nodeByScope, // CO2e split per scope (numbers)
-        CO2e: nodeTotalCO2e,
-        CO2: safeNum(n?.CO2),
-        CH4: safeNum(n?.CH4),
-        N2O: safeNum(n?.N2O),
-        uncertainty: safeNum(n?.uncertainty),
-        selectedScopeCO2e, // ✅ THIS now won’t be 0 if scope split is missing (no scope filter)
-      };
-    });
-
+  return {
+    nodeId: id,
+    nodeLabel: n?.nodeLabel || "",
+    department: n?.department || "",
+    location: n?.location || "",
+    byScope: nodeByScope, // CO2e split per scope (numbers)
+    CO2e: nodeTotalCO2e,
+    CO2: safeNum(n?.CO2),
+    CH4: safeNum(n?.CH4),
+    N2O: safeNum(n?.N2O),
+    uncertainty: safeNum(n?.uncertainty),
+    selectedScopeCO2e, // ✅ THIS now won't be 0 if scope split is missing
+  };
+});
     // -------------------------------------------
     // 4.1) Apply node filters
     // -------------------------------------------
@@ -5862,7 +5949,7 @@ const recalculateSummariesOnAllocationUpdate = async (
       clientId,
       'period.type': { $in: ['daily', 'monthly', 'yearly', 'all-time'] }
     })
-    .select('period')
+    .select('period metadata.preventAutoRecalculation metadata.migratedData')
     .lean();
 
     if (existingSummaries.length === 0) {
@@ -5877,7 +5964,31 @@ const recalculateSummariesOnAllocationUpdate = async (
 
     console.log(`📊 Found ${existingSummaries.length} existing summaries to recalculate`);
 
-    // Group summaries by period type
+    // 🔒 FILTER OUT PROTECTED SUMMARIES
+    const protectedSummaries = existingSummaries.filter(s => 
+      s.metadata?.preventAutoRecalculation || s.metadata?.migratedData
+    );
+    
+    const unprotectedSummaries = existingSummaries.filter(s => 
+      !s.metadata?.preventAutoRecalculation && !s.metadata?.migratedData
+    );
+
+    if (protectedSummaries.length > 0) {
+      console.log(`🔒 Skipping ${protectedSummaries.length} protected summaries (migratedData or preventAutoRecalculation)`);
+    }
+
+    if (unprotectedSummaries.length === 0) {
+      console.log(`ℹ️ All summaries are protected from auto-recalculation`);
+      return {
+        success: true,
+        clientId,
+        recalculatedCount: 0,
+        skippedCount: protectedSummaries.length,
+        message: 'All summaries are protected from auto-recalculation'
+      };
+    }
+
+    // Group UNPROTECTED summaries by period type
     const summariesByType = {
       daily: [],
       monthly: [],
@@ -5885,17 +5996,18 @@ const recalculateSummariesOnAllocationUpdate = async (
       'all-time': []
     };
 
-    for (const summary of existingSummaries) {
+    for (const summary of unprotectedSummaries) {
       const { type, year, month, week, day } = summary.period;
       summariesByType[type].push({ type, year, month, week, day });
     }
 
     const recalculationResults = {
       success: [],
-      failed: []
+      failed: [],
+      skipped: protectedSummaries.length
     };
 
-    // Recalculate daily summaries
+    // Recalculate daily summaries (ONLY UNPROTECTED)
     for (const period of summariesByType.daily) {
       try {
         await recalculateAndSaveSummary(
@@ -5925,7 +6037,7 @@ const recalculateSummariesOnAllocationUpdate = async (
       }
     }
 
-    // Recalculate monthly summaries
+    // Recalculate monthly summaries (ONLY UNPROTECTED)
     for (const period of summariesByType.monthly) {
       try {
         await recalculateAndSaveSummary(
@@ -5953,7 +6065,7 @@ const recalculateSummariesOnAllocationUpdate = async (
       }
     }
 
-    // Recalculate yearly summaries
+    // Recalculate yearly summaries (ONLY UNPROTECTED)
     for (const period of summariesByType.yearly) {
       try {
         await recalculateAndSaveSummary(
@@ -5979,7 +6091,7 @@ const recalculateSummariesOnAllocationUpdate = async (
       }
     }
 
-    // Recalculate all-time summary
+    // Recalculate all-time summary (ONLY IF UNPROTECTED)
     if (summariesByType['all-time'].length > 0) {
       try {
         await recalculateAndSaveSummary(
@@ -6009,6 +6121,7 @@ const recalculateSummariesOnAllocationUpdate = async (
         clientId,
         affectedScopeIdentifiers,
         recalculatedCount: recalculationResults.success.length,
+        skippedCount: recalculationResults.skipped,
         failedCount: recalculationResults.failed.length,
         timestamp: new Date()
       });
@@ -6017,6 +6130,7 @@ const recalculateSummariesOnAllocationUpdate = async (
     const duration = Date.now() - startTime;
     console.log(`✅ Allocation update recalculation completed in ${duration}ms`);
     console.log(`   - Successful: ${recalculationResults.success.length}`);
+    console.log(`   - Skipped (protected): ${recalculationResults.skipped}`);
     console.log(`   - Failed: ${recalculationResults.failed.length}`);
 
     return {
@@ -6024,6 +6138,7 @@ const recalculateSummariesOnAllocationUpdate = async (
       clientId,
       affectedScopeIdentifiers,
       recalculatedCount: recalculationResults.success.length,
+      skippedCount: recalculationResults.skipped,
       failedCount: recalculationResults.failed.length,
       duration,
       details: recalculationResults
@@ -6058,6 +6173,7 @@ module.exports = {
   getScopeIdentifierHierarchyOfProcessEmissionSummary,
   compareSummarySelections,
    recalculateSummariesOnAllocationUpdate,
+   isSummaryProtected
     
 
 };

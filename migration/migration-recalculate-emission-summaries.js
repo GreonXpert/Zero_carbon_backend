@@ -3,14 +3,19 @@
  * COMPREHENSIVE MIGRATION: Emission & Reduction Summary Recalculation
  * ============================================================================
  * 
- * This script recalculates BOTH emission and reduction summaries with:
+ * This script recalculates BOTH emission and reduction summaries using
+ * the actual controller functions to ensure consistency with production code.
+ * 
+ * Features:
+ * - ✅ Uses controller functions (no code duplication)
  * - ✅ Weekly period support
- * - ✅ Proper category, activity, department, location extraction
- * - ✅ Fixed "Unknown" values
+ * - ✅ Checkpoint system for resumable migrations
+ * - ✅ Dry-run mode for testing
+ * - ✅ Protection flags to prevent auto-recalculation
  * - ✅ All periods: daily, weekly, monthly, yearly, all-time
  * 
  * USAGE:
- * node migration-recalculate-summaries-COMPLETE.js
+ * node migration-recalculate-summaries-COMPLETE-v2.js
  * 
  * ============================================================================
  */
@@ -18,12 +23,12 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const EmissionSummary = require('../models/CalculationEmission/EmissionSummary');
-const DataEntry = require('../models/Organization/DataEntry');
-const ProcessFlowchart = require('../models/Organization/Flowchart');
-const NetReductionEntry = require('../models/Reduction/NetReductionEntry');
-const Reduction = require('../models/Reduction/Reduction');
 const fs = require('fs');
 const path = require('path');
+
+// Import controller functions
+const { recalculateAndSaveSummary } = require('../controllers/Calculation/CalculationSummary');
+const { recomputeClientNetReductionSummary } = require('../controllers/Reduction/netReductionSummaryController');
 
 // ============================================================================
 // CONFIGURATION
@@ -33,7 +38,9 @@ const CONFIG = {
   DRY_RUN: false,  // Set to true to test without saving
   BATCH_SIZE: 50,
   TARGET_CLIENT: 'Greon017',
-  CHECKPOINT_FILE: 'migration-checkpoint-complete.json'
+  CHECKPOINT_FILE: 'migration-checkpoint-complete-v2.json',
+  SKIP_PROTECTION_FLAGS: false, // Set to true if you don't want to add protection flags
+  VERBOSE: true  // Set to false for less output
 };
 
 // ============================================================================
@@ -43,12 +50,26 @@ const CONFIG = {
 function loadCheckpoint() {
   try {
     if (fs.existsSync(CONFIG.CHECKPOINT_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG.CHECKPOINT_FILE, 'utf8'));
+      const data = JSON.parse(fs.readFileSync(CONFIG.CHECKPOINT_FILE, 'utf8'));
+      console.log(`📍 Loaded checkpoint: ${data.processedIds?.length || 0} already processed`);
+      return data;
     }
   } catch (error) {
     console.error('⚠️  Error loading checkpoint:', error.message);
   }
-  return { processedIds: [], stats: { updated: 0, skipped: 0, errors: 0 } };
+  return { 
+    processedIds: [], 
+    stats: { 
+      emissionUpdated: 0, 
+      reductionUpdated: 0, 
+      skipped: 0, 
+      errors: 0,
+      bothUpdated: 0,
+      onlyEmission: 0,
+      onlyReduction: 0,
+      noData: 0
+    } 
+  };
 }
 
 function saveCheckpoint(data) {
@@ -60,471 +81,224 @@ function saveCheckpoint(data) {
 }
 
 // ============================================================================
-// DATE RANGE BUILDER (WITH WEEKLY SUPPORT)
+// PERIOD EXTRACTION
 // ============================================================================
 
-function buildDateRange(periodType, year, month, week, day) {
-  const now = new Date();
-  let from, to;
+/**
+ * Extract period information from an EmissionSummary document
+ */
+function extractPeriodInfo(summary) {
+  const { type, year, month, week, day } = summary.period;
+  return { type, year, month, week, day };
+}
 
-  switch (periodType) {
+/**
+ * Get timestamps for reduction summary calculation
+ * For weekly periods, we need to provide sample timestamps within that week
+ */
+function getTimestampsForPeriod(summary) {
+  const { type, year, month, week, day } = summary.period;
+  const timestamps = [];
+
+  switch (type) {
     case 'daily':
       if (year && month && day) {
-        from = new Date(year, month - 1, day, 0, 0, 0);
-        to = new Date(year, month - 1, day, 23, 59, 59, 999);
-      } else {
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-        to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+        timestamps.push(new Date(year, month - 1, day, 12, 0, 0));
       }
       break;
 
     case 'weekly':
       if (year && week) {
+        // Calculate the start of the week
         const firstDayOfYear = new Date(year, 0, 1);
         const daysToWeek = (week - 1) * 7;
-        from = new Date(firstDayOfYear.getTime() + daysToWeek * 24 * 60 * 60 * 1000);
-        to = new Date(from.getTime() + 6 * 24 * 60 * 60 * 1000 + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 59 * 1000);
-      } else {
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay());
-        from = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate(), 0, 0, 0);
-        to = new Date(from.getTime() + 6 * 24 * 60 * 60 * 1000 + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 59 * 1000);
+        const weekStart = new Date(firstDayOfYear.getTime() + daysToWeek * 24 * 60 * 60 * 1000);
+        
+        // Add timestamps for each day of the week
+        for (let i = 0; i < 7; i++) {
+          const dayTimestamp = new Date(weekStart.getTime() + i * 24 * 60 * 60 * 1000);
+          timestamps.push(dayTimestamp);
+        }
       }
       break;
 
     case 'monthly':
       if (year && month) {
-        from = new Date(year, month - 1, 1, 0, 0, 0);
-        to = new Date(year, month, 0, 23, 59, 59, 999);
-      } else {
-        from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-        to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        // Add a timestamp for the middle of the month
+        timestamps.push(new Date(year, month - 1, 15, 12, 0, 0));
       }
       break;
 
     case 'yearly':
       if (year) {
-        from = new Date(year, 0, 1, 0, 0, 0);
-        to = new Date(year, 11, 31, 23, 59, 59, 999);
-      } else {
-        from = new Date(now.getFullYear(), 0, 1, 0, 0, 0);
-        to = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+        // Add a timestamp for the middle of the year
+        timestamps.push(new Date(year, 5, 15, 12, 0, 0));
       }
       break;
 
     case 'all-time':
-      from = new Date(2020, 0, 1, 0, 0, 0);
-      to = now;
+      // For all-time, we don't need specific timestamps
+      // The function will handle it
       break;
-
-    default:
-      throw new Error(`Invalid period type: ${periodType}`);
   }
 
-  return { from, to };
+  return timestamps;
 }
 
 // ============================================================================
-// METADATA EXTRACTION FROM NODES
+// APPLY PROTECTION FLAGS
 // ============================================================================
 
-async function buildMetadataCache(clientId) {
-  console.log('📚 Building metadata cache from ProcessFlowchart...');
+/**
+ * Add protection flags to prevent auto-recalculation from overwriting migrated data
+ */
+async function applyProtectionFlags(summaryId) {
+  if (CONFIG.SKIP_PROTECTION_FLAGS) {
+    return;
+  }
+
+  try {
+    await EmissionSummary.findByIdAndUpdate(
+      summaryId,
+      {
+        $set: {
+          'metadata.migratedData': true,
+          'metadata.preventAutoRecalculation': true,
+          'metadata.migrationTimestamp': new Date(),
+          'metadata.migrationVersion': 'v2-controller-based'
+        }
+      }
+    );
+  } catch (error) {
+    console.error(`⚠️  Failed to apply protection flags to ${summaryId}:`, error.message);
+  }
+}
+
+// ============================================================================
+// PROCESS SINGLE SUMMARY
+// ============================================================================
+
+/**
+ * Process a single EmissionSummary document
+ * Returns: { emissionSuccess, reductionSuccess, error }
+ */
+async function processSummary(summary, userId = null) {
+  const { clientId, _id } = summary;
+  const { type, year, month, week, day } = extractPeriodInfo(summary);
   
-  const flowcharts = await ProcessFlowchart.find({ clientId }).lean();
-  
-  const metadataCache = new Map(); // scopeIdentifier -> metadata
-  
-  for (const chart of flowcharts) {
-    for (const node of chart.nodes || []) {
-      const { department, location } = node.details || {};
-      
-      for (const scope of node.details?.scopeDetails || []) {
-        const metadata = {
-          scopeIdentifier: scope.scopeIdentifier,
-          category: scope.categoryName || 'Unknown',
-          activity: scope.activity || 'Unknown',
-          department: department || 'Unknown',
-          location: location || 'Unknown',
-          scopeType: scope.scopeType || 'Unknown',
-          nodeLabel: node.label || 'Unknown Node'
-        };
+  const result = {
+    emissionSuccess: false,
+    reductionSuccess: false,
+    emissionData: null,
+    reductionData: null,
+    error: null
+  };
+
+  try {
+    // ============================================================
+    // RECALCULATE EMISSION SUMMARY
+    // ============================================================
+    if (CONFIG.VERBOSE) {
+      console.log(`  📊 Recalculating emission summary for ${type} period...`);
+    }
+
+    try {
+      const emissionSummary = await recalculateAndSaveSummary(
+        clientId,
+        type,
+        year,
+        month,
+        week,
+        day,
+        userId
+      );
+
+      if (emissionSummary && emissionSummary.emissionSummary) {
+        result.emissionSuccess = true;
+        result.emissionData = emissionSummary.emissionSummary;
         
-        metadataCache.set(scope.scopeIdentifier, metadata);
+        if (CONFIG.VERBOSE) {
+          const totalCO2e = emissionSummary.emissionSummary.totalEmissions?.CO2e || 0;
+          console.log(`     ✅ Emission: ${totalCO2e.toFixed(2)} CO2e tonnes`);
+        }
+      } else {
+        if (CONFIG.VERBOSE) {
+          console.log(`     ℹ️  No emission data for this period`);
+        }
+      }
+    } catch (emissionError) {
+      console.error(`     ❌ Emission calculation failed: ${emissionError.message}`);
+      result.error = `Emission: ${emissionError.message}`;
+    }
+
+    // ============================================================
+    // RECALCULATE REDUCTION SUMMARY
+    // ============================================================
+    if (CONFIG.VERBOSE) {
+      console.log(`  🌱 Recalculating reduction summary for ${type} period...`);
+    }
+
+    try {
+      const timestamps = getTimestampsForPeriod(summary);
+      
+      await recomputeClientNetReductionSummary(clientId, {
+        timestamps: timestamps.length > 0 ? timestamps : undefined
+      });
+
+      // Fetch the updated summary to check if reduction data was added
+      const updatedSummary = await EmissionSummary.findById(_id).lean();
+      
+      if (updatedSummary && updatedSummary.reductionSummary) {
+        result.reductionSuccess = true;
+        result.reductionData = updatedSummary.reductionSummary;
+        
+        if (CONFIG.VERBOSE) {
+          const totalReduction = updatedSummary.reductionSummary.totalNetReduction || 0;
+          console.log(`     ✅ Reduction: ${totalReduction.toFixed(2)} CO2e tonnes reduced`);
+        }
+      } else {
+        if (CONFIG.VERBOSE) {
+          console.log(`     ℹ️  No reduction data for this period`);
+        }
+      }
+    } catch (reductionError) {
+      console.error(`     ❌ Reduction calculation failed: ${reductionError.message}`);
+      if (result.error) {
+        result.error += ` | Reduction: ${reductionError.message}`;
+      } else {
+        result.error = `Reduction: ${reductionError.message}`;
       }
     }
+
+    // ============================================================
+    // APPLY PROTECTION FLAGS (if not in dry-run)
+    // ============================================================
+    if (!CONFIG.DRY_RUN && (result.emissionSuccess || result.reductionSuccess)) {
+      await applyProtectionFlags(_id);
+    }
+
+  } catch (error) {
+    console.error(`  ❌ Unexpected error processing summary:`, error);
+    result.error = error.message;
   }
+
+  return result;
+}
+
+// ============================================================================
+// FORMAT PERIOD LABEL
+// ============================================================================
+
+function formatPeriodLabel(summary) {
+  const { type, year, month, week, day } = summary.period;
   
-  console.log(`✅ Loaded metadata for ${metadataCache.size} scope identifiers`);
-  return metadataCache;
-}
-
-// ============================================================================
-// EMISSION EXTRACTION (WITH PROPER METADATA)
-// ============================================================================
-
-function extractEmissionValues(calculatedEmissions, metadataCache, dataEntry) {
-  const emissions = {
-    CO2e: 0,
-    CO2: 0,
-    CH4: 0,
-    N2O: 0,
-    scopeType: 'Unknown',
-    category: 'Unknown',
-    activity: 'Unknown',
-    department: 'Unknown',
-    location: 'Unknown',
-    nodeLabel: 'Unknown Node'
-  };
-
-  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
-    return emissions;
-  }
-
-  // Extract from incoming bucket
-  const addBucket = (bucketObj) => {
-    if (!bucketObj || typeof bucketObj !== "object") return;
-
-    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
-
-    for (const bucketKey of keys) {
-      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
-      
-      if (!item || typeof item !== "object") continue;
-
-      const co2e = Number(item.CO2e ?? item.emission ?? item.CO2eWithUncertainty ?? item.emissionWithUncertainty) || 0;
-
-      emissions.CO2e += co2e;
-      emissions.CO2 += Number(item.CO2) || 0;
-      emissions.CH4 += Number(item.CH4) || 0;
-      emissions.N2O += Number(item.N2O) || 0;
-    }
-  };
-
-  addBucket(calculatedEmissions.incoming);
-
-  // 🔥 GET METADATA FROM CACHE
-  const scopeId = dataEntry.scopeIdentifier || dataEntry.scope?.scopeIdentifier;
-  if (scopeId && metadataCache.has(scopeId)) {
-    const meta = metadataCache.get(scopeId);
-    emissions.scopeType = meta.scopeType;
-    emissions.category = meta.category;
-    emissions.activity = meta.activity;
-    emissions.department = meta.department;
-    emissions.location = meta.location;
-    emissions.nodeLabel = meta.nodeLabel;
-  }
-
-  return emissions;
-}
-
-// ============================================================================
-// ENSURE MAP ENTRY
-// ============================================================================
-
-function ensureMapEntry(map, key, defaultValue = {}) {
-  if (!map.has(key)) {
-    map.set(key, {
-      CO2e: 0,
-      CO2: 0,
-      CH4: 0,
-      N2O: 0,
-      uncertainty: 0,
-      dataPointCount: 0,
-      ...defaultValue
-    });
-  }
-  return map.get(key);
-}
-
-// ============================================================================
-// RECALCULATE EMISSION SUMMARY FOR ONE PERIOD
-// ============================================================================
-
-async function recalculateEmissionSummary(summary, metadataCache) {
-  const { clientId, period } = summary;
-  const { type, year, month, week, day } = period;
-
-  try {
-    const { from, to } = buildDateRange(type, year, month, week, day);
-
-    // Get dataentries for this period
-    const dataEntries = await DataEntry.find({
-      clientId,
-      processingStatus: 'processed',
-      timestamp: { $gte: from, $lte: to }
-    }).lean();
-
-    if (dataEntries.length === 0) {
-      return { hasData: false };
-    }
-
-    // Initialize summary structure
-    const emissionSummary = {
-      totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
-      byScope: {},
-      byCategory: new Map(),
-      byActivity: new Map(),
-      byNode: new Map(),
-      byDepartment: new Map(),
-      byLocation: new Map(),
-      byInputType: {},
-      byEmissionFactor: new Map()
-    };
-
-    // Process each dataentry
-    for (const entry of dataEntries) {
-      const emissions = extractEmissionValues(entry.calculatedEmissions, metadataCache, entry);
-      
-      // Total emissions
-      emissionSummary.totalEmissions.CO2e += emissions.CO2e;
-      emissionSummary.totalEmissions.CO2 += emissions.CO2;
-      emissionSummary.totalEmissions.CH4 += emissions.CH4;
-      emissionSummary.totalEmissions.N2O += emissions.N2O;
-
-      // By Scope
-      const scopeType = emissions.scopeType;
-      if (!emissionSummary.byScope[scopeType]) {
-        emissionSummary.byScope[scopeType] = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 };
-      }
-      emissionSummary.byScope[scopeType].CO2e += emissions.CO2e;
-      emissionSummary.byScope[scopeType].CO2 += emissions.CO2;
-      emissionSummary.byScope[scopeType].CH4 += emissions.CH4;
-      emissionSummary.byScope[scopeType].N2O += emissions.N2O;
-      emissionSummary.byScope[scopeType].dataPointCount++;
-
-      // By Category
-      const categoryKey = emissions.category;
-      const categoryEntry = ensureMapEntry(emissionSummary.byCategory, categoryKey, {
-        scopeType: emissions.scopeType,
-        activities: new Map()
-      });
-      categoryEntry.CO2e += emissions.CO2e;
-      categoryEntry.CO2 += emissions.CO2;
-      categoryEntry.CH4 += emissions.CH4;
-      categoryEntry.N2O += emissions.N2O;
-      categoryEntry.dataPointCount++;
-
-      // By Activity (within category)
-      const activityEntry = ensureMapEntry(categoryEntry.activities, emissions.activity);
-      activityEntry.CO2e += emissions.CO2e;
-      activityEntry.CO2 += emissions.CO2;
-      activityEntry.CH4 += emissions.CH4;
-      activityEntry.N2O += emissions.N2O;
-      activityEntry.dataPointCount++;
-
-      // By Activity (top-level)
-      const actEntry = ensureMapEntry(emissionSummary.byActivity, emissions.activity, {
-        scopeType: emissions.scopeType,
-        categoryName: emissions.category
-      });
-      actEntry.CO2e += emissions.CO2e;
-      actEntry.CO2 += emissions.CO2;
-      actEntry.CH4 += emissions.CH4;
-      actEntry.N2O += emissions.N2O;
-      actEntry.dataPointCount++;
-
-      // By Department
-      const deptEntry = ensureMapEntry(emissionSummary.byDepartment, emissions.department, { nodeCount: 0 });
-      deptEntry.CO2e += emissions.CO2e;
-      deptEntry.CO2 += emissions.CO2;
-      deptEntry.CH4 += emissions.CH4;
-      deptEntry.N2O += emissions.N2O;
-      deptEntry.dataPointCount++;
-
-      // By Location
-      const locEntry = ensureMapEntry(emissionSummary.byLocation, emissions.location, { nodeCount: 0 });
-      locEntry.CO2e += emissions.CO2e;
-      locEntry.CO2 += emissions.CO2;
-      locEntry.CH4 += emissions.CH4;
-      locEntry.N2O += emissions.N2O;
-      locEntry.dataPointCount++;
-
-      // By Node
-      const nodeEntry = ensureMapEntry(emissionSummary.byNode, emissions.nodeLabel, {
-        department: emissions.department,
-        location: emissions.location,
-        byScope: {}
-      });
-      nodeEntry.CO2e += emissions.CO2e;
-      nodeEntry.CO2 += emissions.CO2;
-      nodeEntry.CH4 += emissions.CH4;
-      nodeEntry.N2O += emissions.N2O;
-      nodeEntry.dataPointCount++;
-
-      // By Input Type
-      const inputType = entry.inputType || 'manual';
-      if (!emissionSummary.byInputType[inputType]) {
-        emissionSummary.byInputType[inputType] = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 };
-      }
-      emissionSummary.byInputType[inputType].CO2e += emissions.CO2e;
-      emissionSummary.byInputType[inputType].CO2 += emissions.CO2;
-      emissionSummary.byInputType[inputType].CH4 += emissions.CH4;
-      emissionSummary.byInputType[inputType].N2O += emissions.N2O;
-      emissionSummary.byInputType[inputType].dataPointCount++;
-    }
-
-    // Convert Maps to Objects for MongoDB
-    const finalSummary = {
-      ...emissionSummary,
-      byCategory: Object.fromEntries(
-        [...emissionSummary.byCategory.entries()].map(([key, value]) => [
-          key,
-          {
-            ...value,
-            activities: Object.fromEntries(value.activities)
-          }
-        ])
-      ),
-      byActivity: Object.fromEntries(emissionSummary.byActivity),
-      byNode: Object.fromEntries(emissionSummary.byNode),
-      byDepartment: Object.fromEntries(emissionSummary.byDepartment),
-      byLocation: Object.fromEntries(emissionSummary.byLocation),
-      byEmissionFactor: Object.fromEntries(emissionSummary.byEmissionFactor),
-      metadata: {
-        version: (summary.emissionSummary?.metadata?.version || 0) + 1,
-        lastCalculated: new Date(),
-        recalculatedByMigration: true
-      }
-    };
-
-    return {
-      hasData: true,
-      emissionSummary: finalSummary,
-      entriesProcessed: dataEntries.length
-    };
-
-  } catch (error) {
-    console.error(`\n❌ Error recalculating emission summary:`, error);
-    throw error;
-  }
-}
-
-// ============================================================================
-// RECALCULATE REDUCTION SUMMARY FOR ONE PERIOD
-// ============================================================================
-
-async function recalculateReductionSummary(summary) {
-  const { clientId, period } = summary;
-  const { type, year, month, week, day } = period;
-
-  try {
-    const { from, to } = buildDateRange(type, year, month, week, day);
-
-    // Get reduction entries for this period
-    const entries = await NetReductionEntry.find({
-      clientId,
-      timestamp: { $gte: from, $lte: to }
-    }).lean();
-
-    if (entries.length === 0) {
-      return { hasData: false };
-    }
-
-    // Get project metadata
-    const projectIds = [...new Set(entries.map(e => e.projectId))];
-    const projects = await Reduction.find({
-      clientId,
-      projectId: { $in: projectIds }
-    }).select('projectId projectName projectActivity category scope location calculationMethodology').lean();
-
-    const projectMeta = new Map();
-    projects.forEach(p => projectMeta.set(p.projectId, p));
-
-    // Initialize summary
-    const reductionSummary = {
-      totalNetReduction: 0,
-      entriesCount: entries.length,
-      byProject: [],
-      byCategory: {},
-      byScope: {},
-      byLocation: {},
-      byProjectActivity: {},
-      byMethodology: {}
-    };
-
-    const projectMap = new Map();
-
-    // Process each entry
-    for (const e of entries) {
-      const net = Number(e.netReduction || 0);
-      reductionSummary.totalNetReduction += net;
-
-      const meta = projectMeta.get(e.projectId) || {};
-      const projectId = e.projectId;
-      const projectName = meta.projectName || e.projectId;
-      const projectActivity = meta.projectActivity || 'Unknown';
-      const category = meta.category || 'Unknown';
-      const scope = meta.scope || 'Unknown';
-      const location = meta.location?.place || meta.location?.address || 'Unknown';
-      const methodology = meta.calculationMethodology || 'unknown';
-
-      // By Project
-      if (!projectMap.has(projectId)) {
-        projectMap.set(projectId, {
-          projectId,
-          projectName,
-          projectActivity,
-          category,
-          scope,
-          location,
-          methodology,
-          totalNetReduction: 0,
-          entriesCount: 0
-        });
-      }
-      const row = projectMap.get(projectId);
-      row.totalNetReduction += net;
-      row.entriesCount++;
-
-      // By Category
-      if (!reductionSummary.byCategory[category]) {
-        reductionSummary.byCategory[category] = { totalNetReduction: 0, entriesCount: 0 };
-      }
-      reductionSummary.byCategory[category].totalNetReduction += net;
-      reductionSummary.byCategory[category].entriesCount++;
-
-      // By Scope
-      if (!reductionSummary.byScope[scope]) {
-        reductionSummary.byScope[scope] = { totalNetReduction: 0, entriesCount: 0 };
-      }
-      reductionSummary.byScope[scope].totalNetReduction += net;
-      reductionSummary.byScope[scope].entriesCount++;
-
-      // By Location
-      if (!reductionSummary.byLocation[location]) {
-        reductionSummary.byLocation[location] = { totalNetReduction: 0, entriesCount: 0 };
-      }
-      reductionSummary.byLocation[location].totalNetReduction += net;
-      reductionSummary.byLocation[location].entriesCount++;
-
-      // By Project Activity
-      if (!reductionSummary.byProjectActivity[projectActivity]) {
-        reductionSummary.byProjectActivity[projectActivity] = { totalNetReduction: 0, entriesCount: 0 };
-      }
-      reductionSummary.byProjectActivity[projectActivity].totalNetReduction += net;
-      reductionSummary.byProjectActivity[projectActivity].entriesCount++;
-
-      // By Methodology
-      if (!reductionSummary.byMethodology[methodology]) {
-        reductionSummary.byMethodology[methodology] = { totalNetReduction: 0, entriesCount: 0 };
-      }
-      reductionSummary.byMethodology[methodology].totalNetReduction += net;
-      reductionSummary.byMethodology[methodology].entriesCount++;
-    }
-
-    reductionSummary.byProject = [...projectMap.values()];
-
-    return {
-      hasData: true,
-      reductionSummary,
-      entriesProcessed: entries.length
-    };
-
-  } catch (error) {
-    console.error(`\n❌ Error recalculating reduction summary:`, error);
-    throw error;
-  }
+  let label = type;
+  if (year) label += ` ${year}`;
+  if (month) label += `-${String(month).padStart(2, '0')}`;
+  if (week) label += `-W${String(week).padStart(2, '0')}`;
+  if (day) label += `-${String(day).padStart(2, '0')}`;
+  
+  return label;
 }
 
 // ============================================================================
@@ -533,147 +307,181 @@ async function recalculateReductionSummary(summary) {
 
 async function runMigration() {
   console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║  COMPREHENSIVE EMISSION & REDUCTION SUMMARY MIGRATION          ║');
+  console.log('║  COMPREHENSIVE EMISSION & REDUCTION SUMMARY MIGRATION (v2)     ║');
+  console.log('║  Using Controller Functions                                    ║');
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log('📋 Configuration:');
-  console.log(`   - DRY RUN: ${CONFIG.DRY_RUN ? 'YES (no changes will be saved)' : 'NO (changes will be saved)'}`);
+  console.log(`   - DRY RUN: ${CONFIG.DRY_RUN ? '✅ YES (no changes will be saved)' : '❌ NO (changes will be saved)'}`);
   console.log(`   - Batch Size: ${CONFIG.BATCH_SIZE}`);
   console.log(`   - Target Client: ${CONFIG.TARGET_CLIENT}`);
+  console.log(`   - Protection Flags: ${CONFIG.SKIP_PROTECTION_FLAGS ? '❌ Disabled' : '✅ Enabled'}`);
+  console.log(`   - Verbose Mode: ${CONFIG.VERBOSE ? '✅ Enabled' : '❌ Disabled'}`);
   console.log('');
 
   try {
-    // Connect to MongoDB
+    // ============================================================
+    // CONNECT TO DATABASE
+    // ============================================================
     console.log('🔌 Connecting to MongoDB...');
     await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB');
     console.log('');
 
-    // Load metadata cache
-    const metadataCache = await buildMetadataCache(CONFIG.TARGET_CLIENT);
-    console.log('');
-
-    // Get all summaries
-    const totalSummaries = await EmissionSummary.countDocuments({ clientId: CONFIG.TARGET_CLIENT });
+    // ============================================================
+    // GET TOTAL COUNT
+    // ============================================================
+    const totalSummaries = await EmissionSummary.countDocuments({ 
+      clientId: CONFIG.TARGET_CLIENT 
+    });
     console.log(`📊 Total summaries to process: ${totalSummaries}`);
     console.log('');
 
-    // Load checkpoint
+    // ============================================================
+    // LOAD CHECKPOINT
+    // ============================================================
     const checkpoint = loadCheckpoint();
     const processedIds = new Set(checkpoint.processedIds || []);
-    const stats = checkpoint.stats || { updated: 0, skipped: 0, noData: 0, errors: 0 };
+    const stats = checkpoint.stats || { 
+      emissionUpdated: 0, 
+      reductionUpdated: 0, 
+      skipped: 0, 
+      errors: 0,
+      bothUpdated: 0,
+      onlyEmission: 0,
+      onlyReduction: 0,
+      noData: 0
+    };
 
     let processedCount = processedIds.size;
-    let totalEmissionsAdded = 0;
-    let totalReductionsAdded = 0;
-
-    // Process in batches
-    let skip = 0;
     const startTime = Date.now();
 
+    // ============================================================
+    // PROCESS IN BATCHES
+    // ============================================================
+    let skip = 0;
+    let batchNumber = 0;
+
     while (skip < totalSummaries) {
-      const summaries = await EmissionSummary.find({ clientId: CONFIG.TARGET_CLIENT })
+      batchNumber++;
+      
+      const summaries = await EmissionSummary.find({ 
+        clientId: CONFIG.TARGET_CLIENT 
+      })
         .skip(skip)
         .limit(CONFIG.BATCH_SIZE)
         .lean();
 
       if (summaries.length === 0) break;
 
-      console.log(`\n📦 Processing batch ${Math.floor(skip / CONFIG.BATCH_SIZE) + 1}...`);
+      console.log(`\n📦 Processing batch ${batchNumber} (${skip + 1}-${skip + summaries.length} of ${totalSummaries})...`);
 
       for (const summary of summaries) {
-        if (processedIds.has(summary._id.toString())) {
+        const summaryId = summary._id.toString();
+        
+        // Skip if already processed
+        if (processedIds.has(summaryId)) {
           stats.skipped++;
           continue;
         }
 
-        try {
-          // Recalculate emission summary
-          const emissionResult = await recalculateEmissionSummary(summary, metadataCache);
-          
-          // Recalculate reduction summary
-          const reductionResult = await recalculateReductionSummary(summary);
+        const periodLabel = formatPeriodLabel(summary);
+        console.log(`\n  🔄 Processing ${periodLabel} (${summaryId.slice(-6)})`);
 
-          if (!emissionResult.hasData && !reductionResult.hasData) {
-            stats.noData++;
-            processedIds.add(summary._id.toString());
-            continue;
-          }
+        // Process the summary
+        const result = await processSummary(summary);
 
-          // Prepare update
-          const updateData = {};
-          
-          if (emissionResult.hasData) {
-            updateData.emissionSummary = emissionResult.emissionSummary;
-            totalEmissionsAdded += emissionResult.emissionSummary.totalEmissions.CO2e;
-            
-            const periodLabel = `${summary.period.type} ${summary.period.year || ''}${summary.period.month ? '-' + summary.period.month : ''}${summary.period.week ? '-W' + summary.period.week : ''}${summary.period.day ? '-' + summary.period.day : ''}`;
-            console.log(`  ✅ Updated emission summary (${periodLabel})`);
-            console.log(`     Total: ${emissionResult.emissionSummary.totalEmissions.CO2e.toFixed(2)} CO2e tonnes`);
-            console.log(`     Processed ${emissionResult.entriesProcessed} entries`);
-          }
-
-          if (reductionResult.hasData) {
-            updateData.reductionSummary = reductionResult.reductionSummary;
-            updateData['metadata.hasReductionSummary'] = true;
-            updateData['metadata.lastReductionSummaryCalculatedAt'] = new Date();
-            totalReductionsAdded += reductionResult.reductionSummary.totalNetReduction;
-            
-            console.log(`     Reduction: ${reductionResult.reductionSummary.totalNetReduction.toFixed(2)} CO2e tonnes reduced`);
-          }
-
-          // Save to database
-          if (!CONFIG.DRY_RUN && Object.keys(updateData).length > 0) {
-            await EmissionSummary.findByIdAndUpdate(summary._id, { $set: updateData });
-          }
-
-          stats.updated++;
-          processedIds.add(summary._id.toString());
-          processedCount++;
-
-        } catch (error) {
+        // Update statistics
+        if (result.error) {
           stats.errors++;
-          console.error(`  ❌ Error processing summary ${summary._id}: ${error.message}`);
+          console.log(`  ❌ Failed: ${result.error}`);
+        } else if (result.emissionSuccess && result.reductionSuccess) {
+          stats.bothUpdated++;
+          stats.emissionUpdated++;
+          stats.reductionUpdated++;
+        } else if (result.emissionSuccess) {
+          stats.onlyEmission++;
+          stats.emissionUpdated++;
+        } else if (result.reductionSuccess) {
+          stats.onlyReduction++;
+          stats.reductionUpdated++;
+        } else {
+          stats.noData++;
+          console.log(`  ℹ️  No data available for this period`);
         }
+
+        // Mark as processed
+        processedIds.add(summaryId);
+        processedCount++;
       }
 
-      // Save checkpoint every batch
+      // ============================================================
+      // SAVE CHECKPOINT
+      // ============================================================
       saveCheckpoint({
         processedIds: [...processedIds],
         stats,
-        lastProcessed: new Date().toISOString()
+        lastProcessed: new Date().toISOString(),
+        batchNumber
       });
 
-      console.log(`\n📍 Checkpoint saved: ${processedCount} processed`);
-      console.log(`   Updated: ${stats.updated}, Skipped: ${stats.skipped}, No Data: ${stats.noData}, Errors: ${stats.errors}`);
+      console.log(`\n📍 Checkpoint saved: ${processedCount}/${totalSummaries} processed`);
+      console.log(`   ✅ Both Updated: ${stats.bothUpdated}`);
+      console.log(`   📊 Only Emission: ${stats.onlyEmission}`);
+      console.log(`   🌱 Only Reduction: ${stats.onlyReduction}`);
+      console.log(`   ℹ️  No Data: ${stats.noData}`);
+      console.log(`   ⏭️  Skipped: ${stats.skipped}`);
+      console.log(`   ❌ Errors: ${stats.errors}`);
 
       skip += CONFIG.BATCH_SIZE;
+      
+      // Small delay between batches to avoid overwhelming the database
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
+    // ============================================================
+    // FINAL REPORT
+    // ============================================================
     const duration = ((Date.now() - startTime) / 1000 / 60).toFixed(2);
 
-    // Final report
     console.log('\n');
     console.log('╔════════════════════════════════════════════════════════════════╗');
     console.log('║  MIGRATION COMPLETE                                            ║');
     console.log('╚════════════════════════════════════════════════════════════════╝');
     console.log('');
     console.log('📊 Final Statistics:');
-    console.log(`   - Total Processed: ${processedCount}`);
-    console.log(`   - Updated: ${stats.updated}`);
-    console.log(`   - Skipped (already done): ${stats.skipped}`);
-    console.log(`   - No Data: ${stats.noData}`);
-    console.log(`   - Errors: ${stats.errors}`);
-    console.log(`   - Total Emissions Added: ${totalEmissionsAdded.toFixed(2)} CO2e tonnes`);
-    console.log(`   - Total Reductions Added: ${totalReductionsAdded.toFixed(2)} CO2e tonnes`);
-    console.log(`   - Duration: ${duration} minutes`);
-    console.log(`   - Mode: ${CONFIG.DRY_RUN ? 'DRY RUN' : 'LIVE (changes saved)'}`);
+    console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`   Total Processed:        ${processedCount}/${totalSummaries}`);
+    console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`   ✅ Both Updated:        ${stats.bothUpdated}`);
+    console.log(`   📊 Only Emission:       ${stats.onlyEmission}`);
+    console.log(`   🌱 Only Reduction:      ${stats.onlyReduction}`);
+    console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`   Total Emission Updates: ${stats.emissionUpdated}`);
+    console.log(`   Total Reduction Updates:${stats.reductionUpdated}`);
+    console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`   ℹ️  No Data:            ${stats.noData}`);
+    console.log(`   ⏭️  Skipped:            ${stats.skipped}`);
+    console.log(`   ❌ Errors:              ${stats.errors}`);
+    console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`   ⏱️  Duration:           ${duration} minutes`);
+    console.log(`   🔧 Mode:                ${CONFIG.DRY_RUN ? 'DRY RUN' : 'LIVE'}`);
+    console.log(`   🛡️  Protection Flags:   ${CONFIG.SKIP_PROTECTION_FLAGS ? 'Disabled' : 'Enabled'}`);
     console.log('');
 
-    // Cleanup checkpoint
-    if (fs.existsSync(CONFIG.CHECKPOINT_FILE)) {
-      fs.unlinkSync(CONFIG.CHECKPOINT_FILE);
-      console.log('✅ Checkpoint file removed');
+    // ============================================================
+    // CLEANUP CHECKPOINT FILE
+    // ============================================================
+    if (processedCount >= totalSummaries) {
+      if (fs.existsSync(CONFIG.CHECKPOINT_FILE)) {
+        // Keep a backup
+        const backupFile = CONFIG.CHECKPOINT_FILE.replace('.json', '-backup.json');
+        fs.copyFileSync(CONFIG.CHECKPOINT_FILE, backupFile);
+        fs.unlinkSync(CONFIG.CHECKPOINT_FILE);
+        console.log('✅ Checkpoint file removed (backup saved)');
+      }
+    } else {
+      console.log('ℹ️  Checkpoint file retained for resuming later');
     }
 
   } catch (error) {
@@ -683,13 +491,30 @@ async function runMigration() {
   } finally {
     await mongoose.disconnect();
     console.log('🔌 Disconnected from MongoDB');
-    console.log('✅ Migration script completed successfully');
+    console.log('');
+    console.log('✅ Migration script completed');
   }
 }
 
-// Run migration
+// ============================================================================
+// RUN MIGRATION
+// ============================================================================
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n\n⚠️  Migration interrupted by user');
+  console.log('💾 Progress has been saved to checkpoint file');
+  console.log('🔄 You can resume by running this script again');
+  await mongoose.disconnect();
+  process.exit(0);
+});
+
+// Run the migration
 runMigration()
-  .then(() => process.exit(0))
+  .then(() => {
+    console.log('🎉 All done!');
+    process.exit(0);
+  })
   .catch((error) => {
     console.error('❌ Fatal error:', error);
     process.exit(1);

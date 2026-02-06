@@ -174,25 +174,74 @@ const recalculateHistoricalEmissions = async (req, res) => {
       console.log(`Processed ${Math.min(i + batchSize, dataEntries.length)}/${dataEntries.length} entries`);
     }
      // 🆕 Update summaries after batch recalculation if requested
-    if (updateSummaries && results.success > 0) {
-      try {
-        console.log(`📊 Updating summaries after batch recalculation for client: ${clientId}`);
-        const { recalculateAndSaveSummary } = require('./CalculationSummary');
-        
-        // Update all relevant summary periods
-        const now = new Date();
-        await Promise.all([
-          recalculateAndSaveSummary(clientId, 'monthly', now.getFullYear(), now.getMonth() + 1),
-          recalculateAndSaveSummary(clientId, 'yearly', now.getFullYear()),
-          recalculateAndSaveSummary(clientId, 'all-time')
-        ]);
-        
-        console.log(`📊 ✅ Summaries updated after batch recalculation`);
-      } catch (summaryError) {
-        console.error(`📊 ❌ Error updating summaries after batch recalculation:`, summaryError);
-        results.summaryUpdateError = summaryError.message;
+   // 🆕 Update summaries after batch recalculation if requested
+if (updateSummaries && results.success > 0) {
+  try {
+    console.log(`📊 Updating summaries after batch recalculation for client: ${clientId}`);
+    const { recalculateAndSaveSummary } = require('./CalculationSummary');
+    
+    // 🔒 CHECK FOR PROTECTION FLAGS
+    const checkProtection = async (periodType, year, month) => {
+      const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
+      const query = {
+        clientId,
+        'period.type': periodType
+      };
+      
+      if (year) query['period.year'] = year;
+      if (month) query['period.month'] = month;
+
+      const existingSummary = await EmissionSummary.findOne(query)
+        .select('metadata.preventAutoRecalculation metadata.migratedData')
+        .lean();
+
+      if (existingSummary) {
+        return existingSummary.metadata?.preventAutoRecalculation || 
+               existingSummary.metadata?.migratedData;
       }
+      return false;
+    };
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+
+    const updates = [];
+    
+    // Check each period before recalculating
+    const monthlyProtected = await checkProtection('monthly', year, month);
+    if (!monthlyProtected) {
+      updates.push(recalculateAndSaveSummary(clientId, 'monthly', year, month));
+    } else {
+      console.log(`🔒 Skipping monthly summary - protected`);
     }
+
+    const yearlyProtected = await checkProtection('yearly', year);
+    if (!yearlyProtected) {
+      updates.push(recalculateAndSaveSummary(clientId, 'yearly', year));
+    } else {
+      console.log(`🔒 Skipping yearly summary - protected`);
+    }
+
+    const allTimeProtected = await checkProtection('all-time');
+    if (!allTimeProtected) {
+      updates.push(recalculateAndSaveSummary(clientId, 'all-time'));
+    } else {
+      console.log(`🔒 Skipping all-time summary - protected`);
+    }
+    
+    if (updates.length > 0) {
+      await Promise.all(updates);
+      console.log(`📊 ✅ Updated ${updates.length} unprotected summaries`);
+    } else {
+      console.log(`📊 ℹ️ All summaries are protected - no updates performed`);
+    }
+    
+  } catch (summaryError) {
+    console.error(`📊 ❌ Error updating summaries after batch recalculation:`, summaryError);
+    results.summaryUpdateError = summaryError.message;
+  }
+}
     return res.status(200).json({
       success: true,
       message: 'Historical recalculation completed',

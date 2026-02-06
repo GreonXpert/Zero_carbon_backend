@@ -342,37 +342,27 @@ const buildAllocationBreakdown = (matches, rawEmissionValues) => {
  * @param {Object} target - Target emission object to add to
  * @param {Object} source - Source emission object to add from
  */
-const addEmissionValues = (target, source) => {
-  target.CO2e = (target.CO2e || 0) + (source.CO2e || 0);
-  target.CO2 = (target.CO2 || 0) + (source.CO2 || 0);
-  target.CH4 = (target.CH4 || 0) + (source.CH4 || 0);
-  target.N2O = (target.N2O || 0) + (source.N2O || 0);
-  target.uncertainty = (target.uncertainty || 0) + (source.uncertainty || 0);
-};
+function addEmissionValues(target, source) {
+  target.CO2e += source.CO2e;
+  target.CO2 += source.CO2;
+  target.CH4 += source.CH4;
+  target.N2O += source.N2O;
+}
 
-/**
- * 🆕 NEW FUNCTION: Ensure a Map entry exists, creating it with default value if not
- * 
- * @param {Map} map - The Map to check
- * @param {string} key - The key to check/create
- * @param {Object} defaultValue - Default values to merge with base structure
- * @returns {Object} The existing or newly created entry
- */
-const ensureMapEntry = (map, key, defaultValue = {}) => {
+
+function ensureMapEntry(map, key, defaultValue = {}) {
   if (!map.has(key)) {
     map.set(key, {
       CO2e: 0,
       CO2: 0,
       CH4: 0,
       N2O: 0,
-      uncertainty: 0,
       dataPointCount: 0,
       ...defaultValue
     });
   }
   return map.get(key);
-};
-
+}
 
 /**
  * 🆕 ENHANCED: Finalize allocation breakdown for all scopeIdentifiers
@@ -545,15 +535,45 @@ const finalizeAllocationBreakdowns = (byScopeIdentifierMap, allocationWarnings =
  * @param {Object} calculatedEmissions - The calculatedEmissions object from DataEntry
  * @returns {Object} Standardized emission values
  */
-const extractEmissionValues = (calculatedEmissions) => {
-  return {
-    CO2e: calculatedEmissions?.totalGHGEmission?.CO2e || 0,
-    CO2: calculatedEmissions?.totalGHGEmission?.CO2 || 0,
-    CH4: calculatedEmissions?.totalGHGEmission?.CH4 || 0,
-    N2O: calculatedEmissions?.totalGHGEmission?.N2O || 0,
-    uncertainty: calculatedEmissions?.totalGHGEmission?.uncertainty || 0
+function extractEmissionValues(calculatedEmissions) {
+  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+
+  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
+    return totals;
+  }
+
+  const addBucket = (bucketObj) => {
+    if (!bucketObj || typeof bucketObj !== "object") return;
+
+    // Handle Map (if it comes from mongoose as a Map) or Object
+    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
+
+    for (const bucketKey of keys) {
+      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
+      
+      if (!item || typeof item !== "object") continue;
+
+      const co2e =
+        Number(item.CO2e ??
+              item.emission ??
+              item.CO2eWithUncertainty ??
+              item.emissionWithUncertainty) || 0;
+
+      totals.CO2e += co2e;
+      totals.CO2 += Number(item.CO2) || 0;
+      totals.CH4 += Number(item.CH4) || 0;
+      totals.N2O += Number(item.N2O) || 0;
+    }
   };
-};
+
+  // 🔴 FIX: Only add INCOMING emissions. 
+  // Do NOT add cumulative, or you will double-count historical data.
+  addBucket(calculatedEmissions.incoming);
+  
+  // REMOVED: addBucket(calculatedEmissions.cumulative); 
+
+  return totals;
+}
 
 
 const calculateProcessEmissionSummaryPrecise = async (

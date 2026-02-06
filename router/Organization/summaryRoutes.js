@@ -13,7 +13,8 @@ const {
      getSbtiProgress,
   getReductionSummariesByProjects,
   getScopeIdentifierHierarchyOfProcessEmissionSummary,
-  compareSummarySelections 
+  compareSummarySelections,
+  isSummaryProtected 
 
   
   
@@ -467,5 +468,53 @@ router.get('/unallocated-emissions',  async (req, res) => {
     });
   }
 });
+
+
+/**
+ * POST /api/summaries/:clientId/protection
+ * Enable or disable auto-recalculation protection for summaries
+ */
+router.post('/summaries/:clientId/protection', 
+  async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      const { 
+        enable, // true to enable protection, false to disable
+        periodType, // optional: specific period type
+        year,
+        month,
+        day 
+      } = req.body;
+
+      const query = { clientId };
+      if (periodType) query['period.type'] = periodType;
+      if (year) query['period.year'] = year;
+      if (month) query['period.month'] = month;
+      if (day) query['period.day'] = day;
+
+      const updateData = {
+        'metadata.preventAutoRecalculation': enable,
+        'metadata.protectionUpdatedAt': new Date(),
+        'metadata.protectionUpdatedBy': req.user._id
+      };
+
+      const result = await EmissionSummary.updateMany(query, { $set: updateData });
+
+      return res.status(200).json({
+        success: true,
+        message: `Protection ${enable ? 'enabled' : 'disabled'} for ${result.modifiedCount} summaries`,
+        affectedCount: result.modifiedCount
+      });
+
+    } catch (error) {
+      console.error('Error updating summary protection:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update summary protection',
+        error: error.message
+      });
+    }
+  }
+);
 
 module.exports = router;
