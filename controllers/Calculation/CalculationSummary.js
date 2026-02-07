@@ -4404,95 +4404,116 @@ const getReductionSummariesByProjects = async (req, res) => {
 };
 
 /**
- * Compare Mode (Selection A vs Selection B)
- * FIXED VERSION - Properly calculates totals from filtered node data
+ * Compare Mode with Independent Period Selection
+ * VERSION 4 - Supports different periods for Selection A and Selection B
  * 
  * POST /api/summaries/:clientId/compare
+ * 
+ * NEW FEATURE: Each selection can have its own period configuration
+ * Example: Compare 2025 vs 2024 (year-over-year)
  */
 const compareSummarySelections = async (req, res) => {
   try {
     const { clientId } = req.params;
     const body = req.body || {};
 
-    // Parse request parameters
-    const periodType = String(body.periodType || req.query.periodType || "monthly").toLowerCase();
-    
-    const allowedBuckets = new Set(["monthly", "weekly", "daily"]);
-    const bucket = allowedBuckets.has(String(body.bucket || req.query.bucket || "monthly").toLowerCase())
+    // OPTION 1: Global period (backward compatible - both selections use same period)
+    let globalPeriod = null;
+    if (body.periodType || body.year || req.query.periodType || req.query.year) {
+      globalPeriod = {
+        periodType: String(body.periodType || req.query.periodType || "monthly").toLowerCase(),
+        year: Number(body.year || req.query.year) || moment.utc().year(),
+        month: Number(body.month || req.query.month) || (moment.utc().month() + 1),
+        week: Number(body.week || req.query.week) || 1,
+        day: Number(body.day || req.query.day) || 1,
+        from: body.from || req.query.from,
+        to: body.to || req.query.to,
+      };
+    }
+
+    // Bucket and stackBy (can be global or per-selection)
+    const allowedBuckets = new Set(["monthly", "weekly", "daily", "yearly"]);
+    const globalBucket = allowedBuckets.has(String(body.bucket || req.query.bucket || "monthly").toLowerCase())
       ? String(body.bucket || req.query.bucket || "monthly").toLowerCase()
       : "monthly";
 
     const allowedStackBy = new Set(["scope", "category", "activity", "node", "department", "location"]);
-    const stackBy = allowedStackBy.has(String(body.stackBy || req.query.stackBy || "category").toLowerCase())
+    const globalStackBy = allowedStackBy.has(String(body.stackBy || req.query.stackBy || "category").toLowerCase())
       ? String(body.stackBy || req.query.stackBy || "category").toLowerCase()
       : "category";
 
     const selectionA = body.selectionA || {};
     const selectionB = body.selectionB || {};
 
-    // Normalize selections
-    const A = normalizeSelection(selectionA);
-    const B = normalizeSelection(selectionB);
+    // OPTION 2: Per-selection period (new feature)
+    // Selection A period (use global if not specified)
+    const periodA = selectionA.periodType ? {
+      periodType: String(selectionA.periodType).toLowerCase(),
+      year: Number(selectionA.year) || moment.utc().year(),
+      month: Number(selectionA.month) || 1,
+      week: Number(selectionA.week) || 1,
+      day: Number(selectionA.day) || 1,
+      from: selectionA.from,
+      to: selectionA.to,
+    } : globalPeriod;
 
-    console.log('Selection A filters:', JSON.stringify(A, null, 2));
-    console.log('Selection B filters:', JSON.stringify(B, null, 2));
+    // Selection B period (use global if not specified)
+    const periodB = selectionB.periodType ? {
+      periodType: String(selectionB.periodType).toLowerCase(),
+      year: Number(selectionB.year) || moment.utc().year(),
+      month: Number(selectionB.month) || 1,
+      week: Number(selectionB.week) || 1,
+      day: Number(selectionB.day) || 1,
+      from: selectionB.from,
+      to: selectionB.to,
+    } : globalPeriod;
 
-    // Resolve period
-    const { startDate, endDate, year, month } = resolvePeriod(body, req.query, periodType);
+    // Bucket per selection (use global if not specified)
+    const bucketA = selectionA.bucket && allowedBuckets.has(String(selectionA.bucket).toLowerCase())
+      ? String(selectionA.bucket).toLowerCase()
+      : globalBucket;
+    
+    const bucketB = selectionB.bucket && allowedBuckets.has(String(selectionB.bucket).toLowerCase())
+      ? String(selectionB.bucket).toLowerCase()
+      : globalBucket;
 
-    if (!startDate.isValid() || !endDate.isValid() || startDate.isAfter(endDate)) {
-      return res.status(400).json({ success: false, message: "Invalid date range" });
+    // StackBy per selection (use global if not specified)
+    const stackByA = selectionA.stackBy && allowedStackBy.has(String(selectionA.stackBy).toLowerCase())
+      ? String(selectionA.stackBy).toLowerCase()
+      : globalStackBy;
+    
+    const stackByB = selectionB.stackBy && allowedStackBy.has(String(selectionB.stackBy).toLowerCase())
+      ? String(selectionB.stackBy).toLowerCase()
+      : globalStackBy;
+
+    // Normalize filters
+    const filtersA = normalizeSelection(selectionA);
+    const filtersB = normalizeSelection(selectionB);
+
+    console.log('Selection A:', { period: periodA, bucket: bucketA, stackBy: stackByA, filters: filtersA });
+    console.log('Selection B:', { period: periodB, bucket: bucketB, stackBy: stackByB, filters: filtersB });
+
+    // Resolve periods
+    const { startDate: startA, endDate: endA } = resolvePeriod(periodA);
+    const { startDate: startB, endDate: endB } = resolvePeriod(periodB);
+
+    if (!startA.isValid() || !endA.isValid() || startA.isAfter(endA)) {
+      return res.status(400).json({ success: false, message: "Invalid date range for Selection A" });
+    }
+    if (!startB.isValid() || !endB.isValid() || startB.isAfter(endB)) {
+      return res.status(400).json({ success: false, message: "Invalid date range for Selection B" });
     }
 
-    // Query EmissionSummary documents
-    const summaryQuery = {
-      clientId,
-      'period.from': { $lte: endDate.toDate() },
-      'period.to': { $gte: startDate.toDate() },
-    };
+    // Query summaries for each selection independently
+    const summariesA = await querySummaries(clientId, startA, endA);
+    const summariesB = await querySummaries(clientId, startB, endB);
 
-    const summaries = await EmissionSummary.find(summaryQuery)
-      .select('period emissionSummary')
-      .lean();
+    console.log(`Selection A: Found ${summariesA.length} summaries (${startA.format('YYYY-MM-DD')} to ${endA.format('YYYY-MM-DD')})`);
+    console.log(`Selection B: Found ${summariesB.length} summaries (${startB.format('YYYY-MM-DD')} to ${endB.format('YYYY-MM-DD')})`);
 
-    console.log(`Found ${summaries.length} emission summaries in date range`);
-
-    if (summaries.length === 0) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          clientId,
-          period: {
-            type: periodType,
-            year,
-            month,
-            from: startDate.toISOString(),
-            to: endDate.toISOString(),
-            bucket,
-            stackBy,
-          },
-          selectionA: createEmptyResult(A),
-          selectionB: createEmptyResult(B),
-          comparison: {
-            totalA: 0, totalB: 0, totalAPlusB: 0,
-            deltaAminusB: 0, deltaPctVsB: null,
-            lastBucketKey: null, lastBucketDeltaAminusB: 0
-          },
-          metadata: {
-            summariesProcessed: 0,
-            source: 'EmissionSummary',
-            version: 'v3-fixed',
-          }
-        }
-      });
-    }
-
-    // Aggregate summaries for each selection
-    const outA = aggregateSummaries(summaries, A, stackBy, startDate, endDate, bucket);
-    const outB = aggregateSummaries(summaries, B, stackBy, startDate, endDate, bucket);
-
-    console.log('Selection A totals:', outA.totals);
-    console.log('Selection B totals:', outB.totals);
+    // Aggregate each selection
+    const outA = aggregateSummaries(summariesA, filtersA, stackByA, startA, endA, bucketA);
+    const outB = aggregateSummaries(summariesB, filtersB, stackByB, startB, endB, bucketB);
 
     // Calculate comparison metrics
     const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -4501,39 +4522,73 @@ const compareSummarySelections = async (req, res) => {
     const delta = aTotal - bTotal;
     const deltaPct = bTotal === 0 ? null : (delta / bTotal) * 100;
 
-    const bucketKeys = generateBucketKeys(startDate, endDate, bucket);
-    const lastKey = bucketKeys.length ? bucketKeys[bucketKeys.length - 1] : null;
-    const aLast = lastKey ? (outA.series.find(x => x.periodKey === lastKey)?.total?.CO2e || 0) : 0;
-    const bLast = lastKey ? (outB.series.find(x => x.periodKey === lastKey)?.total?.CO2e || 0) : 0;
+    // For comparison, use the bucket keys from each selection
+    // They might be different if periods are different
+    const lastKeyA = outA.series.length ? outA.series[outA.series.length - 1].periodKey : null;
+    const lastKeyB = outB.series.length ? outB.series[outB.series.length - 1].periodKey : null;
+    const aLast = lastKeyA ? (outA.series.find(x => x.periodKey === lastKeyA)?.total?.CO2e || 0) : 0;
+    const bLast = lastKeyB ? (outB.series.find(x => x.periodKey === lastKeyB)?.total?.CO2e || 0) : 0;
 
     return res.status(200).json({
       success: true,
       data: {
         clientId,
-        period: {
-          type: periodType,
-          year,
-          month,
-          from: startDate.toISOString(),
-          to: endDate.toISOString(),
-          bucket,
-          stackBy,
+        periodA: {
+          type: periodA.periodType,
+          year: periodA.year,
+          month: periodA.month,
+          from: startA.toISOString(),
+          to: endA.toISOString(),
+          bucket: bucketA,
+          stackBy: stackByA,
         },
-        selectionA: outA,
-        selectionB: outB,
+        periodB: {
+          type: periodB.periodType,
+          year: periodB.year,
+          month: periodB.month,
+          from: startB.toISOString(),
+          to: endB.toISOString(),
+          bucket: bucketB,
+          stackBy: stackByB,
+        },
+        selectionA: {
+          ...outA,
+          period: {
+            type: periodA.periodType,
+            year: periodA.year,
+            month: periodA.month,
+            from: startA.toISOString(),
+            to: endA.toISOString(),
+            bucket: bucketA,
+          }
+        },
+        selectionB: {
+          ...outB,
+          period: {
+            type: periodB.periodType,
+            year: periodB.year,
+            month: periodB.month,
+            from: startB.toISOString(),
+            to: endB.toISOString(),
+            bucket: bucketB,
+          }
+        },
         comparison: {
           totalA: aTotal,
           totalB: bTotal,
           totalAPlusB: aTotal + bTotal,
           deltaAminusB: delta,
           deltaPctVsB: deltaPct,
-          lastBucketKey: lastKey,
+          lastBucketKeyA: lastKeyA,
+          lastBucketKeyB: lastKeyB,
           lastBucketDeltaAminusB: aLast - bLast,
+          periodsAreSame: periodA.year === periodB.year && periodA.month === periodB.month,
         },
         metadata: {
-          summariesProcessed: summaries.length,
+          summariesProcessedA: summariesA.length,
+          summariesProcessedB: summariesB.length,
           source: 'EmissionSummary',
-          version: 'v3-fixed',
+          version: 'v4-multi-period',
         }
       },
     });
@@ -4551,6 +4606,23 @@ const compareSummarySelections = async (req, res) => {
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
+
+/**
+ * Query emission summaries for a date range
+ */
+async function querySummaries(clientId, startDate, endDate) {
+  const summaryQuery = {
+    clientId,
+    'period.from': { $lte: endDate.toDate() },
+    'period.to': { $gte: startDate.toDate() },
+  };
+
+  const summaries = await EmissionSummary.find(summaryQuery)
+    .select('period emissionSummary')
+    .lean();
+
+  return summaries;
+}
 
 /**
  * Normalize selection filters from request
@@ -4598,19 +4670,20 @@ function normalizeSelection(sel) {
 }
 
 /**
- * Resolve period from request
+ * Resolve period from configuration
  */
-function resolvePeriod(body, query, periodType) {
-  const y = Number(body.year || query.year) || moment.utc().year();
-  const m = Number(body.month || query.month) || (moment.utc().month() + 1);
-  const w = Number(body.week || query.week) || 1;
-  const d = Number(body.day || query.day) || 1;
+function resolvePeriod(config) {
+  const y = config.year;
+  const m = config.month;
+  const w = config.week;
+  const d = config.day;
+  const periodType = config.periodType;
 
   let startDate, endDate;
 
-  if (body.from || query.from) {
-    startDate = moment.utc(body.from || query.from);
-    endDate = moment.utc(body.to || query.to || body.from || query.from);
+  if (config.from) {
+    startDate = moment.utc(config.from);
+    endDate = moment.utc(config.to || config.from);
     if (!endDate.isValid()) endDate = moment.utc(startDate).endOf("day");
   } else {
     if (periodType === "all-time") {
@@ -4631,7 +4704,7 @@ function resolvePeriod(body, query, periodType) {
     }
   }
 
-  return { startDate, endDate, year: y, month: m };
+  return { startDate, endDate };
 }
 
 /**
@@ -4655,13 +4728,8 @@ function createEmptyResult(filters) {
 }
 
 /**
- * CRITICAL FIX: Aggregate summaries properly
- * 
- * Strategy:
- * 1. Start from byNode (most granular with all metadata)
- * 2. Filter nodes by location/department/nodeId
- * 3. Build totals from filtered nodes only
- * 4. Then cross-reference with other dimensions for breakdowns
+ * Aggregate summaries for a selection
+ * This is the FIXED version that properly filters by location/department
  */
 function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, bucket) {
   const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
@@ -4673,7 +4741,6 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
   const byLocation = new Map();
   const series = buildEmptySeries(startDate, endDate, bucket);
 
-  // Track which nodes are included after filtering
   const includedNodes = new Set();
   let includedSummaries = 0;
 
@@ -4692,7 +4759,7 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       if (!matchesFilter(selection.departments, nodeData.department)) continue;
       if (!matchesFilter(selection.locations, nodeData.location)) continue;
 
-      // This node is included - track it
+      // This node is included
       includedNodes.add(nodeName);
 
       // Add to totals
@@ -4715,7 +4782,7 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
         bumpMap(byLocation, nodeData.location, nodeData);
       }
 
-      // Add to time series for node stacking
+      // Add to time series
       if (stackBy === 'node' && periodKey && series.has(periodKey)) {
         const bucketObj = series.get(periodKey);
         addEmissions(bucketObj.total, nodeData);
@@ -4732,11 +4799,10 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
     }
   }
 
-  console.log(`Included nodes after filtering: ${includedNodes.size}`, Array.from(includedNodes));
-  console.log(`Totals after node filtering:`, totals);
+  console.log(`Included nodes: ${includedNodes.size}`, Array.from(includedNodes).slice(0, 5));
+  console.log(`Totals after filtering:`, totals);
 
-  // STEP 2: Process other dimensions for breakdown and stacking
-  // But DON'T add to totals - those are already calculated from nodes
+  // STEP 2: Process other dimensions
   for (const summary of summaries) {
     const es = summary.emissionSummary;
     if (!es) continue;
@@ -4744,21 +4810,17 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
     const periodKey = getPeriodKey(summary.period, bucket);
     includedSummaries++;
 
-    // Process byScope for breakdown
+    // Process byScope
     if (es.byScope) {
       for (const [scopeType, scopeData] of Object.entries(es.byScope)) {
         if (!matchesFilter(selection.scopes, scopeType)) continue;
 
-        // Add to scope breakdown (but verify it came from included nodes)
-        // We approximate by checking if any data exists
         if (includedNodes.size > 0) {
           bumpMap(byScope, scopeType, scopeData);
         }
 
-        // Add to time series for scope stacking
         if (stackBy === 'scope' && periodKey && series.has(periodKey)) {
           const bucketObj = series.get(periodKey);
-          // Only add if we have included nodes
           if (includedNodes.size > 0) {
             bumpStack(bucketObj, scopeType, scopeType, scopeData);
           }
@@ -4766,7 +4828,7 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       }
     }
 
-    // Process byCategory for breakdown
+    // Process byCategory
     if (es.byCategory) {
       for (const [categoryName, categoryData] of Object.entries(es.byCategory)) {
         if (!matchesFilter(selection.categories, categoryName)) continue;
@@ -4785,7 +4847,7 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       }
     }
 
-    // Process byActivity for breakdown
+    // Process byActivity
     if (es.byActivity) {
       for (const [activityName, activityData] of Object.entries(es.byActivity)) {
         if (!matchesFilter(selection.activities, activityName)) continue;
@@ -4809,17 +4871,14 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
     }
   }
 
-  // STEP 3: Normalize scope/category/activity breakdowns to match actual totals
-  // The byScope/byCategory/byActivity from summaries might not be filtered,
-  // so we need to scale them proportionally
+  // STEP 3: Scale breakdowns to match totals
   const summaryTotal = Array.from(byScope.values()).reduce((sum, item) => sum + (item.CO2e || 0), 0);
   const actualTotal = totals.CO2e;
 
   if (summaryTotal > 0 && Math.abs(summaryTotal - actualTotal) > 0.01) {
     const scaleFactor = actualTotal / summaryTotal;
-    console.log(`Scaling scope/category/activity breakdowns by factor: ${scaleFactor}`);
+    console.log(`Scaling breakdowns by factor: ${scaleFactor.toFixed(4)}`);
     
-    // Scale scope breakdown
     for (const [key, value] of byScope.entries()) {
       value.CO2e *= scaleFactor;
       value.CO2 *= scaleFactor;
@@ -4827,7 +4886,6 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       value.N2O *= scaleFactor;
     }
 
-    // Scale category breakdown
     for (const [key, value] of byCategory.entries()) {
       value.CO2e *= scaleFactor;
       value.CO2 *= scaleFactor;
@@ -4835,7 +4893,6 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       value.N2O *= scaleFactor;
     }
 
-    // Scale activity breakdown
     for (const [key, value] of byActivity.entries()) {
       value.CO2e *= scaleFactor;
       value.CO2 *= scaleFactor;
@@ -4843,7 +4900,6 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
       value.N2O *= scaleFactor;
     }
 
-    // Scale series stacks
     for (const [periodKey, bucketObj] of series.entries()) {
       for (const [stackKey, stackData] of bucketObj.stacks.entries()) {
         stackData.CO2e *= scaleFactor;
@@ -4878,10 +4934,10 @@ function aggregateSummaries(summaries, selection, stackBy, startDate, endDate, b
 }
 
 /**
- * Check if a value matches filter (empty filter = match all)
+ * Check if a value matches filter
  */
 function matchesFilter(filterArray, value) {
-  if (!filterArray || filterArray.length === 0) return true; // No filter = match all
+  if (!filterArray || filterArray.length === 0) return true;
   if (!value) return false;
   
   const valueLower = String(value).toLowerCase();
@@ -4894,25 +4950,19 @@ function matchesFilter(filterArray, value) {
 }
 
 /**
- * Extract nodeId from node name (handles various formats)
+ * Extract nodeId from node name
  */
 function extractNodeId(nodeName) {
   const name = String(nodeName);
-  
-  // Try to extract ID after "node-" prefix
   const nodeMatch = name.match(/node[-_]([a-zA-Z0-9]+)/i);
   if (nodeMatch) return nodeMatch[1];
-  
-  // Try to extract ID after last dash or underscore
   const lastPartMatch = name.match(/[-_]([a-zA-Z0-9]+)$/);
   if (lastPartMatch) return lastPartMatch[1];
-  
-  // Return original name converted to lowercase with spaces as dashes
   return name.toLowerCase().replace(/\s+/g, '-');
 }
 
 /**
- * Get period key from summary period for bucketing
+ * Get period key from summary period
  */
 function getPeriodKey(period, targetBucket) {
   if (!period || !period.from) return null;
@@ -4921,6 +4971,7 @@ function getPeriodKey(period, targetBucket) {
   
   if (targetBucket === "daily") return dt.format("YYYY-MM-DD");
   if (targetBucket === "weekly") return dt.format("GGGG-[W]WW");
+  if (targetBucket === "yearly") return dt.format("YYYY");
   return dt.format("YYYY-MM");
 }
 
@@ -4947,6 +4998,16 @@ function generateBucketKeys(start, end, bucket) {
     while (cursor.isSameOrBefore(last)) {
       keys.push(cursor.format("GGGG-[W]WW"));
       cursor.add(1, "week");
+    }
+    return keys;
+  }
+
+  if (bucket === "yearly") {
+    cursor.startOf("year");
+    const last = moment.utc(end).startOf("year");
+    while (cursor.isSameOrBefore(last)) {
+      keys.push(cursor.format("YYYY"));
+      cursor.add(1, "year");
     }
     return keys;
   }
@@ -5029,7 +5090,6 @@ function bumpStack(bucketObj, stackKey, stackLabel, emissions) {
 function finalizeMap(map) {
   return Array.from(map.values()).sort((a, b) => (b.CO2e || 0) - (a.CO2e || 0));
 }
-
 
 module.exports = {
   setSocketIO,
