@@ -1257,6 +1257,370 @@ io.on('connection', (socket) => {
             });
         }
     });
+    socket.on('request-minimal-entries', async (params) => {
+  try {
+    const {
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      startDate,
+      endDate,
+      inputType,
+      page = 1,
+      limit = 50,
+      sortBy = 'timestamp',
+      sortOrder = 'desc'
+    } = params;
+
+    // Authorization check
+    if (socket.userType === 'client_admin' || 
+        socket.userType === 'client_employee_head' || 
+        socket.userType === 'auditor' || 
+        socket.userType === 'viewer') {
+      if (clientId && clientId !== socket.clientId) {
+        socket.emit('minimal-entries-error', {
+          message: 'Unauthorized: Cannot access other client data'
+        });
+        return;
+      }
+    }
+
+    // Build filters
+    const filters = {};
+    if (clientId || socket.clientId) {
+      filters.clientId = clientId || socket.clientId;
+    }
+    if (nodeId) filters.nodeId = nodeId;
+    if (scopeIdentifier) filters.scopeIdentifier = scopeIdentifier;
+    if (inputType) filters.inputType = inputType;
+    if (startDate || endDate) {
+      filters.timestamp = {};
+      if (startDate) filters.timestamp.$gte = new Date(startDate);
+      if (endDate) filters.timestamp.$lte = new Date(endDate);
+    }
+
+    // Build sort
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Pagination
+    const skip = (page - 1) * limit;
+
+    // ✅ Fetch only required fields
+    const [entries, total] = await Promise.all([
+      DataEntry.find(filters)
+        .select({
+          _id: 1,
+          clientId: 1,
+          nodeId: 1,
+          scopeIdentifier: 1,
+          timestamp: 1,
+          date: 1,
+          time: 1,
+          dataValues: 1,
+          dataEntryCumulative: 1,
+          inputType: 1
+        })
+        .sort(sort)
+        .skip(skip)
+        .limit(Math.min(limit, 100)) // Max 100 items for Socket.IO
+        .lean(),
+      DataEntry.countDocuments(filters)
+    ]);
+
+    // ✅ Serialize entries
+    const serializedEntries = entries.map(entry => ({
+      _id: entry._id,
+      clientId: entry.clientId,
+      nodeId: entry.nodeId,
+      scopeIdentifier: entry.scopeIdentifier,
+      timestamp: entry.timestamp,
+      date: entry.date,
+      time: entry.time,
+      inputType: entry.inputType,
+      dataValues: entry.dataValues instanceof Map 
+        ? Object.fromEntries(entry.dataValues)
+        : entry.dataValues,
+      dataEntryCumulative: entry.dataEntryCumulative ? {
+        incomingTotalValue: Number(entry.dataEntryCumulative.incomingTotalValue || 0),
+        cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
+        entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
+        lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
+      } : null
+    }));
+
+    // Send response
+    socket.emit('minimal-entries-data', {
+      success: true,
+      data: serializedEntries,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      hasMore: page * limit < total,
+      filters,
+      timestamp: new Date()
+    });
+
+  } catch (error) {
+    console.error('Error fetching minimal entries:', error);
+    socket.emit('minimal-entries-error', {
+      message: 'Failed to fetch minimal entries',
+      error: error.message
+    });
+  }
+    });
+    socket.on('subscribe-minimal-data', async (params) => {
+    try {
+        const { clientId, nodeId, scopeIdentifier } = params;
+
+        // Authorization check
+        if (socket.userType === 'client_admin' || 
+            socket.userType === 'client_employee_head' || 
+            socket.userType === 'auditor' || 
+            socket.userType === 'viewer') {
+        if (clientId && clientId !== socket.clientId) {
+            socket.emit('subscription-error', {
+            message: 'Unauthorized: Cannot subscribe to other client data'
+            });
+            return;
+        }
+        }
+
+        // Build room name
+        const room = `minimal-data-${clientId || 'all'}-${nodeId || 'all'}-${scopeIdentifier || 'all'}`;
+        
+        // Join room
+        socket.join(room);
+
+        console.log(`📊 Socket ${socket.id} subscribed to minimal data room: ${room}`);
+
+        // Confirm subscription
+        socket.emit('subscription-confirmed', {
+        room,
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        timestamp: new Date()
+        });
+
+        // Send latest entry immediately
+        const filters = {};
+        if (clientId) filters.clientId = clientId;
+        if (nodeId) filters.nodeId = nodeId;
+        if (scopeIdentifier) filters.scopeIdentifier = scopeIdentifier;
+
+        const latestEntry = await DataEntry.findOne(filters)
+        .select({
+            _id: 1,
+            clientId: 1,
+            nodeId: 1,
+            scopeIdentifier: 1,
+            timestamp: 1,
+            dataValues: 1,
+            dataEntryCumulative: 1,
+            inputType: 1
+        })
+        .sort({ timestamp: -1 })
+        .lean();
+
+        if (latestEntry) {
+        const serialized = {
+            _id: latestEntry._id,
+            clientId: latestEntry.clientId,
+            nodeId: latestEntry.nodeId,
+            scopeIdentifier: latestEntry.scopeIdentifier,
+            timestamp: latestEntry.timestamp,
+            inputType: latestEntry.inputType,
+            dataValues: latestEntry.dataValues instanceof Map 
+            ? Object.fromEntries(latestEntry.dataValues)
+            : latestEntry.dataValues,
+            dataEntryCumulative: latestEntry.dataEntryCumulative ? {
+            incomingTotalValue: Number(latestEntry.dataEntryCumulative.incomingTotalValue || 0),
+            cumulativeTotalValue: Number(latestEntry.dataEntryCumulative.cumulativeTotalValue || 0),
+            entryCount: Number(latestEntry.dataEntryCumulative.entryCount || 0),
+            lastUpdatedAt: latestEntry.dataEntryCumulative.lastUpdatedAt || null
+            } : null
+        };
+
+        socket.emit('minimal-data-update', {
+            type: 'latest',
+            data: serialized
+        });
+        }
+
+    } catch (error) {
+        console.error('Error subscribing to minimal data:', error);
+        socket.emit('subscription-error', {
+        message: 'Failed to subscribe to minimal data',
+        error: error.message
+        });
+    }
+    });
+    socket.on('unsubscribe-minimal-data', (params) => {
+    try {
+        const { clientId, nodeId, scopeIdentifier } = params;
+        const room = `minimal-data-${clientId || 'all'}-${nodeId || 'all'}-${scopeIdentifier || 'all'}`;
+        
+        socket.leave(room);
+        
+        console.log(`📊 Socket ${socket.id} unsubscribed from minimal data room: ${room}`);
+        
+        socket.emit('unsubscription-confirmed', { room });
+    } catch (error) {
+        console.error('Error unsubscribing from minimal data:', error);
+    }
+    });
+
+
+/**
+ * Get latest entry for specific scope
+ * 
+ * Client emits: 'get-latest-minimal-entry'
+ * Server responds: 'latest-minimal-entry'
+ */
+socket.on('get-latest-minimal-entry', async (params) => {
+  try {
+    const { clientId, nodeId, scopeIdentifier } = params;
+
+    // Authorization check
+    if (socket.userType === 'client_admin' || 
+        socket.userType === 'client_employee_head' || 
+        socket.userType === 'auditor' || 
+        socket.userType === 'viewer') {
+      if (clientId && clientId !== socket.clientId) {
+        socket.emit('latest-entry-error', {
+          message: 'Unauthorized: Cannot access other client data'
+        });
+        return;
+      }
+    }
+
+    const filters = {};
+    if (clientId || socket.clientId) filters.clientId = clientId || socket.clientId;
+    if (nodeId) filters.nodeId = nodeId;
+    if (scopeIdentifier) filters.scopeIdentifier = scopeIdentifier;
+
+    const entry = await DataEntry.findOne(filters)
+      .select({
+        _id: 1,
+        clientId: 1,
+        nodeId: 1,
+        scopeIdentifier: 1,
+        timestamp: 1,
+        date: 1,
+        time: 1,
+        dataValues: 1,
+        dataEntryCumulative: 1,
+        inputType: 1
+      })
+      .sort({ timestamp: -1 })
+      .lean();
+
+    if (!entry) {
+      socket.emit('latest-minimal-entry', {
+        success: false,
+        message: 'No entry found'
+      });
+      return;
+    }
+
+    const serialized = {
+      _id: entry._id,
+      clientId: entry.clientId,
+      nodeId: entry.nodeId,
+      scopeIdentifier: entry.scopeIdentifier,
+      timestamp: entry.timestamp,
+      date: entry.date,
+      time: entry.time,
+      inputType: entry.inputType,
+      dataValues: entry.dataValues instanceof Map 
+        ? Object.fromEntries(entry.dataValues)
+        : entry.dataValues,
+      dataEntryCumulative: entry.dataEntryCumulative ? {
+        incomingTotalValue: Number(entry.dataEntryCumulative.incomingTotalValue || 0),
+        cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
+        entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
+        lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
+      } : null
+    };
+
+    socket.emit('latest-minimal-entry', {
+      success: true,
+      data: serialized
+    });
+
+  } catch (error) {
+    console.error('Error getting latest minimal entry:', error);
+    socket.emit('latest-entry-error', {
+      message: 'Failed to get latest entry',
+      error: error.message
+    });
+  }
+});
+
+
+    /**
+ * Join data collection room for real-time updates
+ * Clients should emit this when viewing a specific scope's data
+ */
+socket.on('join-data-room', ({ clientId, nodeId, scopeIdentifier }) => {
+  try {
+    // Construct room names
+    const specificRoom = `data-${clientId}-${nodeId || 'all'}-${scopeIdentifier || 'all'}`;
+    const clientRoom = `client-${clientId}`;
+    
+    // Join the rooms
+    socket.join(specificRoom);
+    socket.join(clientRoom);
+    
+    console.log(`📡 Socket ${socket.id} joined data rooms:`, {
+      specific: specificRoom,
+      client: clientRoom
+    });
+    
+    // Confirm to client
+    socket.emit('data-room-joined', {
+      room: specificRoom,
+      clientId,
+      nodeId,
+      scopeIdentifier
+    });
+    
+  } catch (error) {
+    console.error('Error joining data room:', error);
+    socket.emit('error', { message: 'Failed to join data room' });
+  }
+});
+
+
+/**
+ * Leave data collection room
+ * Clients should emit this when navigating away
+ */
+socket.on('leave-data-room', ({ clientId, nodeId, scopeIdentifier }) => {
+  try {
+    const specificRoom = `data-${clientId}-${nodeId || 'all'}-${scopeIdentifier || 'all'}`;
+    const clientRoom = `client-${clientId}`;
+    
+    socket.leave(specificRoom);
+    socket.leave(clientRoom);
+    
+    console.log(`📡 Socket ${socket.id} left data rooms:`, {
+      specific: specificRoom,
+      client: clientRoom
+    });
+    
+    socket.emit('data-room-left', {
+      room: specificRoom,
+      clientId,
+      nodeId,
+      scopeIdentifier
+    });
+    
+  } catch (error) {
+    console.error('Error leaving data room:', error);
+  }
+});
 
     // ========================================================================
     // 🔌 COMMON SOCKET HANDLERS
@@ -1679,6 +2043,58 @@ async function broadcastSLAAlert(alertData) {
     }
 }
 
+/**
+ * Broadcast minimal data update to subscribed clients
+ * This should be called after successful data entry creation
+ * 
+ * Add this to dataCollectionController.js after saving entries:
+ * ```javascript
+ * if (global.broadcastMinimalDataUpdate) {
+ *   global.broadcastMinimalDataUpdate(entry);
+ * }
+ * ```
+ */
+function broadcastMinimalDataUpdate(entry) {
+  if (!io) return;
+
+  const room = `minimal-data-${entry.clientId}-${entry.nodeId}-${entry.scopeIdentifier}`;
+  const broadRoom = `minimal-data-${entry.clientId}-all-all`;
+
+  const data = {
+    _id: entry._id,
+    clientId: entry.clientId,
+    nodeId: entry.nodeId,
+    scopeIdentifier: entry.scopeIdentifier,
+    timestamp: entry.timestamp,
+    inputType: entry.inputType,
+    dataValues: entry.dataValues instanceof Map 
+      ? Object.fromEntries(entry.dataValues)
+      : entry.dataValues,
+    dataEntryCumulative: entry.dataEntryCumulative ? {
+      incomingTotalValue: Number(entry.dataEntryCumulative.incomingTotalValue || 0),
+      cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
+      entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
+      lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
+    } : null
+  };
+
+  // Broadcast to specific room
+  io.to(room).emit('minimal-data-update', {
+    type: 'new',
+    data,
+    timestamp: new Date()
+  });
+
+  // Broadcast to client-wide room
+  io.to(broadRoom).emit('minimal-data-update', {
+    type: 'new',
+    data,
+    timestamp: new Date()
+  });
+
+  console.log(`📊 Broadcast minimal data update to rooms: ${room}, ${broadRoom}`);
+}
+
 // ============================================================================
 // 🌐 EXPORT BROADCAST FUNCTIONS AS GLOBALS
 // ============================================================================
@@ -1700,6 +2116,8 @@ global.broadcastTicketEscalated = broadcastTicketEscalated;
 global.broadcastTicketAttachment = broadcastTicketAttachment;
 global.broadcastTicketDeleted = broadcastTicketDeleted;
 global.broadcastSLAAlert = broadcastSLAAlert;
+
+global.broadcastMinimalDataUpdate = broadcastMinimalDataUpdate;
 
 console.log('✅ All broadcast functions registered globally');
 

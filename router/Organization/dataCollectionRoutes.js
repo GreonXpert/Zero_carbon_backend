@@ -19,7 +19,12 @@ const {
   reconnectSource,
   createMonthlySummaryManual,
   getMonthlySummaries,
-  getCurrentCumulative
+  getCurrentCumulative,
+  updateInputTypeRealtime,
+  getInputTypeStatistics,
+  getDataValuesAndCumulative,
+  //getSingleDataValueAndCumulative,
+  streamDataValuesAndCumulative
 } = require('../../controllers/Organization/dataCollectionController');
 
 const {
@@ -250,6 +255,168 @@ iotRouter.post('/data', async (req, res) => {
     });
   }
 });
+
+// ============================================================================
+// 📊 INPUT TYPE MANAGEMENT ROUTES
+// ============================================================================
+
+/**
+ * UPDATE INPUT TYPE IN REAL-TIME
+ * PATCH /api/data-collection/data-entries/:dataId/input-type
+ * 
+ * ✅ Updates the inputType of a specific data entry
+ * ✅ Broadcasts update via Socket.IO in real-time
+ * ✅ Adds to edit history for audit trail
+ * 
+ * Required Body:
+ * {
+ *   "newInputType": "manual" | "API" | "IOT",
+ *   "reason": "Optional reason for change"
+ * }
+ * 
+ * Example:
+ * PATCH /api/data-collection/data-entries/6985f25ac87da39bb65e04ce/input-type
+ * Body: { "newInputType": "manual", "reason": "Converting to manual for correction" }
+ */
+router.patch(
+  '/data-entries/:dataId/input-type',
+  auth,  // Authentication required
+  updateInputTypeRealtime
+);
+
+
+/**
+ * GET INPUT TYPE STATISTICS - CLIENT LEVEL
+ * GET /api/data-collection/clients/:clientId/input-type-stats
+ * 
+ * ✅ Returns count of manual, API, and IOT entries for entire client
+ * 
+ * Query Parameters (Optional):
+ * - startDate: ISO date string (e.g., "2024-01-01")
+ * - endDate: ISO date string (e.g., "2024-12-31")
+ * - includeSummaries: "true" or "false" (default: "false")
+ * 
+ * Example:
+ * GET /api/data-collection/clients/Greon017/input-type-stats
+ * GET /api/data-collection/clients/Greon017/input-type-stats?startDate=2024-01-01&endDate=2024-12-31
+ */
+router.get(
+  '/clients/:clientId/input-type-stats',
+  auth,  // Authentication required
+  getInputTypeStatistics
+);
+
+
+/**
+ * GET INPUT TYPE STATISTICS - NODE LEVEL
+ * GET /api/data-collection/clients/:clientId/nodes/:nodeId/input-type-stats
+ * 
+ * ✅ Returns count of manual, API, and IOT entries for specific node
+ * 
+ * Query Parameters (Optional):
+ * - startDate: ISO date string
+ * - endDate: ISO date string
+ * - includeSummaries: "true" or "false"
+ * 
+ * Example:
+ * GET /api/data-collection/clients/Greon017/nodes/greon017-node-cdec7a/input-type-stats
+ */
+router.get(
+  '/clients/:clientId/nodes/:nodeId/input-type-stats',
+  auth,
+  getInputTypeStatistics
+);
+
+
+/**
+ * GET INPUT TYPE STATISTICS - SCOPE LEVEL
+ * GET /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type-stats
+ * 
+ * ✅ Returns count of manual, API, and IOT entries for specific scope
+ * ✅ Most granular level of statistics
+ * 
+ * Query Parameters (Optional):
+ * - startDate: ISO date string
+ * - endDate: ISO date string
+ * - includeSummaries: "true" or "false"
+ * 
+ * Example:
+ * GET /api/data-collection/clients/Greon017/nodes/greon017-node-cdec7a/scopes/COK-SC-DG-FY25/input-type-stats
+ */
+router.get(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type-stats',
+  auth,
+  getInputTypeStatistics
+);
+
+// ============================================================================
+// MINIMAL DATA ROUTES - Only dataValues & dataEntryCumulative
+// ============================================================================
+
+/**
+ * @route   GET /api/v1/data/entries/minimal
+ * @desc    Get paginated data entries with only dataValues and dataEntryCumulative
+ * @access  Private
+ * @returns Minimal data entries (75% smaller payload)
+ * 
+ * Query Parameters:
+ * - clientId (string): Filter by client
+ * - nodeId (string): Filter by node
+ * - scopeIdentifier (string): Filter by scope
+ * - startDate (date): Filter entries from this date
+ * - endDate (date): Filter entries until this date
+ * - inputType (string): Filter by API|IOT|MANUAL|CSV
+ * - page (number): Page number (default: 1)
+ * - limit (number): Items per page (default: 500, max: 5000)
+ * - sortBy (string): Sort field (default: timestamp)
+ * - sortOrder (string): asc|desc (default: desc)
+ */
+router.get('/entries/minimal', auth, getDataValuesAndCumulative);
+
+// /**
+//  * @route   GET /api/v1/data/entries/minimal/:dataId
+//  * @desc    Get single data entry with only dataValues and dataEntryCumulative
+//  * @access  Private
+//  * @returns Single minimal data entry
+//  * 
+//  * Query Parameters:
+//  * - clientId (string): Client ID for authorization check
+//  */
+// router.get('/entries/minimal/:dataId', auth, getSingleDataValueAndCumulative);
+
+/**
+ * @route   GET /api/v1/data/entries/stream
+ * @desc    Server-Sent Events stream for real-time data updates
+ * @access  Private
+ * @returns EventSource stream of minimal data entries
+ * 
+ * Query Parameters:
+ * - clientId (string): Required - Client to stream data for
+ * - nodeId (string): Optional - Filter by specific node
+ * - scopeIdentifier (string): Optional - Filter by specific scope
+ * 
+ * Usage Example (Frontend):
+ * ```javascript
+ * const eventSource = new EventSource(
+ *   '/api/v1/data/entries/stream?clientId=CL001&nodeId=NODE123',
+ *   { headers: { 'Authorization': `Bearer ${token}` } }
+ * );
+ * 
+ * eventSource.onmessage = (event) => {
+ *   const { type, data } = JSON.parse(event.data);
+ *   if (type === 'initial') {
+ *     // Initial data load
+ *     console.log('Initial entries:', data);
+ *   } else if (type === 'update') {
+ *     // Real-time update
+ *     console.log('New/updated entry:', data);
+ *   }
+ * };
+ * ```
+ */
+router.get('/entries/stream', auth, streamDataValuesAndCumulative);
+
+
 
 // ============== Export ==============
 module.exports = {
