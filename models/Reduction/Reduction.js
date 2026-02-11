@@ -142,6 +142,10 @@ const M3VariableSchema = new mongoose.Schema({
     type: Number,
     default: null             // only used when type === 'constant'
   },
+  unit:{
+    type: String,
+    default:null
+  },
     remark: { type: String, default: '' },
   Reference: { type: String, default: '' },
   internalSources: {
