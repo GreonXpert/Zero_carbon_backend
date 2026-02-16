@@ -3252,50 +3252,70 @@ const formatDateToYMD = (d) => {
 };
 
 // 🔍 Helper: Build MongoDB filter object for DataEntry list
-
 function buildDataEntryFilters(req) {
   const filters = {};
-  
-  // 1. Client filtering based on user type
-  if (req.userType === 'client_admin' || 
-      req.userType === 'client_employee_head' || 
-      req.userType === 'auditor' || 
-      req.userType === 'viewer') {
-    // Client users can only see their own client's data
-    filters.clientId = req.clientId;
-  } else if (req.query.clientId) {
-    // Super admin/consultant can filter by any clientId
-    filters.clientId = req.query.clientId;
+
+  // Prefer params (because your routes use params), fallback to query (backward compatible)
+  const requestedClientId = req.params?.clientId || req.query?.clientId;
+  const requestedNodeId = req.params?.nodeId || req.query?.nodeId;
+  const requestedScopeIdentifier = req.params?.scopeIdentifier || req.query?.scopeIdentifier;
+
+  // Normalize user info (your codebase uses both styles elsewhere)
+  const userType = req.user?.userType || req.userType;
+  const userClientId = req.user?.clientId || req.clientId;
+
+  // 1) Strict client isolation
+  const clientScopedTypes = [
+    "client_admin",
+    "client_employee_head",
+    "employee",
+    "auditor",
+    "viewer",
+  ];
+
+  if (clientScopedTypes.includes(userType)) {
+    // Client-side users can only see their own client data
+    if (requestedClientId && userClientId && requestedClientId !== userClientId) {
+      const err = new Error("Access denied: cross-client request");
+      err.statusCode = 403;
+      throw err;
+    }
+    filters.clientId = userClientId;
+  } else {
+    // Super admin / consultant must be explicit (prevents accidental "fetch all")
+    if (!requestedClientId) {
+      const err = new Error("clientId is required");
+      err.statusCode = 400;
+      throw err;
+    }
+    filters.clientId = requestedClientId;
   }
-  
-  // 2. Node filtering
-  if (req.query.nodeId) {
-    filters.nodeId = req.query.nodeId;
+
+  // 2) Node filtering
+  if (requestedNodeId) {
+    filters.nodeId = requestedNodeId;
   }
-  
-  // 3. Scope filtering
-  if (req.query.scopeIdentifier) {
-    filters.scopeIdentifier = req.query.scopeIdentifier;
+
+  // 3) Scope filtering
+  if (requestedScopeIdentifier) {
+    filters.scopeIdentifier = requestedScopeIdentifier;
   }
-  
-  // 4. Input type filtering
+
+  // 4) Input type filtering (query only)
   if (req.query.inputType) {
     filters.inputType = req.query.inputType;
   }
-  
-  // 5. Date range filtering
+
+  // 5) Date range filtering (query only)
   if (req.query.startDate || req.query.endDate) {
     filters.timestamp = {};
-    if (req.query.startDate) {
-      filters.timestamp.$gte = new Date(req.query.startDate);
-    }
-    if (req.query.endDate) {
-      filters.timestamp.$lte = new Date(req.query.endDate);
-    }
+    if (req.query.startDate) filters.timestamp.$gte = new Date(req.query.startDate);
+    if (req.query.endDate) filters.timestamp.$lte = new Date(req.query.endDate);
   }
-  
+
   return filters;
 }
+
 
 
 // ⬇️ Helper: Build sort object
@@ -3335,11 +3355,11 @@ const getDataEntries = async (req, res) => {
   try {
     const filters = buildDataEntryFilters(req);
     const sort = buildDataEntrySort(req);
-
+ 
     const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
     const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit, 10) || 500));
     const skip  = (page - 1) * limit;
-
+ 
     const [entries, total] = await Promise.all([
       DataEntry.find(filters)
         .sort(sort)
@@ -3348,9 +3368,9 @@ const getDataEntries = async (req, res) => {
         .lean(),
       DataEntry.countDocuments(filters)
     ]);
-
+ 
     const totalPages = Math.ceil(total / limit);
-
+ 
     return res.status(200).json({
       success: true,
       message: 'Data entries fetched successfully',
@@ -3375,7 +3395,8 @@ const getDataEntries = async (req, res) => {
     });
   }
 };
-
+ 
+ 
 
 
 // Get Collection Status with enhanced authorization and strict client isolation
