@@ -536,6 +536,11 @@ const ProcessFlowchartSchema = new mongoose.Schema({
 // ** NEW CODE: Pre-save hook for edge validation **
 ProcessFlowchartSchema.pre('save', function(next) {
   const flowchart = this;
+
+   if (flowchart.$locals?.skipEdgeValidation === true) {
+    return next();
+  }
+
   const MIN_EDGES_PER_NODE = 1;
 
   // If there are no nodes, no need to validate

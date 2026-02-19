@@ -1099,48 +1099,73 @@ const deleteProcessFlowchart = async (req, res) => {
 };
 
 // Delete specific node from process flowchart
+
 const deleteProcessNode = async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
 
-    // Check if user can manage
     const canManage = await canManageProcessFlowchart(req.user, clientId);
     if (!canManage) {
-      return res.status(403).json({ 
-        message: 'You do not have permission to modify this process flowchart' 
+      return res.status(403).json({
+        message: 'You do not have permission to modify this process flowchart'
       });
     }
 
-    const processFlowchart = await ProcessFlowchart.findOne({ 
-      clientId, 
-      isDeleted: false 
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
     });
 
     if (!processFlowchart) {
       return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    // Remove node and related edges
-    processFlowchart.nodes = processFlowchart.nodes.filter(n => n.id !== nodeId);
-    processFlowchart.edges = processFlowchart.edges.filter(
-      e => e.source !== nodeId && e.target !== nodeId
+    // ✅ Ensure node exists (avoid silent no-op)
+    const exists = (processFlowchart.nodes || []).some(n => String(n.id) === String(nodeId));
+    if (!exists) {
+      return res.status(404).json({ message: 'Node not found' });
+    }
+
+    // Remove node + related edges
+    processFlowchart.nodes = (processFlowchart.nodes || []).filter(n => String(n.id) !== String(nodeId));
+    processFlowchart.edges = (processFlowchart.edges || []).filter(
+      e => String(e.source) !== String(nodeId) && String(e.target) !== String(nodeId)
     );
 
-    processFlowchart.lastModifiedBy = req.user._id;
+    processFlowchart.lastModifiedBy = req.user._id || req.user.id || null;
+
+    // ✅ Make sure Mongoose tracks changes
+    processFlowchart.markModified('nodes');
+    processFlowchart.markModified('edges');
+
+    // ✅ Bypass the "min 1 edge per node" rule for this delete operation
+    processFlowchart.$locals = processFlowchart.$locals || {};
+    processFlowchart.$locals.skipEdgeValidation = true;
+
     await processFlowchart.save();
 
-    res.status(200).json({ 
-      message: 'Node and associated edges deleted successfully' 
+    return res.status(200).json({
+      message: 'Node and associated edges deleted successfully'
     });
 
   } catch (error) {
     console.error('Delete process node error:', error);
-    res.status(500).json({ 
-      message: 'Failed to delete node', 
-      error: error.message 
+
+    // ✅ If your pre-save hook throws statusCode=400, return 400 (not 500)
+    if (error.statusCode === 400) {
+      return res.status(400).json({
+        message: 'Process flowchart validation failed.',
+        error: error.message
+      });
+    }
+
+    return res.status(500).json({
+      message: 'Failed to delete node',
+      error: error.message
     });
   }
 };
+
 
 // Get process flowchart summary
 const getProcessFlowchartSummary = async (req, res) => {
@@ -1622,33 +1647,66 @@ function findScopeIndex(scopes, { scopeUid, scopeIdentifier }) {
 
 
 
+// DELETE single scopeDetail from inside a node (Process flowchart)
+// Route: DELETE /api/processflow/:clientId/node/:nodeId/scope/:scopeIdentifier?scopeUid=...
+
 const hardDeleteProcessScopeDetail = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     const { scopeUid } = req.query || {};
 
-    const canManage = await canManageProcessFlowchart(req.user, clientId);
-    if (!canManage) return res.status(403).json({ message: 'Permission denied' });
+    // Permission check (your canManageProcessFlowchart seems to return an object in other places)
+    const can = await canManageProcessFlowchart(req.user, clientId);
+    const allowed = typeof can === "boolean" ? can : !!can?.allowed;
+    if (!allowed) return res.status(403).json({ message: "Permission denied" });
 
-    const pf = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
-    if (!pf) return res.status(404).json({ message: 'Process flowchart not found' });
+    // Load ONLY the node we care about (lean)
+    const pf = await ProcessFlowchart.findOne(
+      { clientId, isDeleted: false, "nodes.id": nodeId },
+      { nodes: { $elemMatch: { id: nodeId } } }
+    ).lean();
 
-    const node = pf.nodes.find(n => n.id === nodeId);
-    if (!node) return res.status(404).json({ message: 'Node not found' });
+    if (!pf) return res.status(404).json({ message: "Process flowchart / node not found" });
+
+    const node = pf.nodes?.[0];
+    if (!node) return res.status(404).json({ message: "Node not found" });
 
     const scopes = node?.details?.scopeDetails || [];
     const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
-    if (idx === -1) return res.status(404).json({ message: 'Scope detail not found' });
+    if (idx === -1) return res.status(404).json({ message: "Scope detail not found" });
 
-    const removed = scopes.splice(idx, 1)[0];
+    const removed = scopes[idx];
 
-    pf.markModified('nodes');
-    pf.version = (pf.version || 0) + 1;
-    pf.lastModifiedBy = req.user._id || req.user.id;
-    await pf.save();
+    // Build a precise pull condition (prefer _id if present)
+    const pullCondition = removed?._id
+      ? { _id: removed._id }
+      : scopeUid
+        ? { $or: [{ scopeUid: String(scopeUid) }] }
+        : { scopeIdentifier };
 
-    res.status(200).json({
-      message: 'Scope detail permanently deleted (process)',
+    const modifierUserId = req.user?._id || req.user?.id || null;
+
+    // Atomic update: $pull the scopeDetail from that node
+    const result = await ProcessFlowchart.updateOne(
+      { clientId, isDeleted: false, "nodes.id": nodeId },
+      {
+        $pull: { "nodes.$[n].details.scopeDetails": pullCondition },
+        $set: { lastModifiedBy: modifierUserId, updatedAt: new Date() },
+        $inc: { version: 1 }
+      },
+      { arrayFilters: [{ "n.id": nodeId }] }
+    );
+
+    if (!result.modifiedCount) {
+      return res.status(409).json({
+        message: "Scope detail could not be deleted (no changes applied).",
+        nodeId,
+        scopeIdentifier
+      });
+    }
+
+    return res.status(200).json({
+      message: "Scope detail permanently deleted (process)",
       nodeId,
       scope: {
         scopeIdentifier: removed?.scopeIdentifier,
@@ -1656,10 +1714,166 @@ const hardDeleteProcessScopeDetail = async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('hardDeleteProcessScopeDetail error:', err);
-    res.status(500).json({ message: 'Failed to delete scope detail', error: err.message });
+    console.error("hardDeleteProcessScopeDetail error:", err);
+    return res.status(500).json({ message: "Failed to delete scope detail", error: err.message });
   }
 };
+
+
+// Bulk hard delete scopeDetails from inside a PROCESS node
+// DELETE /api/processflow/:clientId/node/:nodeId/scopes
+// Body: { scopeIdentifiers?: string[], scopeIds?: string[] }
+// Optional query: ?cleanupAssignments=true|false
+const hardDeleteProcessScopeDetailsBulk = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+
+    // Accept identifiers via body OR query (?scopeIdentifiers=a,b,c)
+    const body = req.body || {};
+    const q = req.query || {};
+
+    const rawScopeIdentifiers = [
+      ...(Array.isArray(body.scopeIdentifiers) ? body.scopeIdentifiers : []),
+      ...(typeof q.scopeIdentifiers === 'string'
+        ? q.scopeIdentifiers.split(',').map(s => s.trim())
+        : [])
+    ];
+
+    const rawScopeIds = Array.isArray(body.scopeIds) ? body.scopeIds : [];
+
+    const scopeIdentifiers = [...new Set(rawScopeIdentifiers.filter(Boolean))];
+    const scopeObjectIds = rawScopeIds
+      .filter(id => mongoose.Types.ObjectId.isValid(id))
+      .map(id => new mongoose.Types.ObjectId(id));
+
+    if (scopeIdentifiers.length === 0 && scopeObjectIds.length === 0) {
+      return res.status(400).json({
+        message: 'Provide scopeIdentifiers[] and/or scopeIds[] to delete'
+      });
+    }
+
+    // Permission check (same as your other process endpoints)
+    const canManage = await canManageProcessFlowchart(req.user, clientId);
+    if (!canManage) {
+      return res.status(403).json({ message: 'Permission denied' });
+    }
+
+    // Load the node (for response + optional assignment cleanup)
+    const pf = await ProcessFlowchart.findOne(
+      { clientId, isDeleted: false, 'nodes.id': nodeId },
+      { 'nodes.$': 1 }
+    ).lean();
+
+    if (!pf || !pf.nodes || pf.nodes.length === 0) {
+      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    }
+
+    const node = pf.nodes[0];
+    const scopes = node?.details?.scopeDetails || [];
+
+    // Determine which scopes match
+    const identifierSet = new Set(scopeIdentifiers);
+    const idSet = new Set(scopeObjectIds.map(x => String(x)));
+
+    const matchedScopes = scopes.filter(s => {
+      const sid = s?.scopeIdentifier;
+      const oid = s?._id ? String(s._id) : null;
+      return (sid && identifierSet.has(sid)) || (oid && idSet.has(oid));
+    });
+
+    if (matchedScopes.length === 0) {
+      return res.status(404).json({
+        message: 'No matching scopeDetails found to delete',
+        requested: { scopeIdentifiers, scopeIds: rawScopeIds }
+      });
+    }
+
+    // Build $pull condition
+    const pullOr = [];
+    if (scopeIdentifiers.length > 0) {
+      pullOr.push({ scopeIdentifier: { $in: scopeIdentifiers } });
+    }
+    if (scopeObjectIds.length > 0) {
+      pullOr.push({ _id: { $in: scopeObjectIds } });
+    }
+
+    const userId = req.user._id || req.user.id;
+
+    // IMPORTANT: updateOne bypasses your schema pre('save') edge validation
+    const upd = await ProcessFlowchart.updateOne(
+      { clientId, isDeleted: false, 'nodes.id': nodeId },
+      {
+        $pull: {
+          'nodes.$[n].details.scopeDetails': { $or: pullOr }
+        },
+        $set: { lastModifiedBy: userId },
+        $inc: { version: 1 }
+      },
+      {
+        arrayFilters: [{ 'n.id': nodeId }]
+      }
+    );
+
+    if (!upd || upd.modifiedCount === 0) {
+      return res.status(500).json({
+        message: 'Failed to delete scopeDetails (no document modified)',
+        requested: { scopeIdentifiers, scopeIds: rawScopeIds }
+      });
+    }
+
+    // Optional: cleanup assignedModules for employees who were assigned to deleted scopes
+    const cleanupAssignments =
+      String(req.query.cleanupAssignments || 'true').toLowerCase() === 'true';
+
+    if (cleanupAssignments) {
+      // Build scopeIdentifier -> employeeIds map
+      const scopeToEmployees = new Map(); // key: scopeIdentifier, val: Set(employeeId)
+      for (const s of matchedScopes) {
+        const sid = s?.scopeIdentifier;
+        const empIds = Array.isArray(s?.assignedEmployees) ? s.assignedEmployees : [];
+        if (!sid || empIds.length === 0) continue;
+
+        if (!scopeToEmployees.has(sid)) scopeToEmployees.set(sid, new Set());
+        empIds.forEach(eid => scopeToEmployees.get(sid).add(String(eid)));
+      }
+
+      for (const [sid, empSet] of scopeToEmployees.entries()) {
+        const empIds = [...empSet].filter(id => mongoose.Types.ObjectId.isValid(id));
+        if (empIds.length === 0) continue;
+
+        await User.updateMany(
+          { _id: { $in: empIds } },
+          {
+            $pull: {
+              assignedModules: {
+                $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${sid}".*`
+              }
+            }
+          }
+        );
+      }
+    }
+
+    return res.status(200).json({
+      message: `Deleted ${matchedScopes.length} scopeDetail(s) from node`,
+      clientId,
+      nodeId,
+      deleted: matchedScopes.map(s => ({
+        scopeIdentifier: s.scopeIdentifier,
+        scopeId: s._id
+      })),
+      cleanupAssignments
+    });
+  } catch (err) {
+    console.error('hardDeleteProcessScopeDetailsBulk error:', err);
+    return res.status(500).json({
+      message: 'Failed to delete scopeDetails (bulk)',
+      error: err.message
+    });
+  }
+};
+
+
 
 
 /**
