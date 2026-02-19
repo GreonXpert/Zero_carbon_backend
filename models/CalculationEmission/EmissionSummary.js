@@ -244,260 +244,69 @@ const emissionDetailsSchema = new mongoose.Schema(
 );
 
 
-/**
- * Nested schema for PROCESSFLOW SUMMARY
- * Stores allocation-adjusted emission summaries for ProcessFlowchart
- * Similar structure to emissionDetailsSchema but with allocation context
- */
-const processflowSummarySchema = new mongoose.Schema(
+const processEmissionSummarySchema = new mongoose.Schema(
   {
-    // Process flowchart reference
-    processFlowchartId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'ProcessFlowchart',
-      description: 'Reference to the ProcessFlowchart this summary is for'
-    },
-
-    period: {
-      type: {
-        type: String,
-        enum: ['daily', 'weekly', 'monthly', 'yearly'],
-      },
-      year: Number,
-      month: Number,
-      week: Number,
-      day: Number,
-      date: Date,
-      from: Date,
-      to: Date
-    },
-
-    totalEmissions: {
-      CO2e: { type: Number, default: 0 },
-      CO2: { type: Number, default: 0 },
-      CH4: { type: Number, default: 0 },
-      N2O: { type: Number, default: 0 },
-      uncertainty: { type: Number, default: 0 }
-    },
-
-    byScope: {
-      'Scope 1': {
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      },
-      'Scope 2': {
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      },
-      'Scope 3': {
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      }
-    },
-
-    byCategory: {
-      type: Map,
-      of: new mongoose.Schema({
-        scopeType: String,
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      }, { _id: false }),
-      default: {}
-    },
-
-    byActivity: {
-      type: Map,
-      of: new mongoose.Schema({
-        scopeType: String,
-        categoryName: String,
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      }, { _id: false }),
-      default: {}
-    },
-
+    // ── Per-node totals (after allocation percentage is applied) ──────────────
+    // Key = nodeId from ProcessFlowchart
     byNode: {
       type: Map,
-      of: new mongoose.Schema({
-        nodeLabel: String,
-        department: String,
-        location: String,
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 },
-        byScope: {
-          'Scope 1': {
-            CO2e: { type: Number, default: 0 },
-            CO2: { type: Number, default: 0 },
-            CH4: { type: Number, default: 0 },
-            N2O: { type: Number, default: 0 },
-            uncertainty: { type: Number, default: 0 },
-            dataPointCount: { type: Number, default: 0 }
-          },
-          'Scope 2': {
-            CO2e: { type: Number, default: 0 },
-            CO2: { type: Number, default: 0 },
-            CH4: { type: Number, default: 0 },
-            N2O: { type: Number, default: 0 },
-            uncertainty: { type: Number, default: 0 },
-            dataPointCount: { type: Number, default: 0 }
-          },
-          'Scope 3': {
-            CO2e: { type: Number, default: 0 },
-            CO2: { type: Number, default: 0 },
-            CH4: { type: Number, default: 0 },
-            N2O: { type: Number, default: 0 },
-            uncertainty: { type: Number, default: 0 },
-            dataPointCount: { type: Number, default: 0 }
-          }
-        }
-      }, { _id: false }),
+      of: new mongoose.Schema(
+        {
+          nodeLabel:     { type: String, default: 'Unknown' },
+          department:    { type: String, default: 'Unknown' },
+          location:      { type: String, default: 'Unknown' },
+          allocationPct: { type: Number, default: 100 },  // the % used for this node
+          CO2e:          { type: Number, default: 0 },    // allocated CO2e (after allocationPct)
+          originalCO2e:  { type: Number, default: 0 },    // raw CO2e before allocation
+          dataPointCount:{ type: Number, default: 0 },
+          lastUpdatedAt: { type: Date }
+        },
+        { _id: false }
+      ),
       default: {}
     },
 
-    byDepartment: {
-      type: Map,
-      of: new mongoose.Schema({
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 },
-        nodeCount: { type: Number, default: 0 }
-      }, { _id: false }),
-      default: {}
-    },
-
-    byLocation: {
-      type: Map,
-      of: new mongoose.Schema({
-        CO2e: { type: Number, default: 0 },
-        CO2: { type: Number, default: 0 },
-        CH4: { type: Number, default: 0 },
-        N2O: { type: Number, default: 0 },
-        uncertainty: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 },
-        nodeCount: { type: Number, default: 0 }
-      }, { _id: false }),
-      default: {}
-    },
-
-    byInputType: {
-      manual: {
-        CO2e: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      },
-      API: {
-        CO2e: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      },
-      IOT: {
-        CO2e: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      }
-    },
-
-    byEmissionFactor: {
-      type: Map,
-      of: new mongoose.Schema({
-        CO2e: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 },
-        scopeTypes: {
-          'Scope 1': { type: Number, default: 0 },
-          'Scope 2': { type: Number, default: 0 },
-          'Scope 3': { type: Number, default: 0 }
-        }
-      }, { _id: false }),
-      default: {}
-    },
-
-    // NEW: Allocation-specific breakdowns
-    byAllocationPct: {
-      type: Map,
-      of: new mongoose.Schema({
-        allocationPct: { type: Number },
-        CO2e: { type: Number, default: 0 },
-        originalCO2e: { type: Number, default: 0 },
-        recordCount: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 }
-      }, { _id: false }),
-      default: {},
-      description: 'Breakdown by allocation percentage (e.g., "30%": {...}, "70%": {...})'
-    },
-
+    // ── Per-scope-identifier breakdown (showing allocation across nodes) ───────
+    // Key = scopeIdentifier (e.g. "Electricity_Main")
     byScopeIdentifier: {
       type: Map,
-      of: new mongoose.Schema({
-        scopeType: String,
-        allocationPct: { type: Number },
-        CO2e: { type: Number, default: 0 },
-        dataPointCount: { type: Number, default: 0 },
-        nodes: {
-          type: Map,
-          of: new mongoose.Schema({
-            nodeLabel: String,
-            allocationPct: { type: Number },
-            CO2e: { type: Number, default: 0 }
-          }, { _id: false }),
-          default: {}
-        }
-      }, { _id: false }),
-      default: {},
-      description: 'Breakdown showing which nodes each scopeIdentifier is allocated to'
+      of: new mongoose.Schema(
+        {
+          scopeType:     { type: String },
+          CO2e:          { type: Number, default: 0 },   // total allocated CO2e for this scope
+          dataPointCount:{ type: Number, default: 0 },
+
+          // Which nodes received emissions from this scope (and how much)
+          nodes: {
+            type: Map,
+            of: new mongoose.Schema(
+              {
+                nodeLabel:     { type: String },
+                allocationPct: { type: Number, default: 100 },
+                CO2e:          { type: Number, default: 0 }
+              },
+              { _id: false }
+            ),
+            default: {}
+          }
+        },
+        { _id: false }
+      ),
+      default: {}
     },
 
-    trends: {
-      type: mongoose.Schema.Types.Mixed,
-      default: {},
-      description: 'Trends comparing with previous period'
-    },
-
+    // ── Summary metadata ──────────────────────────────────────────────────────
     metadata: {
-      totalDataPoints: { type: Number, default: 0 },
-      allocationRecordsIncluded: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'ProcessFlowEmissionData'
-      }],
-      lastCalculated: { type: Date, default: Date.now },
-      calculatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-      version: { type: Number, default: 1 },
-      isComplete: { type: Boolean, default: false },
-      hasErrors: { type: Boolean, default: false },
-      errors: [String],
-      calculationDuration: Number,
-      // Allocation-specific metadata
+      lastCalculated:    { type: Date, default: Date.now },
       allocationApplied: { type: Boolean, default: true },
-      averageAllocationPct: { type: Number, default: 0 },
-      totalOriginalEmissions: { type: Number, default: 0 },
-      totalAllocatedEmissions: { type: Number, default: 0 }
+      totalAllocatedCO2e:{ type: Number, default: 0 },
+      totalOriginalCO2e: { type: Number, default: 0 },
+      dataPointCount:    { type: Number, default: 0 }
     }
   },
   { _id: false }
 );
+
 /**
  * ROOT SCHEMA
  */
@@ -806,7 +615,10 @@ const emissionSummarySchema = new mongoose.Schema(
         default: {}
       }
     },
-    
+      processEmissionSummary: {
+      type: processEmissionSummarySchema,
+       default: {}
+     },
   },
   {
     timestamps: true,

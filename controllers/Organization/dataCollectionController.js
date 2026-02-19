@@ -8,6 +8,8 @@ const moment = require('moment');
 const fs = require('fs');
 
 const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const { createProcessEmissionDataEntry } = require('../../utils/ProcessEmission/createProcessEmissionDataEntry');
+
 
 
 const {
@@ -1607,10 +1609,28 @@ async function saveOneEntry({
     emissionFactor: resolveEmissionFactor(rawRow?.emissionFactor, scope?.emissionFactor),
   });
 
-  await entry.save();
-  const calcResult = await triggerEmissionCalculation(entry);
-  return { entry, calcResult };
-}
+ await entry.save();
+    const calcResult = await triggerEmissionCalculation(entry);
+
+    // ── NEW: Propagate emission to ProcessFlowchart nodes ───────────────────
+    // Reload the entry from DB so calculatedEmissions is fully populated after
+    // triggerEmissionCalculation (which updates the entry in-place via .save()).
+    // We use setImmediate to let the response return first, keeping latency low.
+    setImmediate(async () => {
+      try {
+        const freshEntry = await require('../../models/Organization/DataEntry')
+          .findById(entry._id).lean();
+        if (freshEntry && freshEntry.calculatedEmissions) {
+          await createProcessEmissionDataEntry(freshEntry);
+        }
+      } catch (e) {
+        console.error('[saveOneEntry] ProcessEmission propagation failed:', e.message);
+      }
+    });
+    // ────────────────────────────────────────────────────────────────────────
+
+    return { entry, calcResult };
+  }
 
 
 
