@@ -5,6 +5,8 @@ const User = require('../../models/User');
 const mongoose = require('mongoose');
 const Notification = require('../../models/Notification/Notification')
 
+const ProcessEmissionDataEntry = require('../../models/Organization/ProcessEmissionDataEntry');
+
 const { v4: uuidv4 } = require('uuid');
 
 // Import helper functions
@@ -2257,6 +2259,595 @@ const validation = validateAllocations(processFlowchart.nodes, {
   }
 };
 
+// ============================================================================
+// SECTION: ProcessEmissionDataEntry — Helper Functions
+// ============================================================================
+
+/**
+ * Build a MongoDB filter object from request params / query.
+ * Handles strict client isolation the same way DataEntry does.
+ */
+function buildProcessEmissionFilters(req) {
+  const filters = {};
+
+  const clientScopedTypes = [
+    'client_admin',
+    'client_employee_head',
+    'employee',
+    'auditor',
+    'viewer',
+  ];
+
+  const userType      = req.user?.userType;
+  const userClientId  = req.user?.clientId;
+
+  // ── clientId ──────────────────────────────────────────────────────────────
+  const requestedClientId =
+    req.params?.clientId || req.query?.clientId;
+
+  if (clientScopedTypes.includes(userType)) {
+    if (requestedClientId && userClientId && requestedClientId !== userClientId) {
+      const err = new Error('Access denied: cross-client request');
+      err.statusCode = 403;
+      throw err;
+    }
+    filters.clientId = userClientId;
+  } else {
+    if (!requestedClientId) {
+      const err = new Error('clientId is required');
+      err.statusCode = 400;
+      throw err;
+    }
+    filters.clientId = requestedClientId;
+  }
+
+  // ── nodeId ────────────────────────────────────────────────────────────────
+  const requestedNodeId =
+    req.params?.nodeId || req.query?.nodeId;
+  if (requestedNodeId) filters.nodeId = requestedNodeId;
+
+  // ── scopeIdentifier ───────────────────────────────────────────────────────
+  const requestedScope =
+    req.params?.scopeIdentifier || req.query?.scopeIdentifier;
+  if (requestedScope) filters.scopeIdentifier = requestedScope;
+
+  // ── scopeType  e.g. "Scope 1" | "Scope 2" | "Scope 3" ───────────────────
+  if (req.query.scopeType) filters.scopeType = req.query.scopeType;
+
+  // ── inputType  e.g. "manual" | "API" | "IOT" ─────────────────────────────
+  if (req.query.inputType) filters.inputType = req.query.inputType;
+
+  // ── nodeType  "Emission Source" | "Reduction" ────────────────────────────
+  if (req.query.nodeType) filters.nodeType = req.query.nodeType;
+
+  // ── emissionCalculationStatus ─────────────────────────────────────────────
+  if (req.query.emissionCalculationStatus)
+    filters.emissionCalculationStatus = req.query.emissionCalculationStatus;
+
+  // ── sourceDataEntryId ─────────────────────────────────────────────────────
+  if (req.query.sourceDataEntryId) {
+    const id = req.query.sourceDataEntryId;
+    if (mongoose.Types.ObjectId.isValid(id))
+      filters.sourceDataEntryId = new mongoose.Types.ObjectId(id);
+  }
+
+  // ── date range (on timestamp) ─────────────────────────────────────────────
+  if (req.query.startDate || req.query.endDate) {
+    filters.timestamp = {};
+    if (req.query.startDate)
+      filters.timestamp.$gte = new Date(req.query.startDate);
+    if (req.query.endDate)
+      filters.timestamp.$lte = new Date(req.query.endDate);
+  }
+
+  return filters;
+}
+
+/** Build a sort object; mirrors the DataEntry helper. */
+function buildProcessEmissionSort(req) {
+  const allowedFields = [
+    'timestamp', 'date', 'time',
+    'inputType', 'scopeType', 'nodeType',
+    'emissionCalculationStatus',
+    'dataEntryCumulative.incomingTotalValue',
+    'dataEntryCumulative.cumulativeTotalValue',
+    'dataEntryCumulative.entryCount',
+    'createdAt', 'updatedAt',
+  ];
+
+  let { sortBy = 'timestamp', sortOrder = 'desc' } = req.query;
+  if (!allowedFields.includes(sortBy)) sortBy = 'timestamp';
+  return { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+}
+
+/** Pagination helper — returns { page, limit, skip }. */
+function buildPagination(req) {
+  const page  = Math.max(1, parseInt(req.query.page,  10) || 1);
+  const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit, 10) || 100));
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+// ============================================================================
+// SECTION: ProcessEmissionDataEntry — Controller Functions
+// ============================================================================
+
+/**
+ * GET /process-emission-entries/clients/:clientId/all
+ *
+ * Returns ALL ProcessEmissionDataEntry records for a client with
+ * optional multi-filter support via query params:
+ *   nodeId, scopeIdentifier, scopeType, inputType, nodeType,
+ *   emissionCalculationStatus, sourceDataEntryId, startDate, endDate,
+ *   sortBy, sortOrder, page, limit
+ */
+const getProcessEmissionEntries = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);
+    const sort     = buildProcessEmissionSort(req);
+    const { page, limit, skip } = buildPagination(req);
+
+    // Optional: select specific fields to reduce payload
+    // const selectFields = req.query.fields
+    //   ? req.query.fields.split(',').join(' ')
+    //   : '';
+
+    const [entries, total] = await Promise.all([
+      ProcessEmissionDataEntry.find(filters)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ProcessEmissionDataEntry.countDocuments(filters),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission entries fetched successfully',
+      data: entries,
+      filtersApplied: filters,
+      sort,
+      pagination: {
+        currentPage:  page,
+        totalPages,
+        totalItems:   total,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionEntries]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission entries',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/clients/:clientId/nodes/:nodeId
+ *
+ * Returns ProcessEmissionDataEntry records for a specific node
+ * within a client. Supports the same query-param filters as
+ * getProcessEmissionEntries.
+ */
+const getProcessEmissionEntriesByNode = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);   // nodeId comes from req.params
+    const sort     = buildProcessEmissionSort(req);
+    const { page, limit, skip } = buildPagination(req);
+
+    const [entries, total] = await Promise.all([
+      ProcessEmissionDataEntry.find(filters)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ProcessEmissionDataEntry.countDocuments(filters),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission entries for node fetched successfully',
+      data: entries,
+      filtersApplied: filters,
+      sort,
+      pagination: {
+        currentPage:  page,
+        totalPages,
+        totalItems:   total,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionEntriesByNode]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission entries by node',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier
+ *
+ * Returns ProcessEmissionDataEntry records for a specific
+ * client + node + scope combination.
+ */
+const getProcessEmissionEntriesByScope = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);   // includes scopeIdentifier
+    const sort     = buildProcessEmissionSort(req);
+    const { page, limit, skip } = buildPagination(req);
+
+    const [entries, total] = await Promise.all([
+      ProcessEmissionDataEntry.find(filters)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ProcessEmissionDataEntry.countDocuments(filters),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission entries for scope fetched successfully',
+      data: entries,
+      filtersApplied: filters,
+      sort,
+      pagination: {
+        currentPage:  page,
+        totalPages,
+        totalItems:   total,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionEntriesByScope]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission entries by scope',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/:entryId
+ *
+ * Returns a single ProcessEmissionDataEntry by its MongoDB _id.
+ */
+const getProcessEmissionEntryById = async (req, res) => {
+  try {
+    const { entryId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(entryId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid entryId format',
+      });
+    }
+
+    const entry = await ProcessEmissionDataEntry.findById(entryId).lean();
+
+    if (!entry) {
+      return res.status(404).json({
+        success: false,
+        message: 'Process emission entry not found',
+      });
+    }
+
+    // Client isolation check
+    const clientScopedTypes = [
+      'client_admin', 'client_employee_head', 'employee', 'auditor', 'viewer',
+    ];
+    if (clientScopedTypes.includes(req.user?.userType)) {
+      if (entry.clientId !== req.user.clientId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: entry belongs to another client',
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission entry fetched successfully',
+      data: entry,
+    });
+  } catch (error) {
+    console.error('[getProcessEmissionEntryById]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission entry',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/clients/:clientId/summary/stats
+ *
+ * Returns aggregate statistics for ProcessEmissionDataEntry records:
+ *   - total count
+ *   - breakdown by scopeType
+ *   - breakdown by inputType
+ *   - breakdown by nodeType
+ *   - breakdown by emissionCalculationStatus
+ *   - date range of available records
+ *
+ * Supports the same optional query-param filters as getProcessEmissionEntries.
+ */
+const getProcessEmissionStats = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);
+
+    const [
+      totalCount,
+      scopeTypeBreakdown,
+      inputTypeBreakdown,
+      nodeTypeBreakdown,
+      statusBreakdown,
+      dateRange,
+    ] = await Promise.all([
+      // 1) total
+      ProcessEmissionDataEntry.countDocuments(filters),
+
+      // 2) by scopeType
+      ProcessEmissionDataEntry.aggregate([
+        { $match: filters },
+        { $group: { _id: '$scopeType', count: { $sum: 1 } } },
+        { $project: { _id: 0, scopeType: '$_id', count: 1 } },
+        { $sort: { count: -1 } },
+      ]),
+
+      // 3) by inputType
+      ProcessEmissionDataEntry.aggregate([
+        { $match: filters },
+        { $group: { _id: '$inputType', count: { $sum: 1 } } },
+        { $project: { _id: 0, inputType: '$_id', count: 1 } },
+        { $sort: { count: -1 } },
+      ]),
+
+      // 4) by nodeType
+      ProcessEmissionDataEntry.aggregate([
+        { $match: filters },
+        { $group: { _id: '$nodeType', count: { $sum: 1 } } },
+        { $project: { _id: 0, nodeType: '$_id', count: 1 } },
+        { $sort: { count: -1 } },
+      ]),
+
+      // 5) by emissionCalculationStatus
+      ProcessEmissionDataEntry.aggregate([
+        { $match: filters },
+        { $group: { _id: '$emissionCalculationStatus', count: { $sum: 1 } } },
+        { $project: { _id: 0, status: '$_id', count: 1 } },
+        { $sort: { count: -1 } },
+      ]),
+
+      // 6) date range
+      ProcessEmissionDataEntry.aggregate([
+        { $match: filters },
+        {
+          $group: {
+            _id: null,
+            earliest: { $min: '$timestamp' },
+            latest:   { $max: '$timestamp' },
+          },
+        },
+      ]),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission statistics fetched successfully',
+      data: {
+        totalCount,
+        byScopeType:  scopeTypeBreakdown,
+        byInputType:  inputTypeBreakdown,
+        byNodeType:   nodeTypeBreakdown,
+        byStatus:     statusBreakdown,
+        dateRange: dateRange[0]
+          ? { earliest: dateRange[0].earliest, latest: dateRange[0].latest }
+          : null,
+      },
+      filtersApplied: filters,
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionStats]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission statistics',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/clients/:clientId/minimal
+ *
+ * Lightweight version — returns only fields needed for dashboards:
+ *   _id, clientId, nodeId, scopeIdentifier, scopeType, inputType,
+ *   nodeType, timestamp, emissionCalculationStatus,
+ *   calculatedEmissions (incoming & cumulative allocated totals),
+ *   dataEntryCumulative
+ *
+ * Supports the same optional query-param filters as getProcessEmissionEntries.
+ */
+const getProcessEmissionEntriesMinimal = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);
+    const sort     = buildProcessEmissionSort(req);
+    const { page, limit, skip } = buildPagination(req);
+
+    const MINIMAL_PROJECTION = {
+      _id:                        1,
+      clientId:                   1,
+      nodeId:                     1,
+      sourceDataEntryId:          1,
+      scopeIdentifier:            1,
+      scopeType:                  1,
+      inputType:                  1,
+      nodeType:                   1,
+      timestamp:                  1,
+      date:                       1,
+      emissionCalculationStatus:  1,
+      dataEntryCumulative:        1,
+      'calculatedEmissions.incoming.allocationPct':        1,
+      'calculatedEmissions.incoming.allocated':            1,
+      'calculatedEmissions.cumulative.allocationPct':      1,
+      'calculatedEmissions.cumulative.allocated':          1,
+      'calculatedEmissions.metadata':                      1,
+    };
+
+    const [entries, total] = await Promise.all([
+      ProcessEmissionDataEntry.find(filters, MINIMAL_PROJECTION)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ProcessEmissionDataEntry.countDocuments(filters),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Minimal process emission entries fetched successfully',
+      data: entries,
+      filtersApplied: filters,
+      sort,
+      pagination: {
+        currentPage:  page,
+        totalPages,
+        totalItems:   total,
+        itemsPerPage: limit,
+        hasNextPage:  page < totalPages,
+        hasPrevPage:  page > 1,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionEntriesMinimal]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch minimal process emission entries',
+      error: error.message,
+    });
+  }
+};
+
+
+/**
+ * GET /process-emission-entries/clients/:clientId/nodes/:nodeId/summary
+ *
+ * Returns an aggregated emission summary per node — useful for
+ * dashboard charts.  Groups entries by scopeIdentifier and returns
+ * the latest cumulative allocated totals for each gas metric.
+ */
+const getProcessEmissionNodeSummary = async (req, res) => {
+  try {
+    const filters = buildProcessEmissionFilters(req);
+
+ const summaries = await ProcessEmissionDataEntry.aggregate([
+  { $match: filters },
+  { $sort: { timestamp: -1 } },
+  {
+    $group: {
+      _id: {
+        nodeId:          '$nodeId',
+        scopeIdentifier: '$scopeIdentifier',
+      },
+      latestRecord:    { $first: '$$ROOT' },
+      totalEntries:    { $sum: 1 },
+      latestTimestamp: { $first: '$timestamp' },
+      oldestTimestamp: { $last: '$timestamp' },
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      nodeId:          '$_id.nodeId',
+      scopeIdentifier: '$_id.scopeIdentifier',
+      scopeType:       '$latestRecord.scopeType',
+      inputType:       '$latestRecord.inputType',
+      nodeType:        '$latestRecord.nodeType',
+      allocationPct:   '$latestRecord.calculatedEmissions.cumulative.allocationPct',
+      cumulativeAllocated: '$latestRecord.calculatedEmissions.cumulative.allocated',
+      incomingAllocated:   '$latestRecord.calculatedEmissions.incoming.allocated',
+      metadata:        '$latestRecord.calculatedEmissions.metadata',
+      dataEntryCumulative: '$latestRecord.dataEntryCumulative',
+      totalEntries:    '$totalEntries',    // ✅ $ prefix to reference grouped field
+      latestTimestamp: '$latestTimestamp', // ✅ $ prefix
+      oldestTimestamp: '$oldestTimestamp', // ✅ $ prefix
+    },
+  },
+  { $sort: { nodeId: 1, scopeIdentifier: 1 } },
+]);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Process emission node summary fetched successfully',
+      data: summaries,
+      filtersApplied: filters,
+    });
+  } catch (error) {
+    if (error.statusCode === 403)
+      return res.status(403).json({ success: false, message: error.message });
+    if (error.statusCode === 400)
+      return res.status(400).json({ success: false, message: error.message });
+
+    console.error('[getProcessEmissionNodeSummary]', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch process emission node summary',
+      error: error.message,
+    });
+  }
+};
+
+
 module.exports = {
   saveProcessFlowchart,
   getProcessFlowchart,
@@ -2271,5 +2862,12 @@ module.exports = {
   removeAssignmentProcess,  
   hardDeleteProcessScopeDetail,
   getAllocations,
-  updateAllocations  
+  updateAllocations,
+  getProcessEmissionEntries,
+  getProcessEmissionEntriesByNode,
+  getProcessEmissionEntriesByScope,
+  getProcessEmissionEntryById,
+  getProcessEmissionStats,
+  getProcessEmissionEntriesMinimal,
+  getProcessEmissionNodeSummary,  
 };

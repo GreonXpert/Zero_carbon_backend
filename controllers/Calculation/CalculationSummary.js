@@ -1501,7 +1501,31 @@ async function buildProcessEmissionSummary(
         }
 
         // ── Node metadata ─────────────────────────────────────────────────
-        const procNode = processNodeMap.get(entry.nodeId);
+        // Primary lookup: ProcessEmissionDataEntry.nodeId IS the process-chart
+        // node ID (e.g. "clientgreon001-node-21973e") so Strategy A entries
+        // will resolve directly here.
+        //
+        // Strategy B fallback: when using main-chart DataEntries, entry.nodeId
+        // is the org-chart node ID (e.g. "malabarcementwo-node-874366") which
+        // does NOT exist in processNodeMap. In that case, find the process node
+        // whose scopeDetails contains the matching scopeIdentifier.
+        let procNode = processNodeMap.get(entry.nodeId);
+
+        // Fallback: search by scopeIdentifier when nodeId doesn't match
+        // (Strategy B: org-chart DataEntry nodeId ≠ process-chart nodeId)
+        if (!procNode && entry.scopeIdentifier) {
+          for (const [, nodeData] of processNodeMap) {
+            const scopeMatch = (nodeData.scopeDetails || []).some(
+              sd => (sd.scopeIdentifier || '').toLowerCase() ===
+                    (entry.scopeIdentifier || '').toLowerCase()
+            );
+            if (scopeMatch) {
+              procNode = nodeData;
+              break;
+            }
+          }
+        }
+
         const orgNode  = orgNodeMap ? orgNodeMap.get(entry.nodeId) : null;
 
         const nodeLabel  = procNode?.label      || orgNode?.label      || entry.nodeId || 'Unknown';
@@ -2077,7 +2101,7 @@ const getEmissionSummary = async (req, res) => {
       day,
       recalculate = "false",
       preferLatest = "true",
-      type = "both" // "emission" | "reduction" | "both"
+      type = "both" // "emission" | "reduction" | "process" | "both"
     } = req.query;
 
     if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
@@ -2090,7 +2114,6 @@ const getEmissionSummary = async (req, res) => {
     const d = day ? parseInt(day) : moment.utc().date();
 
     const noParts = !year && !month && !week && !day;
-
     const baseQuery = { clientId, "period.type": periodType };
 
     let summary;
@@ -2099,15 +2122,7 @@ const getEmissionSummary = async (req, res) => {
     // 1) Load or recalculate summary
     // ----------------------------------------------------
     if (recalculate === "true") {
-      summary = await recalculateAndSaveSummary(
-        clientId,
-        periodType,
-        y,
-        m,
-        w,
-        d,
-        req.user?._id
-      );
+      summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
     } else {
       if (noParts) {
         summary = await EmissionSummary.findOne(baseQuery)
@@ -2115,10 +2130,10 @@ const getEmissionSummary = async (req, res) => {
           .lean();
       } else {
         const exactQuery = { ...baseQuery };
-        if (year) exactQuery["period.year"] = y;
+        if (year)  exactQuery["period.year"]  = y;
         if (month) exactQuery["period.month"] = m;
-        if (week) exactQuery["period.week"] = w;
-        if (day) exactQuery["period.day"] = d;
+        if (week)  exactQuery["period.week"]  = w;
+        if (day)   exactQuery["period.day"]   = d;
 
         summary = await EmissionSummary.findOne(exactQuery).lean();
 
@@ -2129,15 +2144,8 @@ const getEmissionSummary = async (req, res) => {
 
         if (!summary || stale) {
           const recomputed = await recalculateAndSaveSummary(
-            clientId,
-            periodType,
-            y,
-            m,
-            w,
-            d,
-            req.user?._id
+            clientId, periodType, y, m, w, d, req.user?._id
           );
-
           if (recomputed) {
             summary = recomputed;
           } else if (preferLatest === "true") {
@@ -2157,22 +2165,21 @@ const getEmissionSummary = async (req, res) => {
     }
 
     // ----------------------------------------------------
-    // 2) Normalise Maps → plain objects for emissionSummary
+    // 2) Deep-convert Maps → plain objects (covers all nested Maps)
     // ----------------------------------------------------
     const convertMap = (value) => {
       if (value instanceof Map) return Object.fromEntries(value);
       if (Array.isArray(value)) return value.map(convertMap);
       if (value && typeof value === "object" && !(value instanceof Date)) {
         const out = {};
-        for (const k of Object.keys(value)) {
-          out[k] = convertMap(value[k]);
-        }
+        for (const k of Object.keys(value)) out[k] = convertMap(value[k]);
         return out;
       }
       return value;
     };
 
     const emissionSummary = convertMap(summary.emissionSummary || {});
+
     const reductionSummary = summary.reductionSummary || {
       totalNetReduction: 0,
       entriesCount: 0,
@@ -2184,11 +2191,15 @@ const getEmissionSummary = async (req, res) => {
       byMethodology: {}
     };
 
+    // NEW: extract & convert processEmissionSummary (all fields are Maps)
+    const processEmissionSummary = convertMap(summary.processEmissionSummary || {});
+
     const baseResponse = {
       clientId: summary.clientId,
       period: summary.period,
       emissionSummary,
       reductionSummary,
+      processEmissionSummary,          // ← always attached at root
       metadata: summary.metadata || {}
     };
 
@@ -2203,6 +2214,7 @@ const getEmissionSummary = async (req, res) => {
           clientId: baseResponse.clientId,
           period: baseResponse.period,
           emissionSummary: baseResponse.emissionSummary,
+          processEmissionSummary: baseResponse.processEmissionSummary,
           metadata: baseResponse.metadata
         }
       });
@@ -2221,12 +2233,26 @@ const getEmissionSummary = async (req, res) => {
       });
     }
 
-    // both
+    if (type === "process") {
+      return res.status(200).json({
+        success: true,
+        type: "process",
+        data: {
+          clientId: baseResponse.clientId,
+          period: baseResponse.period,
+          processEmissionSummary: baseResponse.processEmissionSummary,
+          metadata: baseResponse.metadata
+        }
+      });
+    }
+
+    // both (default)
     return res.status(200).json({
       success: true,
       type: "both",
       data: baseResponse
     });
+
   } catch (error) {
     console.error("❌ Error getting emission summary:", error);
     return res.status(500).json({
@@ -2236,7 +2262,6 @@ const getEmissionSummary = async (req, res) => {
     });
   }
 };
-
 
 
 
@@ -2250,10 +2275,9 @@ const getMultipleSummaries = async (req, res) => {
       endYear,
       endMonth,
       limit = 12,
-      type = "both"
+      type = "both" // "emission" | "reduction" | "process" | "both"
     } = req.query;
 
-    // Validate
     if (!["daily", "weekly", "monthly", "yearly", "all-time"].includes(periodType)) {
       return res.status(400).json({ success: false, message: "Invalid period type" });
     }
@@ -2269,19 +2293,11 @@ const getMultipleSummaries = async (req, res) => {
         $lte: parseInt(endYear)
       };
     }
-
     if (startMonth) {
-      query["period.month"] = {
-        ...(query["period.month"] || {}),
-        $gte: parseInt(startMonth)
-      };
+      query["period.month"] = { ...(query["period.month"] || {}), $gte: parseInt(startMonth) };
     }
-
     if (endMonth) {
-      query["period.month"] = {
-        ...(query["period.month"] || {}),
-        $lte: parseInt(endMonth)
-      };
+      query["period.month"] = { ...(query["period.month"] || {}), $lte: parseInt(endMonth) };
     }
 
     // ---------------------------------------------
@@ -2293,7 +2309,7 @@ const getMultipleSummaries = async (req, res) => {
       .lean();
 
     // ---------------------------------------------
-    // 3) deepConvert helper (same as getEmissionSummary)
+    // 3) deepConvert helper (handles nested Maps)
     // ---------------------------------------------
     const deepConvert = (value) => {
       if (value instanceof Map) {
@@ -2301,14 +2317,10 @@ const getMultipleSummaries = async (req, res) => {
           [...value.entries()].map(([k, v]) => [k, deepConvert(v)])
         );
       }
-      if (Array.isArray(value)) {
-        return value.map(deepConvert);
-      }
+      if (Array.isArray(value)) return value.map(deepConvert);
       if (value && typeof value === "object" && !(value instanceof Date)) {
         const out = {};
-        for (const k of Object.keys(value)) {
-          out[k] = deepConvert(value[k]);
-        }
+        for (const k of Object.keys(value)) out[k] = deepConvert(value[k]);
         return out;
       }
       return value;
@@ -2318,10 +2330,10 @@ const getMultipleSummaries = async (req, res) => {
     // 4) FORMAT EACH SUMMARY
     // ---------------------------------------------
     const formatted = summaries.map((doc) => {
-      const emissionSummary  = deepConvert(doc.emissionSummary || {});
-      const reductionSummary = deepConvert(doc.reductionSummary || {});
-
-      const metadata = doc.metadata || {};
+      const emissionSummary        = deepConvert(doc.emissionSummary  || {});
+      const reductionSummary       = deepConvert(doc.reductionSummary || {});
+      const processEmissionSummary = deepConvert(doc.processEmissionSummary || {}); // ← NEW
+      const metadata               = doc.metadata || {};
 
       // EMISSION ONLY
       if (type === "emission") {
@@ -2329,6 +2341,7 @@ const getMultipleSummaries = async (req, res) => {
           clientId: doc.clientId,
           period: doc.period,
           emissionSummary,
+          processEmissionSummary,   // ← included: process data complements emission view
           metadata
         };
       }
@@ -2339,18 +2352,33 @@ const getMultipleSummaries = async (req, res) => {
           clientId: doc.clientId,
           period: doc.period,
           reductionSummary,
-          netReductions: doc.netReductions || { totalNetReduction: reductionSummary.totalNetReduction },
+          netReductions: doc.netReductions || {
+            totalNetReduction: reductionSummary.totalNetReduction
+          },
           metadata
         };
       }
 
-      // BOTH
+      // PROCESS ONLY
+      if (type === "process") {
+        return {
+          clientId: doc.clientId,
+          period: doc.period,
+          processEmissionSummary,
+          metadata
+        };
+      }
+
+      // BOTH (default) — include all three summaries
       return {
         clientId: doc.clientId,
         period: doc.period,
         emissionSummary,
         reductionSummary,
-        netReductions: doc.netReductions || { totalNetReduction: reductionSummary.totalNetReduction },
+        processEmissionSummary,
+        netReductions: doc.netReductions || {
+          totalNetReduction: reductionSummary.totalNetReduction
+        },
         metadata
       };
     });
@@ -2374,7 +2402,6 @@ const getMultipleSummaries = async (req, res) => {
     });
   }
 };
-
 //New Update function
 // const getMultipleSummaries = async (req, res) => {
 //   try {
@@ -2527,37 +2554,28 @@ const getFilteredSummary = async (req, res) => {
 
     const {
       // period
-      periodType,
-      year,
-      month,
-      week,
-      day,
+      periodType, year, month, week, day,
 
       // summary selector
       summaryKind: summaryKindRaw,
       summaryType: summaryTypeRaw,
 
-      // common filters (single + multi)
-      scope,
-      scopes,
-      location,
-      locations,
-      department,
-      departments,
-      nodeId,
-      nodeIds,
+      // emission filters
+      scope, scopes,
+      location, locations,
+      department, departments,
+      nodeId, nodeIds,
 
       // reduction filters
-      projectId,
-      projectIds,
-      category,
-      categories,
-      activity,
-      activities,
-      methodology,
-      methodologies,
+      projectId, projectIds,
+      category, categories,
+      activity, activities,
+      methodology, methodologies,
 
-      // sorting
+      // process filters (NEW)
+      processNodeId, processNodeIds,
+
+      // sorting / paging
       sortBy: sortByRaw,
       sortDirection: sortDirectionRaw,
       sortOrder: sortOrderRaw,
@@ -2566,12 +2584,11 @@ const getFilteredSummary = async (req, res) => {
       maxCO2e: maxCO2eRaw,
     } = req.query;
 
+    // ── helpers ─────────────────────────────────────────────────────────────
     const normalizeArray = (val) => {
       if (!val) return [];
       if (Array.isArray(val)) {
-        return val.flatMap((v) => String(v).split(","))
-          .map((v) => v.trim())
-          .filter(Boolean);
+        return val.flatMap((v) => String(v).split(",")).map((v) => v.trim()).filter(Boolean);
       }
       return String(val).split(",").map((v) => v.trim()).filter(Boolean);
     };
@@ -2581,9 +2598,27 @@ const getFilteredSummary = async (req, res) => {
       return Number.isFinite(n) ? n : 0;
     };
 
-    const toLowerSet = (arr) => new Set((arr || []).map((x) => String(x).toLowerCase()));
+    const toLowerSet = (arr) =>
+      new Set((arr || []).map((x) => String(x).toLowerCase()));
 
-    const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase(); // emission|reduction|both
+    // Deep-convert Maps to plain objects (reused throughout)
+    const deepConvert = (value) => {
+      if (value instanceof Map) {
+        return Object.fromEntries(
+          [...value.entries()].map(([k, v]) => [k, deepConvert(v)])
+        );
+      }
+      if (Array.isArray(value)) return value.map(deepConvert);
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const out = {};
+        for (const k of Object.keys(value)) out[k] = deepConvert(value[k]);
+        return out;
+      }
+      return value;
+    };
+
+    // summaryKind supports: emission | reduction | process | both
+    const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase();
 
     // -------------------------------------------
     // 1) Load summary doc (exact period or latest)
@@ -2593,10 +2628,10 @@ const getFilteredSummary = async (req, res) => {
 
     if (periodType) {
       query["period.type"] = periodType;
-      if (year) query["period.year"] = parseInt(year);
+      if (year)  query["period.year"]  = parseInt(year);
       if (month) query["period.month"] = parseInt(month);
-      if (week) query["period.week"] = parseInt(week);
-      if (day) query["period.day"] = parseInt(day);
+      if (week)  query["period.week"]  = parseInt(week);
+      if (day)   query["period.day"]   = parseInt(day);
 
       fullSummary = await EmissionSummary.findOne(query).lean();
     } else {
@@ -2610,21 +2645,21 @@ const getFilteredSummary = async (req, res) => {
     }
 
     // -------------------------------------------
-    // 2) Normalize data
+    // 2) Normalize raw data sections
     // -------------------------------------------
     const es = fullSummary.emissionSummary || {};
     const rs = fullSummary.reductionSummary || {};
+    const ps = fullSummary.processEmissionSummary || {}; // ← NEW
 
-    const byNode = es.byNode || {};
-    const byScope = es.byScope || {};
+    const byNode        = es.byNode        || {};
+    const byScope       = es.byScope       || {};
     const totalEmissions = es.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
 
-    // Build node rows (main emission “records”)
+    // ── EMISSION nodes ──────────────────────────────────────────────────────
     let nodes = Object.entries(byNode).map(([id, n]) => {
       const s1 = safeNum(n?.byScope?.["Scope 1"]?.CO2e);
       const s2 = safeNum(n?.byScope?.["Scope 2"]?.CO2e);
       const s3 = safeNum(n?.byScope?.["Scope 3"]?.CO2e);
-
       return {
         nodeId: id,
         nodeLabel: n?.nodeLabel || "",
@@ -2632,73 +2667,90 @@ const getFilteredSummary = async (req, res) => {
         location: n?.location || "",
         byScope: { "Scope 1": s1, "Scope 2": s2, "Scope 3": s3 },
         CO2e: safeNum(n?.CO2e),
-        CO2: safeNum(n?.CO2),
-        CH4: safeNum(n?.CH4),
-        N2O: safeNum(n?.N2O),
+        CO2:  safeNum(n?.CO2),
+        CH4:  safeNum(n?.CH4),
+        N2O:  safeNum(n?.N2O),
         uncertainty: safeNum(n?.uncertainty),
       };
     });
 
-    // Build project rows (main reduction “records”)
-    let projects = Array.isArray(rs.byProject) ? rs.byProject.map((p) => ({
-      projectId: p.projectId,
-      projectName: p.projectName || p.projectId,
-      scope: p.scope || "",
-      category: p.category || "",
-      location: p.location || "",
-      methodology: p.methodology || "",
-      projectActivity: p.projectActivity || "",
-      totalNetReduction: safeNum(p.totalNetReduction),
-      entriesCount: p.entriesCount || 0,
-    })) : [];
+    // ── REDUCTION projects ──────────────────────────────────────────────────
+    let projects = Array.isArray(rs.byProject)
+      ? rs.byProject.map((p) => ({
+          projectId: p.projectId,
+          projectName: p.projectName || p.projectId,
+          scope: p.scope || "",
+          category: p.category || "",
+          location: p.location || "",
+          methodology: p.methodology || "",
+          projectActivity: p.projectActivity || "",
+          totalNetReduction: safeNum(p.totalNetReduction),
+          entriesCount: p.entriesCount || 0,
+        }))
+      : [];
+
+    // ── PROCESS nodes (NEW) ─────────────────────────────────────────────────
+    // processEmissionSummary.byNode is a Map keyed by nodeId
+    const rawProcessByNode = ps.byNode || {};
+    const processNodeEntries = rawProcessByNode instanceof Map
+      ? Array.from(rawProcessByNode.entries())
+      : Object.entries(rawProcessByNode);
+
+    let processNodes = processNodeEntries.map(([id, n]) => ({
+      nodeId: id,
+      nodeLabel:     n?.nodeLabel     || "",
+      department:    n?.department    || "",
+      location:      n?.location      || "",
+      allocationPct: safeNum(n?.allocationPct || 100),
+      CO2e:          safeNum(n?.CO2e),
+      CO2:           safeNum(n?.CO2),
+      CH4:           safeNum(n?.CH4),
+      N2O:           safeNum(n?.N2O),
+      originalCO2e:  safeNum(n?.originalCO2e),
+      dataPointCount: safeNum(n?.dataPointCount),
+    }));
 
     // -------------------------------------------
     // 3) Parse filters
     // -------------------------------------------
-    const selectedScopes = normalizeArray(scopes || scope);
-    const selectedLocations = normalizeArray(locations || location);
-    const selectedDepartments = normalizeArray(departments || department);
-    const selectedNodeIds = normalizeArray(nodeIds || nodeId);
+    const selectedScopes       = normalizeArray(scopes || scope);
+    const selectedLocations    = normalizeArray(locations || location);
+    const selectedDepartments  = normalizeArray(departments || department);
+    const selectedNodeIds      = normalizeArray(nodeIds || nodeId);
+    const selectedProcessNodes = normalizeArray(processNodeIds || processNodeId); // ← NEW
 
-    const selectedProjectIds = normalizeArray(projectIds || projectId);
-    const selectedCategories = normalizeArray(categories || category);
-    const selectedActivities = normalizeArray(activities || activity);
+    const selectedProjectIds    = normalizeArray(projectIds || projectId);
+    const selectedCategories    = normalizeArray(categories || category);
+    const selectedActivities    = normalizeArray(activities || activity);
     const selectedMethodologies = normalizeArray(methodologies || methodology);
 
-    const locSet = toLowerSet(selectedLocations);
+    const locSet  = toLowerSet(selectedLocations);
     const deptSet = toLowerSet(selectedDepartments);
     const nodeSet = new Set(selectedNodeIds);
+    const pnSet   = new Set(selectedProcessNodes);  // ← NEW
 
     const projSet = new Set(selectedProjectIds);
-    const catSet = toLowerSet(selectedCategories);
-    const actSet = toLowerSet(selectedActivities);
+    const catSet  = toLowerSet(selectedCategories);
+    const actSet  = toLowerSet(selectedActivities);
     const methSet = toLowerSet(selectedMethodologies);
 
     const minCO2e = minCO2eRaw != null ? Number(minCO2eRaw) : null;
     const maxCO2e = maxCO2eRaw != null ? Number(maxCO2eRaw) : null;
+    const limit   = limitRaw ? parseInt(limitRaw) : null;
 
-    const limit = limitRaw ? parseInt(limitRaw) : null;
-
-    const sortBy = (sortByRaw || "co2e").toLowerCase();
-    const direction = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
+    const sortBy       = (sortByRaw || "co2e").toLowerCase();
+    const direction    = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
     const sortDirection = direction === "asc" || direction === "low" ? "asc" : "desc";
 
     // -------------------------------------------
-    // 4) Filter EMISSION nodes
+    // 4) Filter & sort EMISSION nodes (unchanged logic)
     // -------------------------------------------
-    if (selectedNodeIds.length) {
-      nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
-    }
-    if (selectedLocations.length) {
-      nodes = nodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
-    }
-    if (selectedDepartments.length) {
-      nodes = nodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
-    }
+    if (selectedNodeIds.length)   nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
+    if (selectedLocations.length)   nodes = nodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
+    if (selectedDepartments.length) nodes = nodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
 
-    // Scope selection affects “selectedScopeCO2e”
     const scopeUniverse = ["Scope 1", "Scope 2", "Scope 3"];
-    const scopesForSum = selectedScopes.length ? selectedScopes : scopeUniverse;
+    const scopesForSum  = selectedScopes.length ? selectedScopes : scopeUniverse;
 
     nodes = nodes.map((n) => ({
       ...n,
@@ -2708,38 +2760,29 @@ const getFilteredSummary = async (req, res) => {
     if (minCO2e != null) nodes = nodes.filter((n) => n.selectedScopeCO2e >= minCO2e);
     if (maxCO2e != null) nodes = nodes.filter((n) => n.selectedScopeCO2e <= maxCO2e);
 
-    // Sort nodes
     const nodeSort = (a, b) => {
       const dir = sortDirection === "asc" ? 1 : -1;
-
       const val = (x) => {
         if (sortBy === "label" || sortBy === "nodelabel") return String(x.nodeLabel || "").toLowerCase();
         if (sortBy === "department") return String(x.department || "").toLowerCase();
-        if (sortBy === "location") return String(x.location || "").toLowerCase();
-        if (sortBy === "scope1") return safeNum(x.byScope["Scope 1"]);
-        if (sortBy === "scope2") return safeNum(x.byScope["Scope 2"]);
-        if (sortBy === "scope3") return safeNum(x.byScope["Scope 3"]);
+        if (sortBy === "location")   return String(x.location || "").toLowerCase();
+        if (sortBy === "scope1")     return safeNum(x.byScope["Scope 1"]);
+        if (sortBy === "scope2")     return safeNum(x.byScope["Scope 2"]);
+        if (sortBy === "scope3")     return safeNum(x.byScope["Scope 3"]);
         if (sortBy === "selectedscopeco2e") return safeNum(x.selectedScopeCO2e);
         return safeNum(x.selectedScopeCO2e ?? x.CO2e);
       };
-
-      const va = val(a);
-      const vb = val(b);
-
-      if (typeof va === "string" || typeof vb === "string") {
-        return va.localeCompare(vb) * dir;
-      }
-      return (va - vb) * dir;
+      const va = val(a), vb = val(b);
+      return typeof va === "string" ? va.localeCompare(vb) * dir : (va - vb) * dir;
     };
     nodes.sort(nodeSort);
 
-    // Compute emission aggregates from filtered nodes
     const emissionAgg = {
       totalFilteredEmissions: {
         CO2e: nodes.reduce((s, n) => s + safeNum(n.selectedScopeCO2e), 0),
-        CO2: nodes.reduce((s, n) => s + safeNum(n.CO2), 0),
-        CH4: nodes.reduce((s, n) => s + safeNum(n.CH4), 0),
-        N2O: nodes.reduce((s, n) => s + safeNum(n.N2O), 0),
+        CO2:  nodes.reduce((s, n) => s + safeNum(n.CO2), 0),
+        CH4:  nodes.reduce((s, n) => s + safeNum(n.CH4), 0),
+        N2O:  nodes.reduce((s, n) => s + safeNum(n.N2O), 0),
         uncertainty: 0,
       },
       byScope: {},
@@ -2753,7 +2796,6 @@ const getFilteredSummary = async (req, res) => {
         nodeCount: nodes.filter((n) => safeNum(n.byScope?.[sc]) > 0).length,
       };
     }
-
     for (const n of nodes) {
       const lk = n.location || "Unknown";
       if (!emissionAgg.byLocation[lk]) emissionAgg.byLocation[lk] = { CO2e: 0, nodeCount: 0 };
@@ -2766,86 +2808,53 @@ const getFilteredSummary = async (req, res) => {
       emissionAgg.byDepartment[dk].nodeCount += 1;
     }
 
-    // Facets for cascading UI filters
     const facetsEmission = {
-      locations: Object.entries(emissionAgg.byLocation)
-        .map(([k, v]) => ({ value: k, ...v }))
-        .sort((a, b) => b.CO2e - a.CO2e),
-      departments: Object.entries(emissionAgg.byDepartment)
-        .map(([k, v]) => ({ value: k, ...v }))
-        .sort((a, b) => b.CO2e - a.CO2e),
-      scopes: Object.entries(emissionAgg.byScope)
-        .map(([k, v]) => ({ value: k, ...v }))
-        .sort((a, b) => b.CO2e - a.CO2e),
+      locations:   Object.entries(emissionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.CO2e - a.CO2e),
+      departments: Object.entries(emissionAgg.byDepartment).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.CO2e - a.CO2e),
+      scopes:      Object.entries(emissionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.CO2e - a.CO2e),
     };
 
-    let nodesPrimary = nodes;
-    if (limit) nodesPrimary = nodes.slice(0, limit);
+    const nodesPrimary = limit ? nodes.slice(0, limit) : nodes;
 
     // -------------------------------------------
-    // 5) Filter REDUCTION projects (multi-stage)
+    // 5) Filter & sort REDUCTION projects (unchanged logic)
     // -------------------------------------------
-    if (selectedProjectIds.length) {
-      projects = projects.filter((p) => projSet.has(p.projectId));
-    }
-    if (selectedLocations.length) {
-      projects = projects.filter((p) => locSet.has(String(p.location).toLowerCase()));
-    }
-    if (selectedCategories.length) {
-      projects = projects.filter((p) => catSet.has(String(p.category).toLowerCase()));
-    }
-    if (selectedActivities.length) {
-      projects = projects.filter((p) => actSet.has(String(p.projectActivity).toLowerCase()));
-    }
-    if (selectedMethodologies.length) {
-      projects = projects.filter((p) => methSet.has(String(p.methodology).toLowerCase()));
-    }
+    if (selectedProjectIds.length)    projects = projects.filter((p) => projSet.has(p.projectId));
+    if (selectedLocations.length)     projects = projects.filter((p) => locSet.has(String(p.location).toLowerCase()));
+    if (selectedCategories.length)    projects = projects.filter((p) => catSet.has(String(p.category).toLowerCase()));
+    if (selectedActivities.length)    projects = projects.filter((p) => actSet.has(String(p.projectActivity).toLowerCase()));
+    if (selectedMethodologies.length) projects = projects.filter((p) => methSet.has(String(p.methodology).toLowerCase()));
     if (selectedScopes.length) {
       const sSet = toLowerSet(selectedScopes);
       projects = projects.filter((p) => sSet.has(String(p.scope).toLowerCase()));
     }
-
     if (minCO2e != null) projects = projects.filter((p) => p.totalNetReduction >= minCO2e);
     if (maxCO2e != null) projects = projects.filter((p) => p.totalNetReduction <= maxCO2e);
 
     const projectSort = (a, b) => {
       const dir = sortDirection === "asc" ? 1 : -1;
-
       const val = (x) => {
-        if (sortBy === "projectname") return String(x.projectName || "").toLowerCase();
+        if (sortBy === "projectname")  return String(x.projectName || "").toLowerCase();
         if (sortBy === "entriescount") return safeNum(x.entriesCount);
         return safeNum(x.totalNetReduction);
       };
-
-      const va = val(a);
-      const vb = val(b);
-
-      if (typeof va === "string" || typeof vb === "string") {
-        return va.localeCompare(vb) * dir;
-      }
-      return (va - vb) * dir;
+      const va = val(a), vb = val(b);
+      return typeof va === "string" ? va.localeCompare(vb) * dir : (va - vb) * dir;
     };
     projects.sort(projectSort);
 
-    let projectsPrimary = projects;
-    if (limit) projectsPrimary = projects.slice(0, limit);
+    const projectsPrimary = limit ? projects.slice(0, limit) : projects;
 
     const reductionAgg = {
       totalFilteredNetReduction: projects.reduce((s, p) => s + safeNum(p.totalNetReduction), 0),
-      byScope: {},
-      byLocation: {},
-      byCategory: {},
-      byProjectActivity: {},
-      byMethodology: {},
+      byScope: {}, byLocation: {}, byCategory: {}, byProjectActivity: {}, byMethodology: {},
     };
-
     const bump = (obj, key, val) => {
       const k = key || "Unknown";
       if (!obj[k]) obj[k] = { totalNetReduction: 0, projectCount: 0 };
       obj[k].totalNetReduction += val;
       obj[k].projectCount += 1;
     };
-
     for (const p of projects) {
       const v = safeNum(p.totalNetReduction);
       bump(reductionAgg.byScope, p.scope, v);
@@ -2856,20 +2865,88 @@ const getFilteredSummary = async (req, res) => {
     }
 
     const facetsReduction = {
-      scopes: Object.entries(reductionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      locations: Object.entries(reductionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      categories: Object.entries(reductionAgg.byCategory).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      activities: Object.entries(reductionAgg.byProjectActivity).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      methodologies: Object.entries(reductionAgg.byMethodology).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      scopes:       Object.entries(reductionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      locations:    Object.entries(reductionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      categories:   Object.entries(reductionAgg.byCategory).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      activities:   Object.entries(reductionAgg.byProjectActivity).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      methodologies:Object.entries(reductionAgg.byMethodology).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
     };
 
     // -------------------------------------------
-    // 6) Response (emission / reduction / both)
+    // 6) Filter & sort PROCESS nodes (NEW)
+    // -------------------------------------------
+    if (selectedProcessNodes.length)  processNodes = processNodes.filter((n) => pnSet.has(n.nodeId));
+    if (selectedLocations.length)     processNodes = processNodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
+    if (selectedDepartments.length)   processNodes = processNodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
+    if (selectedScopes.length) {
+      // processEmissionSummary.byScope uses same "Scope 1/2/3" keys — filter nodes whose
+      // allocated CO2e is non-zero for at least one selected scope (best-effort match).
+      // For stricter per-node scope filtering, extend processEmissionSummary.byNode schema.
+    }
+    if (minCO2e != null) processNodes = processNodes.filter((n) => n.CO2e >= minCO2e);
+    if (maxCO2e != null) processNodes = processNodes.filter((n) => n.CO2e <= maxCO2e);
+
+    // Sort process nodes
+    processNodes.sort((a, b) => {
+      const dir = sortDirection === "asc" ? 1 : -1;
+      const val = (x) => {
+        if (sortBy === "label" || sortBy === "nodelabel") return String(x.nodeLabel || "").toLowerCase();
+        if (sortBy === "department")  return String(x.department || "").toLowerCase();
+        if (sortBy === "location")    return String(x.location || "").toLowerCase();
+        if (sortBy === "allocation")  return safeNum(x.allocationPct);
+        return safeNum(x.CO2e);
+      };
+      const va = val(a), vb = val(b);
+      return typeof va === "string" ? va.localeCompare(vb) * dir : (va - vb) * dir;
+    });
+
+    const processNodesPrimary = limit ? processNodes.slice(0, limit) : processNodes;
+
+    // Build process aggregates
+    const processAgg = {
+      totalFilteredAllocatedCO2e: processNodes.reduce((s, n) => s + safeNum(n.CO2e), 0),
+      totalFilteredOriginalCO2e:  processNodes.reduce((s, n) => s + safeNum(n.originalCO2e), 0),
+      byLocation:   {},
+      byDepartment: {},
+    };
+    for (const n of processNodes) {
+      const lk = n.location || "Unknown";
+      if (!processAgg.byLocation[lk]) processAgg.byLocation[lk] = { CO2e: 0, nodeCount: 0 };
+      processAgg.byLocation[lk].CO2e += safeNum(n.CO2e);
+      processAgg.byLocation[lk].nodeCount += 1;
+
+      const dk = n.department || "Unknown";
+      if (!processAgg.byDepartment[dk]) processAgg.byDepartment[dk] = { CO2e: 0, nodeCount: 0 };
+      processAgg.byDepartment[dk].CO2e += safeNum(n.CO2e);
+      processAgg.byDepartment[dk].nodeCount += 1;
+    }
+
+    const facetsProcess = {
+      locations:   Object.entries(processAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.CO2e - a.CO2e),
+      departments: Object.entries(processAgg.byDepartment).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.CO2e - a.CO2e),
+    };
+
+    // Summary-level process data (totals, byScope, byScopeIdentifier, etc.) deep-converted
+    const processSummaryTop = {
+      totalEmissions:     deepConvert(ps.totalEmissions     || {}),
+      byScope:            deepConvert(ps.byScope            || {}),
+      byScopeIdentifier:  deepConvert(ps.byScopeIdentifier  || {}),
+      byCategory:         deepConvert(ps.byCategory         || {}),
+      byActivity:         deepConvert(ps.byActivity         || {}),
+      byDepartment:       deepConvert(ps.byDepartment       || {}),
+      byLocation:         deepConvert(ps.byLocation         || {}),
+      byEmissionFactor:   deepConvert(ps.byEmissionFactor   || {}),
+      trends:             deepConvert(ps.trends             || {}),
+      metadata:           deepConvert(ps.metadata           || {}),
+    };
+
+    // -------------------------------------------
+    // 7) Compose response by summaryKind
     // -------------------------------------------
     const response = {
       success: true,
       clientId,
-      period: fullSummary.period,
+      period:   fullSummary.period,
       metadata: fullSummary.metadata || {},
     };
 
@@ -2877,11 +2954,19 @@ const getFilteredSummary = async (req, res) => {
       response.summaryKind = "emission";
       response.data = {
         totalEmissions,
-        byScope, // original period totals (not filtered)
+        byScope,
         nodes,
-        primary: nodesPrimary,
+        primary:    nodesPrimary,
         aggregates: emissionAgg,
-        facets: facetsEmission,
+        facets:     facetsEmission,
+        // process data alongside emission so frontend can show allocation context
+        processEmissionSummary: {
+          ...processSummaryTop,
+          nodes:   processNodes,
+          primary: processNodesPrimary,
+          aggregates: processAgg,
+          facets:     facetsProcess,
+        },
       };
       return res.status(200).json(response);
     }
@@ -2891,29 +2976,48 @@ const getFilteredSummary = async (req, res) => {
       response.data = {
         totalNetReduction: safeNum(rs.totalNetReduction),
         projects,
-        primary: projectsPrimary,
+        primary:    projectsPrimary,
         aggregates: reductionAgg,
-        facets: facetsReduction,
+        facets:     facetsReduction,
       };
       return res.status(200).json(response);
     }
 
-    // both
+    if (summaryKind === "process") {
+      response.summaryKind = "process";
+      response.data = {
+        ...processSummaryTop,
+        nodes:      processNodes,
+        primary:    processNodesPrimary,
+        aggregates: processAgg,
+        facets:     facetsProcess,
+      };
+      return res.status(200).json(response);
+    }
+
+    // both (default)
     response.summaryKind = "both";
     response.data = {
       emission: {
         totalEmissions,
         nodes,
-        primary: nodesPrimary,
+        primary:    nodesPrimary,
         aggregates: emissionAgg,
-        facets: facetsEmission,
+        facets:     facetsEmission,
       },
       reduction: {
         totalNetReduction: safeNum(rs.totalNetReduction),
         projects,
-        primary: projectsPrimary,
+        primary:    projectsPrimary,
         aggregates: reductionAgg,
-        facets: facetsReduction,
+        facets:     facetsReduction,
+      },
+      process: {
+        ...processSummaryTop,
+        nodes:      processNodes,
+        primary:    processNodesPrimary,
+        aggregates: processAgg,
+        facets:     facetsProcess,
       },
     };
     return res.status(200).json(response);
@@ -3897,10 +4001,7 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     let { periodType = "monthly", year, month, week, day } = req.query;
 
     if (!clientId) {
-      return res.status(400).json({
-        success: false,
-        message: "clientId is required"
-      });
+      return res.status(400).json({ success: false, message: "clientId is required" });
     }
 
     const allowedTypes = ["daily", "weekly", "monthly", "yearly", "all-time"];
@@ -3912,24 +4013,39 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     }
 
     // ----------------------------------------------
-    // Resolve period (same as calculateEmissionSummary)
+    // Resolve period
     // ----------------------------------------------
     const now = moment.utc();
-    const y = year ? Number(year) : now.year();
+    const y = year  ? Number(year)  : now.year();
     const m = month ? Number(month) : now.month() + 1;
-    const w = week ? Number(week) : now.isoWeek();
-    const d = day ? Number(day) : now.date();
+    const w = week  ? Number(week)  : now.isoWeek();
+    const d = day   ? Number(day)   : now.date();
 
     const { from, to } = buildDateRange(periodType, y, m, w, d);
 
     // ----------------------------------------------
-    // Fetch all processed data entries for period
+    // Build EmissionSummary query for processEmissionSummary
     // ----------------------------------------------
-    const dataEntries = await DataEntry.find({
-      clientId,
-      processingStatus: "processed",
-      timestamp: { $gte: from, $lte: to }
-    }).lean();
+    const summaryQuery = { clientId, "period.type": periodType };
+    if (year)  summaryQuery["period.year"]  = y;
+    if (month) summaryQuery["period.month"] = m;
+    if (week)  summaryQuery["period.week"]  = w;
+    if (day)   summaryQuery["period.day"]   = d;
+
+    // ----------------------------------------------
+    // Parallel fetch: DataEntries + EmissionSummary (for processEmissionSummary)
+    // ----------------------------------------------
+    const [dataEntries, emissionSummaryDoc] = await Promise.all([
+      DataEntry.find({
+        clientId,
+        processingStatus: "processed",
+        timestamp: { $gte: from, $lte: to }
+      }).lean(),
+      EmissionSummary.findOne(summaryQuery)
+        .select("processEmissionSummary emissionSummary.byNode period metadata")
+        .sort({ "period.to": -1, updatedAt: -1 })
+        .lean()
+    ]);
 
     if (!dataEntries.length) {
       return res.status(404).json({
@@ -3939,8 +4055,30 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     }
 
     // ----------------------------------------------
+    // Deep-convert Maps → plain objects
+    // ----------------------------------------------
+    const deepConvert = (value) => {
+      if (value instanceof Map) {
+        return Object.fromEntries(
+          [...value.entries()].map(([k, v]) => [k, deepConvert(v)])
+        );
+      }
+      if (Array.isArray(value)) return value.map(deepConvert);
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const out = {};
+        for (const k of Object.keys(value)) out[k] = deepConvert(value[k]);
+        return out;
+      }
+      return value;
+    };
+
+    const processEmissionSummary = deepConvert(
+      emissionSummaryDoc?.processEmissionSummary || {}
+    );
+
+    // ----------------------------------------------
     // Get active flowchart for node metadata
-    // If not found, fallback to EmissionSummary.byNode
+    // Falls back to EmissionSummary.byNode (already fetched above)
     // ----------------------------------------------
     let nodeMetaMap = new Map();
 
@@ -3951,10 +4089,10 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
       if (flowchart?.nodes?.length) {
         flowchart.nodes.forEach(n => {
           nodeMetaMap.set(n.id, {
-            nodeId: n.id,
-            label: n.label || "Unnamed node",
+            nodeId:     n.id,
+            label:      n.label || "Unnamed node",
             department: n.details?.department || "Unknown",
-            location: n.details?.location || "Unknown"
+            location:   n.details?.location   || "Unknown"
           });
         });
       }
@@ -3962,28 +4100,20 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
       console.warn("⚠ No active flowchart found:", errFlow?.message);
     }
 
-    // ----------------------------------------------
-    // If flowchart metadata missing → use EmissionSummary metadata
-    // ----------------------------------------------
-    if (nodeMetaMap.size === 0) {
-      const latestSummary = await EmissionSummary.findOne({ clientId })
-        .sort({ "period.to": -1 })
-        .lean();
+    // Fallback: use already-fetched EmissionSummary byNode (no extra DB call)
+    if (nodeMetaMap.size === 0 && emissionSummaryDoc) {
+      const byNode =
+        emissionSummaryDoc.byNode ||
+        emissionSummaryDoc.emissionSummary?.byNode ||
+        {};
 
-      if (latestSummary) {
-        const byNode =
-          latestSummary.byNode ||
-          latestSummary.emissionSummary?.byNode ||
-          {};
-
-        for (const [nodeId, nd] of Object.entries(byNode)) {
-          nodeMetaMap.set(nodeId, {
-            nodeId,
-            label: nd.nodeLabel || "Unnamed node",
-            department: nd.department || "Unknown",
-            location: nd.location || "Unknown"
-          });
-        }
+      for (const [nodeId, nd] of Object.entries(byNode)) {
+        nodeMetaMap.set(nodeId, {
+          nodeId,
+          label:      nd.nodeLabel  || "Unnamed node",
+          department: nd.department || "Unknown",
+          location:   nd.location   || "Unknown"
+        });
       }
     }
 
@@ -3998,7 +4128,7 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     const getDateStringFromEntry = (entry) => {
       if (entry.date) return entry.date;
       const dt = moment.utc(entry.timestamp);
-      return `${dt.date().toString().padStart(2, "0")}:${(dt.month()+1)
+      return `${dt.date().toString().padStart(2, "0")}:${(dt.month() + 1)
         .toString()
         .padStart(2, "0")}:${dt.year()}`;
     };
@@ -4013,68 +4143,57 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
       const meta = nodeMetaMap.get(entry.nodeId) || {};
 
       const emissions = extractEmissionValues(entry.calculatedEmissions);
-      const co2e = safeNum(emissions.CO2e);
+      const co2e    = safeNum(emissions.CO2e);
       const dateStr = getDateStringFromEntry(entry);
 
       if (!scopeStatsMap.has(scopeIdentifier)) {
         scopeStatsMap.set(scopeIdentifier, {
           scopeIdentifier,
-          totalCO2e: 0,
+          totalCO2e:    0,
           entriesCount: 0,
-          maxEntry: null,
-          minEntry: null,
-          dailyTotals: new Map(),
-          nodes: new Map(),
-          locations: new Map(),
-          departments: new Map()
+          maxEntry:     null,
+          minEntry:     null,
+          dailyTotals:  new Map(),
+          nodes:        new Map(),
+          locations:    new Map(),
+          departments:  new Map()
         });
       }
 
       const stat = scopeStatsMap.get(scopeIdentifier);
 
-      // Accumulate totals
-      stat.totalCO2e += co2e;
+      stat.totalCO2e    += co2e;
       stat.entriesCount += 1;
 
       const entryInfo = {
-        entryId: entry._id,
-        nodeId: entry.nodeId,
+        entryId:   entry._id,
+        nodeId:    entry.nodeId,
         scopeType: entry.scopeType,
-        CO2e: co2e,
-        date: dateStr,
-        time: entry.time,
+        CO2e:      co2e,
+        date:      dateStr,
+        time:      entry.time,
         timestamp: entry.timestamp,
         inputType: entry.inputType
       };
 
-      // Max entry
-      if (!stat.maxEntry || co2e > stat.maxEntry.CO2e) {
-        stat.maxEntry = entryInfo;
-      }
+      if (!stat.maxEntry || co2e > stat.maxEntry.CO2e) stat.maxEntry = entryInfo;
+      if (co2e > 0 && (!stat.minEntry || co2e < stat.minEntry.CO2e)) stat.minEntry = entryInfo;
 
-      // Min entry (positive only)
-      if (co2e > 0) {
-        if (!stat.minEntry || co2e < stat.minEntry.CO2e) {
-          stat.minEntry = entryInfo;
-        }
-      }
-
-      // Daily totals
       stat.dailyTotals.set(dateStr, (stat.dailyTotals.get(dateStr) || 0) + co2e);
 
-      // Node-level aggregation
+      // Node-level
       if (!stat.nodes.has(entry.nodeId)) {
         stat.nodes.set(entry.nodeId, {
-          nodeId: entry.nodeId,
-          nodeLabel: meta.label,
-          department: meta.department,
-          location: meta.location,
-          totalCO2e: 0,
+          nodeId:       entry.nodeId,
+          nodeLabel:    meta.label,
+          department:   meta.department,
+          location:     meta.location,
+          totalCO2e:    0,
           entriesCount: 0
         });
       }
       const ns = stat.nodes.get(entry.nodeId);
-      ns.totalCO2e += co2e;
+      ns.totalCO2e    += co2e;
       ns.entriesCount += 1;
 
       // Location-level
@@ -4083,7 +4202,7 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
         stat.locations.set(locKey, { location: locKey, totalCO2e: 0, entriesCount: 0 });
       }
       const ls = stat.locations.get(locKey);
-      ls.totalCO2e += co2e;
+      ls.totalCO2e    += co2e;
       ls.entriesCount += 1;
 
       // Department-level
@@ -4092,68 +4211,71 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
         stat.departments.set(deptKey, { department: deptKey, totalCO2e: 0, entriesCount: 0 });
       }
       const ds = stat.departments.get(deptKey);
-      ds.totalCO2e += co2e;
+      ds.totalCO2e    += co2e;
       ds.entriesCount += 1;
     }
 
     // ----------------------------------------------
-    // Convert internal maps → arrays + compute extremes
+    // Convert internal Maps → arrays + compute extremes
     // ----------------------------------------------
     let allStats = Array.from(scopeStatsMap.values()).map(stat => {
-
-      const dailyTotalsArray = Array.from(stat.dailyTotals.entries()).map(([date, CO2e]) => ({
-        date, CO2e
-      }));
+      const dailyTotalsArray = Array.from(stat.dailyTotals.entries()).map(
+        ([date, CO2e]) => ({ date, CO2e })
+      );
 
       const maxDay = dailyTotalsArray.length
         ? dailyTotalsArray.reduce((a, b) => (b.CO2e > a.CO2e ? b : a), dailyTotalsArray[0])
         : null;
 
-      const positiveDays = dailyTotalsArray.filter(d => d.CO2e > 0);
+      const positiveDays = dailyTotalsArray.filter(x => x.CO2e > 0);
       const minDay = positiveDays.length
         ? positiveDays.reduce((a, b) => (b.CO2e < a.CO2e ? b : a), positiveDays[0])
         : null;
 
       return {
         scopeIdentifier: stat.scopeIdentifier,
-        totalCO2e: stat.totalCO2e,
-        entriesCount: stat.entriesCount,
-        maxEntry: stat.maxEntry,
-        minEntry: stat.minEntry,
-        dailyTotals: dailyTotalsArray,
+        totalCO2e:       stat.totalCO2e,
+        entriesCount:    stat.entriesCount,
+        maxEntry:        stat.maxEntry,
+        minEntry:        stat.minEntry,
+        dailyTotals:     dailyTotalsArray,
         maxDay,
         minDay,
-        nodes: Array.from(stat.nodes.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
-        locations: Array.from(stat.locations.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
+        nodes:       Array.from(stat.nodes.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
+        locations:   Array.from(stat.locations.values()).sort((a, b) => b.totalCO2e - a.totalCO2e),
         departments: Array.from(stat.departments.values()).sort((a, b) => b.totalCO2e - a.totalCO2e)
       };
     });
 
     if (!allStats.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No results could be computed"
-      });
+      return res.status(404).json({ success: false, message: "No results could be computed" });
     }
 
-    // Sort by total descending
     allStats.sort((a, b) => b.totalCO2e - a.totalCO2e);
 
     const highestByTotal = allStats[0];
-    const lowestByTotal = [...allStats].reverse().find(s => s.totalCO2e > 0) || null;
+    const lowestByTotal  = [...allStats].reverse().find(s => s.totalCO2e > 0) || null;
 
     // ----------------------------------------------
-    // Build unified period object (matches new model)
+    // Build period object
     // ----------------------------------------------
-    const period = {
-      type: periodType,
-      from,
-      to,
-      year: y
-    };
+    const period = { type: periodType, from, to, year: y };
     if (["monthly", "daily"].includes(periodType)) period.month = m;
-    if (periodType === "weekly") period.week = w;
-    if (periodType === "daily") period.day = d;
+    if (periodType === "weekly")                   period.week  = w;
+    if (periodType === "daily")                    period.day   = d;
+
+    // ----------------------------------------------
+    // processEmissionSummary: enrich with per-scopeIdentifier process allocation
+    // so the caller can cross-reference raw extremes vs allocated amounts
+    // ----------------------------------------------
+    const processByScopeId = processEmissionSummary?.byScopeIdentifier || {};
+    const processByNode    = processEmissionSummary?.byNode            || {};
+
+    // Attach processAllocation onto each stat item (if data exists)
+    allStats = allStats.map(stat => ({
+      ...stat,
+      processAllocation: processByScopeId[stat.scopeIdentifier] || null
+    }));
 
     // ----------------------------------------------
     // Final response
@@ -4167,6 +4289,18 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
           highestByTotal,
           lowestByTotal,
           all: allStats
+        },
+        // ── NEW: process emission summary for this period ──────────────────
+        processEmissionSummary: {
+          totalEmissions:    processEmissionSummary.totalEmissions    || {},
+          byScope:           processEmissionSummary.byScope           || {},
+          byScopeIdentifier: processByScopeId,
+          byNode:            processByNode,
+          byDepartment:      processEmissionSummary.byDepartment      || {},
+          byLocation:        processEmissionSummary.byLocation        || {},
+          byCategory:        processEmissionSummary.byCategory        || {},
+          byActivity:        processEmissionSummary.byActivity        || {},
+          metadata:          processEmissionSummary.metadata          || {}
         }
       }
     });
@@ -4180,7 +4314,6 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     });
   }
 };
-
 
 
 
@@ -4246,8 +4379,6 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       day,
       from,
       to,
-
-      // Filters (single or comma-separated)
       location,
       department,
       nodeId,
@@ -4255,123 +4386,151 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       scopeType,
       category,
       activity,
-
-      // NEW (optional): force the top-level grouping
-      groupBy, // location | department | node | scopeType | category | activity | scopeIdentifier
+      groupBy,
     } = req.query;
 
     if (!clientId) {
       return res.status(400).json({ success: false, message: "clientId is required" });
     }
 
-    // ---------------------------- helpers ----------------------------
+    // ── helpers ─────────────────────────────────────────────────────────────
     const toArr = (v) => {
       if (!v) return [];
       if (Array.isArray(v)) return v.flatMap(toArr);
-      return String(v)
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean);
+      return String(v).split(",").map((x) => x.trim()).filter(Boolean);
     };
-
-    const locFilter = toArr(location);
-    const deptFilter = toArr(department);
-    const nodeFilter = toArr(nodeId);
-    const sidFilter = toArr(scopeIdentifier);
-    const scopeTypeFilter = toArr(scopeType);
-    const categoryFilter = toArr(category);
-    const activityFilter = toArr(activity);
 
     const matches = (value, arr) => {
       if (!arr?.length) return true;
       if (value === null || value === undefined) return false;
-      const v = String(value).toLowerCase();
-      return arr.some((x) => String(x).toLowerCase() === v);
+      return arr.some((x) => String(x).toLowerCase() === String(value).toLowerCase());
     };
 
-    // ---------------------------- PERIOD RANGE ----------------------------
+    const deepConvert = (value) => {
+      if (value instanceof Map) {
+        return Object.fromEntries(
+          [...value.entries()].map(([k, v]) => [k, deepConvert(v)])
+        );
+      }
+      if (Array.isArray(value)) return value.map(deepConvert);
+      if (value && typeof value === "object" && !(value instanceof Date)) {
+        const out = {};
+        for (const k of Object.keys(value)) out[k] = deepConvert(value[k]);
+        return out;
+      }
+      return value;
+    };
+
+    const locFilter       = toArr(location);
+    const deptFilter      = toArr(department);
+    const nodeFilter      = toArr(nodeId);
+    const sidFilter       = toArr(scopeIdentifier);
+    const scopeTypeFilter = toArr(scopeType);
+    const categoryFilter  = toArr(category);
+    const activityFilter  = toArr(activity);
+
+    // ── Period range ─────────────────────────────────────────────────────────
     const now = moment.utc();
-    const y = parseInt(year) || now.year();
+    const y = parseInt(year)  || now.year();
     const m = parseInt(month) || now.month() + 1;
-    const d = parseInt(day) || now.date();
+    const d = parseInt(day)   || now.date();
 
     let startDate, endDate;
 
     if (periodType === "custom" && (from || to)) {
       startDate = moment.utc(from).startOf("day");
-      endDate = moment.utc(to).endOf("day");
+      endDate   = moment.utc(to).endOf("day");
     } else if (periodType === "yearly") {
       startDate = moment.utc({ year: y }).startOf("year");
-      endDate = moment.utc({ year: y }).endOf("year");
+      endDate   = moment.utc({ year: y }).endOf("year");
     } else if (periodType === "daily") {
       startDate = moment.utc({ year: y, month: m - 1, day: d }).startOf("day");
-      endDate = moment.utc({ year: y, month: m - 1, day: d }).endOf("day");
+      endDate   = moment.utc({ year: y, month: m - 1, day: d }).endOf("day");
     } else {
       startDate = moment.utc({ year: y, month: m - 1 }).startOf("month");
-      endDate = moment.utc({ year: y, month: m - 1 }).endOf("month");
+      endDate   = moment.utc({ year: y, month: m - 1 }).endOf("month");
     }
 
-    // ---------------------------- LOAD DATAENTRY (DB-level filters where possible) ----------------------------
+    // ── Build EmissionSummary query for processEmissionSummary ───────────────
+    const summaryQuery = { clientId };
+    if (periodType !== "custom") {
+      summaryQuery["period.type"] = periodType;
+      if (year)  summaryQuery["period.year"]  = y;
+      if (month) summaryQuery["period.month"] = m;
+      if (day)   summaryQuery["period.day"]   = d;
+    }
+
+    // ── DataEntry find query ──────────────────────────────────────────────────
     const findQuery = {
       clientId,
       timestamp: { $gte: startDate.toDate(), $lte: endDate.toDate() },
       processingStatus: "processed",
     };
+    if (nodeFilter.length)      findQuery.nodeId          = { $in: nodeFilter };
+    if (sidFilter.length)       findQuery.scopeIdentifier = { $in: sidFilter };
+    if (scopeTypeFilter.length) findQuery.scopeType       = { $in: scopeTypeFilter };
 
-    // only safe filters (exist in DataEntry directly)
-    if (nodeFilter.length) findQuery.nodeId = { $in: nodeFilter };
-    if (sidFilter.length) findQuery.scopeIdentifier = { $in: sidFilter };
-    if (scopeTypeFilter.length) findQuery.scopeType = { $in: scopeTypeFilter };
+    // ── Parallel fetch: DataEntry + Flowcharts + EmissionSummary ─────────────
+    const [entries, orgChart, processChart, emissionSummaryDoc] = await Promise.all([
+      DataEntry.find(findQuery).lean(),
+      Flowchart.findOne({ clientId, isActive: true }).lean(),
+      ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean(),
+      EmissionSummary.findOne(summaryQuery)
+        .select("processEmissionSummary period metadata")
+        .sort({ "period.to": -1, updatedAt: -1 })
+        .lean()
+    ]);
 
-    const entries = await DataEntry.find(findQuery).lean();
+    // Convert processEmissionSummary Maps → plain objects
+    const processEmissionSummary = deepConvert(
+      emissionSummaryDoc?.processEmissionSummary || {}
+    );
+
+    const emptyResponse = {
+      success: true,
+      data: {
+        clientId,
+        period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
+        totals: { totalEntries: 0, totalCO2e: 0 },
+        scopeIdentifierHierarchy: { list: [] },
+        nodeHierarchy:            { list: [] },
+        locationHierarchy:        { list: [] },
+        departmentHierarchy:      { list: [] },
+        scopeTypeHierarchy:       { list: [] },
+        processEmissionSummary,
+        filtersApplied: {
+          location:       locFilter,
+          department:     deptFilter,
+          nodeId:         nodeFilter,
+          scopeIdentifier: sidFilter,
+          scopeType:      scopeTypeFilter,
+          category:       categoryFilter,
+          activity:       activityFilter,
+        },
+      },
+    };
 
     if (!entries.length) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          clientId,
-          period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
-          totals: { totalEntries: 0, totalCO2e: 0 },
-          scopeIdentifierHierarchy: { list: [] },
-          nodeHierarchy: { list: [] },
-          locationHierarchy: { list: [] },
-          departmentHierarchy: { list: [] },
-          scopeTypeHierarchy: { list: [] },
-          filtersApplied: {
-            location: locFilter,
-            department: deptFilter,
-            nodeId: nodeFilter,
-            scopeIdentifier: sidFilter,
-            scopeType: scopeTypeFilter,
-            category: categoryFilter,
-            activity: activityFilter,
-          },
-        },
-        message: "No summary found for this period",
-      });
+      return res.status(200).json({ ...emptyResponse, message: "No summary found for this period" });
     }
 
-    // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
-    const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
-    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean();
-
-    const allNodes = {};
+    // ── Ingest flowchart metadata ─────────────────────────────────────────────
+    const allNodes  = {};
     const allScopes = {};
 
     const ingestChart = (chart) => {
       if (!chart?.nodes) return;
       for (const node of chart.nodes) {
         allNodes[node.id] = {
-          label: node.label || "Unknown Node",
+          label:      node.label || "Unknown Node",
           department: node.details?.department || null,
-          location: node.details?.location || null,
+          location:   node.details?.location   || null,
         };
-
         for (const s of node.details?.scopeDetails || []) {
           allScopes[`${node.id}::${s.scopeIdentifier}`] = {
-            scopeType: s.scopeType,
+            scopeType:    s.scopeType,
             categoryName: s.categoryName,
-            activity: s.activity,
+            activity:     s.activity,
           };
         }
       }
@@ -4380,14 +4539,12 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     ingestChart(orgChart);
     ingestChart(processChart);
 
-    // ---------------------------- AGGREGATION MAPS ----------------------------
-    const nodeMap = new Map();
-    const locMap = new Map();
-    const deptMap = new Map();
+    // ── Aggregation Maps ──────────────────────────────────────────────────────
+    const nodeMap      = new Map();
+    const locMap       = new Map();
+    const deptMap      = new Map();
     const scopeTypeMap = new Map();
 
-    // Wrapper grouping:
-    // If groupBy not provided, auto-wrap when a non-scope filter is used.
     const inferredGroupBy =
       groupBy ||
       (locFilter.length
@@ -4405,21 +4562,22 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         : "scopeType");
 
     const wrapHierarchy = inferredGroupBy !== "scopeType";
-
-    // groupMap: groupKey -> { id,label, CO2e..., scopeTree: Map() }
-    const groupMap = new Map();
+    const groupMap      = new Map();
     const globalScopeTree = new Map();
 
     const safe = (v) => (v ? Number(v) : 0);
 
     const sumFromEntry = (entry) => {
-      const src = entry.calculatedEmissions?.incoming || entry.calculatedEmissions?.cumulative || {};
-      let totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+      const src =
+        entry.calculatedEmissions?.incoming ||
+        entry.calculatedEmissions?.cumulative ||
+        {};
+      const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
       for (const bucket of Object.values(src)) {
         totals.CO2e += safe(bucket.CO2e);
-        totals.CO2 += safe(bucket.CO2);
-        totals.CH4 += safe(bucket.CH4);
-        totals.N2O += safe(bucket.N2O);
+        totals.CO2  += safe(bucket.CO2);
+        totals.CH4  += safe(bucket.CH4);
+        totals.N2O  += safe(bucket.N2O);
       }
       return totals;
     };
@@ -4428,34 +4586,28 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       if (!map.has(key)) map.set(key, { id: key, label, CO2e: 0, CO2: 0, CH4: 0, N2O: 0 });
       const x = map.get(key);
       x.CO2e += emissions.CO2e;
-      x.CO2 += emissions.CO2;
-      x.CH4 += emissions.CH4;
-      x.N2O += emissions.N2O;
+      x.CO2  += emissions.CO2;
+      x.CH4  += emissions.CH4;
+      x.N2O  += emissions.N2O;
     };
 
     const getGroupInfo = ({
-      resolvedLocation,
-      resolvedDepartment,
-      resolvedScopeType,
-      resolvedCategory,
-      resolvedActivity,
-      nodeLabel,
-      nodeId,
-      sid,
+      resolvedLocation, resolvedDepartment, resolvedScopeType,
+      resolvedCategory, resolvedActivity, nodeLabel, nodeId, sid,
     }) => {
       switch (inferredGroupBy) {
         case "location":
-          return { key: resolvedLocation || "Unknown Location", label: resolvedLocation || "Unknown Location" };
+          return { key: resolvedLocation || "Unknown Location",     label: resolvedLocation || "Unknown Location" };
         case "department":
           return { key: resolvedDepartment || "Unknown Department", label: resolvedDepartment || "Unknown Department" };
         case "node":
-          return { key: nodeId || "Unknown Node", label: nodeLabel || "Unknown Node" };
+          return { key: nodeId || "Unknown Node",                   label: nodeLabel || "Unknown Node" };
         case "category":
-          return { key: resolvedCategory || "Uncategorized", label: resolvedCategory || "Uncategorized" };
+          return { key: resolvedCategory || "Uncategorized",        label: resolvedCategory || "Uncategorized" };
         case "activity":
-          return { key: resolvedActivity || "Unspecified", label: resolvedActivity || "Unspecified" };
+          return { key: resolvedActivity || "Unspecified",          label: resolvedActivity || "Unspecified" };
         case "scopeIdentifier":
-          return { key: sid || "Unknown Scope Identifier", label: sid || "Unknown Scope Identifier" };
+          return { key: sid || "Unknown Scope Identifier",          label: sid || "Unknown Scope Identifier" };
         case "scopeType":
         default:
           return { key: "__root__", label: "__root__" };
@@ -4466,12 +4618,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       if (!wrapHierarchy) return globalScopeTree;
       if (!groupMap.has(groupKey)) {
         groupMap.set(groupKey, {
-          id: groupKey,
-          label: groupLabel,
-          CO2e: 0,
-          CO2: 0,
-          CH4: 0,
-          N2O: 0,
+          id: groupKey, label: groupLabel,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
           scopeTree: new Map(),
         });
       }
@@ -4481,12 +4629,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     const ensureScopePath = (scopeTree, scopeTypeKey, categoryKey, activityKey) => {
       if (!scopeTree.has(scopeTypeKey)) {
         scopeTree.set(scopeTypeKey, {
-          id: scopeTypeKey,
-          label: scopeTypeKey,
-          CO2e: 0,
-          CO2: 0,
-          CH4: 0,
-          N2O: 0,
+          id: scopeTypeKey, label: scopeTypeKey,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
           categories: new Map(),
         });
       }
@@ -4494,12 +4638,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
       if (!scopeNode.categories.has(categoryKey)) {
         scopeNode.categories.set(categoryKey, {
-          id: `${scopeTypeKey}::${categoryKey}`,
-          label: categoryKey,
-          CO2e: 0,
-          CO2: 0,
-          CH4: 0,
-          N2O: 0,
+          id: `${scopeTypeKey}::${categoryKey}`, label: categoryKey,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
           activities: new Map(),
         });
       }
@@ -4507,13 +4647,9 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
       if (!catNode.activities.has(activityKey)) {
         catNode.activities.set(activityKey, {
-          id: `${scopeTypeKey}::${categoryKey}::${activityKey}`,
-          label: activityKey,
-          CO2e: 0,
-          CO2: 0,
-          CH4: 0,
-          N2O: 0,
-          scopeIds: new Map(), // aggregate by scopeIdentifier
+          id: `${scopeTypeKey}::${categoryKey}::${activityKey}`, label: activityKey,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+          scopeIds: new Map(),
         });
       }
       const actNode = catNode.activities.get(activityKey);
@@ -4521,122 +4657,92 @@ const getScopeIdentifierHierarchy = async (req, res) => {
       return { scopeNode, catNode, actNode };
     };
 
-    // ---------------------------- PROCESS EACH DATAENTRY ----------------------------
+    // ── Process each DataEntry ────────────────────────────────────────────────
     let grandTotal = 0;
-    let usedCount = 0;
+    let usedCount  = 0;
 
     for (const entry of entries) {
       const emissions = sumFromEntry(entry);
       if (!emissions.CO2e) continue;
 
-      // Extract metadata from Flowchart
-      const scopeKey = `${entry.nodeId}::${entry.scopeIdentifier}`;
-      const meta = allScopes[scopeKey] || {};
+      const scopeKey         = `${entry.nodeId}::${entry.scopeIdentifier}`;
+      const meta             = allScopes[scopeKey] || {};
+      const nodeMeta         = allNodes[entry.nodeId] || {};
 
-      const resolvedScopeType = meta.scopeType || entry.scopeType || "Unknown Scope";
-      const resolvedCategory = meta.categoryName || "Uncategorized";
-      const resolvedActivity = meta.activity || "Unspecified";
-
-      const nodeMeta = allNodes[entry.nodeId] || {};
-      const nodeLabel = nodeMeta.label || "Unknown Node";
+      const resolvedScopeType  = meta.scopeType    || entry.scopeType  || "Unknown Scope";
+      const resolvedCategory   = meta.categoryName || "Uncategorized";
+      const resolvedActivity   = meta.activity     || "Unspecified";
+      const nodeLabel          = nodeMeta.label    || "Unknown Node";
       const resolvedDepartment = nodeMeta.department || "Unknown Department";
-      const resolvedLocation = nodeMeta.location || "Unknown Location";
+      const resolvedLocation   = nodeMeta.location   || "Unknown Location";
 
-      // ---- APPLY FILTERS (based on resolved values) ----
-      if (!matches(resolvedLocation, locFilter)) continue;
-      if (!matches(resolvedDepartment, deptFilter)) continue;
-      if (!matches(entry.nodeId, nodeFilter)) continue;
-      if (!matches(entry.scopeIdentifier, sidFilter)) continue;
-      if (!matches(resolvedScopeType, scopeTypeFilter)) continue;
-      if (!matches(resolvedCategory, categoryFilter)) continue;
-      if (!matches(resolvedActivity, activityFilter)) continue;
+      // Apply in-memory filters
+      if (!matches(resolvedLocation,   locFilter))       continue;
+      if (!matches(resolvedDepartment, deptFilter))      continue;
+      if (!matches(entry.nodeId,       nodeFilter))      continue;
+      if (!matches(entry.scopeIdentifier, sidFilter))    continue;
+      if (!matches(resolvedScopeType,  scopeTypeFilter)) continue;
+      if (!matches(resolvedCategory,   categoryFilter))  continue;
+      if (!matches(resolvedActivity,   activityFilter))  continue;
 
-      // passed all filters
-      usedCount += 1;
+      usedCount  += 1;
       grandTotal += emissions.CO2e;
 
-      // ---- pick group root (location/department/node/...) ----
-      const g = getGroupInfo({
-        resolvedLocation,
-        resolvedDepartment,
-        resolvedScopeType,
-        resolvedCategory,
-        resolvedActivity,
-        nodeLabel,
-        nodeId: entry.nodeId,
-        sid: entry.scopeIdentifier,
+      const g         = getGroupInfo({
+        resolvedLocation, resolvedDepartment, resolvedScopeType,
+        resolvedCategory, resolvedActivity,
+        nodeLabel, nodeId: entry.nodeId, sid: entry.scopeIdentifier,
       });
-
       const scopeTree = getScopeTreeForGroup(g.key, g.label);
 
       if (wrapHierarchy) {
         const groupObj = groupMap.get(g.key);
         groupObj.CO2e += emissions.CO2e;
-        groupObj.CO2 += emissions.CO2;
-        groupObj.CH4 += emissions.CH4;
-        groupObj.N2O += emissions.N2O;
+        groupObj.CO2  += emissions.CO2;
+        groupObj.CH4  += emissions.CH4;
+        groupObj.N2O  += emissions.N2O;
       }
 
-      // ---- nested hierarchy (inside group) ----
-      const { scopeNode, actNode } = ensureScopePath(scopeTree, resolvedScopeType, resolvedCategory, resolvedActivity);
+      const { scopeNode, actNode } = ensureScopePath(
+        scopeTree, resolvedScopeType, resolvedCategory, resolvedActivity
+      );
 
       scopeNode.CO2e += emissions.CO2e;
-      scopeNode.CO2 += emissions.CO2;
-      scopeNode.CH4 += emissions.CH4;
-      scopeNode.N2O += emissions.N2O;
+      scopeNode.CO2  += emissions.CO2;
+      scopeNode.CH4  += emissions.CH4;
+      scopeNode.N2O  += emissions.N2O;
 
-      // aggregate leaf per scopeIdentifier
       const sid = entry.scopeIdentifier || "Unknown Scope Identifier";
       if (!actNode.scopeIds.has(sid)) {
         actNode.scopeIds.set(sid, {
           id: `${resolvedScopeType}::${resolvedCategory}::${resolvedActivity}::${sid}`,
           label: sid,
-          CO2e: 0,
-          CO2: 0,
-          CH4: 0,
-          N2O: 0,
+          CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+          // ── NEW: attach process allocation for this scopeIdentifier ──────
+          processAllocation:
+            processEmissionSummary?.byScopeIdentifier?.[sid] || null
         });
       }
       const leaf = actNode.scopeIds.get(sid);
       leaf.CO2e += emissions.CO2e;
-      leaf.CO2 += emissions.CO2;
-      leaf.CH4 += emissions.CH4;
-      leaf.N2O += emissions.N2O;
+      leaf.CO2  += emissions.CO2;
+      leaf.CH4  += emissions.CH4;
+      leaf.N2O  += emissions.N2O;
 
-      // ---- flat hierarchies ----
-      pushSum(nodeMap, entry.nodeId, nodeLabel, emissions);
-      pushSum(locMap, resolvedLocation, resolvedLocation, emissions);
-      pushSum(deptMap, resolvedDepartment, resolvedDepartment, emissions);
-      pushSum(scopeTypeMap, resolvedScopeType, resolvedScopeType, emissions);
+      pushSum(nodeMap,      entry.nodeId,        nodeLabel,          emissions);
+      pushSum(locMap,       resolvedLocation,     resolvedLocation,   emissions);
+      pushSum(deptMap,      resolvedDepartment,   resolvedDepartment, emissions);
+      pushSum(scopeTypeMap, resolvedScopeType,    resolvedScopeType,  emissions);
     }
 
     if (!usedCount) {
       return res.status(200).json({
-        success: true,
-        data: {
-          clientId,
-          period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
-          totals: { totalEntries: 0, totalCO2e: 0 },
-          scopeIdentifierHierarchy: { list: [] },
-          nodeHierarchy: { list: [] },
-          locationHierarchy: { list: [] },
-          departmentHierarchy: { list: [] },
-          scopeTypeHierarchy: { list: [] },
-          filtersApplied: {
-            location: locFilter,
-            department: deptFilter,
-            nodeId: nodeFilter,
-            scopeIdentifier: sidFilter,
-            scopeType: scopeTypeFilter,
-            category: categoryFilter,
-            activity: activityFilter,
-          },
-        },
-        message: "No results after applying filters",
+        ...emptyResponse,
+        message: "No results after applying filters"
       });
     }
 
-    // ---------------------------- FORMAT FINAL TREE ----------------------------
+    // ── Build final tree ──────────────────────────────────────────────────────
     const buildScopeList = (scopeTree) => {
       const scopeList = [];
 
@@ -4662,7 +4768,6 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         catList.sort((a, b) => b.CO2e - a.CO2e);
         scopeObj.children = catList;
         delete scopeObj.categories;
-
         scopeList.push(scopeObj);
       }
 
@@ -4672,28 +4777,24 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
     const sortFlat = (arr) => arr.sort((a, b) => b.CO2e - a.CO2e);
 
-    // ---- NEW: if wrapped, scopeIdentifierHierarchy becomes group-rooted ----
     let finalHierarchyList;
     if (!wrapHierarchy) {
       finalHierarchyList = buildScopeList(globalScopeTree);
     } else {
       finalHierarchyList = Array.from(groupMap.values())
-        .map((g) => {
-          const children = buildScopeList(g.scopeTree);
-          return {
-            id: g.id,
-            label: g.label,
-            CO2e: g.CO2e,
-            CO2: g.CO2,
-            CH4: g.CH4,
-            N2O: g.N2O,
-            children,
-          };
-        })
+        .map((g) => ({
+          id:    g.id,
+          label: g.label,
+          CO2e:  g.CO2e,
+          CO2:   g.CO2,
+          CH4:   g.CH4,
+          N2O:   g.N2O,
+          children: buildScopeList(g.scopeTree),
+        }))
         .sort((a, b) => b.CO2e - a.CO2e);
     }
 
-    // ---------------------------- FINAL RESPONSE ----------------------------
+    // ── Final response ────────────────────────────────────────────────────────
     return res.status(200).json({
       success: true,
       data: {
@@ -4701,29 +4802,38 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         period: { type: periodType, year: y, month: m, day: d, from: startDate, to: endDate },
         totals: { totalEntries: usedCount, totalCO2e: grandTotal },
 
-        // This is what your frontend uses for the “tree”
         scopeIdentifierHierarchy: { list: finalHierarchyList },
+        nodeHierarchy:            { list: sortFlat(Array.from(nodeMap.values())) },
+        locationHierarchy:        { list: sortFlat(Array.from(locMap.values())) },
+        departmentHierarchy:      { list: sortFlat(Array.from(deptMap.values())) },
+        scopeTypeHierarchy:       { list: sortFlat(Array.from(scopeTypeMap.values())) },
 
-        // flat lists
-        nodeHierarchy: { list: sortFlat(Array.from(nodeMap.values())) },
-        locationHierarchy: { list: sortFlat(Array.from(locMap.values())) },
-        departmentHierarchy: { list: sortFlat(Array.from(deptMap.values())) },
-        scopeTypeHierarchy: { list: sortFlat(Array.from(scopeTypeMap.values())) },
+        // ── NEW: process emission summary for this period ────────────────────
+        processEmissionSummary: {
+          totalEmissions:    processEmissionSummary.totalEmissions    || {},
+          byScope:           processEmissionSummary.byScope           || {},
+          byScopeIdentifier: processEmissionSummary.byScopeIdentifier || {},
+          byNode:            processEmissionSummary.byNode            || {},
+          byDepartment:      processEmissionSummary.byDepartment      || {},
+          byLocation:        processEmissionSummary.byLocation        || {},
+          byCategory:        processEmissionSummary.byCategory        || {},
+          byActivity:        processEmissionSummary.byActivity        || {},
+          metadata:          processEmissionSummary.metadata          || {}
+        },
 
-        // helpful for UI debug
         groupByApplied: inferredGroupBy,
-
         filtersApplied: {
-          location: locFilter,
-          department: deptFilter,
-          nodeId: nodeFilter,
+          location:        locFilter,
+          department:      deptFilter,
+          nodeId:          nodeFilter,
           scopeIdentifier: sidFilter,
-          scopeType: scopeTypeFilter,
-          category: categoryFilter,
-          activity: activityFilter,
+          scopeType:       scopeTypeFilter,
+          category:        categoryFilter,
+          activity:        activityFilter,
         },
       },
     });
+
   } catch (error) {
     console.error("Hierarchy Error:", error);
     return res.status(500).json({ success: false, message: error.message });

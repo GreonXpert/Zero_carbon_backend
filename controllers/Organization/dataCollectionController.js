@@ -17,6 +17,12 @@ const {
   validateEmissionPrerequisites
 } = require('../Calculation/emissionIntegration');
 
+// Imported here (not at top to avoid circular-dep issues) so that we can
+// re-trigger summaries AFTER ProcessEmissionDataEntry records are persisted.
+// The first summary run (inside triggerEmissionCalculation) fires before those
+// records exist; a second run ensures Strategy A picks them up correctly.
+const { updateSummariesOnDataChange } = require('../Calculation/CalculationSummary');
+
 const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
 
 const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
@@ -1616,12 +1622,26 @@ async function saveOneEntry({
     // Reload the entry from DB so calculatedEmissions is fully populated after
     // triggerEmissionCalculation (which updates the entry in-place via .save()).
     // We use setImmediate to let the response return first, keeping latency low.
+    //
+    // IMPORTANT: updateSummariesOnDataChange is called a SECOND time here,
+    // AFTER createProcessEmissionDataEntry saves the allocated records.
+    // The first call (inside triggerEmissionCalculation) runs before those
+    // records exist, so ProcessEmissionSummary Strategy A always finds 0 entries
+    // and falls back to Strategy B (unallocated values).
+    // This second call guarantees Strategy A finds the ProcessEmissionDataEntry
+    // records and uses the correct pre-computed allocated CO2e values.
     setImmediate(async () => {
       try {
         const freshEntry = await require('../../models/Organization/DataEntry')
           .findById(entry._id).lean();
         if (freshEntry && freshEntry.calculatedEmissions) {
           await createProcessEmissionDataEntry(freshEntry);
+          // ✅ Re-trigger summaries now that ProcessEmissionDataEntry records exist.
+          // Strategy A in buildProcessEmissionSummary will now find and use
+          // the pre-computed allocated values (e.g. 4.788 instead of 15.96).
+          console.log(`📊 [saveOneEntry] Re-triggering summary updates after ProcessEmission propagation for: ${freshEntry._id}`);
+          await updateSummariesOnDataChange(freshEntry);
+          console.log(`✅ [saveOneEntry] Summary updates completed with allocated process emissions.`);
         }
       } catch (e) {
         console.error('[saveOneEntry] ProcessEmission propagation failed:', e.message);
