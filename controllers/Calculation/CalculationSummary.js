@@ -2,6 +2,10 @@
 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 const DataEntry = require('../../models/Organization/DataEntry');
+
+// ProcessEmissionDataEntry: separate collection for process-flowchart emission entries.
+// Each record stores original + allocated values per processFlowchart node.
+const ProcessEmissionDataEntry = require('../../models/Organization/ProcessEmissionDataEntry');
 const Flowchart = require('../../models/Organization/Flowchart');
 const Client = require('../../models/CMS/Client');
 const moment = require('moment');
@@ -72,39 +76,93 @@ function convertKgToTonnes(valueInKg) {
 function extractEmissionValues(calculatedEmissions) {
   const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
 
-  if (!calculatedEmissions || typeof calculatedEmissions !== "object") {
+  if (!calculatedEmissions || typeof calculatedEmissions !== 'object') {
     return totals;
   }
 
+  /**
+   * Sums emission gases from a flat-or-one-deep bucket container.
+   * e.g. { process: { CO2e, CO2, CH4, N2O } }
+   *      or { electricity: { CO2e, ... }, combustion: { CO2e, ... } }
+   */
   const addBucket = (bucketObj) => {
-    if (!bucketObj || typeof bucketObj !== "object") return;
+    if (!bucketObj || typeof bucketObj !== 'object') return;
 
-    // Handle Map (if it comes from mongoose as a Map) or Object
-    const keys = (bucketObj instanceof Map) ? bucketObj.keys() : Object.keys(bucketObj);
+    const keys = bucketObj instanceof Map
+      ? [...bucketObj.keys()]
+      : Object.keys(bucketObj);
 
     for (const bucketKey of keys) {
-      const item = (bucketObj instanceof Map) ? bucketObj.get(bucketKey) : bucketObj[bucketKey];
-      
-      if (!item || typeof item !== "object") continue;
+      const item = bucketObj instanceof Map
+        ? bucketObj.get(bucketKey)
+        : bucketObj[bucketKey];
 
-      const co2e =
-        Number(item.CO2e ??
-              item.emission ??
-              item.CO2eWithUncertainty ??
-              item.emissionWithUncertainty) || 0;
+      if (!item || typeof item !== 'object') continue;
 
-      totals.CO2e += co2e;
-      totals.CO2 += Number(item.CO2) || 0;
-      totals.CH4 += Number(item.CH4) || 0;
-      totals.N2O += Number(item.N2O) || 0;
+      // Direct emission fields on this item?
+      const hasDirect =
+        item.CO2e !== undefined ||
+        item.emission !== undefined ||
+        item.CO2eWithUncertainty !== undefined ||
+        item.emissionWithUncertainty !== undefined;
+
+      if (hasDirect) {
+        totals.CO2e += Number(item.CO2e ?? item.emission ?? item.CO2eWithUncertainty ?? item.emissionWithUncertainty) || 0;
+        totals.CO2  += Number(item.CO2) || 0;
+        totals.CH4  += Number(item.CH4) || 0;
+        totals.N2O  += Number(item.N2O) || 0;
+        continue;
+      }
+
+      // One level deeper (e.g. { process: { CO2e, ... } })
+      for (const ck of Object.keys(item)) {
+        const child = item[ck];
+        if (!child || typeof child !== 'object') continue;
+        const childHasDirect =
+          child.CO2e !== undefined ||
+          child.emission !== undefined ||
+          child.CO2eWithUncertainty !== undefined ||
+          child.emissionWithUncertainty !== undefined;
+        if (!childHasDirect) continue;
+        totals.CO2e += Number(child.CO2e ?? child.emission ?? child.CO2eWithUncertainty ?? child.emissionWithUncertainty) || 0;
+        totals.CO2  += Number(child.CO2) || 0;
+        totals.CH4  += Number(child.CH4) || 0;
+        totals.N2O  += Number(child.N2O) || 0;
+      }
     }
   };
 
-  // 🔴 FIX: Only add INCOMING emissions. 
-  // Do NOT add cumulative, or you will double-count historical data.
-  addBucket(calculatedEmissions.incoming);
-  
-  // REMOVED: addBucket(calculatedEmissions.cumulative); 
+  // ── Only read INCOMING (never cumulative — avoids double-counting) ──────────
+  const incoming = calculatedEmissions.incoming;
+  if (!incoming || typeof incoming !== 'object') return totals;
+
+  const getField = (obj, key) =>
+    obj instanceof Map ? obj.get(key) : obj[key];
+
+  // ── Detect NEW processEmissionData shape: ────────────────────────────────
+  //    incoming = { allocationPct, original: { process:{...} }, allocated: { process:{...} } }
+  //
+  //    For the MAIN emissionSummary we use original (pre-allocation) values.
+  //    The processEmissionSummary uses `allocated` via extractAllocatedEmissionValues.
+  const incomingOriginal  = getField(incoming, 'original');
+  const incomingAllocated = getField(incoming, 'allocated');
+  const isNewFormat =
+    (incomingOriginal  && typeof incomingOriginal  === 'object') ||
+    (incomingAllocated && typeof incomingAllocated === 'object');
+
+  if (isNewFormat) {
+    // Use `original` bucket — this is the pre-allocation emission value
+    if (incomingOriginal && typeof incomingOriginal === 'object') {
+      addBucket(incomingOriginal);
+    }
+    // Fallback: if original is absent but allocated exists, use allocated
+    if (totals.CO2e === 0 && incomingAllocated && typeof incomingAllocated === 'object') {
+      addBucket(incomingAllocated);
+    }
+  } else {
+    // OLD FORMAT — direct bucket names inside incoming
+    addBucket(incoming);
+  }
 
   return totals;
 }
@@ -115,29 +173,18 @@ function extractEmissionValues(calculatedEmissions) {
  * Helper function to add emission values to a target object
  * Values should already be in tonnes
  */
-function addEmissionValues(target, source) {
-  target.CO2e += source.CO2e;
-  target.CO2 += source.CO2;
-  target.CH4 += source.CH4;
-  target.N2O += source.N2O;
-}
-
-function ensureMapEntry(map, key, defaultValue = {}) {
-  if (!map.has(key)) {
-    map.set(key, {
-      CO2e: 0,
-      CO2: 0,
-      CH4: 0,
-      N2O: 0,
-      dataPointCount: 0,
-      ...defaultValue
-    });
+function addEmissionValues(target, source, incrementCount = false) {
+  target.CO2e += (source.CO2e || 0);
+  target.CO2  += (source.CO2  || 0);
+  target.CH4  += (source.CH4  || 0);
+  target.N2O  += (source.N2O  || 0);
+  if (incrementCount && target.dataPointCount !== undefined) {
+    target.dataPointCount += 1;
   }
-  return map.get(key);
 }
 
 /**
- * Helper function to ensure Map structure exists
+ * Helper function to ensure Map structure exists (sanitizes key)
  */
 function ensureMapEntry(map, key, defaultValue = {}) {
   const sanitizedKey = sanitizeMapKey(key); // Sanitize the key before using it
@@ -342,7 +389,7 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
 
         // === BY SCOPE ===
         if (emissionSummary.byScope[entry.scopeType]) {
-          addEmissionValues(emissionSummary.byScope[entry.scopeType], emissionValues);
+          addEmissionValues(emissionSummary.byScope[entry.scopeType], emissionValues, true);
         }
 
         // === BY CATEGORY ===
@@ -380,8 +427,8 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
             }
           }
         );
-        addEmissionValues(node, emissionValues);
-        addEmissionValues(node.byScope[entry.scopeType], emissionValues);
+        addEmissionValues(node, emissionValues, true);
+        addEmissionValues(node.byScope[entry.scopeType], emissionValues, true);
 
         // === BY DEPARTMENT ===
         const dept = ensureMapEntry(emissionSummary.byDepartment, nodeContext.department);
@@ -478,12 +525,61 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     });
 
     // ============================================================
+    // FETCH PROCESS EMISSION DATA ENTRIES
+    // ProcessEmissionDataEntry is a dedicated collection that stores
+    // pre-computed allocated emissions per ProcessFlowchart node.
+    // Schema: calculatedEmissions.incoming.{ allocationPct, original{Map}, allocated{Map} }
+    // We query by clientId + timestamp range — same period window as main entries.
+    // ============================================================
+    let fetchedProcessEntries = [];
+    try {
+      fetchedProcessEntries = await ProcessEmissionDataEntry.find({
+        clientId,
+        emissionCalculationStatus: 'completed',
+        timestamp: { $gte: from, $lte: to }
+      }).lean();
+
+      console.log(
+        `[ProcessEmissionSummary] Fetched ${fetchedProcessEntries.length} ` +
+        `ProcessEmissionDataEntry record(s) for client ${clientId} ` +
+        `in period [${from.toISOString()} – ${to.toISOString()}]`
+      );
+    } catch (fetchErr) {
+      console.warn('[ProcessEmissionSummary] Failed to fetch ProcessEmissionDataEntry:', fetchErr.message);
+    }
+
+    // ============================================================
+    // BUILD PROCESS EMISSION SUMMARY
+    // Non-blocking: errors here must NOT break the main calculation.
+    // ============================================================
+    let processEmissionSummaryData = null;
+    try {
+      processEmissionSummaryData = await buildProcessEmissionSummary(
+        clientId,
+        dataEntries,           // main-chart entries (Strategy B fallback only)
+        nodeMap,               // org-chart node metadata
+        periodType, year, month, week, day, userId,
+        fetchedProcessEntries  // ← pre-fetched process entries (Strategy A - authoritative)
+      );
+      if (processEmissionSummaryData) {
+        console.log(
+          `📊 [ProcessEmissionSummary] Built — ` +
+          `totalAllocatedCO2e: ${processEmissionSummaryData.metadata?.totalAllocatedCO2e}, ` +
+          `dataPoints: ${processEmissionSummaryData.metadata?.dataPointCount}`
+        );
+      }
+    } catch (procErr) {
+      console.error('[ProcessEmissionSummary] Non-fatal build error:', procErr.message);
+    }
+
+    // ============================================================
     // RETURN FULL DOCUMENT STRUCTURE
     // ============================================================
     return {
       clientId,
       period: emissionSummary.period,
       emissionSummary,
+      processEmissionSummary: processEmissionSummaryData,
       metadata: {
         lastCalculated: new Date(),
         isComplete: true,
@@ -938,6 +1034,713 @@ function mapToObj(value) {
 
 
 
+// =============================================================================
+// PROCESS EMISSION SUMMARY BUILDER
+// =============================================================================
+
+/**
+ * Extract emission values from a DataEntry's calculatedEmissions.
+ *
+ * Priority order (to avoid double-counting):
+ *   1. calculatedEmissions.allocated.incoming  — set by the process allocation engine
+ *   2. calculatedEmissions.incoming            — set by the main calculation engine
+ *
+ * We NEVER read .cumulative to avoid double-counting historical data.
+ */
+function extractAllocatedEmissionValues(calculatedEmissions) {
+  /**
+   * Supports BOTH data shapes:
+   *
+   * A) New "processEmissionData" shape:
+   *    calculatedEmissions.incoming = {
+   *      allocationPct: 30,
+   *      original:  { process: { CO2e: 15.96, CO2, CH4, N2O, ... } },
+   *      allocated: { process: { CO2e: 4.787, CO2, CH4, N2O, ... } }  ← USE THIS
+   *    }
+   *
+   * B) Older internal shape used by previous allocation engine:
+   *    calculatedEmissions.allocated.incoming = { bucketA: {..}, bucketB:{..} }
+   *
+   * C) Fallback (no allocation object):
+   *    calculatedEmissions.incoming = { bucketA: {..}, bucketB:{..} }
+   *
+   * RETURN:
+   *  {
+   *    allocated:      {CO2e,CO2,CH4,N2O},   // allocated totals → into processEmissionSummary
+   *    original:       {CO2e,CO2,CH4,N2O},   // pre-allocation totals
+   *    allocationPct:  number|null,
+   *    isPreAllocated: boolean               // true = allocated values came directly from data
+   *  }
+   */
+  const zero = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+  const result = {
+    allocated:      { ...zero },
+    original:       { ...zero },
+    allocationPct:  null,
+    isPreAllocated: false,
+  };
+
+  if (!calculatedEmissions || typeof calculatedEmissions !== 'object') return result;
+
+  const safeN = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const getField = (obj, key) =>
+    obj instanceof Map ? obj.get(key) : (obj ? obj[key] : undefined);
+
+  /**
+   * Sums a flat-or-one-deep bucket container into { CO2e, CO2, CH4, N2O }.
+   * e.g. { process: { CO2e: 4.787, CO2: 0, ... } }
+   */
+  const sumBucketContainer = (container) => {
+    const totals = { ...zero };
+    if (!container || typeof container !== 'object') return totals;
+
+    const keys = container instanceof Map
+      ? [...container.keys()]
+      : Object.keys(container);
+
+    for (const k of keys) {
+      const item = container instanceof Map ? container.get(k) : container[k];
+      if (!item || typeof item !== 'object') continue;
+
+      const hasDirect =
+        item.CO2e !== undefined ||
+        item.emission !== undefined ||
+        item.CO2eWithUncertainty !== undefined ||
+        item.emissionWithUncertainty !== undefined;
+
+      if (hasDirect) {
+        totals.CO2e += safeN(item.CO2e ?? item.emission ?? item.CO2eWithUncertainty ?? item.emissionWithUncertainty ?? 0);
+        totals.CO2  += safeN(item.CO2);
+        totals.CH4  += safeN(item.CH4);
+        totals.N2O  += safeN(item.N2O);
+        continue;
+      }
+
+      // One extra level of nesting (rare)
+      for (const ck of Object.keys(item)) {
+        const child = item[ck];
+        if (!child || typeof child !== 'object') continue;
+        const childHasDirect =
+          child.CO2e !== undefined ||
+          child.emission !== undefined ||
+          child.CO2eWithUncertainty !== undefined ||
+          child.emissionWithUncertainty !== undefined;
+        if (!childHasDirect) continue;
+        totals.CO2e += safeN(child.CO2e ?? child.emission ?? child.CO2eWithUncertainty ?? child.emissionWithUncertainty ?? 0);
+        totals.CO2  += safeN(child.CO2);
+        totals.CH4  += safeN(child.CH4);
+        totals.N2O  += safeN(child.N2O);
+      }
+    }
+    return totals;
+  };
+
+  // ── SHAPE A: NEW format — incoming.{allocationPct, original, allocated} ────
+  const incoming = calculatedEmissions.incoming;
+  if (incoming && typeof incoming === 'object') {
+    // Read allocationPct
+    const pct =
+      getField(incoming, 'allocationPct') ??
+      getField(incoming, 'allocationPercentage') ??
+      getField(incoming, 'allocationPercent');
+    if (pct !== undefined && pct !== null) result.allocationPct = safeN(pct);
+
+    const incomingAllocated = getField(incoming, 'allocated');
+    const incomingOriginal  = getField(incoming, 'original');
+
+    // Use pre-computed allocated values from incoming.allocated
+    // e.g. allocated: { process: { CO2e: 4.787, ... } }
+    if (incomingAllocated && typeof incomingAllocated === 'object') {
+      result.allocated      = sumBucketContainer(incomingAllocated);
+      result.isPreAllocated = true;
+    }
+
+    // Use original pre-allocation values from incoming.original
+    // e.g. original: { process: { CO2e: 15.96, ... } }
+    if (incomingOriginal && typeof incomingOriginal === 'object') {
+      result.original = sumBucketContainer(incomingOriginal);
+    }
+
+    // If original was not stored, infer only from non-meta keys (not original/allocated)
+    // to avoid double-counting original + allocated together
+    if (result.isPreAllocated && result.original.CO2e === 0 && incomingOriginal === undefined) {
+      const SKIP_KEYS = new Set(['allocationPct', 'allocationPercentage', 'allocationPercent', 'original', 'allocated']);
+      const syntheticContainer = {};
+      const allIncomingKeys = incoming instanceof Map ? [...incoming.keys()] : Object.keys(incoming);
+      for (const k of allIncomingKeys) {
+        if (!SKIP_KEYS.has(k)) syntheticContainer[k] = getField(incoming, k);
+      }
+      if (Object.keys(syntheticContainer).length > 0) {
+        const inferred = sumBucketContainer(syntheticContainer);
+        if (inferred.CO2e > 0) result.original = inferred;
+      }
+    }
+  }
+
+  // ── SHAPE B: Old allocation shape — calculatedEmissions.allocated.incoming ─
+  if (!result.isPreAllocated && calculatedEmissions.allocated && typeof calculatedEmissions.allocated === 'object') {
+    const alloc = calculatedEmissions.allocated;
+
+    if (alloc.incoming && typeof alloc.incoming === 'object') {
+      const keys = alloc.incoming instanceof Map ? [...alloc.incoming.keys()] : Object.keys(alloc.incoming);
+      if (keys.length > 0) {
+        result.allocated      = sumBucketContainer(alloc.incoming);
+        result.isPreAllocated = true;
+      }
+    }
+
+    if (!result.isPreAllocated && typeof alloc === 'object' && !('incoming' in alloc) && !('cumulative' in alloc)) {
+      const keys = alloc instanceof Map ? [...alloc.keys()] : Object.keys(alloc);
+      if (keys.length > 0) {
+        result.allocated      = sumBucketContainer(alloc);
+        result.isPreAllocated = true;
+      }
+    }
+  }
+
+  // ── SHAPE C: Fallback — treat incoming as original (old direct-bucket format) ─
+  if (result.original.CO2e === 0) {
+    const inc = calculatedEmissions.incoming;
+    if (inc && typeof inc === 'object') {
+      // Only use incoming as original if it's the old direct-bucket format
+      // (i.e. no original/allocated sub-keys present)
+      const hasOriginalKey  = getField(inc, 'original')  !== undefined;
+      const hasAllocatedKey = getField(inc, 'allocated') !== undefined;
+      if (!hasOriginalKey && !hasAllocatedKey) {
+        result.original = sumBucketContainer(inc);
+      }
+    }
+  }
+
+  // ── If not pre-allocated, compute allocated from allocationPct ────────────
+  if (!result.isPreAllocated) {
+    const pct = result.allocationPct;
+    if (typeof pct === 'number' && pct > 0 && pct <= 100) {
+      const f = pct / 100;
+      result.allocated = {
+        CO2e: result.original.CO2e * f,
+        CO2:  result.original.CO2  * f,
+        CH4:  result.original.CH4  * f,
+        N2O:  result.original.N2O  * f,
+      };
+    } else {
+      result.allocated = { ...result.original };
+    }
+  }
+
+  return result;
+}
+
+/** Zero-filled processEmissionSummary — returned when there is no process data */
+function buildEmptyProcessEmissionSummary() {
+  return {
+    totalEmissions: { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+    byScope: {
+      'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+      'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+      'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+    },
+    byNode:            {},
+    byScopeIdentifier: {},
+    byDepartment:      {},
+    byLocation:        {},
+    byEmissionFactor:  {},
+    byActivity:        {},
+    byCategory:        {},
+    trends: {
+      totalEmissionsChange: { value: 0, percentage: 0, direction: 'same' },
+      scopeChanges: {
+        'Scope 1': { value: 0, percentage: 0, direction: 'same' },
+        'Scope 2': { value: 0, percentage: 0, direction: 'same' },
+        'Scope 3': { value: 0, percentage: 0, direction: 'same' }
+      }
+    },
+    metadata: {
+      lastCalculated:     new Date(),
+      allocationApplied:  false,
+      totalAllocatedCO2e: 0,
+      totalOriginalCO2e:  0,
+      dataPointCount:     0,
+      hasErrors:          false,
+      errors:             []
+    }
+  };
+}
+
+/**
+ * Build processEmissionSummary.
+ *
+ * KEY DESIGN DECISIONS (fixing previous bugs):
+ *
+ * 1. NO SECOND DataEntry QUERY — receives the already-fetched `dataEntries`
+ *    and `orgNodeMap` from calculateEmissionSummary.  This ensures that every
+ *    emission record that appears in emissionSummary also appears here.
+ *
+ * 2. SAFE ProcessFlowchart LOOKUP — uses `isDeleted: { $ne: true }` so the
+ *    query works even when the field is absent (undefined) on old documents.
+ *    Falls back to a plain `{ clientId }` sort-by-updatedAt query if needed.
+ *
+ * 3. ALLOCATION PERCENTAGE FALLBACK CHAIN:
+ *      ProcessFlowchart scopeDetail.allocationPercentage
+ *      → ProcessFlowchart node-level allocationPercentage
+ *      → 100 % (no allocation, use full value)
+ *
+ * 4. METADATA / CATEGORY / ACTIVITY RESOLUTION CHAIN:
+ *      ProcessFlowchart scopeDetail → org-chart scopeDetail → DataEntry fields
+ *
+ * 5. TOTALS: includes totalEmissions and byScope (previously missing).
+ *
+ * @param {string}  clientId
+ * @param {Array}   dataEntries  - lean DataEntry docs already fetched
+ * @param {Map}     orgNodeMap   - Map<nodeId, {label,department,location,scopeDetails}>
+ * @param {string}  periodType
+ * @param {number}  year
+ * @param {number}  month
+ * @param {number}  week
+ * @param {number}  day
+ * @param {*}       userId
+ */
+async function buildProcessEmissionSummary(
+  clientId,
+  dataEntries,              // main-chart DataEntries (Strategy B fallback only)
+  orgNodeMap,               // Map<nodeId, {label,dept,location,scopeDetails}> from main flowchart
+  periodType,
+  year,
+  month,
+  week,
+  day,
+  userId = null,
+  preloadedProcessEntries = null   // ← process DataEntries pre-fetched by calculateEmissionSummary
+) {
+  try {
+    console.log(
+      `📊 [ProcessEmissionSummary] Building ${periodType} summary for client: ${clientId} | ` +
+      `preloaded=${preloadedProcessEntries ? preloadedProcessEntries.length : 0}`
+    );
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STEP 1 — Fetch ProcessFlowchart for node metadata
+    //          (department / location / scopeDetails / allocationPct lookup)
+    // ══════════════════════════════════════════════════════════════════════════
+    let processChart = null;
+    try {
+      processChart = await ProcessFlowchart.findOne({
+        clientId,
+        isDeleted: { $ne: true }
+      }).lean();
+      if (!processChart) {
+        processChart = await ProcessFlowchart.findOne({ clientId })
+          .sort({ updatedAt: -1 }).lean();
+      }
+    } catch (chartErr) {
+      console.warn('[ProcessEmissionSummary] ProcessFlowchart query error:', chartErr.message);
+    }
+
+    const processNodeMap = new Map();
+    if (processChart && Array.isArray(processChart.nodes)) {
+      for (const node of processChart.nodes) {
+        if (!node.id) continue;
+        processNodeMap.set(node.id, {
+          label:         node.label || null,
+          department:    node.details?.department || null,
+          location:      node.details?.location   || null,
+          allocationPct: node.details?.allocationPercentage
+                         ?? node.allocationPercentage
+                         ?? 100,
+          scopeDetails:  node.details?.scopeDetails || []
+        });
+      }
+    }
+
+    console.log(`[ProcessEmissionSummary] ProcessFlowchart: ${processNodeMap.size} node(s) for ${clientId}`);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STEP 2 — Determine which DataEntries to aggregate.
+    //
+    // STRATEGY A (authoritative — uses preloaded process entries):
+    //   Uses entries passed in from calculateEmissionSummary that were fetched
+    //   from the ProcessDataEntry collection (separate from DataEntry).
+    //   These entries have:
+    //     calculatedEmissions.incoming.allocationPct  = e.g. 30
+    //     calculatedEmissions.incoming.original.*.CO2e = original value (e.g. 15.96)
+    //     calculatedEmissions.incoming.allocated.*.CO2e = allocated value (e.g. 4.787) ← USE
+    //   We use allocated values DIRECTLY — no re-multiplication needed.
+    //
+    // STRATEGY B (fallback — main-chart entries + manual allocation):
+    //   If no process entries are available, use the main-chart DataEntries
+    //   and apply allocationPct from ProcessFlowchart manually.
+    // ══════════════════════════════════════════════════════════════════════════
+    let entriesToProcess = [];
+    let usingProcessNodeEntries = false;
+
+    if (preloadedProcessEntries && preloadedProcessEntries.length > 0) {
+      // STRATEGY A — authoritative path
+      entriesToProcess        = preloadedProcessEntries;
+      usingProcessNodeEntries = true;
+      console.log(
+        `[ProcessEmissionSummary] STRATEGY A — using ${preloadedProcessEntries.length} ` +
+        `preloaded process entries with pre-computed allocated values.`
+      );
+    } else {
+      // STRATEGY A DB fallback — in case calculateEmissionSummary couldn't pre-fetch them
+      // (e.g. called from a path that doesn't pass preloadedProcessEntries)
+      try {
+        const { from, to } = buildDateRange(periodType, { year, month, week, day });
+        const fallbackEntries = await ProcessEmissionDataEntry.find({
+          clientId,
+          emissionCalculationStatus: 'completed',
+          timestamp: { $gte: from, $lte: to }
+        }).lean();
+
+        console.log(`[ProcessEmissionSummary] STRATEGY A (DB fallback, ProcessEmissionDataEntry): ${fallbackEntries.length} entries`);
+
+        if (fallbackEntries.length > 0) {
+          entriesToProcess        = fallbackEntries;
+          usingProcessNodeEntries = true;
+          console.log(`[ProcessEmissionSummary] STRATEGY A (DB fallback) — found ${fallbackEntries.length} ProcessEmissionDataEntry records`);
+        }
+      } catch (queryErr) {
+        console.warn('[ProcessEmissionSummary] Strategy A DB fallback failed:', queryErr.message);
+      }
+    }
+
+    // STRATEGY B — use main-chart entries if no process entries found
+    if (!usingProcessNodeEntries) {
+      if (!dataEntries || dataEntries.length === 0) {
+        console.log('[ProcessEmissionSummary] No entries available. Returning empty summary.');
+        return buildEmptyProcessEmissionSummary();
+      }
+      entriesToProcess = dataEntries;
+      console.log(
+        `[ProcessEmissionSummary] STRATEGY B — using ${dataEntries.length} main-chart ` +
+        `entries with ProcessFlowchart allocationPct applied manually.`
+      );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STEP 3 — Accumulation structures
+    // ══════════════════════════════════════════════════════════════════════════
+    const totalEmissions = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
+    const byScope = {
+      'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+      'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+      'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+    };
+    const byNode            = new Map();
+    const byScopeIdentifier = new Map();
+    const byDepartment      = new Map();
+    const byLocation        = new Map();
+    const byEmissionFactor  = new Map();
+    const byActivity        = new Map();
+    const byCategory        = new Map();
+
+    const safeN = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+    const addV = (target, vals) => {
+      target.CO2e += safeN(vals.CO2e);
+      target.CO2  += safeN(vals.CO2);
+      target.CH4  += safeN(vals.CH4);
+      target.N2O  += safeN(vals.N2O);
+    };
+
+    const getOrCreate = (map, key, init = {}) => {
+      const k = sanitizeMapKey(String(key));
+      if (!map.has(k)) map.set(k, { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, dataPointCount: 0, ...init });
+      return map.get(k);
+    };
+
+    const errors             = [];
+    let   totalAllocatedCO2e = 0;
+    let   totalOriginalCO2e  = 0;
+    let   processedCount     = 0;
+    let   anyPreAllocated    = false;
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STEP 4 — Process each entry
+    //
+    // For STRATEGY A entries (process DataEntries):
+    //   calculatedEmissions.incoming.allocationPct  = 30
+    //   calculatedEmissions.incoming.original.process.CO2e  = 15.96  (pre-allocation)
+    //   calculatedEmissions.incoming.allocated.process.CO2e =  4.787 (post-allocation) ← USE
+    //   extractAllocatedEmissionValues → isPreAllocated=true → use allocated directly
+    //
+    // For STRATEGY B entries (main-chart DataEntries):
+    //   calculatedEmissions.incoming.process.CO2e = 15.96
+    //   extractAllocatedEmissionValues → isPreAllocated=false → multiply by allocationPct
+    // ══════════════════════════════════════════════════════════════════════════
+    for (const entry of entriesToProcess) {
+      try {
+        const emPack = extractAllocatedEmissionValues(entry.calculatedEmissions);
+
+        if (emPack.isPreAllocated) anyPreAllocated = true;
+
+        const originalVals  = emPack.original  || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+        let   allocatedVals = emPack.allocated  || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+
+        const hasAnyEmission =
+          allocatedVals.CO2e !== 0 || allocatedVals.CO2  !== 0 ||
+          allocatedVals.CH4  !== 0 || allocatedVals.N2O  !== 0;
+
+        if (!hasAnyEmission) continue;
+
+        processedCount++;
+
+        if (processedCount === 1 || processedCount % 50 === 0) {
+          console.log(
+            `[ProcessEmissionSummary] Entry #${processedCount}: ` +
+            `nodeId=${entry.nodeId}, scopeId=${entry.scopeIdentifier}, ` +
+            `strategy=${usingProcessNodeEntries ? 'A(process)' : 'B(main)'}, ` +
+            `isPreAllocated=${emPack.isPreAllocated}, allocationPct=${emPack.allocationPct}, ` +
+            `original.CO2e=${safeN(originalVals.CO2e).toFixed(4)}, ` +
+            `allocated.CO2e=${safeN(allocatedVals.CO2e).toFixed(4)}`
+          );
+        }
+
+        // ── Node metadata ─────────────────────────────────────────────────
+        const procNode = processNodeMap.get(entry.nodeId);
+        const orgNode  = orgNodeMap ? orgNodeMap.get(entry.nodeId) : null;
+
+        const nodeLabel  = procNode?.label      || orgNode?.label      || entry.nodeId || 'Unknown';
+        const department = procNode?.department  || orgNode?.department || 'Unknown';
+        const location   = procNode?.location    || orgNode?.location   || 'Unknown';
+
+        // ── Allocation % resolution ───────────────────────────────────────
+        const procScopeDetail = procNode?.scopeDetails?.find(s =>
+          (s.scopeIdentifier || '').toLowerCase() === (entry.scopeIdentifier || '').toLowerCase()
+        );
+
+        const allocationPct = safeN(
+          emPack.allocationPct              ??
+          procScopeDetail?.allocationPercentage ??
+          procNode?.allocationPct           ??
+          100
+        );
+
+        // CRITICAL: Strategy A entries (isPreAllocated=true) already have
+        // allocated values computed — do NOT multiply again.
+        if (!emPack.isPreAllocated) {
+          const f = allocationPct / 100;
+          allocatedVals = {
+            CO2e: safeN(originalVals.CO2e) * f,
+            CO2:  safeN(originalVals.CO2)  * f,
+            CH4:  safeN(originalVals.CH4)  * f,
+            N2O:  safeN(originalVals.N2O)  * f,
+          };
+        }
+
+        // ── Category / Activity / ScopeType resolution ────────────────────
+        const orgScopeDetail = orgNode?.scopeDetails?.find(
+          s => s.scopeIdentifier === entry.scopeIdentifier
+        );
+        const categoryName   = procScopeDetail?.categoryName || orgScopeDetail?.categoryName || entry.categoryName || 'Unknown Category';
+        const activity       = procScopeDetail?.activity     || orgScopeDetail?.activity     || entry.activity     || 'Unknown Activity';
+        const scopeType      = procScopeDetail?.scopeType    || orgScopeDetail?.scopeType    || entry.scopeType    || 'Unknown Scope';
+        const emFactorSource = entry.emissionFactor || 'Unknown';
+
+        const originalCO2e = safeN(originalVals.CO2e);
+        totalOriginalCO2e  += originalCO2e;
+        totalAllocatedCO2e += allocatedVals.CO2e;
+
+        // ── totalEmissions ────────────────────────────────────────────────
+        addV(totalEmissions, allocatedVals);
+
+        // ── byScope ───────────────────────────────────────────────────────
+        if (byScope[scopeType]) {
+          addV(byScope[scopeType], allocatedVals);
+          byScope[scopeType].dataPointCount += 1;
+        }
+
+        // ── byNode ────────────────────────────────────────────────────────
+        const nodeKey = sanitizeMapKey(entry.nodeId || 'unknown');
+        if (!byNode.has(nodeKey)) {
+          byNode.set(nodeKey, {
+            nodeLabel, department, location, allocationPct,
+            CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+            originalCO2e: 0, dataPointCount: 0, lastUpdatedAt: new Date()
+          });
+        }
+        const nodeEntry = byNode.get(nodeKey);
+        addV(nodeEntry, allocatedVals);
+        nodeEntry.originalCO2e   += originalCO2e;
+        nodeEntry.dataPointCount += 1;
+        nodeEntry.lastUpdatedAt   = new Date();
+
+        // ── byScopeIdentifier ─────────────────────────────────────────────
+        const sid = sanitizeMapKey(entry.scopeIdentifier || 'Unknown');
+        if (!byScopeIdentifier.has(sid)) {
+          byScopeIdentifier.set(sid, {
+            scopeType, CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
+            dataPointCount: 0, nodes: new Map()
+          });
+        }
+        const sidEntry = byScopeIdentifier.get(sid);
+        addV(sidEntry, allocatedVals);
+        sidEntry.dataPointCount += 1;
+        if (!sidEntry.nodes.has(nodeKey)) {
+          sidEntry.nodes.set(nodeKey, { nodeLabel, allocationPct, CO2e: 0 });
+        }
+        sidEntry.nodes.get(nodeKey).CO2e += allocatedVals.CO2e;
+
+        // ── byDepartment ──────────────────────────────────────────────────
+        const deptEntry = getOrCreate(byDepartment, department);
+        addV(deptEntry, allocatedVals);
+        deptEntry.dataPointCount += 1;
+
+        // ── byLocation ────────────────────────────────────────────────────
+        const locEntry = getOrCreate(byLocation, location);
+        addV(locEntry, allocatedVals);
+        locEntry.dataPointCount += 1;
+
+        // ── byEmissionFactor ──────────────────────────────────────────────
+        const efKey = sanitizeMapKey(emFactorSource);
+        if (!byEmissionFactor.has(efKey)) {
+          byEmissionFactor.set(efKey, {
+            CO2e: 0, dataPointCount: 0,
+            scopeTypes: { 'Scope 1': 0, 'Scope 2': 0, 'Scope 3': 0 }
+          });
+        }
+        const efEntry = byEmissionFactor.get(efKey);
+        efEntry.CO2e += allocatedVals.CO2e;
+        efEntry.dataPointCount += 1;
+        if (efEntry.scopeTypes[scopeType] !== undefined) efEntry.scopeTypes[scopeType] += 1;
+
+        // ── byActivity ────────────────────────────────────────────────────
+        const actKey = sanitizeMapKey(activity);
+        if (!byActivity.has(actKey)) {
+          byActivity.set(actKey, { scopeType, categoryName, CO2e: 0, CO2: 0, CH4: 0, N2O: 0, dataPointCount: 0 });
+        }
+        const actEntry = byActivity.get(actKey);
+        addV(actEntry, allocatedVals);
+        actEntry.dataPointCount += 1;
+
+        // ── byCategory ────────────────────────────────────────────────────
+        const catKey = sanitizeMapKey(categoryName);
+        if (!byCategory.has(catKey)) {
+          byCategory.set(catKey, { scopeType, CO2e: 0, CO2: 0, CH4: 0, N2O: 0, dataPointCount: 0 });
+        }
+        const catEntry = byCategory.get(catKey);
+        addV(catEntry, allocatedVals);
+        catEntry.dataPointCount += 1;
+
+      } catch (entryErr) {
+        errors.push(`Entry ${entry._id}: ${entryErr.message}`);
+      }
+    }
+
+    console.log(
+      `[ProcessEmissionSummary] Finished: ` +
+      `strategy=${usingProcessNodeEntries ? 'A(process entries)' : 'B(main entries)'}, ` +
+      `processed=${processedCount}, ` +
+      `totalOriginalCO2e=${totalOriginalCO2e.toFixed(4)}, ` +
+      `totalAllocatedCO2e=${totalAllocatedCO2e.toFixed(4)}`
+    );
+
+    // ── nodeCount rollup ───────────────────────────────────────────────────
+    const deptNodes = new Map();
+    const locNodes  = new Map();
+    for (const [nk, nData] of byNode) {
+      const dk = sanitizeMapKey(nData.department);
+      const lk = sanitizeMapKey(nData.location);
+      if (!deptNodes.has(dk)) deptNodes.set(dk, new Set());
+      deptNodes.get(dk).add(nk);
+      if (!locNodes.has(lk)) locNodes.set(lk, new Set());
+      locNodes.get(lk).add(nk);
+    }
+    for (const [dk, s] of deptNodes) if (byDepartment.has(dk)) byDepartment.get(dk).nodeCount = s.size;
+    for (const [lk, s] of locNodes)  if (byLocation.has(lk))   byLocation.get(lk).nodeCount   = s.size;
+
+    // ── Trends ────────────────────────────────────────────────────────────
+    let trends = {
+      totalEmissionsChange: { value: 0, percentage: 0, direction: 'same' },
+      scopeChanges: {
+        'Scope 1': { value: 0, percentage: 0, direction: 'same' },
+        'Scope 2': { value: 0, percentage: 0, direction: 'same' },
+        'Scope 3': { value: 0, percentage: 0, direction: 'same' }
+      }
+    };
+    if (periodType !== 'all-time') {
+      try {
+        const prev = getPreviousPeriod(periodType, year, month, week, day);
+        const prevSummary = await EmissionSummary.findOne({
+          clientId,
+          'period.type':  periodType,
+          'period.year':  prev.year,
+          'period.month': prev.month,
+          'period.week':  prev.week,
+          'period.day':   prev.day
+        }).lean();
+
+        const prevTotal = prevSummary?.processEmissionSummary?.metadata?.totalAllocatedCO2e || 0;
+        if (prevTotal > 0) {
+          const delta = totalAllocatedCO2e - prevTotal;
+          const pct   = parseFloat(((delta / prevTotal) * 100).toFixed(2));
+          trends.totalEmissionsChange = { value: delta, percentage: pct, direction: delta > 0 ? 'up' : delta < 0 ? 'down' : 'same' };
+        }
+        for (const s of ['Scope 1', 'Scope 2', 'Scope 3']) {
+          const currVal = byScope[s]?.CO2e || 0;
+          const prevVal = prevSummary?.processEmissionSummary?.byScope?.[s]?.CO2e || 0;
+          if (prevVal > 0) {
+            const d   = currVal - prevVal;
+            const pct = parseFloat(((d / prevVal) * 100).toFixed(2));
+            trends.scopeChanges[s] = { value: d, percentage: pct, direction: d > 0 ? 'up' : d < 0 ? 'down' : 'same' };
+          }
+        }
+      } catch (trendErr) { errors.push(`Trend calc: ${trendErr.message}`); }
+    }
+
+    // ── Flatten Maps → plain objects ───────────────────────────────────────
+    const flattenMap = (m) => {
+      if (!(m instanceof Map)) return m || {};
+      const obj = {};
+      for (const [k, v] of m) {
+        if (v && typeof v === 'object') {
+          const copy = { ...v };
+          for (const prop of Object.keys(copy)) {
+            if (copy[prop] instanceof Map) copy[prop] = flattenMap(copy[prop]);
+          }
+          obj[k] = copy;
+        } else { obj[k] = v; }
+      }
+      return obj;
+    };
+
+    return {
+      totalEmissions,
+      byScope,
+      byNode:            flattenMap(byNode),
+      byScopeIdentifier: flattenMap(byScopeIdentifier),
+      byDepartment:      flattenMap(byDepartment),
+      byLocation:        flattenMap(byLocation),
+      byEmissionFactor:  flattenMap(byEmissionFactor),
+      byActivity:        flattenMap(byActivity),
+      byCategory:        flattenMap(byCategory),
+      trends,
+      metadata: {
+        lastCalculated:    new Date(),
+        allocationApplied: usingProcessNodeEntries || anyPreAllocated || (processNodeMap.size > 0),
+        totalAllocatedCO2e,
+        totalOriginalCO2e,
+        dataPointCount:    processedCount,
+        hasErrors:         errors.length > 0,
+        errors
+      }
+    };
+
+  } catch (err) {
+    console.error('[ProcessEmissionSummary] Fatal error, returning empty:', err.message);
+    return buildEmptyProcessEmissionSummary();
+  }
+}
+
+// =============================================================================
+// END — PROCESS EMISSION SUMMARY BUILDER
+// =============================================================================
+
+
 /**
  * Persist an emission summary in STRUCTURE A:
  *
@@ -1083,6 +1886,46 @@ async function saveEmissionSummary(summaryData) {
     emissionSummary: emissionSummaryToSave,
     metadata: rootMetadata,
   };
+
+  // ── Persist processEmissionSummary ─────────────────────────────────────────
+  // buildProcessEmissionSummary() always returns a fully-serialized plain object
+  // (Maps already flattened). We just assign it directly.
+  // If this run returned null/undefined, preserve any previously saved value.
+  if (summaryData.processEmissionSummary &&
+      typeof summaryData.processEmissionSummary === 'object') {
+    // Ensure required top-level fields are always present
+    const pes = summaryData.processEmissionSummary;
+    update.processEmissionSummary = {
+      totalEmissions: pes.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 },
+      byScope:        pes.byScope || {
+        'Scope 1': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        'Scope 2': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 },
+        'Scope 3': { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0, dataPointCount: 0 }
+      },
+      byNode:            pes.byNode            || {},
+      byScopeIdentifier: pes.byScopeIdentifier || {},
+      byDepartment:      pes.byDepartment      || {},
+      byLocation:        pes.byLocation        || {},
+      byEmissionFactor:  pes.byEmissionFactor  || {},
+      byActivity:        pes.byActivity        || {},
+      byCategory:        pes.byCategory        || {},
+      trends:            pes.trends            || {
+        totalEmissionsChange: { value: 0, percentage: 0, direction: 'same' },
+        scopeChanges: {
+          'Scope 1': { value: 0, percentage: 0, direction: 'same' },
+          'Scope 2': { value: 0, percentage: 0, direction: 'same' },
+          'Scope 3': { value: 0, percentage: 0, direction: 'same' }
+        }
+      },
+      metadata: pes.metadata || {
+        lastCalculated: new Date(), allocationApplied: false,
+        totalAllocatedCO2e: 0, totalOriginalCO2e: 0, dataPointCount: 0,
+        hasErrors: false, errors: []
+      }
+    };
+  } else if (existing?.processEmissionSummary) {
+    update.processEmissionSummary = existing.processEmissionSummary;
+  }
 
   // Preserve reductionSummary if it exists
   if (existing?.reductionSummary) {
@@ -3510,7 +4353,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
     // ---------------------------- LOAD FLOWCHART METADATA ----------------------------
     const orgChart = await Flowchart.findOne({ clientId, isActive: true }).lean();
-    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: false }).lean();
+    const processChart = await ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean();
 
     const allNodes = {};
     const allScopes = {};

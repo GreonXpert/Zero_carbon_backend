@@ -246,6 +246,43 @@ const emissionDetailsSchema = new mongoose.Schema(
 
 const processEmissionSummarySchema = new mongoose.Schema(
   {
+    // ── Total allocated emissions across all process nodes ────────────────────
+    totalEmissions: {
+      CO2e:        { type: Number, default: 0 },
+      CO2:         { type: Number, default: 0 },
+      CH4:         { type: Number, default: 0 },
+      N2O:         { type: Number, default: 0 },
+      uncertainty: { type: Number, default: 0 }
+    },
+
+    // ── Allocated emissions broken down by scope ──────────────────────────────
+    byScope: {
+      'Scope 1': {
+        CO2e:          { type: Number, default: 0 },
+        CO2:           { type: Number, default: 0 },
+        CH4:           { type: Number, default: 0 },
+        N2O:           { type: Number, default: 0 },
+        uncertainty:   { type: Number, default: 0 },
+        dataPointCount:{ type: Number, default: 0 }
+      },
+      'Scope 2': {
+        CO2e:          { type: Number, default: 0 },
+        CO2:           { type: Number, default: 0 },
+        CH4:           { type: Number, default: 0 },
+        N2O:           { type: Number, default: 0 },
+        uncertainty:   { type: Number, default: 0 },
+        dataPointCount:{ type: Number, default: 0 }
+      },
+      'Scope 3': {
+        CO2e:          { type: Number, default: 0 },
+        CO2:           { type: Number, default: 0 },
+        CH4:           { type: Number, default: 0 },
+        N2O:           { type: Number, default: 0 },
+        uncertainty:   { type: Number, default: 0 },
+        dataPointCount:{ type: Number, default: 0 }
+      }
+    },
+
     // ── Per-node totals (after allocation percentage is applied) ──────────────
     // Key = nodeId from ProcessFlowchart
     byNode: {
@@ -257,6 +294,9 @@ const processEmissionSummarySchema = new mongoose.Schema(
           location:      { type: String, default: 'Unknown' },
           allocationPct: { type: Number, default: 100 },  // the % used for this node
           CO2e:          { type: Number, default: 0 },    // allocated CO2e (after allocationPct)
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
           originalCO2e:  { type: Number, default: 0 },    // raw CO2e before allocation
           dataPointCount:{ type: Number, default: 0 },
           lastUpdatedAt: { type: Date }
@@ -274,6 +314,9 @@ const processEmissionSummarySchema = new mongoose.Schema(
         {
           scopeType:     { type: String },
           CO2e:          { type: Number, default: 0 },   // total allocated CO2e for this scope
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
           dataPointCount:{ type: Number, default: 0 },
 
           // Which nodes received emissions from this scope (and how much)
@@ -295,13 +338,128 @@ const processEmissionSummarySchema = new mongoose.Schema(
       default: {}
     },
 
+    // ── By Department ─────────────────────────────────────────────────────────
+    byDepartment: {
+      type: Map,
+      of: new mongoose.Schema(
+        {
+          CO2e:          { type: Number, default: 0 },
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
+          dataPointCount:{ type: Number, default: 0 },
+          nodeCount:     { type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: {}
+    },
+
+    // ── By Location ───────────────────────────────────────────────────────────
+    byLocation: {
+      type: Map,
+      of: new mongoose.Schema(
+        {
+          CO2e:          { type: Number, default: 0 },
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
+          dataPointCount:{ type: Number, default: 0 },
+          nodeCount:     { type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: {}
+    },
+
+    // ── By Emission Factor Source ─────────────────────────────────────────────
+    byEmissionFactor: {
+      type: Map,
+      of: new mongoose.Schema(
+        {
+          CO2e:          { type: Number, default: 0 },
+          dataPointCount:{ type: Number, default: 0 },
+          scopeTypes: {
+            'Scope 1': { type: Number, default: 0 },
+            'Scope 2': { type: Number, default: 0 },
+            'Scope 3': { type: Number, default: 0 }
+          }
+        },
+        { _id: false }
+      ),
+      default: {}
+    },
+
+    // ── By Activity ───────────────────────────────────────────────────────────
+    byActivity: {
+      type: Map,
+      of: new mongoose.Schema(
+        {
+          scopeType:     { type: String },
+          categoryName:  { type: String },
+          CO2e:          { type: Number, default: 0 },
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
+          dataPointCount:{ type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: {}
+    },
+
+    // ── By Category ───────────────────────────────────────────────────────────
+    byCategory: {
+      type: Map,
+      of: new mongoose.Schema(
+        {
+          scopeType:     { type: String },
+          CO2e:          { type: Number, default: 0 },
+          CO2:           { type: Number, default: 0 },
+          CH4:           { type: Number, default: 0 },
+          N2O:           { type: Number, default: 0 },
+          dataPointCount:{ type: Number, default: 0 }
+        },
+        { _id: false }
+      ),
+      default: {}
+    },
+
+    // ── Trends (comparing with previous period) ───────────────────────────────
+    trends: {
+      totalEmissionsChange: {
+        value:      { type: Number, default: 0 },
+        percentage: { type: Number, default: 0 },
+        direction:  { type: String, enum: ['up', 'down', 'same'], default: 'same' }
+      },
+      scopeChanges: {
+        'Scope 1': {
+          value:      { type: Number, default: 0 },
+          percentage: { type: Number, default: 0 },
+          direction:  { type: String, enum: ['up', 'down', 'same'], default: 'same' }
+        },
+        'Scope 2': {
+          value:      { type: Number, default: 0 },
+          percentage: { type: Number, default: 0 },
+          direction:  { type: String, enum: ['up', 'down', 'same'], default: 'same' }
+        },
+        'Scope 3': {
+          value:      { type: Number, default: 0 },
+          percentage: { type: Number, default: 0 },
+          direction:  { type: String, enum: ['up', 'down', 'same'], default: 'same' }
+        }
+      }
+    },
+
     // ── Summary metadata ──────────────────────────────────────────────────────
     metadata: {
       lastCalculated:    { type: Date, default: Date.now },
       allocationApplied: { type: Boolean, default: true },
       totalAllocatedCO2e:{ type: Number, default: 0 },
       totalOriginalCO2e: { type: Number, default: 0 },
-      dataPointCount:    { type: Number, default: 0 }
+      dataPointCount:    { type: Number, default: 0 },
+      hasErrors:         { type: Boolean, default: false },
+      errors:            [String]
     }
   },
   { _id: false }
