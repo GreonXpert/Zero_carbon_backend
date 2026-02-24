@@ -189,6 +189,7 @@ function normalizeM3VariableFull(v = {}) {
     name,
     type,                   // ✔ internal now preserved
     value,
+    unit,
     updatePolicy: v.updatePolicy || 'manual',
     defaultValue: v.defaultValue ?? null,
     lastValue: v.lastValue ?? null,
