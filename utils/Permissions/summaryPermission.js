@@ -1,224 +1,116 @@
-// utils/Permissions/summaryPermission.js
+// utils/Permissions/summaryPermission.js  (UPDATED)
+// UPDATED: attaches req.summaryAccessContext to avoid duplicate DB queries in controller
+
+'use strict';
 
 const Client = require('../../models/CMS/Client');
-const User = require('../../models/User');
-const { getActiveFlowchart } = require('../DataCollection/dataCollection');
+const User   = require('../../models/User');
+const { getActiveFlowchart }     = require('../DataCollection/dataCollection');
+const { getSummaryAccessContext } = require('./summaryAccessContext');
 
 const checkSummaryPermission = async (req, res, next) => {
-    try {
-        const { clientId } = req.params;
-        const user = req.user;
+  try {
+    const { clientId } = req.params;
+    const user = req.user;
 
-        // Debug logging to understand the user object structure
-        console.log('Permission Check Debug:', {
-            userType: user?.userType,
-            userId: user?._id || user?.id,
-            userIdType: typeof (user?._id || user?.id),
-            clientIdParam: clientId
-        });
-
-        if (!user) {
-            return res.status(401).json({ 
-                success: false, 
-                message: 'Authentication required.' 
-            });
-        }
-
-        // Get the user ID (handle both _id and id cases)
-        const userId = (user._id || user.id).toString();
-
-        // Fetch client - NO population needed, we'll work with ObjectIds directly
-        const client = await Client.findOne({ clientId }).lean();
-
-        if (!client) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Client not found.' 
-            });
-        }
-
-        // Helper function to safely convert ObjectId to string
-        const getIdString = (field) => {
-            if (!field) return null;
-            // Handle both ObjectId and populated object cases
-            if (field._id) return field._id.toString();
-            if (field.$oid) return field.$oid;
-            return field.toString();
-        };
-
-        // Extract consultant IDs from client
-        const clientConsultantAdminId = getIdString(client.leadInfo?.consultantAdminId);
-        const clientAssignedConsultantId = getIdString(client.leadInfo?.assignedConsultantId);
-        const workflowAssignedConsultantId = getIdString(client.workflowTracking?.assignedConsultantId);
-        const createdById = getIdString(client.leadInfo?.createdBy);
-
-        // Debug logging for consultant IDs
-        console.log('Client Permission Data:', {
-            consultantAdminId: clientConsultantAdminId,
-            assignedConsultantId: clientAssignedConsultantId,
-            workflowAssignedConsultantId: workflowAssignedConsultantId,
-            createdBy: createdById,
-            currentUserId: userId
-        });
-
-        // Build permission check based on user type (following getClients pattern)
-        switch (user.userType) {
-            case "super_admin":
-                // Super Admin: Can access all summaries
-                console.log('Access granted: Super Admin');
-                return next();
-
-            case "consultant_admin":
-                // Consultant Admin: Can see clients they or their consultants manage
-                
-                // Check if this consultant admin is directly assigned to the client
-                if (clientConsultantAdminId === userId) {
-                    console.log('Access granted: Direct Consultant Admin assignment');
-                    return next();
-                }
-
-                // Check if they created the client
-                if (createdById === userId) {
-                    console.log('Access granted: Client Creator Consultant Admin');
-                    return next();
-                }
-
-                // Find all consultants under this consultant admin
-                const consultants = await User.find({ 
-                    consultantAdminId: userId,
-                    userType: 'consultant'
-                }).select("_id").lean();
-                
-                // Create array of consultant IDs as strings
-                const consultantIds = consultants.map(c => c._id.toString());
-                
-                console.log('Consultant Admin - Team IDs:', consultantIds);
-                
-                // Check if any of their consultants are assigned to this client
-                const hasTeamAccess = 
-                    (clientAssignedConsultantId && consultantIds.includes(clientAssignedConsultantId)) ||
-                    (workflowAssignedConsultantId && consultantIds.includes(workflowAssignedConsultantId));
-                
-                if (hasTeamAccess) {
-                    console.log('Access granted: Consultant Admin manages assigned consultant');
-                    return next();
-                }
-                
-                console.log('Access denied: Consultant Admin without permission');
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You do not have permission to view this client\'s summary.',
-                    debug: process.env.NODE_ENV === 'development' ? {
-                        yourId: userId,
-                        yourTeam: consultantIds,
-                        clientConsultantAdminId: clientConsultantAdminId,
-                        clientAssignedConsultantId: clientAssignedConsultantId,
-                        workflowAssignedConsultantId: workflowAssignedConsultantId
-                    } : undefined
-                });
-
-            case "consultant":
-                // Consultant: Can see assigned clients only
-                const isAssignedConsultant = 
-                    clientAssignedConsultantId === userId ||
-                    workflowAssignedConsultantId === userId;
-                
-                if (isAssignedConsultant) {
-                    console.log('Access granted: Assigned Consultant');
-                    return next();
-                }
-                
-                console.log('Access denied: Consultant without assignment');
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You are not assigned to this client.',
-                    debug: process.env.NODE_ENV === 'development' ? {
-                        yourId: userId,
-                        clientAssignedConsultantId: clientAssignedConsultantId,
-                        workflowAssignedConsultantId: workflowAssignedConsultantId
-                    } : undefined
-                });
-
-            case "client_admin":
-            case "auditor":
-            case "viewer":
-                // Client users: Can only access their own organization's summary
-                if (user.clientId === clientId) {
-                    console.log(`Access granted: ${user.userType} - own organization`);
-                    return next();
-                }
-                
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You can only view summaries for your own organization.',
-                    yourClientId: user.clientId,
-                    requestedClientId: clientId
-                });
-
-            case "client_employee_head":
-                // Employee Head: Can access summaries for their organization
-                if (user.clientId !== clientId) {
-                    return res.status(403).json({
-                        success: false,
-                        message: 'Access denied. You can only view summaries for your own organization.',
-                        yourClientId: user.clientId,
-                        requestedClientId: clientId
-                    });
-                }
-
-                // Additional check: Must be assigned to at least one node
-                const activeFlowchart = await getActiveFlowchart(clientId);
-                if (activeFlowchart && activeFlowchart.chart) {
-                    const isAssigned = activeFlowchart.chart.nodes.some(
-                        node => {
-                            const nodeEmployeeHeadId = getIdString(node.details.employeeHeadId);
-                            return nodeEmployeeHeadId === userId;
-                        }
-                    );
-
-                    if (isAssigned) {
-                        console.log('Access granted: Employee Head with node assignment');
-                        return next();
-                    }
-                }
-
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You are not assigned to any nodes in this organization.'
-                });
-
-            case "employee":
-                // Regular Employee: Can access summaries for their organization (if needed)
-                if (user.clientId === clientId) {
-                    console.log('Access granted: Employee - own organization');
-                    return next();
-                }
-                
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You can only view summaries for your own organization.',
-                    yourClientId: user.clientId,
-                    requestedClientId: clientId
-                });
-
-            default:
-                // Unknown user type
-                console.log('Access denied: Unknown user type');
-                return res.status(403).json({
-                    success: false,
-                    message: 'Access denied. You do not have permission to view summaries.',
-                    userType: user.userType
-                });
-        }
-
-    } catch (error) {
-        console.error('Error in checkSummaryPermission middleware:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during permission check.',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Authentication required.' });
     }
+
+    const userId = (user._id || user.id).toString();
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found.' });
+    }
+
+    const getIdString = (field) => {
+      if (!field) return null;
+      if (field._id) return field._id.toString();
+      if (field.$oid) return field.$oid;
+      return field.toString();
+    };
+
+    const clientConsultantAdminId      = getIdString(client.leadInfo?.consultantAdminId);
+    const clientAssignedConsultantId   = getIdString(client.leadInfo?.assignedConsultantId);
+    const workflowAssignedConsultantId = getIdString(client.workflowTracking?.assignedConsultantId);
+    const createdById                  = getIdString(client.leadInfo?.createdBy);
+
+    let permitted = false;
+
+    switch (user.userType) {
+      case 'super_admin':
+        permitted = true;
+        break;
+
+      case 'consultant_admin': {
+        if (clientConsultantAdminId === userId || createdById === userId) {
+          permitted = true;
+          break;
+        }
+        const consultants = await User.find({
+          consultantAdminId: userId, userType: 'consultant'
+        }).select('_id').lean();
+        const cIds = consultants.map(c => c._id.toString());
+        permitted = (clientAssignedConsultantId && cIds.includes(clientAssignedConsultantId)) ||
+                    (workflowAssignedConsultantId && cIds.includes(workflowAssignedConsultantId));
+        break;
+      }
+
+      case 'consultant':
+        permitted = clientAssignedConsultantId === userId || workflowAssignedConsultantId === userId;
+        break;
+
+      case 'client_admin':
+      case 'auditor':
+      case 'viewer':
+        permitted = user.clientId === clientId;
+        break;
+
+      case 'client_employee_head': {
+        if (user.clientId !== clientId) break;
+        const fc = await getActiveFlowchart(clientId);
+        if (fc?.chart) {
+          permitted = fc.chart.nodes.some(n =>
+            getIdString(n.details?.employeeHeadId) === userId
+          );
+        }
+        break;
+      }
+
+      case 'employee':
+        // Belong to the client — data filtering done in controller via access context
+        permitted = user.clientId === clientId;
+        break;
+
+      default:
+        permitted = false;
+    }
+
+    if (!permitted) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have permission to view this summary.',
+      });
+    }
+
+    // Attach access context — controller uses this to filter response data.
+    // This avoids re-querying Flowchart/Reduction in the controller.
+    try {
+      req.summaryAccessContext = await getSummaryAccessContext(user, clientId);
+    } catch (ctxErr) {
+      console.error('[summaryPermission] Access context build failed:', ctxErr.message);
+      req.summaryAccessContext = null; // controller will re-build if null
+    }
+
+    return next();
+
+  } catch (error) {
+    console.error('Error in checkSummaryPermission:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during permission check.',
+    });
+  }
 };
 
 module.exports = { checkSummaryPermission };

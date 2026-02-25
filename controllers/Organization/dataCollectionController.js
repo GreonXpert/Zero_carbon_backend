@@ -24,6 +24,11 @@ const {
 const { updateSummariesOnDataChange } = require('../Calculation/CalculationSummary');
 
 const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
+const {
+  getDataEntryAccessContext,
+  buildDataEntryMongoConstraint,
+  attachDataEntryAccessContext,
+} = require('../../utils/Permissions/dataEntryPermission');
 
 const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
 const { resolveApiKeyRequestTargets } = require("../../utils/ApiKey/apiKeyNotifications");
@@ -3353,6 +3358,52 @@ function buildDataEntryFilters(req) {
     if (req.query.endDate) filters.timestamp.$lte = new Date(req.query.endDate);
   }
 
+  // 6) Role-based row-level access control
+  //    req.dataEntryAccessContext is attached by attachDataEntryAccessContext middleware.
+  //    If present, merge the permission constraint so only authorised rows are returned.
+  const accessCtx = req.dataEntryAccessContext;
+  if (accessCtx && !accessCtx.isFullAccess) {
+    const constraint = buildDataEntryMongoConstraint(accessCtx);
+
+    if (constraint && constraint._impossible) {
+      // Fail-closed: user has no assignments → match nothing
+      filters._id = null;
+      return filters;
+    }
+
+    if (constraint) {
+      if (constraint.nodeId) {
+        // employee_head: intersect requested nodeId with allowed set
+        if (filters.nodeId) {
+          // Caller requested a specific nodeId — verify it's in allowed set
+          if (!constraint.nodeId.$in.includes(filters.nodeId)) {
+            filters._id = null; // deny access to this specific node
+            return filters;
+          }
+          // nodeId already set correctly, no change needed
+        } else {
+          // No specific node requested — restrict to allowed nodes
+          filters.nodeId = constraint.nodeId;
+        }
+      }
+
+      if (constraint.scopeIdentifier) {
+        // employee: intersect requested scopeIdentifier with allowed set
+        if (filters.scopeIdentifier) {
+          // Caller requested a specific scope — verify it's in allowed set
+          if (!constraint.scopeIdentifier.$in.includes(filters.scopeIdentifier)) {
+            filters._id = null; // deny access to this specific scope
+            return filters;
+          }
+          // scopeIdentifier already set correctly, no change needed
+        } else {
+          // No specific scope requested — restrict to allowed scopes
+          filters.scopeIdentifier = constraint.scopeIdentifier;
+        }
+      }
+    }
+  }
+
   return filters;
 }
 
@@ -3393,6 +3444,18 @@ const buildDataEntrySort = (req) => {
 // Get Data Entries with enhanced authorization and strict client isolation
 const getDataEntries = async (req, res) => {
   try {
+    // If the middleware did not run (e.g., legacy caller), build context on-the-fly.
+    // This ensures the controller is safe even if the middleware is not on the route.
+    if (!req.dataEntryAccessContext) {
+      const clientId = req.params?.clientId || req.query?.clientId || req.user?.clientId;
+      try {
+        req.dataEntryAccessContext = await getDataEntryAccessContext(req.user, clientId);
+      } catch (ctxErr) {
+        console.error('[getDataEntries] Failed to build access context:', ctxErr.message);
+        req.dataEntryAccessContext = { isFullAccess: false, allowedNodeIds: new Set(), allowedScopeIdentifiers: new Set() };
+      }
+    }
+
     const filters = buildDataEntryFilters(req);
     const sort = buildDataEntrySort(req);
  
@@ -3427,6 +3490,9 @@ const getDataEntries = async (req, res) => {
       }
     });
   } catch (error) {
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message });
+    }
     console.error('Error getting data entries:', error);
     return res.status(500).json({
       success: false,
@@ -4547,6 +4613,57 @@ const getDataValuesAndCumulative = async (req, res) => {
       if (req.query.endDate) filters.timestamp.$lte = new Date(req.query.endDate);
     }
 
+    // Role-based access control — apply the constraint built by middleware.
+    // Build it on-the-fly if the middleware was not registered on this route.
+    {
+      let accessCtx = req.dataEntryAccessContext;
+      if (!accessCtx) {
+        try {
+          accessCtx = await getDataEntryAccessContext(req.user, req.query.clientId);
+        } catch (_) {
+          accessCtx = { isFullAccess: false, allowedNodeIds: new Set(), allowedScopeIdentifiers: new Set() };
+        }
+      }
+
+      if (!accessCtx.isFullAccess) {
+        const constraint = buildDataEntryMongoConstraint(accessCtx);
+
+        if (constraint && constraint._impossible) {
+          // Fail-closed: user has no assignments → return empty immediately
+          return res.status(200).json({
+            success: true,
+            message: 'Minimal data entries fetched successfully',
+            data: [],
+            filtersApplied: filters,
+            sort: { timestamp: -1 },
+            pagination: { currentPage: 1, totalPages: 0, totalItems: 0, itemsPerPage: 20, hasNextPage: false, hasPrevPage: false },
+            metadata: { fieldsIncluded: ['dataValues', 'dataEntryCumulative'], optimizedPayload: true, estimatedSizeReduction: '~75%' }
+          });
+        }
+
+        if (constraint) {
+          if (constraint.nodeId) {
+            if (filters.nodeId) {
+              if (!constraint.nodeId.$in.includes(filters.nodeId)) {
+                filters._id = null; // deny this specific node
+              }
+            } else {
+              filters.nodeId = constraint.nodeId;
+            }
+          }
+          if (constraint.scopeIdentifier) {
+            if (filters.scopeIdentifier) {
+              if (!constraint.scopeIdentifier.$in.includes(filters.scopeIdentifier)) {
+                filters._id = null; // deny this specific scope
+              }
+            } else {
+              filters.scopeIdentifier = constraint.scopeIdentifier;
+            }
+          }
+        }
+      }
+    }
+
     // Build sort
     const sortBy = req.query.sortBy || 'timestamp';
     const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
@@ -4754,7 +4871,27 @@ const streamDataValuesAndCumulative = async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
-    // Build filters
+    // Build access context for role-based filtering
+    let accessCtx = req.dataEntryAccessContext;
+    if (!accessCtx) {
+      try {
+        accessCtx = await getDataEntryAccessContext(req.user, clientId);
+      } catch (_) {
+        accessCtx = { isFullAccess: false, allowedNodeIds: new Set(), allowedScopeIdentifiers: new Set() };
+      }
+    }
+
+    // Build the access constraint for the change stream $match stage
+    const accessConstraint = buildDataEntryMongoConstraint(accessCtx);
+
+    // If fail-closed (no assignments), send empty initial data and close
+    if (accessConstraint && accessConstraint._impossible) {
+      res.write(`data: ${JSON.stringify({ type: 'initial', data: [] })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Build filters for initial data load (reuses buildDataEntryFilters + context)
     const filters = buildDataEntryFilters(req);
 
     // Send initial data
@@ -4792,15 +4929,25 @@ const streamDataValuesAndCumulative = async (req, res) => {
 
     res.write(`data: ${JSON.stringify({ type: 'initial', data: serialized })}\n\n`);
 
+    // Build the change stream $match with role-based constraints
+    const changeStreamMatch = {
+      'fullDocument.clientId': clientId,
+      ...(nodeId && { 'fullDocument.nodeId': nodeId }),
+      ...(scopeIdentifier && { 'fullDocument.scopeIdentifier': scopeIdentifier }),
+      operationType: { $in: ['insert', 'update'] },
+      // Apply role-based constraints to the change stream as well
+      ...(accessConstraint?.nodeId && {
+        'fullDocument.nodeId': { $in: accessConstraint.nodeId.$in }
+      }),
+      ...(accessConstraint?.scopeIdentifier && {
+        'fullDocument.scopeIdentifier': { $in: accessConstraint.scopeIdentifier.$in }
+      }),
+    };
+
     // Set up change stream for real-time updates
     const changeStream = DataEntry.watch([
       {
-        $match: {
-          'fullDocument.clientId': clientId,
-          ...(nodeId && { 'fullDocument.nodeId': nodeId }),
-          ...(scopeIdentifier && { 'fullDocument.scopeIdentifier': scopeIdentifier }),
-          operationType: { $in: ['insert', 'update'] }
-        }
+        $match: changeStreamMatch
       }
     ]);
 

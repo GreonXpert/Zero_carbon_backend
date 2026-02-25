@@ -20,13 +20,6 @@ const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
 
 const {getActiveFlowchart} = require ('../../utils/DataCollection/dataCollection');
 
-const {
-  getSummaryAccessContext,
-  applyAccessContextToSummary,
-  filterProcessEmissionSummary,
-  filterReductionSummary,
-} = require('../../utils/Permissions/summaryAccessContext');
-
 // Import socket.io instance
 let io;
 
@@ -2171,12 +2164,6 @@ const getEmissionSummary = async (req, res) => {
       });
     }
 
-    // ── ★ ADDED: Role-based data filtering ────────────────────────────────────
-    const accessCtx = req.summaryAccessContext    // attached by checkSummaryPermission
-      || await getSummaryAccessContext(req.user, clientId); // fallback if middleware skipped
-    summary = applyAccessContextToSummary(summary, accessCtx);
-    // ── ★ END: Role-based data filtering ─────────────────────────────────────
-
     // ----------------------------------------------------
     // 2) Deep-convert Maps → plain objects (covers all nested Maps)
     // ----------------------------------------------------
@@ -2278,8 +2265,6 @@ const getEmissionSummary = async (req, res) => {
 
 
 
-
-
 const getMultipleSummaries = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -2323,14 +2308,6 @@ const getMultipleSummaries = async (req, res) => {
       .limit(parseInt(limit))
       .lean();
 
-    // ── ★ ADDED: Role-based data filtering ────────────────────────────────────
-    const mAccessCtx = req.summaryAccessContext
-      || await getSummaryAccessContext(req.user, clientId);
-    const rawSummaries = mAccessCtx.isFullAccess
-      ? summaries
-      : summaries.map((s) => applyAccessContextToSummary(s, mAccessCtx));
-    // ── ★ END: Role-based data filtering ─────────────────────────────────────
-
     // ---------------------------------------------
     // 3) deepConvert helper (handles nested Maps)
     // ---------------------------------------------
@@ -2352,11 +2329,11 @@ const getMultipleSummaries = async (req, res) => {
     // ---------------------------------------------
     // 4) FORMAT EACH SUMMARY
     // ---------------------------------------------
-    const formatted = rawSummaries.map((doc) => {
-      const emissionSummary = deepConvert(doc.emissionSummary || {});
-      const reductionSummary = deepConvert(doc.reductionSummary || {});
+    const formatted = summaries.map((doc) => {
+      const emissionSummary        = deepConvert(doc.emissionSummary  || {});
+      const reductionSummary       = deepConvert(doc.reductionSummary || {});
       const processEmissionSummary = deepConvert(doc.processEmissionSummary || {}); // ← NEW
-      const metadata = doc.metadata || {};
+      const metadata               = doc.metadata || {};
 
       // EMISSION ONLY
       if (type === "emission") {
@@ -2425,7 +2402,6 @@ const getMultipleSummaries = async (req, res) => {
     });
   }
 };
-
 //New Update function
 // const getMultipleSummaries = async (req, res) => {
 //   try {
@@ -2668,14 +2644,6 @@ const getFilteredSummary = async (req, res) => {
       return res.status(404).json({ success: false, message: "No summary data found." });
     }
 
-    // ── ★ ADDED: Role-based data filtering ────────────────────────────────────
-    const fAccessCtx = req.summaryAccessContext
-      || await getSummaryAccessContext(req.user, clientId);
-    if (!fAccessCtx.isFullAccess) {
-      fullSummary = applyAccessContextToSummary(fullSummary, fAccessCtx);
-    }
-    // ── ★ END: Role-based data filtering ─────────────────────────────────────
-
     // -------------------------------------------
     // 2) Normalize raw data sections
     // -------------------------------------------
@@ -2683,8 +2651,8 @@ const getFilteredSummary = async (req, res) => {
     const rs = fullSummary.reductionSummary || {};
     const ps = fullSummary.processEmissionSummary || {}; // ← NEW
 
-    const byNode         = es.byNode || {};
-    const byScope        = es.byScope || {};
+    const byNode        = es.byNode        || {};
+    const byScope       = es.byScope       || {};
     const totalEmissions = es.totalEmissions || { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
 
     // ── EMISSION nodes ──────────────────────────────────────────────────────
@@ -2730,15 +2698,15 @@ const getFilteredSummary = async (req, res) => {
 
     let processNodes = processNodeEntries.map(([id, n]) => ({
       nodeId: id,
-      nodeLabel:      n?.nodeLabel || "",
-      department:     n?.department || "",
-      location:       n?.location || "",
-      allocationPct:  safeNum(n?.allocationPct || 100),
-      CO2e:           safeNum(n?.CO2e),
-      CO2:            safeNum(n?.CO2),
-      CH4:            safeNum(n?.CH4),
-      N2O:            safeNum(n?.N2O),
-      originalCO2e:   safeNum(n?.originalCO2e),
+      nodeLabel:     n?.nodeLabel     || "",
+      department:    n?.department    || "",
+      location:      n?.location      || "",
+      allocationPct: safeNum(n?.allocationPct || 100),
+      CO2e:          safeNum(n?.CO2e),
+      CO2:           safeNum(n?.CO2),
+      CH4:           safeNum(n?.CH4),
+      N2O:           safeNum(n?.N2O),
+      originalCO2e:  safeNum(n?.originalCO2e),
       dataPointCount: safeNum(n?.dataPointCount),
     }));
 
@@ -2759,7 +2727,7 @@ const getFilteredSummary = async (req, res) => {
     const locSet  = toLowerSet(selectedLocations);
     const deptSet = toLowerSet(selectedDepartments);
     const nodeSet = new Set(selectedNodeIds);
-    const pnSet   = new Set(selectedProcessNodes); // ← NEW
+    const pnSet   = new Set(selectedProcessNodes);  // ← NEW
 
     const projSet = new Set(selectedProjectIds);
     const catSet  = toLowerSet(selectedCategories);
@@ -2770,14 +2738,14 @@ const getFilteredSummary = async (req, res) => {
     const maxCO2e = maxCO2eRaw != null ? Number(maxCO2eRaw) : null;
     const limit   = limitRaw ? parseInt(limitRaw) : null;
 
-    const sortBy        = (sortByRaw || "co2e").toLowerCase();
-    const direction     = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
+    const sortBy       = (sortByRaw || "co2e").toLowerCase();
+    const direction    = (sortDirectionRaw || sortOrderRaw || "desc").toLowerCase();
     const sortDirection = direction === "asc" || direction === "low" ? "asc" : "desc";
 
     // -------------------------------------------
     // 4) Filter & sort EMISSION nodes (unchanged logic)
     // -------------------------------------------
-    if (selectedNodeIds.length)     nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
+    if (selectedNodeIds.length)   nodes = nodes.filter((n) => nodeSet.has(n.nodeId));
     if (selectedLocations.length)   nodes = nodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
     if (selectedDepartments.length) nodes = nodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
 
@@ -2897,19 +2865,19 @@ const getFilteredSummary = async (req, res) => {
     }
 
     const facetsReduction = {
-      scopes:        Object.entries(reductionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      locations:     Object.entries(reductionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      categories:    Object.entries(reductionAgg.byCategory).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      activities:    Object.entries(reductionAgg.byProjectActivity).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
-      methodologies: Object.entries(reductionAgg.byMethodology).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      scopes:       Object.entries(reductionAgg.byScope).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      locations:    Object.entries(reductionAgg.byLocation).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      categories:   Object.entries(reductionAgg.byCategory).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      activities:   Object.entries(reductionAgg.byProjectActivity).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
+      methodologies:Object.entries(reductionAgg.byMethodology).map(([k, v]) => ({ value: k, ...v })).sort((a, b) => b.totalNetReduction - a.totalNetReduction),
     };
 
     // -------------------------------------------
     // 6) Filter & sort PROCESS nodes (NEW)
     // -------------------------------------------
-    if (selectedProcessNodes.length) processNodes = processNodes.filter((n) => pnSet.has(n.nodeId));
-    if (selectedLocations.length)    processNodes = processNodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
-    if (selectedDepartments.length)  processNodes = processNodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
+    if (selectedProcessNodes.length)  processNodes = processNodes.filter((n) => pnSet.has(n.nodeId));
+    if (selectedLocations.length)     processNodes = processNodes.filter((n) => locSet.has(String(n.location).toLowerCase()));
+    if (selectedDepartments.length)   processNodes = processNodes.filter((n) => deptSet.has(String(n.department).toLowerCase()));
     if (selectedScopes.length) {
       // processEmissionSummary.byScope uses same "Scope 1/2/3" keys — filter nodes whose
       // allocated CO2e is non-zero for at least one selected scope (best-effort match).
@@ -2923,9 +2891,9 @@ const getFilteredSummary = async (req, res) => {
       const dir = sortDirection === "asc" ? 1 : -1;
       const val = (x) => {
         if (sortBy === "label" || sortBy === "nodelabel") return String(x.nodeLabel || "").toLowerCase();
-        if (sortBy === "department") return String(x.department || "").toLowerCase();
-        if (sortBy === "location")   return String(x.location || "").toLowerCase();
-        if (sortBy === "allocation") return safeNum(x.allocationPct);
+        if (sortBy === "department")  return String(x.department || "").toLowerCase();
+        if (sortBy === "location")    return String(x.location || "").toLowerCase();
+        if (sortBy === "allocation")  return safeNum(x.allocationPct);
         return safeNum(x.CO2e);
       };
       const va = val(a), vb = val(b);
@@ -2938,7 +2906,7 @@ const getFilteredSummary = async (req, res) => {
     const processAgg = {
       totalFilteredAllocatedCO2e: processNodes.reduce((s, n) => s + safeNum(n.CO2e), 0),
       totalFilteredOriginalCO2e:  processNodes.reduce((s, n) => s + safeNum(n.originalCO2e), 0),
-      byLocation: {},
+      byLocation:   {},
       byDepartment: {},
     };
     for (const n of processNodes) {
@@ -2960,16 +2928,16 @@ const getFilteredSummary = async (req, res) => {
 
     // Summary-level process data (totals, byScope, byScopeIdentifier, etc.) deep-converted
     const processSummaryTop = {
-      totalEmissions:    deepConvert(ps.totalEmissions || {}),
-      byScope:           deepConvert(ps.byScope || {}),
-      byScopeIdentifier: deepConvert(ps.byScopeIdentifier || {}),
-      byCategory:        deepConvert(ps.byCategory || {}),
-      byActivity:        deepConvert(ps.byActivity || {}),
-      byDepartment:      deepConvert(ps.byDepartment || {}),
-      byLocation:        deepConvert(ps.byLocation || {}),
-      byEmissionFactor:  deepConvert(ps.byEmissionFactor || {}),
-      trends:            deepConvert(ps.trends || {}),
-      metadata:          deepConvert(ps.metadata || {}),
+      totalEmissions:     deepConvert(ps.totalEmissions     || {}),
+      byScope:            deepConvert(ps.byScope            || {}),
+      byScopeIdentifier:  deepConvert(ps.byScopeIdentifier  || {}),
+      byCategory:         deepConvert(ps.byCategory         || {}),
+      byActivity:         deepConvert(ps.byActivity         || {}),
+      byDepartment:       deepConvert(ps.byDepartment       || {}),
+      byLocation:         deepConvert(ps.byLocation         || {}),
+      byEmissionFactor:   deepConvert(ps.byEmissionFactor   || {}),
+      trends:             deepConvert(ps.trends             || {}),
+      metadata:           deepConvert(ps.metadata           || {}),
     };
 
     // -------------------------------------------
@@ -2978,7 +2946,7 @@ const getFilteredSummary = async (req, res) => {
     const response = {
       success: true,
       clientId,
-      period: fullSummary.period,
+      period:   fullSummary.period,
       metadata: fullSummary.metadata || {},
     };
 
@@ -2988,16 +2956,16 @@ const getFilteredSummary = async (req, res) => {
         totalEmissions,
         byScope,
         nodes,
-        primary: nodesPrimary,
+        primary:    nodesPrimary,
         aggregates: emissionAgg,
-        facets: facetsEmission,
+        facets:     facetsEmission,
         // process data alongside emission so frontend can show allocation context
         processEmissionSummary: {
           ...processSummaryTop,
-          nodes: processNodes,
+          nodes:   processNodes,
           primary: processNodesPrimary,
           aggregates: processAgg,
-          facets: facetsProcess,
+          facets:     facetsProcess,
         },
       };
       return res.status(200).json(response);
@@ -3008,9 +2976,9 @@ const getFilteredSummary = async (req, res) => {
       response.data = {
         totalNetReduction: safeNum(rs.totalNetReduction),
         projects,
-        primary: projectsPrimary,
+        primary:    projectsPrimary,
         aggregates: reductionAgg,
-        facets: facetsReduction,
+        facets:     facetsReduction,
       };
       return res.status(200).json(response);
     }
@@ -3019,10 +2987,10 @@ const getFilteredSummary = async (req, res) => {
       response.summaryKind = "process";
       response.data = {
         ...processSummaryTop,
-        nodes: processNodes,
-        primary: processNodesPrimary,
+        nodes:      processNodes,
+        primary:    processNodesPrimary,
         aggregates: processAgg,
-        facets: facetsProcess,
+        facets:     facetsProcess,
       };
       return res.status(200).json(response);
     }
@@ -3033,23 +3001,23 @@ const getFilteredSummary = async (req, res) => {
       emission: {
         totalEmissions,
         nodes,
-        primary: nodesPrimary,
+        primary:    nodesPrimary,
         aggregates: emissionAgg,
-        facets: facetsEmission,
+        facets:     facetsEmission,
       },
       reduction: {
         totalNetReduction: safeNum(rs.totalNetReduction),
         projects,
-        primary: projectsPrimary,
+        primary:    projectsPrimary,
         aggregates: reductionAgg,
-        facets: facetsReduction,
+        facets:     facetsReduction,
       },
       process: {
         ...processSummaryTop,
-        nodes: processNodes,
-        primary: processNodesPrimary,
+        nodes:      processNodes,
+        primary:    processNodesPrimary,
         aggregates: processAgg,
-        facets: facetsProcess,
+        facets:     facetsProcess,
       },
     };
     return res.status(200).json(response);
@@ -3063,6 +3031,7 @@ const getFilteredSummary = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -3284,16 +3253,12 @@ const getLatestScope12Total = async (req, res) => {
       });
     }
 
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx1 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    const filteredLatest = applyAccessContextToSummary(latest, _ctx1);
-
     // =====================================================
     // 2) Handle EMISSION SUMMARY mode
     // =====================================================
     if (summaryKind === "emission") {
       const byScopeMain =
-        filteredLatest.byScope || filteredLatest.emissionSummary?.byScope || null;
+        latest.byScope || latest.emissionSummary?.byScope || null;
 
       let { s1, s2 } = extractS1S2FromByScope(byScopeMain);
 
@@ -3302,7 +3267,7 @@ const getLatestScope12Total = async (req, res) => {
       // ------------------------------------------
       if ((s1 + s2) === 0) {
         const byNodeMain =
-          filteredLatest.byNode || filteredLatest.emissionSummary?.byNode || {};
+          latest.byNode || latest.emissionSummary?.byNode || {};
 
         const nodeList = Array.isArray(byNodeMain)
           ? byNodeMain
@@ -3331,7 +3296,7 @@ const getLatestScope12Total = async (req, res) => {
         message: "Latest Scope 1 & Scope 2 totals (emissions)",
         data: {
           clientId,
-          latestPeriod: filteredLatest.period || filteredLatest.emissionSummary?.period || null,
+          latestPeriod: latest.period || latest.emissionSummary?.period || null,
           scope1CO2e: s1,
           scope2CO2e: s2,
           scope12TotalCO2e: s1 + s2,
@@ -3347,13 +3312,13 @@ const getLatestScope12Total = async (req, res) => {
     // =====================================================
     if (summaryKind === "reduction") {
       const byScopeRed =
-        filteredLatest.reductionSummary?.byScope || null;
+        latest.reductionSummary?.byScope || null;
 
       let { s1, s2 } = extractS1S2FromByScope(byScopeRed);
 
       // If summary has project-level breakdown only:
       if ((s1 + s2) === 0) {
-        const byProject = filteredLatest.reductionSummary?.byProject || [];
+        const byProject = latest.reductionSummary?.byProject || [];
 
         for (const p of byProject) {
           if (p.scope) {
@@ -3370,7 +3335,7 @@ const getLatestScope12Total = async (req, res) => {
         message: "Latest Scope 1 & Scope 2 totals (reductions)",
         data: {
           clientId,
-          latestPeriod: filteredLatest.period || null,
+          latestPeriod: latest.period || null,
           scope1NetReduction: s1,
           scope2NetReduction: s2,
           scope12NetReductionTotal: s1 + s2,
@@ -3495,12 +3460,6 @@ const getTopLowEmissionStats = async (req, res) => {
         success: false,
         message: "No summary found",
       });
-    }
-
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx2 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    if (!_ctx2.isFullAccess) {
-      fullSummary = applyAccessContextToSummary(fullSummary, _ctx2);
     }
 
     const period =
@@ -4088,19 +4047,7 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
         .lean()
     ]);
 
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx3 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    let filteredDataEntries3 = dataEntries;
-    if (!_ctx3.isFullAccess) {
-      const { allowedNodeIds, allowedScopeIdentifiers } = _ctx3;
-      filteredDataEntries3 = dataEntries.filter(e => {
-        const nodeOk  = allowedNodeIds.size === 0 || allowedNodeIds.has(e.nodeId);
-        const scopeOk = allowedScopeIdentifiers.size === 0 || allowedScopeIdentifiers.has(e.scopeIdentifier);
-        return nodeOk && scopeOk;
-      });
-    }
-
-    if (!filteredDataEntries3.length) {
+    if (!dataEntries.length) {
       return res.status(404).json({
         success: false,
         message: "No processed entries for this period"
@@ -4125,12 +4072,9 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
       return value;
     };
 
-    const _rawProcess3 = deepConvert(
+    const processEmissionSummary = deepConvert(
       emissionSummaryDoc?.processEmissionSummary || {}
     );
-    const processEmissionSummary = !_ctx3.isFullAccess
-      ? filterProcessEmissionSummary(_rawProcess3, _ctx3)
-      : _rawProcess3;
 
     // ----------------------------------------------
     // Get active flowchart for node metadata
@@ -4526,29 +4470,6 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     if (sidFilter.length)       findQuery.scopeIdentifier = { $in: sidFilter };
     if (scopeTypeFilter.length) findQuery.scopeType       = { $in: scopeTypeFilter };
 
-    // ── Role-based access filter: constrain DataEntry query ──────────────────
-    const _ctx4 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    if (!_ctx4.isFullAccess) {
-      const { allowedNodeIds, allowedScopeIdentifiers } = _ctx4;
-      if (allowedNodeIds.size > 0) {
-        const allowedArr = [...allowedNodeIds];
-        findQuery.nodeId = findQuery.nodeId
-          ? { $in: (findQuery.nodeId.$in || []).filter(id => allowedNodeIds.has(id)).concat() }
-          : { $in: allowedArr };
-        // If caller filtered by nodeId but intersection is empty, constrain to allowed
-        const intersected = findQuery.nodeId.$in;
-        if (!intersected.length) findQuery.nodeId = { $in: allowedArr };
-      }
-      if (allowedScopeIdentifiers.size > 0) {
-        const allowedArr = [...allowedScopeIdentifiers];
-        findQuery.scopeIdentifier = findQuery.scopeIdentifier
-          ? { $in: (findQuery.scopeIdentifier.$in || []).filter(id => allowedScopeIdentifiers.has(id)) }
-          : { $in: allowedArr };
-        const intersected = findQuery.scopeIdentifier.$in;
-        if (!intersected.length) findQuery.scopeIdentifier = { $in: allowedArr };
-      }
-    }
-
     // ── Parallel fetch: DataEntry + Flowcharts + EmissionSummary ─────────────
     const [entries, orgChart, processChart, emissionSummaryDoc] = await Promise.all([
       DataEntry.find(findQuery).lean(),
@@ -4561,12 +4482,9 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     ]);
 
     // Convert processEmissionSummary Maps → plain objects
-    const _rawProcess4 = deepConvert(
+    const processEmissionSummary = deepConvert(
       emissionSummaryDoc?.processEmissionSummary || {}
     );
-    const processEmissionSummary = !_ctx4.isFullAccess
-      ? filterProcessEmissionSummary(_rawProcess4, _ctx4)
-      : _rawProcess4;
 
     const emptyResponse = {
       success: true,
@@ -4929,7 +4847,6 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
 
 
-
 /**
  * GET /api/summaries/:clientId/reduction/hierarchy
  *
@@ -5044,36 +4961,6 @@ const getReductionSummaryHierarchy = async (req, res) => {
     if (projectIdList.length) entryQuery.projectId = { $in: projectIdList };
 
     // NOTE: we only filter by entry fields here (projectId). Others need Reduction meta.
-
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx5 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    if (!_ctx5.isFullAccess) {
-      const { allowedReductionProjectIds } = _ctx5;
-      if (allowedReductionProjectIds.size === 0) {
-        return res.status(200).json({
-          success: true,
-          message: "No reduction data accessible for your account",
-          data: {
-            clientId,
-            period: { type: periodType, year: y, month: m, day: d, quarter: q, from: start.toDate(), to: end.toDate() },
-            totals: { totalEntries: 0, totalNetReduction: 0 },
-            projectHierarchy: { list: [] },
-            categoryHierarchy: { list: [] },
-            methodologyHierarchy: { list: [] },
-            locationHierarchy: { list: [] },
-            scopeHierarchy: { list: [] },
-          },
-        });
-      }
-      const allowed = [...allowedReductionProjectIds];
-      if (entryQuery.projectId?.$in?.length) {
-        const intersection = entryQuery.projectId.$in.filter(id => allowedReductionProjectIds.has(id));
-        entryQuery.projectId = { $in: intersection.length ? intersection : allowed };
-      } else {
-        entryQuery.projectId = { $in: allowed };
-      }
-    }
-
     const rows = await NetReductionEntry.find(entryQuery).lean();
 
     if (!rows.length) {
@@ -5390,26 +5277,6 @@ const getReductionSummariesByProjects = async (req, res) => {
       return res.status(400).json({ success: false, message: "projectIds is required (comma separated)" });
     }
 
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx6 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    let accessibleList = list;
-    if (!_ctx6.isFullAccess) {
-      const { allowedReductionProjectIds } = _ctx6;
-      if (allowedReductionProjectIds.size === 0) {
-        return res.status(200).json({
-          success: true,
-          data: { clientId, period: null, count: 0, projects: [] },
-        });
-      }
-      accessibleList = list.filter(id => allowedReductionProjectIds.has(id));
-      if (!accessibleList.length) {
-        return res.status(200).json({
-          success: true,
-          data: { clientId, period: null, count: 0, projects: [] },
-        });
-      }
-    }
-
     // build range (see section 3 below for the updated buildDateRange)
     const { from: rangeFrom, to: rangeTo, period } = buildDateRange(periodType, {
       year: Number(year),
@@ -5426,14 +5293,14 @@ const getReductionSummariesByProjects = async (req, res) => {
     // entries
     const entries = await NetReductionEntry.find({
       clientId,
-      projectId: { $in: accessibleList },
+      projectId: { $in: list },
       timestamp: { $gte: rangeFrom, $lte: rangeTo },
     }).lean();
 
     // load project meta
     const projects = await Reduction.find({
       clientId,
-      projectId: { $in: accessibleList },
+      projectId: { $in: list },
       isDeleted: { $ne: true },
     })
       .select("projectId projectName projectActivity category scope location calculationMethodology")
@@ -5450,7 +5317,7 @@ const getReductionSummariesByProjects = async (req, res) => {
     }
 
     // build per-project summaries
-    const data = accessibleList.map((pid) => {
+    const data = list.map((pid) => {
       const meta = metaByProject.get(pid) || {};
       const rows = grouped.get(pid) || [];
 
@@ -5597,28 +5464,9 @@ const compareSummarySelections = async (req, res) => {
     console.log(`Selection A: Found ${summariesA.length} summaries (${startA.format('YYYY-MM-DD')} to ${endA.format('YYYY-MM-DD')})`);
     console.log(`Selection B: Found ${summariesB.length} summaries (${startB.format('YYYY-MM-DD')} to ${endB.format('YYYY-MM-DD')})`);
 
-    // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx7 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    let filteredSummariesA = summariesA;
-    let filteredSummariesB = summariesB;
-    if (!_ctx7.isFullAccess) {
-      filteredSummariesA = summariesA.map(s => applyAccessContextToSummary(s, _ctx7));
-      filteredSummariesB = summariesB.map(s => applyAccessContextToSummary(s, _ctx7));
-      // Clamp nodeIds selection filters to only allowed nodes (belt-and-suspenders)
-      const allowedNodes = [..._ctx7.allowedNodeIds];
-      if (allowedNodes.length) {
-        filtersA.nodeIds = filtersA.nodeIds.length
-          ? filtersA.nodeIds.filter(id => _ctx7.allowedNodeIds.has(id))
-          : allowedNodes;
-        filtersB.nodeIds = filtersB.nodeIds.length
-          ? filtersB.nodeIds.filter(id => _ctx7.allowedNodeIds.has(id))
-          : allowedNodes;
-      }
-    }
-
     // Aggregate each selection
-    const outA = aggregateSummaries(filteredSummariesA, filtersA, stackByA, startA, endA, bucketA);
-    const outB = aggregateSummaries(filteredSummariesB, filtersB, stackByB, startB, endB, bucketB);
+    const outA = aggregateSummaries(summariesA, filtersA, stackByA, startA, endA, bucketA);
+    const outB = aggregateSummaries(summariesB, filtersB, stackByB, startB, endB, bucketB);
 
     // Calculate comparison metrics
     const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);

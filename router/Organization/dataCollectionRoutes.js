@@ -31,6 +31,10 @@ const {
   getDataCompletionStats,
 } = require('../../controllers/DataCollection/dataCompletionController');
 
+const {
+  attachDataEntryAccessContext,
+} = require('../../utils/Permissions/dataEntryPermission');
+
 const uploadCsv = require('../../utils/uploads/organisation/csv/uploadCsvMulter');
 
 
@@ -143,10 +147,14 @@ router.delete('/data-entries/:dataId', deleteManualData);
  * GET /api/data-collection/clients/:clientId/data-entries
  * GET /api/data-collection/clients/:clientId/nodes/:nodeId/data-entries
  * GET /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries
+ *
+ * attachDataEntryAccessContext builds the role-based access context ONCE
+ * and attaches it to req so that buildDataEntryFilters can apply it without
+ * any additional DB queries inside the controller.
  */
-router.get('/clients/:clientId/data-entries', getDataEntries);
-router.get('/clients/:clientId/nodes/:nodeId/data-entries', getDataEntries);
-router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries', getDataEntries);
+router.get('/clients/:clientId/data-entries', attachDataEntryAccessContext, getDataEntries);
+router.get('/clients/:clientId/nodes/:nodeId/data-entries', attachDataEntryAccessContext, getDataEntries);
+router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries', attachDataEntryAccessContext, getDataEntries);
 
 // ============== Configuration Routes ==============
 
@@ -186,6 +194,7 @@ router.get('/clients/:clientId/collection-status', getCollectionStatus);
 router.get(
   '/clients/:clientId/data-completion',
   auth,
+  attachDataEntryAccessContext,
   getDataCompletionStats
 );
 
@@ -302,7 +311,8 @@ router.patch(
  */
 router.get(
   '/clients/:clientId/input-type-stats',
-  auth,  // Authentication required
+  auth,
+  attachDataEntryAccessContext,
   getInputTypeStatistics
 );
 
@@ -324,6 +334,7 @@ router.get(
 router.get(
   '/clients/:clientId/nodes/:nodeId/input-type-stats',
   auth,
+  attachDataEntryAccessContext,
   getInputTypeStatistics
 );
 
@@ -346,6 +357,7 @@ router.get(
 router.get(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type-stats',
   auth,
+  attachDataEntryAccessContext,
   getInputTypeStatistics
 );
 
@@ -371,7 +383,7 @@ router.get(
  * - sortBy (string): Sort field (default: timestamp)
  * - sortOrder (string): asc|desc (default: desc)
  */
-router.get('/entries/minimal', auth, getDataValuesAndCumulative);
+router.get('/entries/minimal', auth, attachDataEntryAccessContext, getDataValuesAndCumulative);
 
 // /**
 //  * @route   GET /api/v1/data/entries/minimal/:dataId
@@ -414,7 +426,7 @@ router.get('/entries/minimal', auth, getDataValuesAndCumulative);
  * };
  * ```
  */
-router.get('/entries/stream', auth, streamDataValuesAndCumulative);
+router.get('/entries/stream', auth, attachDataEntryAccessContext, streamDataValuesAndCumulative);
 
 
 

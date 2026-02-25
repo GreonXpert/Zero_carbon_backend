@@ -274,102 +274,238 @@ async function checkDataFrequencyAndNotifyAllClients(now = new Date()) {
  * Pure function: calculate data completion stats for a client.
  * Used by HTTP API and Socket.IO.
  */
-async function calculateDataCompletionStatsForClient(clientId, now = new Date()) {
-  const client = await Client.findOne({ clientId }).select('clientId clientName').lean();
-  if (!client) {
-    const error = new Error('Client not found');
-    error.statusCode = 404;
-    throw error;
-  }
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  const scopes = await getAllScopesWithFrequencyForClient(clientId);
+const toStr = (v) => {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (v._id != null) return String(v._id);
+  if (v.id  != null) return String(v.id);
+  return typeof v.toString === 'function' ? v.toString() : '';
+};
 
-  const stats = {
-    clientId,
-    clientName: client.clientName,
-    generatedAt: now,
-    overall: {
-      expected: 0,
-      completed: 0,
-      completionPercent: 0,
-    },
-    byAssessmentLevel: {
-      organization: { expected: 0, completed: 0, completionPercent: 0 },
-      process: { expected: 0, completed: 0, completionPercent: 0 },
-    },
-    byInputType: {
-      manual: { expected: 0, completed: 0, completionPercent: 0 },
-      API: { expected: 0, completed: 0, completionPercent: 0 },
-      IOT: { expected: 0, completed: 0, completionPercent: 0 },
-    },
+/**
+ * Derive month + year from a JS Date (1-indexed month).
+ */
+function getPeriodFromDate(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  return {
+    month: d.getMonth() + 1, // 1-12
+    year:  d.getFullYear(),
   };
-
-  for (const scopeCtx of scopes) {
-    const { node, scope, type: assessmentLevel } = scopeCtx;
-    const collectionFrequency = scope.collectionFrequency || 'monthly';
-
-    // Normalise inputType to our keys
-    const rawInputType = scope.inputType || 'manual';
-    let inputType;
-    if (rawInputType.toLowerCase() === 'manual') inputType = 'manual';
-    else if (rawInputType.toLowerCase() === 'api') inputType = 'API';
-    else if (rawInputType.toLowerCase() === 'iot') inputType = 'IOT';
-    else inputType = rawInputType;
-
-    const { from, to } = getCurrentWindowForFrequency(collectionFrequency, now);
-
-    // Expected one update per period
-    stats.overall.expected += 1;
-    if (stats.byAssessmentLevel[assessmentLevel]) {
-      stats.byAssessmentLevel[assessmentLevel].expected += 1;
-    }
-
-    if (!stats.byInputType[inputType]) {
-      stats.byInputType[inputType] = { expected: 0, completed: 0, completionPercent: 0 };
-    }
-    stats.byInputType[inputType].expected += 1;
-
-    const lastEntry = await DataEntry.findOne({
-      clientId,
-      nodeId: node.id,
-      scopeIdentifier: scope.scopeIdentifier,
-      timestamp: { $gte: from, $lte: to },
-    })
-      .sort({ timestamp: -1 })
-      .lean();
-
-    const hasDataThisPeriod = !!lastEntry;
-
-    if (hasDataThisPeriod) {
-      stats.overall.completed += 1;
-      if (stats.byAssessmentLevel[assessmentLevel]) {
-        stats.byAssessmentLevel[assessmentLevel].completed += 1;
-      }
-      stats.byInputType[inputType].completed += 1;
-    }
-  }
-
-  const safePercent = (completed, expected) =>
-    expected > 0 ? Math.round((completed / expected) * 100) : 0;
-
-  stats.overall.completionPercent = safePercent(
-    stats.overall.completed,
-    stats.overall.expected,
-  );
-
-  for (const level of ['organization', 'process']) {
-    const block = stats.byAssessmentLevel[level];
-    block.completionPercent = safePercent(block.completed, block.expected);
-  }
-
-  for (const key of Object.keys(stats.byInputType)) {
-    const block = stats.byInputType[key];
-    block.completionPercent = safePercent(block.completed, block.expected);
-  }
-
-  return stats;
 }
 
+// ─── Core computation ─────────────────────────────────────────────────────────
+
+/**
+ * calculateDataCompletionStatsForClient
+ *
+ * Returns completion statistics for a client's flowchart scopes.
+ * If `options.allowedNodeIds` or `options.allowedScopeIdentifiers` is provided,
+ * only the matching scopes are included — the DB aggregation is scoped at
+ * query time for performance (no post-filter).
+ *
+ * @param {string} clientId
+ * @param {Date}   referenceDate   - determines the current period (month/year)
+ * @param {object} [options]
+ * @param {Set<string>} [options.allowedNodeIds]          - restrict to these nodeIds   (employee_head)
+ * @param {Set<string>} [options.allowedScopeIdentifiers] - restrict to these scopes   (employee)
+ *
+ * @returns {object} See "Return shape" section at bottom of file.
+ */
+async function calculateDataCompletionStatsForClient(clientId, referenceDate, options = {}) {
+  const { allowedNodeIds, allowedScopeIdentifiers } = options;
+  const hasNodeFilter  = allowedNodeIds          instanceof Set && allowedNodeIds.size  > 0;
+  const hasScopeFilter = allowedScopeIdentifiers instanceof Set && allowedScopeIdentifiers.size > 0;
+
+  // ── 1. Fetch the active flowchart ──────────────────────────────────────────
+  const flowchart = await Flowchart.findOne({ clientId, isActive: true }).lean();
+  if (!flowchart || !Array.isArray(flowchart.nodes)) {
+    return _buildEmptyStats(clientId, referenceDate);
+  }
+
+  // ── 2. Build the definitive list of scopes the user is allowed to see ──────
+  //    Each entry in `scopePlan` represents ONE scope cell in the flowchart.
+  const scopePlan = []; // { nodeId, nodeLabel, department, location, scopeIdentifier, scopeType, inputType, categoryName }
+
+  for (const node of flowchart.nodes) {
+    const details = node.details || {};
+    const nodeId  = node.id;
+
+    // Respect node-level restriction (employee_head)
+    if (hasNodeFilter && !allowedNodeIds.has(nodeId)) continue;
+
+    const scopeDetails = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
+
+    for (const sd of scopeDetails) {
+      if (!sd.scopeIdentifier || sd.isDeleted) continue;
+
+      // Respect scope-level restriction (employee)
+      if (hasScopeFilter && !allowedScopeIdentifiers.has(sd.scopeIdentifier)) continue;
+
+      scopePlan.push({
+        nodeId,
+        nodeLabel:       node.label        || '',
+        department:      details.department || '',
+        location:        details.location   || '',
+        scopeIdentifier: sd.scopeIdentifier,
+        scopeType:       sd.scopeType       || '',
+        inputType:       sd.inputType       || 'manual',
+        categoryName:    sd.categoryName    || '',
+        activity:        sd.activity        || '',
+      });
+    }
+  }
+
+  // No scopes accessible → return empty (fail-closed)
+  if (scopePlan.length === 0) {
+    return _buildEmptyStats(clientId, referenceDate);
+  }
+
+  // ── 3. Single aggregation: which scopes have ≥1 DataEntry this period ──────
+  const { month, year } = getPeriodFromDate(referenceDate);
+
+  // Period boundaries: first millisecond of month → first millisecond of next month
+  const periodStart = new Date(year, month - 1, 1);            // month is 1-indexed
+  const periodEnd   = new Date(year, month,     1);            // exclusive upper bound
+
+  // Only query for the scopeIdentifiers we care about (scoped at DB level)
+  const scopeIdentifiersInPlan = scopePlan.map(s => s.scopeIdentifier);
+
+  // Build optional nodeId constraint for employee_head (tightens the DB scan further)
+  const nodeIdsInPlan = hasNodeFilter
+    ? Array.from(allowedNodeIds)
+    : [...new Set(scopePlan.map(s => s.nodeId))];
+
+  const matchStage = {
+    clientId,
+    nodeId:          { $in: nodeIdsInPlan },
+    scopeIdentifier: { $in: scopeIdentifiersInPlan },
+    isSummary:       false,
+    timestamp:       { $gte: periodStart, $lt: periodEnd },
+  };
+
+  // Aggregate: one document per unique (nodeId, scopeIdentifier) pair that has data
+  const completedAgg = await DataEntry.aggregate([
+    { $match: matchStage },
+    {
+      $group: {
+        _id: {
+          nodeId:          '$nodeId',
+          scopeIdentifier: '$scopeIdentifier',
+        },
+        entryCount:    { $sum: 1 },
+        latestEntry:   { $max: '$timestamp' },
+        inputTypes:    { $addToSet: '$inputType' },
+      },
+    },
+  ]);
+
+  // Build a fast lookup: "nodeId|scopeIdentifier" → aggregation result
+  const completedMap = new Map();
+  for (const row of completedAgg) {
+    const key = `${row._id.nodeId}|${row._id.scopeIdentifier}`;
+    completedMap.set(key, {
+      entryCount:  row.entryCount,
+      latestEntry: row.latestEntry,
+      inputTypes:  row.inputTypes,
+    });
+  }
+
+  // ── 4. Build the flat scope list (Option A shape) ─────────────────────────
+  const scopes = scopePlan.map(s => {
+    const key      = `${s.nodeId}|${s.scopeIdentifier}`;
+    const aggData  = completedMap.get(key) || null;
+    const hasData  = aggData !== null;
+
+    return {
+      nodeId:          s.nodeId,
+      nodeLabel:       s.nodeLabel,
+      department:      s.department,
+      location:        s.location,
+      scopeIdentifier: s.scopeIdentifier,
+      scopeType:       s.scopeType,
+      inputType:       s.inputType,
+      categoryName:    s.categoryName,
+      activity:        s.activity,
+      hasData,
+      entryCount:  hasData ? aggData.entryCount  : 0,
+      latestEntry: hasData ? aggData.latestEntry : null,
+      inputTypes:  hasData ? aggData.inputTypes  : [],
+      status:      hasData ? 'completed' : 'pending',
+    };
+  });
+
+  // ── 5. Compute summary totals ──────────────────────────────────────────────
+  const totalScopes     = scopes.length;
+  const completedScopes = scopes.filter(s => s.hasData).length;
+  const pendingScopes   = totalScopes - completedScopes;
+  const completionPercentage = totalScopes > 0
+    ? parseFloat(((completedScopes / totalScopes) * 100).toFixed(1))
+    : 0;
+
+  // ── 6. Break down by scope type (Scope 1 / 2 / 3) ─────────────────────────
+  const byScopeType = {};
+  for (const s of scopes) {
+    const st = s.scopeType || 'Unknown';
+    if (!byScopeType[st]) {
+      byScopeType[st] = { total: 0, completed: 0, pending: 0, completionPercentage: 0 };
+    }
+    byScopeType[st].total += 1;
+    if (s.hasData) byScopeType[st].completed += 1;
+    else           byScopeType[st].pending   += 1;
+  }
+  for (const st of Object.keys(byScopeType)) {
+    const g = byScopeType[st];
+    g.completionPercentage = g.total > 0
+      ? parseFloat(((g.completed / g.total) * 100).toFixed(1))
+      : 0;
+  }
+
+  // ── 7. Break down by node ──────────────────────────────────────────────────
+  const byNodeMap = new Map();
+  for (const s of scopes) {
+    if (!byNodeMap.has(s.nodeId)) {
+      byNodeMap.set(s.nodeId, {
+        nodeId:    s.nodeId,
+        nodeLabel: s.nodeLabel,
+        department: s.department,
+        location:   s.location,
+        total:     0, completed: 0, pending: 0, completionPercentage: 0,
+      });
+    }
+    const n = byNodeMap.get(s.nodeId);
+    n.total += 1;
+    if (s.hasData) n.completed += 1;
+    else           n.pending   += 1;
+  }
+  for (const n of byNodeMap.values()) {
+    n.completionPercentage = n.total > 0
+      ? parseFloat(((n.completed / n.total) * 100).toFixed(1))
+      : 0;
+  }
+
+  return {
+    clientId,
+    period: {
+      month,
+      year,
+      label: periodStart.toLocaleString('default', { month: 'long' }) + ' ' + year,
+      startDate: periodStart.toISOString(),
+      endDate:   new Date(year, month, 0).toISOString(), // last day of month
+    },
+    summary: {
+      totalScopes,
+      completedScopes,
+      pendingScopes,
+      completionPercentage,
+      isFiltered: hasNodeFilter || hasScopeFilter,   // tells the frontend it's a role-scoped view
+    },
+    byScopeType,
+    byNode: Array.from(byNodeMap.values()),
+    scopes,                  // flat list — Option A shape
+  };
+}
 /**
  * Net Reduction data completion / frequency stats for a client.
  * Uses Reduction.reportingFrequency and NetReductionEntry timestamp window.
@@ -488,16 +624,81 @@ async function getNetReductionCompletionStats(req, res) {
  * === HTTP API ===
  * GET /api/data-collection/clients/:clientId/data-completion
  */
+// ─── HTTP handler ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/data-collection/clients/:clientId/data-completion
+ *
+ * Reads req.dataEntryAccessContext (attached by attachDataEntryAccessContext
+ * middleware) and passes the allowed sets into calculateDataCompletionStatsForClient
+ * so the DB aggregation is scoped at query level — no post-filter required.
+ *
+ * Query params:
+ *   month (1-12)  — defaults to current month
+ *   year  (4-dig) — defaults to current year
+ */
 async function getDataCompletionStats(req, res) {
   try {
     const { clientId } = req.params;
-    const stats = await calculateDataCompletionStatsForClient(clientId, new Date());
+
+    // Build reference date from query params or default to now
+    const now   = new Date();
+    const month = parseInt(req.query.month, 10) || (now.getMonth() + 1);
+    const year  = parseInt(req.query.year,  10) || now.getFullYear();
+    const referenceDate = new Date(year, month - 1, 1);
+
+    // ── Resolve access options from context set by middleware ──────────────
+    const accessCtx = req.dataEntryAccessContext;
+
+    let filterOptions = {};  // empty = full access
+
+    if (accessCtx && !accessCtx.isFullAccess) {
+      const { role, allowedNodeIds, allowedScopeIdentifiers } = accessCtx;
+
+      if (role === 'client_employee_head') {
+        // Fail-closed: employee_head with no assigned nodes → return empty
+        if (!allowedNodeIds || allowedNodeIds.size === 0) {
+          return res.status(200).json({
+            success: true,
+            message: 'Data completion stats fetched successfully',
+            data:    _buildEmptyStats(clientId, referenceDate),
+          });
+        }
+        filterOptions = { allowedNodeIds };
+
+      } else if (role === 'employee') {
+        // Fail-closed: employee with no assigned scopes → return empty
+        if (!allowedScopeIdentifiers || allowedScopeIdentifiers.size === 0) {
+          return res.status(200).json({
+            success: true,
+            message: 'Data completion stats fetched successfully',
+            data:    _buildEmptyStats(clientId, referenceDate),
+          });
+        }
+        filterOptions = { allowedScopeIdentifiers };
+      }
+      // For any other unrecognised restricted role → fail-closed
+      else if (!accessCtx.isFullAccess) {
+        return res.status(200).json({
+          success: true,
+          message: 'Data completion stats fetched successfully',
+          data:    _buildEmptyStats(clientId, referenceDate),
+        });
+      }
+    }
+
+    const stats = await calculateDataCompletionStatsForClient(
+      clientId,
+      referenceDate,
+      filterOptions
+    );
 
     return res.status(200).json({
       success: true,
       message: 'Data completion stats fetched successfully',
       data: stats,
     });
+
   } catch (err) {
     console.error('getDataCompletionStats error:', err);
     const status = err.statusCode || 500;
@@ -507,6 +708,33 @@ async function getDataCompletionStats(req, res) {
       error: err.message,
     });
   }
+}
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+function _buildEmptyStats(clientId, referenceDate) {
+  const { month, year } = getPeriodFromDate(referenceDate);
+  const periodStart = new Date(year, month - 1, 1);
+  return {
+    clientId,
+    period: {
+      month,
+      year,
+      label:     periodStart.toLocaleString('default', { month: 'long' }) + ' ' + year,
+      startDate: periodStart.toISOString(),
+      endDate:   new Date(year, month, 0).toISOString(),
+    },
+    summary: {
+      totalScopes:          0,
+      completedScopes:      0,
+      pendingScopes:        0,
+      completionPercentage: 0,
+      isFiltered:           true,
+    },
+    byScopeType: {},
+    byNode:      [],
+    scopes:      [],
+  };
 }
 
 module.exports = {
