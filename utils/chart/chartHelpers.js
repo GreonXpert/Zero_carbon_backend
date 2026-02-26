@@ -90,7 +90,8 @@ const normalizeScopeDetail = (scope) => {
         setupNotes: ''
       }
     },
-    reductionCalculationMode: scope.reductionCalculationMode || 'advanced'
+    reductionCalculationMode: scope.reductionCalculationMode || 'advanced',
+    allocationPct: typeof scope.allocationPct === 'number' ? scope.allocationPct : 100,
   
   };
   // ── Custom values (optional, with alias support) ─────────────────────────────
