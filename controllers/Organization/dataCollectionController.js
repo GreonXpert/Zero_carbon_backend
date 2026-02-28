@@ -33,7 +33,14 @@ const {
 const { uploadOrganisationCSVCreate } = require('../../utils/uploads/organisation/csv/create');
 const { resolveApiKeyRequestTargets } = require("../../utils/ApiKey/apiKeyNotifications");
 
-
+const {
+  logDataEntryCreate,
+  logDataEntryUpdate,
+  logDataEntryDelete,
+  logDataEntryCalculate,
+  logDataEntryImport,
+  logDataEntryInputTypeSwitch,
+} = require('../../services/audit/dataEntryAuditLog');
 
 
 /**
@@ -962,6 +969,7 @@ const saveAPIData = async (req, res) => {
     });
 
     await entry.save();
+    
 
     // Trigger emission calculation
     await triggerEmissionCalculation(entry);
@@ -1750,6 +1758,9 @@ const saveManualData = async (req, res) => {
           // ✅ NEW: include dataEntryCumulative for each saved entry
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
+
+        
+
       } catch (err) {
         errors.push({ index: i, error: err.message });
       }
@@ -1964,12 +1975,26 @@ const uploadCSVData = async (req, res) => {
           // ✅ NEW: include dataEntryCumulative per saved row
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
+
+       
+
       } catch (err) {
         errors.push({
           row: i + 1,
           error: err.message
         });
       }
+    }
+
+    // ✅ Audit log — bulk import summary (after all rows processed)
+    if (saved.length > 0) {
+      await logDataEntryImport(req, clientId, saved.length, {
+        fileName,
+        failedCount: errors.length,
+        s3Key: s3Upload?.key ?? null,
+        nodeId,
+        scopeIdentifier,
+      });
     }
 
     /* -------------------------------------------------- */
@@ -2896,6 +2921,18 @@ const editManualData = async (req, res) => {
 
     await entry.save();
 
+    // ✅ Audit log — build a meaningful hint from what actually changed
+    const editedFields = [];
+    if (rawDateInput || rawTimeInput) editedFields.push('date/time');
+    if (dataValues)                   editedFields.push('dataValues');
+    const editHint = [
+      `Manual edit on scope ${entry.scopeIdentifier}`,
+      editedFields.length ? `(changed: ${editedFields.join(', ')})` : '',
+      reason                          ? `— reason: ${reason}`        : '',
+    ].filter(Boolean).join(' ');
+
+    await logDataEntryUpdate(req, entry, editHint);
+
     // ✅ Recalculate summaries / emissions + ALSO rebuild cumulative chain (including dataEntryCumulative)
     await handleDataChange(entry);
 
@@ -2991,6 +3028,9 @@ const deleteManualData = async (req, res) => {
 
     // Keep references for re-calculation and emit before delete
     const { clientId, nodeId, scopeIdentifier, timestamp, _id } = entry;
+
+    // ✅ Audit log — capture before the document is removed
+    await logDataEntryDelete(req, entry, 'hard');
 
     await entry.deleteOne();
 
@@ -3106,6 +3146,14 @@ const switchInputType = async (req, res) => {
         connectionDetails: {},
         userId: actorId,
       });
+
+      // ✅ Audit log — scope-level switch (no specific DataEntry)
+      await logDataEntryInputTypeSwitch(
+        req,
+        { clientId, nodeId, scopeIdentifier },   // minimal stand-in for entry
+        previousType ?? 'unknown',
+        'manual'
+      );
 
       return res.json({ success: true, inputType: "manual" });
     }
@@ -3273,6 +3321,14 @@ if (targetUsers.length > 0) {
       },
       userId: actorId,
     });
+
+    // ✅ Audit log — scope-level switch to API / IOT
+    await logDataEntryInputTypeSwitch(
+      req,
+      { clientId, nodeId, scopeIdentifier },   // minimal stand-in for entry
+      previousType ?? 'unknown',
+      inputType
+    );
 
     return res.json({
       success: true,

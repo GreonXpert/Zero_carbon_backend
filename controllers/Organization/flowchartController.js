@@ -23,6 +23,16 @@ const {
 // Add this import at the top of flowchartController.js:
 const { autoUpdateFlowchartStatus } = require('../../utils/Workflow/workflow');
 const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode, canAccessModule, getNormalizedLevels} = require('../../utils/Permissions/permissions')
+
+// Audit log helpers for the organization_flowchart module
+const {
+  
+  logFlowchartUpdate,
+  logFlowchartDelete,
+  logFlowchartNodeAssign,
+  logFlowchartScopeAssign,
+  logFlowchartScopeUnassign,
+} = require('../../services/audit/flowchartAuditLog');
  
 // ============================================================================
 // PERMISSION HELPERS
@@ -368,6 +378,7 @@ const saveFlowchart = async (req, res) => {
       flowchart.lastModifiedBy = userId;
       flowchart.version       += 1;
       await flowchart.save();
+      await logFlowchartUpdate(req, flowchart, `Flowchart updated — client: ${clientId}, nodes: ${normalizedNodes.length}, version: ${flowchart.version}`);
     } else {
       // CREATE new flowchart
       isNew = true;
@@ -722,6 +733,7 @@ const deleteFlowchart = async (req, res) => {
     flowchart.isActive       = false;
     flowchart.lastModifiedBy = req.user._id;
     await flowchart.save();
+    await logFlowchartDelete(req, flowchart, 'soft');
 
     // Notify all client_admins for this client
     const clientAdmins = await User.find({ 
@@ -790,6 +802,7 @@ const deleteFlowchartNode = async (req, res) => {
     flowchart.lastModifiedBy = req.user.id;
     flowchart.version += 1;
     await flowchart.save();
+    await logFlowchartUpdate(req, flowchart, `Node deleted — nodeId: ${nodeId}, client: ${clientId}, remaining nodes: ${flowchart.nodes.length}`);
 
     res.status(200).json({ message: 'Node deleted successfully' });
   } catch (error) {
@@ -842,6 +855,7 @@ const restoreFlowchart = async (req, res) => {
     flowchart.lastModifiedBy = req.user.id;
     flowchart.version       += 1;
     await flowchart.save();
+    await logFlowchartUpdate(req, flowchart, `Flowchart restored from soft-delete — client: ${clientId}, version: ${flowchart.version}`);
 
     res.status(200).json({ 
       message: 'Flowchart restored successfully' 
@@ -1442,6 +1456,7 @@ const updateFlowchartNode = async (req, res) => {
     flowchart.version = (flowchart.version || 0) + 1;
 
     await flowchart.save();
+    await logFlowchartUpdate(req, flowchart, `Node updated — nodeId: ${nodeId}, client: ${clientId}, version: ${flowchart.version}`);
 
     return res.status(200).json({
       message: 'Node updated successfully',
@@ -1502,6 +1517,7 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
       node.details.employeeHeadId = employeeHeadId;
 
       await flowchart.save();
+      await logFlowchartNodeAssign(req, flowchart, nodeId, employeeHeadId);
 
       return res.status(200).json({
         message: 'Employee head assigned to node successfully.',
@@ -1518,6 +1534,7 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
     node.details.employeeHeadId = null;
 
     await flowchart.save();
+    await logFlowchartUpdate(req, flowchart, `Employee head unassigned from node — nodeId: ${nodeId}, client: ${clientId}`);
 
     return res.status(200).json({
       message: 'Employee head unassigned from node successfully.',
@@ -1578,6 +1595,11 @@ const hardDeleteScopeDetail = async (req, res) => {
     flowchart.version = (flowchart.version || 0) + 1;
     flowchart.lastModifiedBy = req.user._id || req.user.id;
     await flowchart.save();
+    await logFlowchartUpdate(
+      req,
+      flowchart,
+      `Scope detail permanently deleted — nodeId: ${nodeId}, scope: ${removed?.scopeIdentifier || scopeIdentifier}, client: ${clientId}`
+    );
 
     return res.status(200).json({
       message: 'Scope detail permanently deleted',

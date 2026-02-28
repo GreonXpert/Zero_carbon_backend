@@ -1,4 +1,4 @@
-  // controllers/netReductionController.js
+// controllers/netReductionController.js
   const mongoose = require("mongoose");
   const moment = require('moment');
   const csvtojson = require('csvtojson');
@@ -14,6 +14,16 @@
 
 // controllers/Reduction/netReductionController.js
 const { recomputeClientNetReductionSummary } = require('./netReductionSummaryController');
+
+// Audit log helpers for net_reduction module
+const {
+  logNetReductionCreate,
+  logNetReductionUpdate,
+  logNetReductionDelete,
+  logNetReductionHardDelete,
+  logNetReductionCalculate,
+  logNetReductionInputTypeSwitch,
+} = require('../../services/audit/netReductionAuditLog');
 
 const fs = require('fs');
 const { uploadReductionCSVCreate } = require('../../utils/uploads/Reduction/csv/create');
@@ -930,6 +940,9 @@ exports.saveM3NetReduction = async (req, res) => {
       netReduction: NwU_now
     });
 
+    // Audit log — M3 manual net reduction entry created
+    await logNetReductionCreate(req, entry);
+
     // 10. Recompute project-level cumulative stats (uses netReduction series)
     await recomputeProjectCumulative(clientId, projectId, "methodology3");
     try {
@@ -1146,6 +1159,9 @@ exports.saveManualNetReduction = async (req, res) => {
         .select("-__v")
         .lean();
 
+      // Audit log — M1 manual batch created (non-blocking)
+      Promise.all(fresh.map(e => logNetReductionCreate(req, e))).catch(() => {});
+
       return res.status(201).json({
         success: true,
         message:
@@ -1232,6 +1248,9 @@ exports.saveManualNetReduction = async (req, res) => {
     })
       .select("-__v")
       .lean();
+
+    // Audit log — M2 manual batch created (non-blocking)
+    Promise.all(fresh.map(e => logNetReductionCreate(req, e))).catch(() => {});
 
     return res.status(201).json({
       success: true,
@@ -1329,6 +1348,9 @@ exports.saveApiNetReduction = async (req, res) => {
         netReduction: net
       });
 
+      // Audit log — API M1 net reduction entry created
+      await logNetReductionCreate(req, entry);
+
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
   timestamps: saved.map(e => e.timestamp).filter(Boolean),
@@ -1388,6 +1410,9 @@ exports.saveApiNetReduction = async (req, res) => {
           time: when.time,
           timestamp: when.timestamp
         });
+
+        // Audit log — API M2 net reduction entry created
+        await logNetReductionCreate(req, entry);
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
         try { await recomputeClientNetReductionSummary(clientId, {
@@ -1467,6 +1492,9 @@ exports.saveApiNetReduction = async (req, res) => {
         m3: result,
         netReduction: result.netWithUncertainty
       });
+
+      // Audit log — API M3 net reduction entry created
+      await logNetReductionCreate(req, entry);
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
@@ -1583,6 +1611,9 @@ exports.saveIotNetReduction = async (req, res) => {
         netReduction: net
       });
 
+      // Audit log — IoT M1 net reduction entry created
+      await logNetReductionCreate(req, entry);
+
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
   timestamps: saved.map(e => e.timestamp).filter(Boolean),
@@ -1644,6 +1675,9 @@ exports.saveIotNetReduction = async (req, res) => {
           time: when.time,
           timestamp: when.timestamp
         });
+
+        // Audit log — IoT M2 net reduction entry created
+        await logNetReductionCreate(req, entry);
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
         try { await recomputeClientNetReductionSummary(clientId, {
@@ -1722,6 +1756,9 @@ exports.saveIotNetReduction = async (req, res) => {
         m3: result,
         netReduction: result.netWithUncertainty
       });
+
+      // Audit log — IoT M3 net reduction entry created
+      await logNetReductionCreate(req, entry);
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
@@ -2004,6 +2041,9 @@ exports.uploadCsvNetReduction = async (req, res) => {
   timestamps: saved.map(e => e.timestamp).filter(Boolean),
 });
 
+    // Audit log — CSV batch created (non-blocking)
+    Promise.all(saved.map(e => logNetReductionCreate(req, e))).catch(() => {});
+
     if (global.broadcastNetReductionCompletionUpdate) {
       global.broadcastNetReductionCompletionUpdate(clientId);
     }
@@ -2131,6 +2171,10 @@ exports.uploadCsvNetReduction = async (req, res) => {
         time: when.time,
         timestamp: when.timestamp
       });
+
+      // Audit log — M2 net reduction entry created
+      await logNetReductionCreate(req, entry);
+
       try { await recomputeClientNetReductionSummary(clientId, {
   timestamps: saved.map(e => e.timestamp).filter(Boolean),
 }); } catch (e) { console.warn('summary recompute failed:', e.message); }
@@ -2753,6 +2797,13 @@ exports.updateManualNetReductionEntry = async (req, res) => {
 
     await entry.save({ validateBeforeSave: false });
 
+    // Audit log — M3 manual net reduction entry updated
+    await logNetReductionUpdate(
+      req,
+      entry,
+      `M3 net reduction entry updated — project: ${projectId}, entryId: ${entryId}`
+    );
+
     // Recompute full series (cumulativeNetReduction / high / low)
     const series = await recomputeProjectCumulative(
       clientId,
@@ -2844,6 +2895,9 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
 
     // ✅ Delete
     await NetReductionEntry.deleteOne({ _id: entry._id });
+
+    // Audit log — net reduction entry permanently deleted
+    await logNetReductionHardDelete(req, entry);
 
     // ✅ Recompute cumulative/high/low series for this project+methodology
     let series = null;
@@ -3065,6 +3119,9 @@ exports.switchNetReductionInputType = async (req, res) => {
 
       await project.save();
 
+      // Audit log — inputType switched to manual
+      await logNetReductionInputTypeSwitch(req, project, previousInputType, 'manual');
+
       return res.status(200).json({
         success: true,
         message: "Switched to Manual input (apiEndpoint saved)",
@@ -3080,6 +3137,9 @@ exports.switchNetReductionInputType = async (req, res) => {
       project.reductionDataEntry.iotStatus = false;
 
       await project.save();
+
+      // Audit log — inputType switched to CSV (manual)
+      await logNetReductionInputTypeSwitch(req, project, previousInputType, 'manual');
 
       return res.status(200).json({
         success: true,
@@ -3123,6 +3183,13 @@ exports.switchNetReductionInputType = async (req, res) => {
 
       project.markModified("reductionDataEntry");
       await project.save();
+
+      // Audit log — API key request created, inputType not yet switched
+      await logNetReductionUpdate(
+        req,
+        project,
+        `API key request created — project: ${projectId}, requested inputType: ${inputType}, keyType: ${keyType}`
+      );
 
       // ✅ notify ONLY createdBy consultant_admin + assigned consultant
       const consultantTargets = await resolveClientConsultantTargets(clientId);
@@ -3188,6 +3255,9 @@ exports.switchNetReductionInputType = async (req, res) => {
 
     project.markModified("reductionDataEntry");
     await project.save();
+
+    // Audit log — inputType switched (key existed, endpoint configured)
+    await logNetReductionInputTypeSwitch(req, project, previousInputType, inputType.toLowerCase());
 
     return res.status(200).json({
       success: true,
@@ -3317,6 +3387,13 @@ exports.disconnectNetReductionSource = async (req, res) => {
     reduction.markModified('reductionDataEntry');
     await reduction.save();
 
+    // Audit log — external source disconnected
+    await logNetReductionUpdate(
+      req,
+      reduction,
+      `Net reduction source disconnected — project: ${projectId}, inputType: ${r.inputType}`
+    );
+
     return res.status(200).json({
       message: 'Net reduction source disconnected successfully',
       clientId,
@@ -3380,6 +3457,13 @@ exports.reconnectNetReductionSource = async (req, res) => {
     reduction.reductionDataEntry = r;
     reduction.markModified('reductionDataEntry');
     await reduction.save();
+
+    // Audit log — external source reconnected
+    await logNetReductionUpdate(
+      req,
+      reduction,
+      `Net reduction source reconnected — project: ${projectId}, inputType: ${r.inputType}`
+    );
 
     return res.status(200).json({
       message: 'Net reduction source reconnected successfully',

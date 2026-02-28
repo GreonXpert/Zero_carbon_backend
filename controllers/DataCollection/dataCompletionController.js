@@ -14,6 +14,8 @@ const {
   isDataMissingForCurrentWindow,
 } = require('../../utils/DataCollection/dataFrequencyHelper');
 
+
+
 // =================== Socket.IO ===================
 
 let io = null;
@@ -313,7 +315,7 @@ function getPeriodFromDate(date) {
  *
  * @returns {object} See "Return shape" section at bottom of file.
  */
-async function calculateDataCompletionStatsForClient(clientId, referenceDate, options = {}) {
+async function calculateDataCompletionStatsForClient(clientId, referenceDate = new Date(), options = {}) {
   const { allowedNodeIds, allowedScopeIdentifiers } = options;
   const hasNodeFilter  = allowedNodeIds          instanceof Set && allowedNodeIds.size  > 0;
   const hasScopeFilter = allowedScopeIdentifiers instanceof Set && allowedScopeIdentifiers.size > 0;

@@ -27,6 +27,13 @@
 const Flowchart        = require('../../models/Organization/Flowchart');
 const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
 
+// 🆕 Import accessControlPermission helpers
+const {
+  hasModuleAccess,
+  isChecklistRole,
+} = require('./accessControlPermission');
+
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -40,15 +47,25 @@ const toStr = (v) => {
   return typeof v.toString === 'function' ? v.toString() : '';
 };
 
-// ─── Roles that see ALL data for the client (no row-level filtering) ─────────
+// ── Roles that see ALL data for the client (no row-level filtering) ───────────
+// 🆕 'auditor' and 'viewer' have been REMOVED — they are now subject to
+//    their accessControls checklist via the isChecklistRole branch below.
 const FULL_ACCESS_ROLES = new Set([
   'super_admin',
   'consultant_admin',
   'consultant',
   'client_admin',
-  'auditor',
-  'viewer',
 ]);
+
+// ── Internal helper: empty context (fail-closed) ──────────────────────────────
+const _emptyCtx = (role) => ({
+  isFullAccess: false,
+  role,
+  userId: '',
+  allowedNodeIds: new Set(),
+  allowedScopeIdentifiers: new Set(),
+});
+
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
 
@@ -79,14 +96,25 @@ const getDataEntryAccessContext = async (user, clientId) => {
 
   const { userType } = user;
 
+  // 1) Full-access roles (admin, consultant) — no checklist
   if (FULL_ACCESS_ROLES.has(userType)) {
     return { isFullAccess: true };
   }
 
-  const userId = toStr(user._id ?? user.id ?? user);
+  // 2) 🆕 Checklist roles: viewer and auditor
+  if (isChecklistRole(userType)) {
+    if (!hasModuleAccess(user, 'data_entry')) {
+      // Fail-closed: data_entry module not enabled
+      return _emptyCtx(userType);
+    }
+    // Module enabled → all rows accessible (section filtering done in controller)
+    return { isFullAccess: true };
+  }
+
+  // 3) Restricted roles: employee_head and employee
+  const userId = toStr(user._id ?? user.id ?? user.userId ?? '');
 
   if (!userId) {
-    console.warn('[dataEntryPermission] Could not extract userId from user object');
     return _emptyCtx(userType);
   }
 
@@ -94,33 +122,24 @@ const getDataEntryAccessContext = async (user, clientId) => {
   const allowedScopeIdentifiers = new Set();
 
   try {
-    // Single parallel fetch for both flowchart types — avoid N+1
-    const [orgChart, processChart] = await Promise.all([
+    const [orgChart] = await Promise.all([
       Flowchart.findOne({ clientId, isActive: true }).lean(),
-      ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean(),
     ]);
 
-    const allCharts = [orgChart, processChart].filter(Boolean);
-
-    for (const chart of allCharts) {
-      if (!Array.isArray(chart.nodes)) continue;
-
-      for (const node of chart.nodes) {
+    if (orgChart && Array.isArray(orgChart.nodes)) {
+      for (const node of orgChart.nodes) {
         const details      = node.details || {};
         const empHeadId    = toStr(details.employeeHeadId);
-        const scopeDetails = Array.isArray(details.scopeDetails) ? details.scopeDetails : [];
+        const scopeDetails = details.scopeDetails || [];
 
         if (userType === 'client_employee_head') {
-          // employee_head owns the ENTIRE node
           if (empHeadId && empHeadId === userId) {
             allowedNodeIds.add(node.id);
           }
-
         } else if (userType === 'employee') {
-          // employee owns specific scopeDetails entries
           for (const sd of scopeDetails) {
             if (!sd.scopeIdentifier || sd.isDeleted) continue;
-            const assigned  = Array.isArray(sd.assignedEmployees) ? sd.assignedEmployees : [];
+            const assigned = Array.isArray(sd.assignedEmployees) ? sd.assignedEmployees : [];
             const isAssigned = assigned.some(emp => toStr(emp) === userId);
             if (isAssigned) {
               allowedScopeIdentifiers.add(sd.scopeIdentifier);
@@ -129,21 +148,14 @@ const getDataEntryAccessContext = async (user, clientId) => {
         }
       }
     }
-
   } catch (err) {
     console.error('[dataEntryPermission] Error building access context:', err.message);
-    // Fail-closed: if flowchart lookup fails, return empty (no data)
-    return _emptyCtx(userType, userId);
+    return _emptyCtx(userType); // fail-closed on error
   }
 
-  console.log(
-    `[dataEntryPermission] userId=${userId} role=${userType} ` +
-    `allowedNodes=${allowedNodeIds.size} allowedScopes=${allowedScopeIdentifiers.size}`
-  );
-
   return {
-    isFullAccess:            false,
-    role:                    userType,
+    isFullAccess: false,
+    role: userType,
     userId,
     allowedNodeIds,
     allowedScopeIdentifiers,
@@ -170,7 +182,6 @@ const buildDataEntryMongoConstraint = (ctx) => {
 
   if (ctx.role === 'client_employee_head') {
     if (ctx.allowedNodeIds.size === 0) {
-      // Fail-closed: employee_head with no assigned nodes → return nothing
       return { _impossible: true };
     }
     return { nodeId: { $in: Array.from(ctx.allowedNodeIds) } };
@@ -178,15 +189,20 @@ const buildDataEntryMongoConstraint = (ctx) => {
 
   if (ctx.role === 'employee') {
     if (ctx.allowedScopeIdentifiers.size === 0) {
-      // Fail-closed: employee with no assigned scopes → return nothing
       return { _impossible: true };
     }
     return { scopeIdentifier: { $in: Array.from(ctx.allowedScopeIdentifiers) } };
   }
 
-  // Unknown restricted role → fail-closed
+  // Checklist roles that failed module check (_emptyCtx)
+  // role will be 'viewer' or 'auditor' with empty sets → fail-closed
+  if (ctx.role === 'viewer' || ctx.role === 'auditor') {
+    return { _impossible: true };
+  }
+
   return { _impossible: true };
 };
+
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -211,18 +227,25 @@ const attachDataEntryAccessContext = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Authentication required.' });
     }
 
-    // Resolve clientId from params or query
     const clientId = req.params?.clientId || req.query?.clientId;
 
     if (!clientId) {
-      // Some endpoints build clientId from user.clientId — allow to pass through
-      // The controller's buildDataEntryFilters will handle this case.
       req.dataEntryAccessContext = { isFullAccess: FULL_ACCESS_ROLES.has(user.userType) };
+
+      // 🆕 For checklist roles without clientId in params: resolve from user.clientId
+      if (isChecklistRole(user.userType)) {
+        req.dataEntryAccessContext = {
+          isFullAccess: hasModuleAccess(user, 'data_entry'),
+        };
+      }
+
       return next();
     }
 
-    // Client-scoped roles: enforce that clientId matches their own
-    const clientScopedRoles = new Set(['client_admin', 'client_employee_head', 'employee', 'auditor', 'viewer']);
+    const clientScopedRoles = new Set([
+      'client_admin', 'client_employee_head', 'employee', 'auditor', 'viewer',
+    ]);
+
     if (clientScopedRoles.has(user.userType)) {
       if (user.clientId && user.clientId !== clientId) {
         return res.status(403).json({
@@ -232,30 +255,29 @@ const attachDataEntryAccessContext = async (req, res, next) => {
       }
     }
 
-    const ctx = await getDataEntryAccessContext(user, clientId);
-    req.dataEntryAccessContext = ctx;
-
+    req.dataEntryAccessContext = await getDataEntryAccessContext(user, clientId);
     return next();
-  } catch (err) {
-    console.error('[dataEntryPermission] attachDataEntryAccessContext error:', err.message);
+
+  } catch (error) {
+    console.error('[attachDataEntryAccessContext]', error);
     return res.status(500).json({
       success: false,
-      message: 'Internal server error during permission check.',
+      message: 'Internal error building data entry access context.',
     });
   }
 };
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
+// // ─── Private helpers ──────────────────────────────────────────────────────────
 
-function _emptyCtx(role, userId = '') {
-  return {
-    isFullAccess:            false,
-    role,
-    userId,
-    allowedNodeIds:          new Set(),
-    allowedScopeIdentifiers: new Set(),
-  };
-}
+// function _emptyCtx(role, userId = '') {
+//   return {
+//     isFullAccess:            false,
+//     role,
+//     userId,
+//     allowedNodeIds:          new Set(),
+//     allowedScopeIdentifiers: new Set(),
+//   };
+// }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 

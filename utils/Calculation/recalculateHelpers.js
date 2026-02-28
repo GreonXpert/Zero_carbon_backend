@@ -134,7 +134,7 @@ async function recalculateNetReductionEntriesAfter(insertedEntry) {
  */
 async function recalculateDataEntriesAfter(insertedEntry) {
   try {
-    const DataEntry = require('../models/DataEntry');
+    const DataEntry = require('../../models/Organization/DataEntry');
     
     console.log(`🔄 Recalculating data entries after timestamp: ${insertedEntry.timestamp}`);
     

@@ -42,6 +42,8 @@ const {
   deleteSupportUser,
 } = require("../controllers/userController");
 
+ const { PRESET_TEMPLATES } = require('../utils/Permissions/accessControlPermission');
+
 const User = require("../models/User");
 
 // ===================================================================
@@ -638,5 +640,18 @@ router.get(
     }
   }
 );
+
+
+router.get('/access-control-presets', auth, checkRole('client_admin'), (req, res) => {
+     return res.status(200).json({
+       success: true,
+       message: 'Access control preset templates',
+       presets: PRESET_TEMPLATES,
+       modules: Object.fromEntries(
+         Array.from(VALID_MODULES).map(mod => [mod, VALID_SECTIONS[mod]])
+       ),
+     });
+   });
+
 
 module.exports = router;

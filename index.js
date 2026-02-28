@@ -69,6 +69,11 @@ const ticketRoutes = require('./router/Ticket/ticketRoutes');
 // Ticket controller import
 const ticketController = require('./controllers/Ticket/ticketController');
 
+// Audit log routes
+const auditLogRoutes     = require('./router/AuditLog/auditLogRoutes');
+const auditLogController = require('./controllers/AuditLog/auditLogController');
+const { logLogin }       = require('./services/audit/auditLogService');
+
 // SLA checker import
 const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
 const { setTicketChatSocketIO } = require('./utils/sockets/ticketChatSocket');
@@ -160,6 +165,9 @@ app.use('/api/iot', iotRouter);
 
 app.use('/api', apiKeyRoutes);
 app.use('/api/tickets', ticketRoutes);
+
+// Audit logs
+app.use('/api/audit-logs', auditLogRoutes);
 
 // // In your main app.js or routes/index.js
 // const debugRoutes = require('./router/debug');
@@ -259,6 +267,7 @@ netReductionController.setSocketIO(io);
 sbtiController.setSocketIO(io);
 dataCompletionController.setSocketIO(io);
 ticketController.setSocketIO(io);
+auditLogController.setSocketIO(io);
 
 setTicketChatSocketIO(io);
 
@@ -1471,6 +1480,67 @@ io.on('connection', (socket) => {
     }
     });
 
+        // ========================================================================
+    // 📋 AUDIT LOG SOCKET HANDLERS
+    // ========================================================================
+
+    /**
+     * Client subscribes to real-time audit log stream for a specific client org.
+     * Client emits: 'subscribe-audit-logs'  { clientId? }
+     * Server will emit 'audit:new' on this room when a new log is created.
+    */
+
+    socket.on('subscribe-audit-logs', async (data = {}) => {
+        try {
+            const { clientId } = data;
+            const effectiveClientId = clientId || socket.clientId;
+
+            // Only allow subscription if the user can actually see this client's logs
+            const { getLogAccessQuery } = require('./utils/Permissions/logPermission');
+            const query = await getLogAccessQuery(socket.user);
+            if (!query) {
+                return socket.emit('audit-error', { message: 'Access denied to audit logs.' });
+            }
+
+            if (socket.user.userType === 'super_admin') {
+                // Super admin already in 'userType_super_admin' room from connection
+                socket.emit('audit-subscribed', { scope: 'global' });
+            } else if (['consultant_admin', 'consultant'].includes(socket.user.userType)) {
+                // Join room keyed by this admin's id
+                socket.join(`consultant_admin_${socket.userId}`);
+                socket.emit('audit-subscribed', { scope: 'consultant', userId: socket.userId });
+            } else if (effectiveClientId) {
+                socket.join(`audit_client_${effectiveClientId}`);
+                socket.emit('audit-subscribed', {
+                    scope: 'client',
+                    clientId: effectiveClientId
+                });
+            } else {
+                socket.emit('audit-error', { message: 'clientId required to subscribe to audit logs.' });
+            }
+
+        } catch (err) {
+            console.error('Error in subscribe-audit-logs:', err);
+            socket.emit('audit-error', { message: 'Failed to subscribe to audit logs.' });
+        }
+    });
+
+    socket.on('unsubscribe-audit-logs', (data = {}) => {
+        try {
+            const { clientId } = data;
+            const effectiveClientId = clientId || socket.clientId;
+            if (effectiveClientId) {
+                socket.leave(`audit_client_${effectiveClientId}`);
+            }
+            socket.leave(`consultant_admin_${socket.userId}`);
+            socket.emit('audit-unsubscribed', { timestamp: new Date().toISOString() });
+        } catch (err) {
+            console.error('Error in unsubscribe-audit-logs:', err);
+        }
+    });
+
+
+
 
 /**
  * Get latest entry for specific scope
@@ -2094,7 +2164,21 @@ function broadcastMinimalDataUpdate(entry) {
 
   console.log(`📊 Broadcast minimal data update to rooms: ${room}, ${broadRoom}`);
 }
-
+global.broadcastAuditLog = function(logDoc) {
+    try {
+        if (!io) return;
+        const payload = { log: logDoc, timestamp: new Date().toISOString() };
+        io.to('userType_super_admin').emit('audit:new', payload);
+        if (logDoc.consultantAdminId) {
+            io.to(`consultant_admin_${logDoc.consultantAdminId}`).emit('audit:new', payload);
+        }
+        if (logDoc.clientId) {
+            io.to(`audit_client_${logDoc.clientId}`).emit('audit:new', payload);
+        }
+    } catch (err) {
+        console.error('Error in broadcastAuditLog:', err.message);
+    }
+};
 // ============================================================================
 // 🌐 EXPORT BROADCAST FUNCTIONS AS GLOBALS
 // ============================================================================

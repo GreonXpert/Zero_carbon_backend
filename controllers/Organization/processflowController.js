@@ -34,6 +34,17 @@ const {
   formatValidationError
 } = require('../../utils/allocation/allocationHelpers');
 
+// Audit log helpers for the process_flowchart module
+const {
+  logProcessFlowCreate,
+  logProcessFlowUpdate,
+  logProcessFlowDelete,
+  logProcessFlowNodeAssign,
+  logProcessFlowScopeAssign,
+  logProcessFlowScopeUnassign,
+  logProcessFlowAllocationUpdate,
+} = require('../../services/audit/processFlowchartAuditLog');
+
 // Enhanced validation for scope details (excerpt from flowchartController.js)
 // const validateScopeDetails = (scopeDetails, nodeId) => {
 //   if (!Array.isArray(scopeDetails)) {
@@ -324,6 +335,17 @@ const saveProcessFlowchart = async (req, res) => {
 
     // The .save() call will now automatically trigger the pre-save hook in the model
     await processFlowchart.save();
+
+    // Audit log — fired after every successful DB write
+    if (isNew) {
+      await logProcessFlowCreate(req, processFlowchart);
+    } else {
+      await logProcessFlowUpdate(
+        req,
+        processFlowchart,
+        `Process flowchart updated — client: ${clientId}, nodes: ${processFlowchart.nodes.length}, version: ${processFlowchart.version}`
+      );
+    }
 
     // 9) Auto-start flowchart status
     if (['consultant', 'consultant_admin'].includes(req.user.userType) && isNew) {
@@ -1045,6 +1067,11 @@ const updateProcessFlowchartNode = async (req, res) => {
     processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
 
     await processFlowchart.save();
+    await logProcessFlowUpdate(
+      req,
+      processFlowchart,
+      `Process node updated — nodeId: ${nodeId}, client: ${clientId}, version: ${processFlowchart.version}`
+    );
 
     return res.status(200).json({
       message: 'Node updated successfully',
@@ -1086,6 +1113,7 @@ const deleteProcessFlowchart = async (req, res) => {
     processFlowchart.deletedAt = new Date();
     processFlowchart.deletedBy = req.user._id;
     await processFlowchart.save();
+    await logProcessFlowDelete(req, processFlowchart, 'soft');
 
     res.status(200).json({ 
       message: 'Process flowchart deleted successfully' 
@@ -1145,6 +1173,11 @@ const deleteProcessNode = async (req, res) => {
     processFlowchart.$locals.skipEdgeValidation = true;
 
     await processFlowchart.save();
+    await logProcessFlowUpdate(
+      req,
+      processFlowchart,
+      `Process node deleted — nodeId: ${nodeId}, client: ${clientId}, remaining nodes: ${processFlowchart.nodes.length}`
+    );
 
     return res.status(200).json({
       message: 'Node and associated edges deleted successfully'
@@ -1269,6 +1302,11 @@ const restoreProcessFlowchart = async (req, res) => {
     processFlowchart.deletedBy     = null;
     processFlowchart.lastModifiedBy = req.user._id;
     await processFlowchart.save();
+    await logProcessFlowUpdate(
+      req,
+      processFlowchart,
+      `Process flowchart restored from soft-delete — client: ${clientId}`
+    );
 
     res.status(200).json({
       message: 'Process flowchart restored successfully'
@@ -1325,6 +1363,7 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
       node.details.employeeHeadId = employeeHeadId;
 
       await flowchart.save();
+      await logProcessFlowNodeAssign(req, flowchart, nodeId, employeeHeadId);
 
       return res.status(200).json({
         message: 'Employee head assigned to node successfully.',
@@ -1342,6 +1381,11 @@ const assignOrUnassignEmployeeHeadToNode = async (req, res) => {
       node.details.employeeHeadId = null;
 
       await flowchart.save();
+      await logProcessFlowUpdate(
+        req,
+        flowchart,
+        `Employee head unassigned from process node — nodeId: ${nodeId}, client: ${clientId}`
+      );
 
       return res.status(200).json({
         message: 'Employee head unassigned from node successfully.',
@@ -1459,6 +1503,15 @@ const assignScopeToProcessNode = async (req, res) => {
     if (upd.modifiedCount === 0) {
       return res.status(500).json({ message: 'Failed to update process flowchart scope assignments' });
     }
+
+    // Audit log — employees assigned to a scope in a process node
+    await logProcessFlowScopeAssign(
+      req,
+      { _id: flow._id, clientId },
+      nodeId,
+      scopeIdentifier,
+      employeeIds
+    );
 
     // 10) Update employee documents (mirror of Flowchart assigner)
     const scopeAssignment = {
@@ -1600,6 +1653,15 @@ const removeAssignmentProcess = async (req, res) => {
       }
     );
 
+    // Audit log — employees removed from a scope in a process node
+    await logProcessFlowScopeUnassign(
+      req,
+      { _id: flow._id, clientId },
+      nodeId,
+      scopeIdentifier,
+      employeeIds
+    );
+
     // 8) Remove the assignment records from each employee's assignedModules
     await User.updateMany(
       { _id: { $in: employeeIds } },
@@ -1706,6 +1768,13 @@ const hardDeleteProcessScopeDetail = async (req, res) => {
         scopeIdentifier
       });
     }
+
+    // Audit log — scope permanently deleted from a process node
+    await logProcessFlowUpdate(
+      req,
+      { _id: pf._id, clientId, nodes: pf.nodes ?? [] },
+      `Process scope detail permanently deleted — nodeId: ${nodeId}, scope: ${removed?.scopeIdentifier || scopeIdentifier}, client: ${clientId}`
+    );
 
     return res.status(200).json({
       message: "Scope detail permanently deleted (process)",
@@ -2163,7 +2232,27 @@ const updateAllocations = async (req, res) => {
     processFlowchart.markModified('nodes');
     processFlowchart.lastModifiedBy = req.user._id || req.user.id;
     await processFlowchart.save();
-    
+
+    // ── Audit log: one entry per changed node allocation ──────────────────
+    for (const scopeInfo of updateSummary) {
+      for (const nodeInfo of scopeInfo.nodesUpdated) {
+        await logProcessFlowAllocationUpdate(
+          req,
+          processFlowchart,
+          nodeInfo.nodeId,
+          nodeInfo.previousAllocationPct,
+          nodeInfo.newAllocationPct
+        );
+      }
+    }
+    // ── Audit log: one summary-level update entry ──────────────────────────
+    await logProcessFlowUpdate(
+      req,
+      processFlowchart,
+      `Allocation percentages updated — client: ${clientId}, ${scopeIdentifierUpdates.size} scopeIdentifier(s), ${updatedCount} scope(s) changed`
+    );
+    // ─────────────────────────────────────────────────────────────────────
+
     console.log(`✅ Allocations saved successfully for ${scopeIdentifierUpdates.size} scopeIdentifier(s)`);
     
     // ============================================================================

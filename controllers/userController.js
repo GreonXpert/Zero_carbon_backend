@@ -34,8 +34,13 @@ const {
   notifySupportUserDeleted,
 } = require("../utils/notifications/supportNotifications");
 
+const {
+     validateAndSanitizeChecklist,
+     VIEWER_DEFAULT_CHECKLIST,
+     AUDITOR_DEFAULT_CHECKLIST,
+       } = require('../utils/Permissions/accessControlPermission');
 
-
+const { logLogin, logLoginFailed, logUserCreated } = require('../services/audit/auditLogService');
 
 
 // Initialize Super Admin Account from Environment Variables
@@ -113,15 +118,18 @@ const login = async (req, res) => {
 
     if (!user) {
       console.log(`[LOGIN STEP 1] User not found: ${loginIdentifier}`);
+      logLoginFailed(req, req.body.email || req.body.identifier).catch(() => {});
       return res.status(404).json({ message: "User not found" });
     }
 
     // ==========================================================
     // 2. PASSWORD VALIDATION
     // ==========================================================
+    
     const isMatch = bcrypt.compareSync(password, user.password);
     if (!isMatch) {
       console.log(`[LOGIN STEP 1] Invalid password for: ${user.email}`);
+      logLoginFailed(req, req.body.email || req.body.identifier).catch(() => {});
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
@@ -136,6 +144,7 @@ const login = async (req, res) => {
 
       if (!client) {
         console.log(`[LOGIN STEP 1] Inactive client: ${user.clientId}`);
+        logLoginFailed(req, req.body.email || req.body.identifier).catch(() => {});
         return res.status(403).json({
           message: "Your organization's subscription is not active"
         });
@@ -203,6 +212,7 @@ const login = async (req, res) => {
 // ==========================================================
 // ADD THESE TWO NEW FUNCTIONS AFTER THE login FUNCTION IN userController.js
 // ==========================================================
+
 
 // Login Step 2: Verify OTP and Issue Final Token
 const verifyLoginOTP = async (req, res) => {
@@ -309,6 +319,8 @@ const verifyLoginOTP = async (req, res) => {
     // ==========================================================
     // 7. SUCCESS RESPONSE
     // ==========================================================
+
+    logLogin(req, user).catch(() => {}); 
     console.log(`[LOGIN STEP 2] Login successful for ${user.email}`);
     
     res.status(200).json({
@@ -484,6 +496,7 @@ const createConsultantAdmin = async (req, res) => {
 
     await consultantAdmin.save();
     console.log("[DEBUG] ✅ User saved to DB with ID:", consultantAdmin._id);
+    logUserCreated(req, consultantAdmin).catch(() => {});
 
     // Handle profile image upload
     let imageUploadResult = { success: false, error: null };
@@ -754,6 +767,7 @@ const createConsultant = async (req, res) => {
     await consultant.save();
     
     console.log(`✅ Consultant created: ${consultant.userName} (ID: ${consultant.employeeId})`);
+    logUserCreated(req, consultant).catch(() => {})
     
     // ==========================================
     // 7. HANDLE PROFILE IMAGE (Optional)
@@ -1085,6 +1099,25 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 };
 
 
+// ==========================================
+// HELPER FUNCTION - Extract field from error message
+// ==========================================
+function extractFieldFromError(errorMessage) {
+  if (!errorMessage) return null;
+  
+  const lowerMessage = errorMessage.toLowerCase();
+  
+  if (lowerMessage.includes('email')) return 'email';
+  if (lowerMessage.includes('password')) return 'password';
+  if (lowerMessage.includes('username')) return 'userName';
+  if (lowerMessage.includes('contact')) return 'contactNumber';
+  if (lowerMessage.includes('address')) return 'address';
+  if (lowerMessage.includes('department')) return 'department';
+  if (lowerMessage.includes('location')) return 'location';
+  
+  return null;
+}
+
 // Enhanced Create Employee Head Function (Client Admin only)
 // Supports both single and bulk creation
 
@@ -1259,6 +1292,7 @@ const createEmployeeHead = async (req, res) => {
         });
 
         await head.save();
+        logUserCreated(req, head).catch(() => {})
 
         console.log(`✅ Employee Head created: ${head.userName} | Department: ${head.department} | Location: ${head.location}`);
 
@@ -1383,7 +1417,7 @@ ZeroCarbon Team`;
             location: data.location
           },
           error: err.message,
-          field: this.extractFieldFromError(err.message)
+          field: extractFieldFromError(err.message)
         });
 
         results.summary.failed++;
@@ -1468,24 +1502,6 @@ ZeroCarbon Team`;
   }
 };
 
-// ==========================================
-// HELPER FUNCTION - Extract field from error message
-// ==========================================
-function extractFieldFromError(errorMessage) {
-  if (!errorMessage) return null;
-  
-  const lowerMessage = errorMessage.toLowerCase();
-  
-  if (lowerMessage.includes('email')) return 'email';
-  if (lowerMessage.includes('password')) return 'password';
-  if (lowerMessage.includes('username')) return 'userName';
-  if (lowerMessage.includes('contact')) return 'contactNumber';
-  if (lowerMessage.includes('address')) return 'address';
-  if (lowerMessage.includes('department')) return 'department';
-  if (lowerMessage.includes('location')) return 'location';
-  
-  return null;
-}
 
 module.exports = { createEmployeeHead };
 
@@ -1544,7 +1560,7 @@ const createEmployee = async (req, res) => {
           }
         });
         await emp.save();
-
+          logUserCreated(req, emp).catch(() => {});
           try { await saveUserProfileImage(req, emp); } catch (e) {
          console.warn('profile image save skipped:', e.message);
          }
@@ -1569,15 +1585,19 @@ const createEmployee = async (req, res) => {
   }
 };;
 
-// Create Auditor (Client Admin only)
+// ============================================================
+// PATCH: controllers/userController.js
+// ============================================================
+
+
 const createAuditor = async (req, res) => {
   try {
-    if (!req.user || req.user.userType !== "client_admin") {
-      return res.status(403).json({ 
-        message: "Only Client Admin can create Auditors" 
+    if (!req.user || req.user.userType !== 'client_admin') {
+      return res.status(403).json({
+        message: 'Only Client Admin can create Auditors',
       });
     }
-    
+
     const {
       email,
       password,
@@ -1585,34 +1605,46 @@ const createAuditor = async (req, res) => {
       userName,
       address,
       auditPeriod,
-      auditScope
+      auditScope,
+      accessControls, // 🆕 NEW: optional checklist from client_admin
     } = req.body;
-    
+
     // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
-    });
-    
+    const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
     if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
-      });
+      return res.status(409).json({ message: 'Email or Username already exists' });
     }
-    
+
+    // ── Validate + sanitize accessControls ──────────────────────────────────
+    let resolvedAccessControls;
+    if (accessControls) {
+      const validation = validateAndSanitizeChecklist(accessControls);
+      if (!validation.valid) {
+        return res.status(400).json({
+          message: `Invalid accessControls: ${validation.error}`,
+        });
+      }
+      resolvedAccessControls = validation.sanitized;
+    } else {
+      // Fail-closed default: all false. client_admin must explicitly grant access.
+      resolvedAccessControls = AUDITOR_DEFAULT_CHECKLIST;
+    }
+
     const hashedPassword = bcrypt.hashSync(password, 10);
-    
+
     const auditor = new User({
       email,
       password: hashedPassword,
       contactNumber,
       userName,
-      userType: "auditor",
+      userType: 'auditor',
       address,
       companyName: req.user.companyName,
       clientId: req.user.clientId,
       auditPeriod,
       auditScope,
       createdBy: req.user.id,
+      isActive:true,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -1620,45 +1652,50 @@ const createAuditor = async (req, res) => {
         canViewReports: true,
         canEditBoundaries: false,
         canSubmitData: false,
-        canAudit: true
-      }
+        canAudit: true,
+      },
+      accessControls: resolvedAccessControls, // 🆕
     });
-    
-    await auditor.save();
 
-        try { await saveUserProfileImage(req, auditor); } catch (e) {
+    await auditor.save();
+    logUserCreated(req, auditor).catch(() => {});
+    try {
+      await saveUserProfileImage(req, auditor);
+    } catch (e) {
       console.warn('profile image save skipped:', e.message);
     }
 
-    
     res.status(201).json({
-      message: "Auditor created successfully",
+      message: 'Auditor created successfully',
       auditor: {
         id: auditor._id,
         email: auditor.email,
         userName: auditor.userName,
-        auditPeriod: auditor.auditPeriod
-      }
+        auditPeriod: auditor.auditPeriod,
+        accessControls: auditor.accessControls, // 🆕 return checklist in response
+      },
     });
-    
   } catch (error) {
-    console.error("Create auditor error:", error);
-    res.status(500).json({ 
-      message: "Failed to create Auditor", 
-      error: error.message 
+    console.error('Create auditor error:', error);
+    res.status(500).json({
+      message: 'Failed to create Auditor',
+      error: error.message,
     });
   }
 };
 
-// Create Viewer (Client Admin only)
+// ─────────────────────────────────────────────────────────────
+// REPLACEMENT for the existing createViewer function:
+// ─────────────────────────────────────────────────────────────
+
 const createViewer = async (req, res) => {
   try {
-    if (!req.user || req.user.userType !== "client_admin") {
-      return res.status(403).json({ 
-        message: "Only Client Admin can create Viewers" 
+    if (!req.user || req.user.userType !== 'client_admin') {
+      return res.status(403).json({
+        message: 'Only Client Admin can create Viewers',
       });
     }
-    
+
     const {
       email,
       password,
@@ -1666,34 +1703,46 @@ const createViewer = async (req, res) => {
       userName,
       address,
       viewerPurpose,
-      viewerExpiryDate
+      viewerExpiryDate,
+      accessControls, // 🆕 NEW: optional checklist from client_admin
     } = req.body;
-    
+
     // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { userName }]
-    });
-    
+    const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
     if (existingUser) {
-      return res.status(409).json({ 
-        message: "Email or Username already exists" 
-      });
+      return res.status(409).json({ message: 'Email or Username already exists' });
     }
-    
+
+    // ── Validate + sanitize accessControls ──────────────────────────────────
+    let resolvedAccessControls;
+    if (accessControls) {
+      const validation = validateAndSanitizeChecklist(accessControls);
+      if (!validation.valid) {
+        return res.status(400).json({
+          message: `Invalid accessControls: ${validation.error}`,
+        });
+      }
+      resolvedAccessControls = validation.sanitized;
+    } else {
+      // Fail-closed default: all false. client_admin must explicitly grant access.
+      resolvedAccessControls = VIEWER_DEFAULT_CHECKLIST;
+    }
+
     const hashedPassword = bcrypt.hashSync(password, 10);
-    
+
     const viewer = new User({
       email,
       password: hashedPassword,
       contactNumber,
       userName,
-      userType: "viewer",
+      userType: 'viewer',
       address,
       companyName: req.user.companyName,
       clientId: req.user.clientId,
       viewerPurpose,
       viewerExpiryDate,
       createdBy: req.user.id,
+      isActive:true,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -1701,32 +1750,34 @@ const createViewer = async (req, res) => {
         canViewReports: true,
         canEditBoundaries: false,
         canSubmitData: false,
-        canAudit: false
-      }
+        canAudit: false,
+      },
+      accessControls: resolvedAccessControls, // 🆕
     });
-    
-    await viewer.save();
 
-        try { await saveUserProfileImage(req, viewer); } catch (e) {
+    await viewer.save();
+    logUserCreated(req, viewer).catch(() => {});
+    try {
+      await saveUserProfileImage(req, viewer);
+    } catch (e) {
       console.warn('profile image save skipped:', e.message);
     }
 
-    
     res.status(201).json({
-      message: "Viewer created successfully",
+      message: 'Viewer created successfully',
       viewer: {
         id: viewer._id,
         email: viewer.email,
         userName: viewer.userName,
-        viewerPurpose: viewer.viewerPurpose
-      }
+        viewerPurpose: viewer.viewerPurpose,
+        accessControls: viewer.accessControls, // 🆕 return checklist in response
+      },
     });
-    
   } catch (error) {
-    console.error("Create viewer error:", error);
-    res.status(500).json({ 
-      message: "Failed to create Viewer", 
-      error: error.message 
+    console.error('Create viewer error:', error);
+    res.status(500).json({
+      message: 'Failed to create Viewer',
+      error: error.message,
     });
   }
 };
@@ -1970,7 +2021,7 @@ const createSupportManager = async (req, res) => {
     });
 
     await supportManager.save();
-
+    logUserCreated(req, supportManager).catch(() => {});
     // ✅ 3A) Welcome notification (account created)
     try {
       await notifySupportManagerWelcome({ actor: req.user, supportManager, tempPassword: password, email  });
@@ -2251,6 +2302,7 @@ const createSupport = async (req, res) => {
     });
 
     await supportUser.save();
+    logUserCreated(req, supportUser).catch(() => {});
 
     try {
   await notifySupportUserWelcome({ actor: req.user, supportUser, supportManager,tempPassword: password, email  });
@@ -3904,14 +3956,6 @@ const updateUser = async (req, res) => {
     // ✅ Safe current user id (supports id/_id/userId)
     const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
 
-    // Remove immutable fields
-    delete updateData.password;
-    delete updateData.userType;
-    delete updateData.clientId;
-    delete updateData.createdBy;
-    delete updateData.consultantAdminId;
-    delete updateData.parentUser;
-
     const userToUpdate = await User.findById(userId);
     if (!userToUpdate) {
       return res.status(404).json({ message: "User not found" });
@@ -3973,6 +4017,45 @@ const updateUser = async (req, res) => {
       return res.status(403).json({
         message: "You don't have permission to update this user",
       });
+    }
+
+    // -------------------------------------
+    // REMOVE IMMUTABLE FIELDS + accessControls VALIDATION
+    // -------------------------------------
+
+    // Remove immutable fields
+    delete updateData.password;
+    delete updateData.userType;
+    delete updateData.clientId;
+    delete updateData.createdBy;
+    delete updateData.consultantAdminId;
+    delete updateData.parentUser;
+
+    // 🆕 Handle accessControls checklist update for viewer/auditor
+    if (updateData.accessControls !== undefined) {
+      const targetUserType = userToUpdate.userType;
+
+      // Only client_admin / super_admin can set accessControls for viewer/auditor
+      if (
+        req.user.userType !== "client_admin" &&
+        req.user.userType !== "super_admin"
+      ) {
+        delete updateData.accessControls; // silently strip — non-admin cannot set
+      } else if (!["viewer", "auditor"].includes(targetUserType)) {
+        // accessControls only applies to viewer/auditor
+        delete updateData.accessControls;
+      } else {
+        // Validate and sanitize the incoming checklist
+        const validation = validateAndSanitizeChecklist(updateData.accessControls);
+
+        if (!validation.valid) {
+          return res.status(400).json({
+            message: `Invalid accessControls: ${validation.error}`,
+          });
+        }
+
+        updateData.accessControls = validation.sanitized;
+      }
     }
 
     // -------------------------------------
@@ -4824,6 +4907,13 @@ const assignHeadToNode = async (req, res) => {
   }
 };
 
+const {
+  logFlowchartScopeAssign,
+  logFlowchartScopeUnassign,
+} = require('../services/audit/flowchartAuditLog'); 
+// adjust ../../ based on your controller location
+
+
 /**
  * POST /api/users/assign-scope
  * body: { clientId, nodeId, scopeIdentifier, employeeIds }
@@ -4831,74 +4921,69 @@ const assignHeadToNode = async (req, res) => {
  */
 const assignScope = async (req, res) => {
   try {
-    // 1) Authorization check
     if (req.user.userType !== 'client_employee_head') {
-      return res.status(403).json({ 
-        message: 'Only Employee Heads can assign employees to scopes' 
+      return res.status(403).json({
+        message: 'Only Employee Heads can assign employees to scopes'
       });
     }
 
     const { clientId, nodeId, scopeIdentifier, employeeIds } = req.body;
 
-    // 2) Validate required fields
     if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
-      return res.status(400).json({ 
-        message: 'clientId, nodeId, scopeIdentifier, and employeeIds array are required' 
+      return res.status(400).json({
+        message: 'clientId, nodeId, scopeIdentifier, and employeeIds array are required'
       });
     }
 
     if (employeeIds.length === 0) {
-      return res.status(400).json({ 
-        message: 'At least one employee must be assigned' 
+      return res.status(400).json({
+        message: 'At least one employee must be assigned'
       });
     }
 
-    // 3) Verify this is within the head's organization
     if (req.user.clientId !== clientId) {
-      return res.status(403).json({ 
-        message: 'You can only assign employees within your organization' 
+      return res.status(403).json({
+        message: 'You can only assign employees within your organization'
       });
     }
 
-    // 4) Fetch the specific node and verify existence
+    // ✅ IMPORTANT: include _id + clientId in projection for audit logger
     const flowchart = await Flowchart.findOne(
       { clientId, 'nodes.id': nodeId },
-      { 'nodes.$': 1 }
+      { _id: 1, clientId: 1, 'nodes.$': 1 }
     );
 
     if (!flowchart || !flowchart.nodes || flowchart.nodes.length === 0) {
-      return res.status(404).json({ 
-        message: 'Flowchart or node not found' 
+      return res.status(404).json({
+        message: 'Flowchart or node not found'
       });
     }
 
     const node = flowchart.nodes[0];
 
-    // 5) Verify this Employee Head is assigned to this node
     const assignedHeadId = node.details && node.details.employeeHeadId
       ? String(node.details.employeeHeadId)
       : null;
     const currentUserId = req.user.id
       ? String(req.user.id)
       : null;
+
     if (assignedHeadId !== currentUserId) {
-      return res.status(403).json({ 
-        message: 'You are not authorized to manage this node. Only the assigned Employee Head can assign scopes.' 
+      return res.status(403).json({
+        message: 'You are not authorized to manage this node. Only the assigned Employee Head can assign scopes.'
       });
     }
 
-    // 6) Find the specific scope detail
     const scopeDetail = node.details.scopeDetails.find(
       scope => scope.scopeIdentifier === scopeIdentifier
     );
 
     if (!scopeDetail) {
-      return res.status(404).json({ 
-        message: `Scope detail '${scopeIdentifier}' not found in this node` 
+      return res.status(404).json({
+        message: `Scope detail '${scopeIdentifier}' not found in this node`
       });
     }
 
-    // 7) Verify all employees exist and belong to this organization
     const employees = await User.find({
       _id: { $in: employeeIds },
       userType: 'employee',
@@ -4907,18 +4992,17 @@ const assignScope = async (req, res) => {
     });
 
     if (employees.length !== employeeIds.length) {
-      return res.status(400).json({ 
-        message: 'One or more employees not found or not in your organization' 
+      return res.status(400).json({
+        message: 'One or more employees not found or not in your organization'
       });
     }
 
-    // 8) Remove existing assignments for these employees from this scope
     await Flowchart.updateOne(
       { clientId, 'nodes.id': nodeId },
       {
         $pull: {
-          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
-            $in: employeeIds 
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': {
+            $in: employeeIds
           }
         }
       },
@@ -4930,13 +5014,12 @@ const assignScope = async (req, res) => {
       }
     );
 
-    // 9) Add new assignments to the flowchart
     const flowResult = await Flowchart.updateOne(
       { clientId, 'nodes.id': nodeId },
       {
         $addToSet: {
-          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
-            $each: employeeIds 
+          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': {
+            $each: employeeIds
           }
         },
         $set: {
@@ -4953,12 +5036,11 @@ const assignScope = async (req, res) => {
     );
 
     if (flowResult.modifiedCount === 0) {
-      return res.status(500).json({ 
-        message: 'Failed to update flowchart scope assignments' 
+      return res.status(500).json({
+        message: 'Failed to update flowchart scope assignments'
       });
     }
 
-    // 10) Update each employee's record
     const scopeAssignment = {
       nodeId,
       nodeLabel: node.label,
@@ -4975,8 +5057,8 @@ const assignScope = async (req, res) => {
     await User.updateMany(
       { _id: { $in: employeeIds } },
       {
-        $set: { 
-          employeeHeadId: req.user._id 
+        $set: {
+          employeeHeadId: req.user._id
         },
         $addToSet: {
           assignedModules: JSON.stringify(scopeAssignment)
@@ -4984,9 +5066,18 @@ const assignScope = async (req, res) => {
       }
     );
 
+    // ✅ AUDIT LOG (Assign Employees → Scope)
+    await logFlowchartScopeAssign(
+      req,
+      { _id: flowchart._id, clientId: flowchart.clientId },
+      nodeId,
+      scopeIdentifier,
+      employeeIds
+    );
+
     console.log(`✅ Scope '${scopeIdentifier}' assigned to ${employeeIds.length} employees by ${req.user.userName}`);
 
-    res.status(200).json({ 
+    res.status(200).json({
       message: 'Employees successfully assigned to scope',
       assignment: {
         scope: {
@@ -5012,12 +5103,13 @@ const assignScope = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error in assignScope:', error);
-    res.status(500).json({ 
-      message: 'Error assigning employees to scope', 
-      error: error.message 
+    res.status(500).json({
+      message: 'Error assigning employees to scope',
+      error: error.message
     });
   }
 };
+
 
 
 
@@ -5177,22 +5269,19 @@ const removeAssignment = async (req, res) => {
     const { clientId, nodeId, scopeIdentifier, employeeIds } = req.body;
 
     if (!clientId || !nodeId) {
-      return res.status(400).json({ 
-        message: 'clientId and nodeId are required' 
+      return res.status(400).json({
+        message: 'clientId and nodeId are required'
       });
     }
 
     if (req.user.userType === 'client_admin') {
-      // Remove Employee Head from node
+      // (optional) your existing node-head removal logic remains the same
       const result = await Flowchart.updateOne(
         { clientId, 'nodes.id': nodeId },
-        { 
-          $unset: { 'nodes.$.details.employeeHeadId': "" }
-        }
+        { $unset: { 'nodes.$.details.employeeHeadId': "" } }
       );
 
       if (result.modifiedCount > 0) {
-        // Remove from user's assigned modules
         await User.updateMany(
           { userType: 'client_employee_head', clientId },
           {
@@ -5202,19 +5291,28 @@ const removeAssignment = async (req, res) => {
           }
         );
 
-        res.status(200).json({ message: 'Employee Head removed from node' });
+        return res.status(200).json({ message: 'Employee Head removed from node' });
       } else {
-        res.status(404).json({ message: 'Node not found' });
+        return res.status(404).json({ message: 'Node not found' });
       }
 
     } else if (req.user.userType === 'client_employee_head' && scopeIdentifier && employeeIds) {
-      // Remove employees from scope
+      // ✅ fetch minimal flowchart info for audit logger
+      const flowchart = await Flowchart.findOne(
+        { clientId, 'nodes.id': nodeId },
+        { _id: 1, clientId: 1 }
+      );
+
+      if (!flowchart) {
+        return res.status(404).json({ message: 'Flowchart or node not found' });
+      }
+
       await Flowchart.updateOne(
         { clientId, 'nodes.id': nodeId },
         {
           $pull: {
-            'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { 
-              $in: employeeIds 
+            'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': {
+              $in: employeeIds
             }
           }
         },
@@ -5226,31 +5324,41 @@ const removeAssignment = async (req, res) => {
         }
       );
 
-      // Remove from employees' assigned modules
       await User.updateMany(
         { _id: { $in: employeeIds } },
         {
           $pull: {
-            assignedModules: { 
-              $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${scopeIdentifier}".*` 
+            assignedModules: {
+              $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${scopeIdentifier}".*`
             }
           }
         }
       );
 
-      res.status(200).json({ message: 'Employees removed from scope' });
+      // ✅ AUDIT LOG (Unassign Employees ← Scope)
+      await logFlowchartScopeUnassign(
+        req,
+        { _id: flowchart._id, clientId: flowchart.clientId },
+        nodeId,
+        scopeIdentifier,
+        employeeIds
+      );
+
+      return res.status(200).json({ message: 'Employees removed from scope' });
+
     } else {
-      res.status(403).json({ message: 'Insufficient permissions' });
+      return res.status(403).json({ message: 'Insufficient permissions' });
     }
 
   } catch (error) {
     console.error('❌ Error removing assignment:', error);
-    res.status(500).json({ 
-      message: 'Error removing assignment', 
-      error: error.message 
+    res.status(500).json({
+      message: 'Error removing assignment',
+      error: error.message
     });
   }
 };
+
 
 /**
  * Assign support manager to consultant or consultant admin

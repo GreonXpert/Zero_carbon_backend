@@ -7,6 +7,16 @@ const { getNormalizedAssessmentLevels } = require('../../utils/DataCollection/da
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
 const { normalizeEdges } = require('../../utils/chart/chartHelpers');
 
+// Audit log helpers for the transport_flowchart module
+const {
+  logTransportFlowCreate,
+  logTransportFlowUpdate,
+  logTransportFlowDelete,
+  logTransportFlowNodeAssign,
+  logTransportFlowScopeAssign,
+  logTransportFlowScopeUnassign,
+} = require('../../services/audit/transportFlowchartAuditLog');
+
 /**
  * Internal helper: extract upstream / downstream transportation scopes
  * from a given chart.
@@ -297,6 +307,11 @@ exports.saveTransportFlowchart = async (req, res) => {
       existing.lastModifiedBy = userId;
       existing.assessmentLevels = levels;
       saved = await existing.save();
+      await logTransportFlowUpdate(
+        req,
+        saved,
+        `Transport flowchart (${transportType}) updated — client: ${clientId}, nodes: ${saved.nodes.length}, version: ${saved.version}`
+      );
     } else {
       saved = await TransportFlowchart.create({
         clientId,
@@ -308,6 +323,7 @@ exports.saveTransportFlowchart = async (req, res) => {
         lastModifiedBy: userId,
         assessmentLevels: levels
       });
+      await logTransportFlowCreate(req, saved);
     }
 
     return res.status(200).json({
@@ -424,6 +440,7 @@ exports.deleteTransportFlowchart = async (req, res) => {
     existing.isActive = false;
     existing.lastModifiedBy = (req.user._id || req.user.id || '').toString();
     await existing.save();
+    await logTransportFlowDelete(req, existing, 'soft');
 
     return res.status(200).json({
       message: `Transport flowchart (${existing.transportType}) deleted successfully`
@@ -493,6 +510,11 @@ exports.restoreTransportFlowchart = async (req, res) => {
     latestInactive.lastModifiedBy = (req.user._id || req.user.id || '').toString();
     latestInactive.version = (latestInactive.version || 1) + 1;
     await latestInactive.save();
+    await logTransportFlowUpdate(
+      req,
+      latestInactive,
+      `Transport flowchart (${latestInactive.transportType}) restored from soft-delete — client: ${clientId}, version: ${latestInactive.version}`
+    );
 
     return res.status(200).json({
       message: `Transport flowchart (${latestInactive.transportType}) restored successfully`
@@ -538,12 +560,20 @@ exports.hardDeleteTransportFlowchart = async (req, res) => {
       filter.transportType = typeParam;
     }
 
+    // Load docs before deletion so we can log them individually
+    const docsToDelete = await TransportFlowchart.find(filter).lean();
+
     const result = await TransportFlowchart.deleteMany(filter);
 
     if (!result.deletedCount) {
       return res.status(404).json({
         message: 'No transport flowcharts found to hard delete for this client and filter'
       });
+    }
+
+    // Audit log each hard-deleted doc (fired after successful deleteMany)
+    for (const doc of docsToDelete) {
+      await logTransportFlowDelete(req, doc, 'hard');
     }
 
     return res.status(200).json({
@@ -558,5 +588,3 @@ exports.hardDeleteTransportFlowchart = async (req, res) => {
     });
   }
 };
-
-

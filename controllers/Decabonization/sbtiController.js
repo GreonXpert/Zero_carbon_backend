@@ -2,6 +2,17 @@
 const SbtiTarget = require('../../models/Decarbonization/SbtiTarget');
 const { canManageFlowchart, canViewFlowchart, canManageProcessFlowchart } = require('../../utils/Permissions/permissions');
 
+// Audit log helpers for the sbti module
+const {
+  logSbtiCreate,
+  logSbtiUpdate,
+  logSbtiDelete,
+  logSbtiHardDelete,
+  logSbtiTargetApprove,
+  logSbtiTargetReject,
+  logSbtiCalculate,
+} = require('../../services/audit/sbtiAuditLog');
+
 // Optional: real-time updates like your summaries do
 let io;
 const setSocketIO = (socketIO) => { io = socketIO; };
@@ -291,11 +302,21 @@ if (!managePerm.allowed) {
     // grace dates computed in pre-save
 
     // Upsert by clientId + targetType (so you can store near-term and net-zero separately)
+    // Pre-check existence so we can distinguish create vs update in the audit log
+    const _existedBefore = await SbtiTarget.exists({ clientId, targetType });
+
     const saved = await SbtiTarget.findOneAndUpdate(
       { clientId, targetType },
       { $set: updateDoc, $setOnInsert: { createdBy: req.user?._id } },
       { upsert: true, new: true, runValidators: true }
     );
+
+    // Audit log — create or update
+    if (_existedBefore) {
+      await logSbtiUpdate(req, saved, `SBTi target updated — client: ${clientId}, targetType: ${targetType}, targetYear: ${saved.targetYear ?? 'N/A'}, method: ${saved.method}`);
+    } else {
+      await logSbtiCreate(req, saved);
+    }
 
     emitSbtiUpdate(clientId, { type: 'sbti-upsert', targetType, id: saved._id });
     return res.status(200).json({ success: true, data: saved });
@@ -383,6 +404,10 @@ const addRenewableProgress = async (req, res) => {
     else doc.renewableElectricity.push(row);
 
     await doc.save();
+
+    // Audit log — renewable electricity progress updated
+    await logSbtiUpdate(req, doc, `SBTi renewable electricity updated — client: ${clientId}, targetType: ${targetType}, year: ${year}, %RE: ${percentRE}`);
+
     emitSbtiUpdate(clientId, { type: 'sbti-renewable-updated', targetType, year });
     return res.status(200).json({ success: true, data: doc });
   } catch (err) {
@@ -427,6 +452,10 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
     else doc.supplierEngagement.push(row);
 
     await doc.save();
+
+    // Audit log — supplier engagement updated
+    await logSbtiUpdate(req, doc, `SBTi supplier engagement updated — client: ${clientId}, targetType: ${targetType}, year: ${year}, coverage: ${percent}%`);
+
     emitSbtiUpdate(clientId, { type: 'sbti-supplier-updated', targetType, year });
     return res.status(200).json({ success: true, data: doc });
   } catch (err) {
@@ -466,6 +495,10 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
     });
 
     await doc.save();
+
+    // Audit log — FLAG info updated
+    await logSbtiUpdate(req, doc, `SBTi FLAG info updated — client: ${clientId}, targetType: ${targetType}, flagSharePercent: ${req.body.flagSharePercent ?? 'N/A'}`);
+
     emitSbtiUpdate(clientId, { type: 'sbti-flag-updated', targetType });
     return res.status(200).json({ success: true, data: doc });
   } catch (err) {
@@ -527,6 +560,13 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
     }
 
     await doc.save();
+
+    // Audit log — coverage info updated
+    await logSbtiUpdate(
+      req,
+      doc,
+      `SBTi coverage updated — client: ${clientId}, targetType: ${targetType}, S1+S2: ${s12}%, S3 share: ${s3share}%, S3 coverage: ${s3cov}%`
+    );
 
     // 4) Return a fresh copy to avoid any stale values on the in-memory doc
     const fresh = await SbtiTarget.findById(doc._id).lean();
@@ -590,6 +630,13 @@ if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)
     };
 
     await doc.save();
+
+    // Audit log — inventory coverage updated
+    await logSbtiUpdate(
+      req,
+      doc,
+      `SBTi inventory coverage updated — client: ${clientId}, targetType: ${targetType}, S1+S2 covered: ${percentS12Covered}%, S3 by targets: ${percentS3CoveredByTargets}%`
+    );
 
     emitSbtiUpdate?.(clientId, { type: 'sbti-inventory-coverage-updated', targetType });
     return res.status(200).json({ success: true, data: doc });

@@ -165,6 +165,121 @@ const userSchema = new mongoose.Schema(
       enum: ['reduction', 'decarbonization', 'organization', 'process', 'both'],
       default: []
     },
+
+    // ╔══════════════════════════════════════════════════════════╗
+    // ║  ACCESS CONTROLS CHECKLIST (viewer / auditor only)       ║
+    // ║  Assigned by client_admin at create / edit time.         ║
+    // ║  All defaults are FALSE (fail-closed).                   ║
+    // ║  Enforced via utils/Permissions/accessControlPermission  ║
+    // ╚══════════════════════════════════════════════════════════╝
+    accessControls: {
+      modules: {
+        emission_summary: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            overview:         { type: Boolean, default: false },
+            byScope:          { type: Boolean, default: false },
+            byNode:           { type: Boolean, default: false },
+            byDepartment:     { type: Boolean, default: false },
+            byLocation:       { type: Boolean, default: false },
+            processEmission:  { type: Boolean, default: false },
+            reductionSummary: { type: Boolean, default: false },
+            trends:           { type: Boolean, default: false },
+            metadata:         { type: Boolean, default: false },
+          },
+        },
+        data_entry: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            list:             { type: Boolean, default: false },
+            detail:           { type: Boolean, default: false },
+            editHistory:      { type: Boolean, default: false },
+            logs:             { type: Boolean, default: false },
+            cumulativeValues: { type: Boolean, default: false },
+            stats:            { type: Boolean, default: false },
+          },
+        },
+        process_flowchart: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            view:                   { type: Boolean, default: false },
+            entries:                { type: Boolean, default: false },
+            processEmissionEntries: { type: Boolean, default: false },
+          },
+        },
+        organization_flowchart: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            view:        { type: Boolean, default: false },
+            nodes:       { type: Boolean, default: false },
+            assignments: { type: Boolean, default: false },
+          },
+        },
+        reduction: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            list:         { type: Boolean, default: false },
+            detail:       { type: Boolean, default: false },
+            netReduction: { type: Boolean, default: false },
+            summary:      { type: Boolean, default: false },
+          },
+        },
+        decarbonization: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            sbti:    { type: Boolean, default: false },
+            targets: { type: Boolean, default: false },
+          },
+        },
+        reports: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            basic:    { type: Boolean, default: false },
+            detailed: { type: Boolean, default: false },
+            export:   { type: Boolean, default: false },
+          },
+        },
+        tickets: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            view:   { type: Boolean, default: false },
+            create: { type: Boolean, default: false },
+          },
+        },
+         // audit_logs — controls what audit log data a viewer/auditor can read.
+        //
+        // HOW IT WORKS:
+        //   Page-level sections: list, detail, export — control UI page visibility.
+        //   Per-module sections (*_logs) — control which AuditLog.module rows are returned.
+        //   logPermission._buildModuleFilter() reads these to build { module: { $in: [...] } }.
+        //
+        // AUTH RESTRICTION:
+        //   'auth' logs are ALWAYS blocked for viewer/auditor at the logPermission layer.
+        //   There is no 'auth_logs' section — it cannot be granted via checklist.
+        //   Only super_admin, consultant_admin, consultant see auth logs (no schema field needed).
+        audit_logs: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            // Page-level access
+            list:                     { type: Boolean, default: false },
+            detail:                   { type: Boolean, default: false },
+            export:                   { type: Boolean, default: false },
+            // Per audit-service module access
+            // Each controls visibility of AuditLog rows where module === mapped value
+            data_entry_logs:          { type: Boolean, default: false }, // module: 'data_entry'
+            flowchart_logs:           { type: Boolean, default: false }, // module: 'organization_flowchart'
+            process_flowchart_logs:   { type: Boolean, default: false }, // module: 'process_flowchart'
+            transport_flowchart_logs: { type: Boolean, default: false }, // module: 'transport_flowchart'
+            reduction_logs:           { type: Boolean, default: false }, // module: 'reduction'
+            net_reduction_logs:       { type: Boolean, default: false }, // module: 'net_reduction'
+            sbti_logs:                { type: Boolean, default: false }, // module: 'sbti'
+            emission_summary_logs:    { type: Boolean, default: false }, // module: 'emission_summary'
+            user_management_logs:     { type: Boolean, default: false }, // module: 'user_management'
+            system_logs:              { type: Boolean, default: false }, // module: 'system'
+          },
+        },
+      },
+    },
   },
   { timestamps: true }
 );

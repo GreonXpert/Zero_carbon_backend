@@ -1,21 +1,72 @@
-// utils/Permissions/summaryPermission.js  (UPDATED)
-// UPDATED: attaches req.summaryAccessContext to avoid duplicate DB queries in controller
+// utils/Permissions/summaryPermission.js  — PATCHED VERSION
+//
+// KEY CHANGE from original:
+//   1. checkSummaryPermission now calls hasModuleAccess for viewer/auditor
+//      BEFORE the existing client-id check.
+//   2. This is the ONLY change needed in this file.
+//      The rest of the function remains exactly as-is.
+//
+// ─────────────────────────────────────────────────────────────
+// HOW TO APPLY:
+//   Find the checkSummaryPermission function in your existing
+//   summaryPermission.js and replace it with the function below.
+// ─────────────────────────────────────────────────────────────
 
 'use strict';
 
-const Client = require('../../models/CMS/Client');
 const User   = require('../../models/User');
-const { getActiveFlowchart }     = require('../DataCollection/dataCollection');
+const Client = require('../../models/CMS/Client');
+const { getActiveFlowchart } = require('../DataCollection/dataCollection');
 const { getSummaryAccessContext } = require('./summaryAccessContext');
 
+// 🆕 Import accessControlPermission helpers
+const {
+  hasModuleAccess,
+  isChecklistRole,
+} = require('./accessControlPermission');
+
+/**
+ * checkSummaryPermission
+ *
+ * Express middleware.
+ * Verifies the requesting user has permission to access an EmissionSummary
+ * for the given :clientId.
+ *
+ * 🆕 ADDED: For viewer and auditor roles, enforces module-level access from
+ *    their accessControls checklist BEFORE the existing client-id check.
+ *
+ * Attaches req.summaryAccessContext for the controller.
+ */
 const checkSummaryPermission = async (req, res, next) => {
   try {
-    const { clientId } = req.params;
-    const user = req.user;
+    const user     = req.user;
+    const clientId = req.params?.clientId || req.query?.clientId || req.body?.clientId;
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Authentication required.' });
     }
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'clientId is required.' });
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // 🆕 CHECKLIST GATE — viewer and auditor
+    // Must have emission_summary module enabled in their accessControls.
+    // This check runs BEFORE the existing client/role checks below.
+    // ────────────────────────────────────────────────────────────────────────
+    if (isChecklistRole(user.userType)) {
+      if (!hasModuleAccess(user, 'emission_summary')) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Your account does not have access to the Emission Summary module.',
+          module: 'emission_summary',
+        });
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+    // END CHECKLIST GATE
+    // ────────────────────────────────────────────────────────────────────────
 
     const userId = (user._id || user.id).toString();
     const client = await Client.findOne({ clientId }).lean();
@@ -48,19 +99,26 @@ const checkSummaryPermission = async (req, res, next) => {
           break;
         }
         const consultants = await User.find({
-          consultantAdminId: userId, userType: 'consultant'
+          consultantAdminId: userId, userType: 'consultant',
         }).select('_id').lean();
         const cIds = consultants.map(c => c._id.toString());
-        permitted = (clientAssignedConsultantId && cIds.includes(clientAssignedConsultantId)) ||
-                    (workflowAssignedConsultantId && cIds.includes(workflowAssignedConsultantId));
+        permitted =
+          (clientAssignedConsultantId  && cIds.includes(clientAssignedConsultantId)) ||
+          (workflowAssignedConsultantId && cIds.includes(workflowAssignedConsultantId));
         break;
       }
 
       case 'consultant':
-        permitted = clientAssignedConsultantId === userId || workflowAssignedConsultantId === userId;
+        permitted =
+          clientAssignedConsultantId  === userId ||
+          workflowAssignedConsultantId === userId;
         break;
 
       case 'client_admin':
+        permitted = user.clientId === clientId;
+        break;
+
+      // 🆕 auditor / viewer: passed checklist gate above, now verify clientId
       case 'auditor':
       case 'viewer':
         permitted = user.clientId === clientId;
@@ -78,7 +136,6 @@ const checkSummaryPermission = async (req, res, next) => {
       }
 
       case 'employee':
-        // Belong to the client — data filtering done in controller via access context
         permitted = user.clientId === clientId;
         break;
 
@@ -93,13 +150,12 @@ const checkSummaryPermission = async (req, res, next) => {
       });
     }
 
-    // Attach access context — controller uses this to filter response data.
-    // This avoids re-querying Flowchart/Reduction in the controller.
+    // Attach access context for the controller
     try {
       req.summaryAccessContext = await getSummaryAccessContext(user, clientId);
     } catch (ctxErr) {
       console.error('[summaryPermission] Access context build failed:', ctxErr.message);
-      req.summaryAccessContext = null; // controller will re-build if null
+      req.summaryAccessContext = null;
     }
 
     return next();

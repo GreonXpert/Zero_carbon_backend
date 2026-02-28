@@ -8,6 +8,16 @@ const { syncReductionWorkflow } = require('../../utils/Workflow/workflow');
 const { syncClientReductionProjects } = require('../../utils/Workflow/syncReductionProjects'); // <-- ADD THIS LINE
 const { uploadReductionMedia, saveReductionFiles } = require('../../utils/uploads/reductionUploadS3');
 
+// Audit log helpers for the reduction module
+const {
+  logReductionCreate,
+  logReductionUpdate,
+  logReductionDelete,
+  logReductionHardDelete,
+  logReductionInputTypeSwitch,
+  logReductionCalculate,
+} = require('../../services/audit/reductionAuditLog');
+
 
 
 
@@ -551,6 +561,9 @@ exports.createReduction = async (req, res) => {
     await doc.validate();
     await doc.save();
 
+    // Audit log — reduction project created
+    await logReductionCreate(req, doc);
+
     notifyReductionEvent({
       actor: req.user,
       clientId,
@@ -1071,6 +1084,8 @@ exports.updateReduction = async (req, res) => {
 
     // ---------------- Data Entry ----------------
     // ---------------- Data Entry ----------------
+    // Capture previous inputType for audit log (before any change)
+    const _prevInputType = doc.reductionDataEntry?.inputType ?? 'manual';
 if (reductionEntryIn) {
   const entry = normalizeReductionDataEntry(
     reductionEntryIn,
@@ -1122,6 +1137,13 @@ if (reductionEntryIn) {
 
     await doc.save();
 
+    // Audit log — detect inputType switch, then log update
+    const _newInputType = doc.reductionDataEntry?.inputType ?? 'manual';
+    if (reductionEntryIn && _prevInputType !== _newInputType) {
+      await logReductionInputTypeSwitch(req, doc, _prevInputType, _newInputType);
+    }
+    await logReductionUpdate(req, doc);
+
     // ---------------- Notifications ----------------
     notifyReductionEvent({ actor: req.user, clientId, action: "updated", doc }).catch(() => {});
     Promise.all([
@@ -1157,6 +1179,9 @@ exports.recalculateReduction = async (req, res) => {
     // Trigger pre('validate') for recompute
     await doc.validate();
     await doc.save();
+
+    // Audit log — emission recalculation triggered
+    await logReductionCalculate(req, doc);
 
     res.status(200).json({ success:true, message:'Recalculated', data: doc });
   } catch (err) {
@@ -1204,6 +1229,9 @@ exports.deleteReduction = async (req, res) => {
     doc.deletedAt = new Date();
     doc.deletedBy = req.user.id;
     await doc.save();
+
+    // Audit log — soft delete
+    await logReductionDelete(req, doc);
 
     // Notifications & sync
     notifyReductionEvent({
@@ -1284,6 +1312,9 @@ exports.deleteFromDB = async (req, res) => {
       });
     }
 
+    // Audit log — hard (permanent) delete
+    await logReductionHardDelete(req, doc);
+
     // Notifications & sync
     notifyReductionEvent({
       actor: req.user,
@@ -1363,6 +1394,10 @@ exports.restoreSoftDeletedReduction = async (req, res) => {
     doc.deletedBy = undefined;
 
     await doc.save();
+
+    // Audit log — project restored from soft-delete
+    await logReductionUpdate(req, doc, `Reduction project restored from soft-delete — "${doc.projectName ?? doc.projectId}"`);
+
     Promise.all([
   syncReductionWorkflow(clientId, req.user?.id).catch(err => console.error('Workflow sync error:', err)),
   syncClientReductionProjects(clientId).catch(err => console.error('Project sync error:', err))
@@ -1436,6 +1471,13 @@ exports.assignEmployeeHeadToProject = async (req, res) => {
     }
 
     await reduction.save();
+
+    // Audit log — employee head assigned to reduction project
+    await logReductionUpdate(
+      req,
+      reduction,
+      `Employee head ${isChange ? 'changed' : 'assigned'} — project: ${reduction.projectId}, headId: ${head._id}`
+    );
 
     return res.status(200).json({
       message: 'Employee Head assigned successfully',
@@ -1520,6 +1562,14 @@ exports.assignEmployeesToProject = async (req, res) => {
 
     await reduction.save();
 
+    // Audit log — employees assigned / removed / set on reduction project
+    const _empAction = mode === 'remove' ? 'unassigned' : mode === 'set' ? 'set' : 'assigned';
+    await logReductionUpdate(
+      req,
+      reduction,
+      `Employees ${_empAction} (mode: ${mode}) — project: ${reduction.projectId}, count: ${employeeIds.length}`
+    );
+
     return res.status(200).json({
       message: 'Employees updated for project',
       data: {
@@ -1589,6 +1639,13 @@ exports.updateReductionStatus = async (req, res) => {
     const previousStatus = reduction.status;
     reduction.status = status;
     await reduction.save();
+
+    // Audit log — project status changed
+    await logReductionUpdate(
+      req,
+      reduction,
+      `Reduction status changed '${previousStatus}' → '${status}' — project: ${reduction.projectId}`
+    );
 
     // Sync with client workflow tracking
     await syncClientReductionProjects(reduction.clientId);
@@ -1937,7 +1994,3 @@ exports.getMyAssignedReductions = async (req, res) => {
   req.params.clientId = req.user.clientId;
   return exports.getAllReductions(req, res);
 };
-
-
-
-
