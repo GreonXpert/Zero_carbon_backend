@@ -33,6 +33,73 @@ const userSchema = new mongoose.Schema(
       type: Boolean, 
       default: false 
     },
+  
+    /**
+     * Maximum number of simultaneous active login sessions allowed for this user.
+     *
+     * Default : 1  → single-device mode (most secure; enforced for all new users
+     *                  and all existing users via the default value)
+     * Range   : 1–10
+     *
+     * A super_admin can raise this for specific users (e.g., a consultant_admin
+     * who legitimately works from multiple machines).
+     *
+     * Migration note: existing documents that lack this field will read the
+     * schema default (1) automatically — no DB migration script required.
+     */
+    concurrentLoginLimit: {
+      type: Number,
+      default: 1,
+      min: [1, 'concurrentLoginLimit must be at least 1'],
+      max: [10, 'concurrentLoginLimit cannot exceed 10']
+    },
+
+     /**
+     * canLogoutAllDevices
+     * ──────────────────────────────────────────────────────────────────
+     * When true, the user is permitted to call
+     *   POST /api/users/me/logout-all-devices
+     * which invalidates every active session they have (except optionally
+     * the current one — see the controller for the chosen strategy).
+     *
+     * Who can set this to true:
+     *   • super_admin
+     *   • consultant_admin
+     *
+     * Default: false  (safest — most users should not have this power).
+     *
+     * Roles that typically get this enabled:
+     *   consultant_admin, client_admin (if desired), supportManager
+     */
+    canLogoutAllDevices: {
+      type: Boolean,
+      default: false
+    },
+
+    /**
+     * permissionToEdit
+     * ──────────────────────────────────────────────────────────────────
+     * When true, the user may:
+     *   • update their own profile  (PATCH /api/users/:userId)
+     *   • change their own password (POST /api/users/me/change-password)
+     *   • use forgot / reset password flows
+     *
+     * When false, all three operations return 403 for that user.
+     *
+     * Default: true  — new users can edit their own profile by default.
+     *
+     * Set to false for:
+     *   • kiosk / shared accounts that must not be self-modified
+     *   • accounts where only an admin should make changes
+     *
+     * ⚠️  WARNING: if you set this to false, the user cannot recover their
+     *   own account via forgot-password.  You MUST use the admin endpoint
+     *   PATCH /api/admin/users/:userId/user-permissions  to restore it.
+     */
+    permissionToEdit: {
+      type: Boolean,
+      default: true
+    },
     
     // Hierarchical relationships
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

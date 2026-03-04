@@ -1,7 +1,22 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Client = require('../models/CMS/Client');
+const UserSession = require('../models/UserSession'); // ← NEW
 
+/**
+ * Primary auth middleware used by all protected routes (router.use(auth)).
+ *
+ * Changes from original:
+ *   1. After JWT decode + user fetch, verifies that `decoded.sessionId` exists
+ *      in UserSession as an active, non-expired session.
+ *   2. Updates `lastSeen` on the session (fire-and-forget — never blocks the request).
+ *   3. Attaches `req.sessionId` so controllers (e.g. logout) can reference it.
+ *
+ * Backward compat: tokens issued before this patch have no `sessionId` field.
+ * Those tokens will fail the session check and return 401 "Session not found".
+ * Users must log in once after the patch is deployed. This is intentional and
+ * expected — it is the deployment cut-over moment.
+ */
 const auth = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
@@ -10,12 +25,12 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ message: "No token provided" });
     }
 
-    const token = authHeader.slice(7); // Remove "Bearer " prefix
+    const token = authHeader.slice(7);
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Verify user still exists
+      // ── 1. Verify user still exists ──────────────────────────────────────
       const user = await User.findById(decoded.id).select('-password');
 
       if (!user) {
@@ -24,20 +39,49 @@ const auth = async (req, res, next) => {
 
       const isSandboxUser = user.sandbox === true;
 
-      // ✅ Allow sandbox users even if isActive is false
       if (!user.isActive && !isSandboxUser) {
         return res.status(403).json({ message: "User account is deactivated" });
       }
 
-      // For client users, check if subscription is active
+      // ── 2. Session liveness check ─────────────────────────────────────────
+      //
+      // Every real login token (issued by verifyLoginOTP) contains `sessionId`.
+      // Tokens that have no sessionId are legacy tokens from before this patch —
+      // treat them as invalid so users are forced to re-authenticate.
+      if (!decoded.sessionId) {
+        return res.status(401).json({
+          message: "Session invalid. Please log in again.",
+          code: "SESSION_MISSING"
+        });
+      }
+
+      const session = await UserSession.findOne({
+        sessionId: decoded.sessionId,
+        userId: user._id,
+        isActive: true
+      });
+
+      if (!session) {
+        return res.status(401).json({
+          message: "Session is no longer valid. Please log in again.",
+          code: "SESSION_EXPIRED"
+        });
+      }
+
+      // Fire-and-forget: update lastSeen without blocking the request
+      UserSession.updateOne(
+        { sessionId: decoded.sessionId },
+        { $set: { lastSeen: new Date() } }
+      ).exec().catch(err =>
+        console.error('[AUTH] lastSeen update failed:', err.message)
+      );
+
+      // ── 3. Client subscription check ──────────────────────────────────────
       if (user.clientId) {
-        // Load client **without** forcing accountDetails.isActive here
         const client = await Client.findOne({ clientId: user.clientId });
 
         if (!client) {
-          return res.status(403).json({
-            message: "Your organization is not found"
-          });
+          return res.status(403).json({ message: "Your organization is not found" });
         }
 
         const isSandboxClient =
@@ -45,7 +89,6 @@ const auth = async (req, res, next) => {
           isSandboxUser ||
           String(client.clientId || '').startsWith('Sandbox_');
 
-        // ✅ Skip subscription checks for sandbox clients/users
         if (!isSandboxClient) {
           if (!client.accountDetails || client.accountDetails.isActive !== true) {
             return res.status(403).json({
@@ -53,11 +96,7 @@ const auth = async (req, res, next) => {
             });
           }
 
-          if (
-            !["active", "grace_period"].includes(
-              client.accountDetails.subscriptionStatus
-            )
-          ) {
+          if (!["active", "grace_period"].includes(client.accountDetails.subscriptionStatus)) {
             return res.status(403).json({
               message: "Your organization's subscription has expired"
             });
@@ -65,16 +104,14 @@ const auth = async (req, res, next) => {
         }
       }
 
-      // For viewers, check expiry date (sandbox viewers are unlikely, but keep same logic)
+      // ── 4. Viewer expiry check ────────────────────────────────────────────
       if (user.userType === "viewer" && user.viewerExpiryDate) {
         if (new Date() > new Date(user.viewerExpiryDate)) {
-          return res.status(403).json({
-            message: "Your viewer access has expired"
-          });
+          return res.status(403).json({ message: "Your viewer access has expired" });
         }
       }
 
-      // Attach user info to request (include sandbox + assessmentLevel for flowchart logic)
+      // ── 5. Attach to request ──────────────────────────────────────────────
       req.user = {
         id: user._id.toString(),
         email: user.email,
@@ -88,6 +125,8 @@ const auth = async (req, res, next) => {
         department: user.department,
         location: user.location
       };
+
+      req.sessionId = decoded.sessionId; // ← available to logout controller
 
       next();
 
@@ -110,47 +149,44 @@ const auth = async (req, res, next) => {
   }
 };
 
-// Role-based middleware
+// ── Role-based middleware ─────────────────────────────────────────────────
+
 const checkRole = (...allowedRoles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
     }
-
     if (!allowedRoles.includes(req.user.userType)) {
       return res.status(403).json({
         message: `Access denied. Required roles: ${allowedRoles.join(', ')}`
       });
     }
-
     next();
   };
 };
 
-// Permission-based middleware
+// ── Permission-based middleware ───────────────────────────────────────────
+
 const checkPermission = (permission) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: "Not authenticated" });
     }
-
     if (!req.user.permissions || !req.user.permissions[permission]) {
       return res.status(403).json({
         message: `Access denied. Missing permission: ${permission}`
       });
     }
-
     next();
   };
 };
 
 /**
- * Authentication middleware
- * Verifies JWT token and attaches user to request object
+ * `authenticate` — duplicate variant used by some controllers directly.
+ * Patched with the same session liveness check as `auth`.
  */
 const authenticate = async (req, res, next) => {
   try {
-    // Get token from header
     const authHeader = req.header('Authorization');
     const token = authHeader && authHeader.startsWith('Bearer ')
       ? authHeader.substring(7)
@@ -164,42 +200,58 @@ const authenticate = async (req, res, next) => {
     }
 
     try {
-      // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Support either decoded.userId or decoded.id
       const userId = decoded.userId || decoded.id;
-
-      // Get user from database
       const user = await User.findById(userId).select('-password');
 
       if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid token. User not found.'
-        });
+        return res.status(401).json({ success: false, message: 'Invalid token. User not found.' });
       }
 
       const isSandboxUser = user.sandbox === true;
 
-      // ✅ Allow sandbox users even if isActive is false
       if (!user.isActive && !isSandboxUser) {
+        return res.status(401).json({ success: false, message: 'Account is deactivated.' });
+      }
+
+      // ── Session liveness check (mirrors `auth` above) ───────────────────
+      if (!decoded.sessionId) {
         return res.status(401).json({
           success: false,
-          message: 'Account is deactivated.'
+          message: 'Session invalid. Please log in again.',
+          code: 'SESSION_MISSING'
         });
       }
 
-      // Attach full user doc; controllers can read sandbox and assessmentLevel
+      const session = await UserSession.findOne({
+        sessionId: decoded.sessionId,
+        userId: user._id,
+        isActive: true
+      });
+
+      if (!session) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session is no longer valid. Please log in again.',
+          code: 'SESSION_EXPIRED'
+        });
+      }
+
+      UserSession.updateOne(
+        { sessionId: decoded.sessionId },
+        { $set: { lastSeen: new Date() } }
+      ).exec().catch(err =>
+        console.error('[AUTHENTICATE] lastSeen update failed:', err.message)
+      );
+      // ────────────────────────────────────────────────────────────────────
+
       req.user = user;
+      req.sessionId = decoded.sessionId;
       next();
 
     } catch (jwtError) {
       console.error('JWT verification error:', jwtError.message);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token.'
-      });
+      return res.status(401).json({ success: false, message: 'Invalid token.' });
     }
 
   } catch (error) {
@@ -211,24 +263,15 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-/**
- * Authorization middleware factory
- * Creates middleware to check if user has required role
- */
+// ── Remaining helpers — UNCHANGED ─────────────────────────────────────────
+
 const authorize = (roles = []) => {
-  // roles can be a single role string or an array of roles
-  if (typeof roles === 'string') {
-    roles = [roles];
-  }
+  if (typeof roles === 'string') roles = [roles];
 
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required.'
-      });
+      return res.status(401).json({ success: false, message: 'Authentication required.' });
     }
-
     if (roles.length && !roles.includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
@@ -237,32 +280,18 @@ const authorize = (roles = []) => {
         userRole: req.user.userType
       });
     }
-
     next();
   };
 };
 
-/**
- * Client isolation middleware
- * Ensures users can only access their own client's data
- */
 const enforceClientAccess = (req, res, next) => {
   const { clientId } = req.params;
   const user = req.user;
 
-  // Super admin can access all clients
-  if (user.userType === 'super_admin') {
-    return next();
-  }
+  if (user.userType === 'super_admin') return next();
 
-  // Consultant admin and consultant access based on assignments
-  if (['consultant_admin', 'consultant'].includes(user.userType)) {
-    // Additional logic would be needed to check client assignments
-    // For now, allowing access - implement based on your client assignment model
-    return next();
-  }
+  if (['consultant_admin', 'consultant'].includes(user.userType)) return next();
 
-  // Client users can only access their own organization's data
   if (['client_admin', 'client_employee_head', 'employee', 'auditor'].includes(user.userType)) {
     if (user.clientId !== clientId) {
       return res.status(403).json({
@@ -277,26 +306,17 @@ const enforceClientAccess = (req, res, next) => {
   next();
 };
 
-/**
- * Admin only middleware
- * Allows only super_admin and client_admin
- */
 const adminOnly = (req, res, next) => {
   const allowedRoles = ['super_admin', 'client_admin'];
-
   if (!req.user || !allowedRoles.includes(req.user.userType)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Admin privileges required.'
     });
   }
-
   next();
 };
 
-/**
- * Super admin only middleware
- */
 const superAdminOnly = (req, res, next) => {
   if (!req.user || req.user.userType !== 'super_admin') {
     return res.status(403).json({
@@ -304,14 +324,9 @@ const superAdminOnly = (req, res, next) => {
       message: 'Access denied. Super admin privileges required.'
     });
   }
-
   next();
 };
 
-/**
- * Optional authentication middleware
- * Attaches user if token is valid, but doesn't require authentication
- */
 const optionalAuth = async (req, res, next) => {
   try {
     const authHeader = req.header('Authorization');
@@ -324,14 +339,12 @@ const optionalAuth = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const userId = decoded.userId || decoded.id;
         const user = await User.findById(userId).select('-password');
-
         const isSandboxUser = user && user.sandbox === true;
 
         if (user && (user.isActive || isSandboxUser)) {
           req.user = user;
         }
       } catch (jwtError) {
-        // Invalid token, but we don't reject the request
         console.log('Optional auth: Invalid token provided');
       }
     }
@@ -339,7 +352,7 @@ const optionalAuth = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Optional auth middleware error:', error);
-    next(); // Continue without authentication
+    next();
   }
 };
 

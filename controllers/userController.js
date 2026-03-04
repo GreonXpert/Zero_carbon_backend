@@ -41,7 +41,17 @@ const {
        } = require('../utils/Permissions/accessControlPermission');
 
 const { logLogin, logLoginFailed, logUserCreated } = require('../services/audit/auditLogService');
+const UserSession = require('../models/UserSession');
 
+'use strict';
+
+// ─── Quota enforcement helpers (import in userController.js) ──
+const {
+  reserveUserTypeSlot,
+  releaseUserTypeSlot,
+  getUserTypeQuotaStatusFromDoc,
+  getAssignedConsultantId,
+} = require('../services/quota/quotaService');
 
 // Initialize Super Admin Account from Environment Variables
 const initializeSuperAdmin = async () => {
@@ -228,16 +238,14 @@ const verifyLoginOTP = async (req, res) => {
     console.log(`[LOGIN STEP 2] Verifying OTP`);
 
     // ==========================================================
-    // 1. VERIFY TEMPORARY TOKEN
+    // 1. VERIFY TEMPORARY TOKEN  (unchanged)
     // ==========================================================
     let decoded;
     try {
       decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
-      
+
       if (decoded.stage !== 'otp_pending' || decoded.purpose !== '2fa_verification') {
-        return res.status(401).json({
-          message: "Invalid temporary token"
-        });
+        return res.status(401).json({ message: "Invalid temporary token" });
       }
     } catch (err) {
       console.log(`[LOGIN STEP 2] Invalid or expired temp token`);
@@ -247,16 +255,16 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 2. FIND USER
+    // 2. FIND USER  (unchanged)
     // ==========================================================
     const user = await User.findById(decoded.userId).populate("createdBy", "userName email");
-    
+
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
     // ==========================================================
-    // 3. VERIFY OTP
+    // 3. VERIFY OTP  (unchanged)
     // ==========================================================
     const otpResult = verifyOTP(user.email, otp);
 
@@ -272,7 +280,75 @@ const verifyLoginOTP = async (req, res) => {
     console.log(`[LOGIN STEP 2] OTP verified successfully for ${user.email}`);
 
     // ==========================================================
-    // 4. UPDATE FIRST LOGIN FLAG
+    // 4. CONCURRENT SESSION ENFORCEMENT  ← NEW
+    //
+    // Count active (non-expired) sessions for this user.
+    // If the count is already at the user's limit, reject the login.
+    //
+    // We count on the DB side for accuracy under concurrent requests.
+    // Expired sessions are handled automatically by MongoDB's TTL index
+    // and are therefore never included in this count.
+    // ==========================================================
+    const limit = user.concurrentLoginLimit ?? 1; // schema default = 1
+
+    const activeSessionCount = await UserSession.countDocuments({
+      userId: user._id,
+      isActive: true
+    });
+
+    console.log(
+      `[LOGIN STEP 2] User ${user.email}: activeSessionCount=${activeSessionCount}, limit=${limit}`
+    );
+
+    if (activeSessionCount >= limit) {
+      console.log(
+        `[LOGIN STEP 2] Concurrent session limit reached for ${user.email}`
+      );
+      return res.status(409).json({
+        message: "Already logged in on another device",
+        code: "SESSION_LIMIT_REACHED",
+        activeSessions: activeSessionCount,
+        limit
+      });
+    }
+
+    // ==========================================================
+    // 4b. QUOTA-LEVEL CONCURRENT SESSION CHECK  ← FIX Bug #3
+    //
+    // The per-user check above (step 4) enforces the user-level cap
+    // stored on User.concurrentLoginLimit.
+    // This additional check enforces the per-userType cap configured by
+    // consultant_admin via PATCH /quota/user-types → concurrentLoginLimit.
+    //
+    // These are two independent limits:
+    //   - User-level:  user.concurrentLoginLimit (set via setConcurrentLoginLimit)
+    //   - Quota-level: ConsultantClientQuota.userTypeQuotas.*.concurrentLoginLimit
+    //
+    // Both must pass. The more restrictive of the two takes effect.
+    // Non-quota userTypes (super_admin, consultant_admin, consultant,
+    // client_admin, supportManager, support) are skipped — they have no
+    // ConsultantClientQuota doc and calling the service would be a no-op.
+    // ==========================================================
+    const QUOTA_CONCURRENT_TYPES = ['client_employee_head', 'employee', 'viewer', 'auditor'];
+    if (QUOTA_CONCURRENT_TYPES.includes(user.userType) && user.clientId) {
+      const { checkConcurrentLoginLimit } = require('../services/quota/quotaService');
+      const concurrentCheck = await checkConcurrentLoginLimit(user);
+      if (!concurrentCheck.allowed) {
+        console.log(
+          `[LOGIN STEP 2] Quota concurrent session limit reached for ${user.email}: ` +
+          `${concurrentCheck.activeCount}/${concurrentCheck.limit}`
+        );
+        return res.status(429).json({
+          message:     concurrentCheck.message,
+          code:        'QUOTA_SESSION_LIMIT_REACHED',
+          limit:       concurrentCheck.limit,
+          activeCount: concurrentCheck.activeCount,
+        });
+      }
+    }
+
+    // ==========================================================
+    // 5. UPDATE FIRST LOGIN FLAG  (unchanged)
     // ==========================================================
     if (user.isFirstLogin) {
       user.isFirstLogin = false;
@@ -280,7 +356,38 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 5. CREATE FINAL JWT TOKEN
+    // 6. CREATE SESSION RECORD  ← NEW
+    //
+    // sessionId is a cryptographically random 32-byte hex string.
+    // It will be embedded in the JWT and verified on every request
+    // by the auth middleware.
+    //
+    // expiresAt matches the JWT's own "24h" expiry so that the TTL
+    // index cleans up the session document exactly when the token
+    // would expire anyway.
+    // ==========================================================
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 h
+
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    const ip =
+      req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      'unknown';
+
+    await UserSession.create({
+      userId: user._id,
+      sessionId,
+      userAgent,
+      ip,
+      expiresAt,
+      isActive: true
+    });
+
+    console.log(`[LOGIN STEP 2] Session created: ${sessionId.slice(0, 8)}… for ${user.email}`);
+
+    // ==========================================================
+    // 7. CREATE FINAL JWT TOKEN  (sessionId added to payload)
     // ==========================================================
     const tokenPayload = {
       id: user._id,
@@ -290,7 +397,8 @@ const verifyLoginOTP = async (req, res) => {
       clientId: user.clientId,
       permissions: user.permissions,
       sandbox: user.sandbox === true,
-      assessmentLevel: user.assessmentLevel || []
+      assessmentLevel: user.assessmentLevel || [],
+      sessionId                                // ← NEW: ties token to one session row
     };
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
@@ -298,7 +406,7 @@ const verifyLoginOTP = async (req, res) => {
     });
 
     // ==========================================================
-    // 6. PREPARE USER DATA
+    // 8. PREPARE USER DATA  (unchanged)
     // ==========================================================
     const userData = {
       id: user._id,
@@ -317,12 +425,11 @@ const verifyLoginOTP = async (req, res) => {
     };
 
     // ==========================================================
-    // 7. SUCCESS RESPONSE
+    // 9. SUCCESS RESPONSE  (unchanged shape)
     // ==========================================================
-
-    logLogin(req, user).catch(() => {}); 
+    logLogin(req, user).catch(() => {});
     console.log(`[LOGIN STEP 2] Login successful for ${user.email}`);
-    
+
     res.status(200).json({
       user: userData,
       token,
@@ -337,6 +444,267 @@ const verifyLoginOTP = async (req, res) => {
     });
   }
 };
+
+// ============================================================
+// NEW FUNCTION: logout
+//
+// POST /api/users/logout
+// Header: Authorization: Bearer <token>
+//
+// Marks the current session as inactive so:
+//   - The auth middleware will reject the token immediately (before JWT expiry).
+//   - The slot is freed, allowing the user (or another browser) to log in again.
+//   - The TTL index will eventually clean up the document automatically.
+//
+// No body required — session is identified from the token via req.sessionId
+// (set by the auth middleware which runs before this handler).
+// ============================================================
+const logout = async (req, res) => {
+  try {
+    const sessionId = req.sessionId; // set by auth middleware
+
+    if (!sessionId) {
+      // Should never happen when auth middleware is applied, but guard anyway
+      return res.status(400).json({ message: "No active session found" });
+    }
+
+    const result = await UserSession.updateOne(
+      { sessionId, userId: req.user.id, isActive: true },
+      { $set: { isActive: false } }
+    );
+
+    if (result.matchedCount === 0) {
+      // Session already invalidated or not found — still treat as success
+      console.log(`[LOGOUT] Session not found or already logged out: ${sessionId.slice(0, 8)}…`);
+    } else {
+      console.log(`[LOGOUT] Session invalidated: ${sessionId.slice(0, 8)}… for ${req.user.email}`);
+    }
+
+    return res.status(200).json({ message: "Logged out successfully" });
+
+  } catch (error) {
+    console.error("[LOGOUT] Error:", error);
+    return res.status(500).json({
+      message: "Logout failed",
+      error: error.message
+    });
+  }
+};
+
+
+// ════════════════════════════════════════════════════════════════════════
+//  A)  logoutAllDevices
+//      POST /api/users/me/logout-all-devices
+//
+//  Strategy: Option B (recommended UX)
+//    Revoke ALL sessions EXCEPT the current one.
+//    The user stays logged in on the device they used to trigger this.
+//    All other devices/tabs receive SESSION_EXPIRED on the next request.
+//
+//  To switch to Option A (strict "all devices including current"):
+//    Replace the query filter:
+//      { userId: req.user.id }          ← Option A
+//    with:
+//      { userId: req.user.id,
+//        sessionId: { $ne: req.sessionId } }  ← Option B (current)
+// ════════════════════════════════════════════════════════════════════════
+
+const logoutAllDevices = async (req, res) => {
+  try {
+    // ── 1. Permission check ──────────────────────────────────────────
+    //  canLogoutAllDevices must be explicitly true on the User document.
+    //  We re-read from DB (not JWT) to get the live value.
+    const user = await User.findById(req.user.id).select('canLogoutAllDevices email userName');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (!user.canLogoutAllDevices) {
+      console.log(
+        `[LOGOUT-ALL] DENIED — ${user.email} does not have canLogoutAllDevices permission`
+      );
+      return res.status(403).json({
+        message: 'You do not have permission to log out from all devices.',
+        code:    'LOGOUT_ALL_DENIED'
+      });
+    }
+
+    // ── 2. Revoke all sessions except the current one (Option B) ────
+    //  Change the filter to `{ userId: req.user.id }` if you prefer Option A.
+    const currentSessionId = req.sessionId; // set by auth middleware
+
+    const result = await UserSession.updateMany(
+      {
+        userId:    req.user.id,
+        isActive:  true,
+        sessionId: { $ne: currentSessionId }   // exclude the current session
+      },
+      { $set: { isActive: false } }
+    );
+
+    const revokedCount = result.modifiedCount;
+
+    console.log(
+      `[LOGOUT-ALL] ${user.email} revoked ${revokedCount} session(s) ` +
+      `(current session ${currentSessionId.slice(0, 8)}… preserved)`
+    );
+
+    return res.status(200).json({
+      success:      true,
+      message:      revokedCount > 0
+        ? `Logged out from ${revokedCount} other device(s) successfully.`
+        : 'No other active sessions found.',
+      revokedCount
+    });
+
+  } catch (error) {
+    console.error('[LOGOUT-ALL] Error:', error);
+    return res.status(500).json({
+      message: 'Logout from all devices failed.',
+      error:   process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
+
+// ════════════════════════════════════════════════════════════════════════
+//  B)  setUserPermissions
+//      PATCH /api/admin/users/:userId/user-permissions
+//
+//  Body (one or both fields required):
+//    { "canLogoutAllDevices": true, "permissionToEdit": true }
+//
+//  Allowed callers:
+//    super_admin         — can update any user
+//    consultant_admin    — can update users whose clientId is in their assignedClients
+//
+//  Blocked callers:
+//    client_admin and all other roles → 403
+// ════════════════════════════════════════════════════════════════════════
+
+const setUserPermissions = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const requester  = req.user;
+
+    // ── 1. Validate userId ───────────────────────────────────────────
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid userId' });
+    }
+
+    // ── 2. Validate body ─────────────────────────────────────────────
+    const { canLogoutAllDevices, permissionToEdit } = req.body;
+
+    const hasCanLogout = canLogoutAllDevices !== undefined && canLogoutAllDevices !== null;
+    const hasPermEdit  = permissionToEdit    !== undefined && permissionToEdit    !== null;
+
+    if (!hasCanLogout && !hasPermEdit) {
+      return res.status(400).json({
+        message: 'At least one of canLogoutAllDevices or permissionToEdit must be provided.',
+        allowed: ['canLogoutAllDevices (boolean)', 'permissionToEdit (boolean)']
+      });
+    }
+
+    if (hasCanLogout && typeof canLogoutAllDevices !== 'boolean') {
+      return res.status(400).json({ message: 'canLogoutAllDevices must be a boolean.' });
+    }
+
+    if (hasPermEdit && typeof permissionToEdit !== 'boolean') {
+      return res.status(400).json({ message: 'permissionToEdit must be a boolean.' });
+    }
+
+    // ── 3. Prevent self-update ───────────────────────────────────────
+    if (String(userId) === String(requester.id)) {
+      return res.status(400).json({ message: 'You cannot modify your own permission badges.' });
+    }
+
+    // ── 4. Load target user ──────────────────────────────────────────
+    const targetUser = await User.findById(userId).select('-password');
+
+    if (!targetUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // ── 5. Caller authorisation ──────────────────────────────────────
+    const reqType = requester.userType;
+
+    if (reqType === 'super_admin') {
+      // super_admin can update any user — no further checks needed
+    } else if (reqType === 'consultant_admin') {
+      // consultant_admin: target must belong to one of their assigned clients
+      if (!targetUser.clientId) {
+        return res.status(403).json({
+          message: 'Target user has no clientId — cannot verify organisation ownership.'
+        });
+      }
+
+      // Re-fetch live assignedClients (not from JWT — may be stale)
+      const adminDoc = await User.findById(requester.id)
+        .select('assignedClients')
+        .lean();
+
+      const assignedClients = adminDoc?.assignedClients || [];
+
+      if (!assignedClients.map(String).includes(String(targetUser.clientId))) {
+        return res.status(403).json({
+          message: `You can only manage permissions for users whose organisation (${targetUser.clientId}) is in your assigned clients list.`
+        });
+      }
+    } else {
+      // All other roles — explicitly denied
+      return res.status(403).json({
+        message: 'Only super_admin or consultant_admin can modify user permission badges.'
+      });
+    }
+
+    // ── 6. Apply the updates ─────────────────────────────────────────
+    const previousValues = {
+      canLogoutAllDevices: targetUser.canLogoutAllDevices,
+      permissionToEdit:    targetUser.permissionToEdit
+    };
+
+    if (hasCanLogout) targetUser.canLogoutAllDevices = canLogoutAllDevices;
+    if (hasPermEdit)  targetUser.permissionToEdit    = permissionToEdit;
+
+    await targetUser.save();
+
+    console.log(
+      `[USER-PERMS] ${requester.userType} (${requester.email}) updated ` +
+      `${targetUser.userType} (${targetUser.email}): ` +
+      `${JSON.stringify(previousValues)} → ` +
+      `canLogoutAllDevices=${targetUser.canLogoutAllDevices}, ` +
+      `permissionToEdit=${targetUser.permissionToEdit}`
+    );
+
+    return res.status(200).json({
+      message: 'User permission badges updated successfully.',
+      user: {
+        id:                  targetUser._id,
+        userName:            targetUser.userName,
+        email:               targetUser.email,
+        userType:            targetUser.userType,
+        clientId:            targetUser.clientId || null,
+        canLogoutAllDevices: targetUser.canLogoutAllDevices,
+        permissionToEdit:    targetUser.permissionToEdit,
+        previous:            previousValues
+      }
+    });
+
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      const msgs = Object.values(error.errors).map(e => e.message);
+      return res.status(400).json({ message: 'Validation failed', errors: msgs });
+    }
+
+    console.error('[USER-PERMS] Unexpected error:', error);
+    return res.status(500).json({
+      message: 'Failed to update user permissions.',
+      error:   process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
 
 // Resend OTP
 const resendLoginOTP = async (req, res) => {
@@ -460,6 +828,7 @@ const createConsultantAdmin = async (req, res) => {
     const teamName = req.body.teamName;
     const employeeId = req.body.employeeId;
     const companyName = req.body.companyName;
+    const concurrentLoginLimit= req.body.concurrentLoginLimit || 1;
 
     if (!email || !password || !userName) {
       return res.status(400).json({ 
@@ -491,7 +860,8 @@ const createConsultantAdmin = async (req, res) => {
       companyName,
       createdBy: req.user.id,
       isActive: true,
-      sandbox: false
+      sandbox: false,
+      concurrentLoginLimit
     });
 
     await consultantAdmin.save();
@@ -544,7 +914,8 @@ const createConsultantAdmin = async (req, res) => {
         email,
         userName,
         teamName,
-        profileImage: consultantAdmin.profileImage || null
+        profileImage: consultantAdmin.profileImage || null,
+        concurrentLoginLimit: consultantAdmin.concurrentLoginLimit || 1
       },
       imageUpload: imageUploadResult
     });
@@ -586,7 +957,8 @@ const createConsultant = async (req, res) => {
       employeeId,
       jobRole,
       branch,
-      teamName
+      teamName,
+      concurrentLoginLimit
     } = req.body;
     
     // ==========================================
@@ -761,7 +1133,8 @@ const createConsultant = async (req, res) => {
         canEditBoundaries: true,
         canSubmitData: false,
         canAudit: false
-      }
+      },
+      concurrentLoginLimit: concurrentLoginLimit || 1 // Default to 1 if not specified
     });
     
     await consultant.save();
@@ -861,7 +1234,8 @@ ZeroCarbon Team`;
         userType: consultant.userType,
         createdBy: req.user.userName,
         createdAt: consultant.createdAt,
-        profileImage: consultant.profileImage?.url || null
+        profileImage: consultant.profileImage?.url || null,
+        concurrentLoginLimit: consultant.concurrentLoginLimit
       },
       instructions: {
         nextSteps: [
@@ -1060,6 +1434,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         canSubmitData: false,
         canAudit: false,
       },
+      
     });
 
     await clientAdmin.save();
@@ -1291,7 +1666,31 @@ const createEmployeeHead = async (req, res) => {
           }
         });
 
-        await head.save();
+        // ==========================================
+        // 7b. QUOTA ENFORCEMENT (atomic slot reservation)
+        // ==========================================
+        const ehSlot = await reserveUserTypeSlot(req.user.clientId, 'client_employee_head');
+        if (!ehSlot.allowed) {
+          throw Object.assign(new Error(ehSlot.message || 'Employee Head quota exceeded for this client.'), {
+            isQuotaError: true,
+            quota: {
+              limit:     ehSlot.limit,
+              used:      ehSlot.used,
+              remaining: ehSlot.remaining,
+            },
+          });
+        }
+
+        try {
+          await head.save();
+        } catch (saveErr) {
+          // Rollback the reserved slot on DB failure
+          if (ehSlot.reserved && ehSlot.consultantId) {
+            await releaseUserTypeSlot(req.user.clientId, 'client_employee_head', ehSlot.consultantId).catch(() => {});
+          }
+          throw saveErr;
+        }
+
         logUserCreated(req, head).catch(() => {})
 
         console.log(`✅ Employee Head created: ${head.userName} | Department: ${head.department} | Location: ${head.location}`);
@@ -1407,7 +1806,7 @@ ZeroCarbon Team`;
         // 12. HANDLE INDIVIDUAL CREATION ERRORS
         // ==========================================
         console.error(`❌ Failed to create Employee Head ${itemNumber}/${payloads.length}:`, err.message);
-        
+
         results.errors.push({
           itemNumber: itemNumber,
           input: {
@@ -1417,7 +1816,8 @@ ZeroCarbon Team`;
             location: data.location
           },
           error: err.message,
-          field: extractFieldFromError(err.message)
+          field: extractFieldFromError(err.message),
+          ...(err.isQuotaError ? { quotaExceeded: true, quota: err.quota } : {}),
         });
 
         results.summary.failed++;
@@ -1559,7 +1959,29 @@ const createEmployee = async (req, res) => {
             canAudit: false
           }
         });
-        await emp.save();
+
+        // ── Quota enforcement ──────────────────────────────────────
+        const empSlot = await reserveUserTypeSlot(req.user.clientId, 'employee');
+        if (!empSlot.allowed) {
+          throw Object.assign(
+            new Error(empSlot.message || 'Employee quota exceeded for this client.'),
+            {
+              isQuotaError: true,
+              quota: { limit: empSlot.limit, used: empSlot.used, remaining: empSlot.remaining },
+            }
+          );
+        }
+
+        try {
+          await emp.save();
+        } catch (saveErr) {
+          if (empSlot.reserved && empSlot.consultantId) {
+            await releaseUserTypeSlot(req.user.clientId, 'employee', empSlot.consultantId).catch(() => {});
+          }
+          throw saveErr;
+        }
+        // ── End quota enforcement ──────────────────────────────────
+
           logUserCreated(req, emp).catch(() => {});
           try { await saveUserProfileImage(req, emp); } catch (e) {
          console.warn('profile image save skipped:', e.message);
@@ -1567,7 +1989,11 @@ const createEmployee = async (req, res) => {
 
         results.created.push({ id: emp._id, email: emp.email, userName: emp.userName });
       } catch (err) {
-        results.errors.push({ input: data, error: err.message });
+        results.errors.push({
+          input: data,
+          error: err.message,
+          ...(err.isQuotaError ? { quotaExceeded: true, quota: err.quota } : {}),
+        });
       }
     }
 
@@ -1657,7 +2083,29 @@ const createAuditor = async (req, res) => {
       accessControls: resolvedAccessControls, // 🆕
     });
 
-    await auditor.save();
+    // ── Quota enforcement ────────────────────────────────────────────────────
+    const auditorSlot = await reserveUserTypeSlot(req.user.clientId, 'auditor');
+    if (!auditorSlot.allowed) {
+      return res.status(429).json({
+        message: auditorSlot.message || 'Auditor quota exceeded for this client.',
+        quota: {
+          limit:     auditorSlot.limit     ?? null,
+          used:      auditorSlot.used      ?? null,
+          remaining: auditorSlot.remaining ?? 0,
+        },
+      });
+    }
+
+    try {
+      await auditor.save();
+    } catch (saveErr) {
+      if (auditorSlot.reserved && auditorSlot.consultantId) {
+        await releaseUserTypeSlot(req.user.clientId, 'auditor', auditorSlot.consultantId).catch(() => {});
+      }
+      throw saveErr;
+    }
+    // ── End quota enforcement ────────────────────────────────────────────────
+
     logUserCreated(req, auditor).catch(() => {});
     try {
       await saveUserProfileImage(req, auditor);
@@ -1755,7 +2203,29 @@ const createViewer = async (req, res) => {
       accessControls: resolvedAccessControls, // 🆕
     });
 
-    await viewer.save();
+    // ── Quota enforcement ────────────────────────────────────────────────────
+    const viewerSlot = await reserveUserTypeSlot(req.user.clientId, 'viewer');
+    if (!viewerSlot.allowed) {
+      return res.status(429).json({
+        message: viewerSlot.message || 'Viewer quota exceeded for this client.',
+        quota: {
+          limit:     viewerSlot.limit     ?? null,
+          used:      viewerSlot.used      ?? null,
+          remaining: viewerSlot.remaining ?? 0,
+        },
+      });
+    }
+
+    try {
+      await viewer.save();
+    } catch (saveErr) {
+      if (viewerSlot.reserved && viewerSlot.consultantId) {
+        await releaseUserTypeSlot(req.user.clientId, 'viewer', viewerSlot.consultantId).catch(() => {});
+      }
+      throw saveErr;
+    }
+    // ── End quota enforcement ────────────────────────────────────────────────
+
     logUserCreated(req, viewer).catch(() => {});
     try {
       await saveUserProfileImage(req, viewer);
@@ -1864,6 +2334,7 @@ const createSupportManager = async (req, res) => {
       // ✅ optional assignments
       assignedSupportClients,
       assignedConsultants,
+      concurrentLoginLimit,
     } = req.body;
 
     if (!email || !password || !userName) {
@@ -2016,6 +2487,7 @@ const createSupportManager = async (req, res) => {
       // ✅ store assignments
       assignedSupportClients: clientIds,
       assignedConsultants: consultantIds,
+      concurrentLoginLimit,
 
       createdBy: req.user?._id || req.user?.id || req.user?.userId,
     });
@@ -2101,6 +2573,7 @@ const createSupportManager = async (req, res) => {
         assignedSupportClients: supportManager.assignedSupportClients || [],
         assignedConsultants: supportManager.assignedConsultants || [],
         profileImage: supportManager.profileImage || null,
+        concurrentLoginLimit: supportManager.concurrentLoginLimit || null,
       },
       sync: {
         clientsUpdated,
@@ -2147,6 +2620,7 @@ const createSupport = async (req, res) => {
       // ✅ optional assignments
       assignedSupportClients,
       assignedConsultants,
+      concurrentLoginLimit,
     } = req.body;
 
     if (!email || !password || !userName) {
@@ -2294,6 +2768,7 @@ const createSupport = async (req, res) => {
       // ✅ store assignments
       assignedSupportClients: clientIds,
       assignedConsultants: consultantIds,
+      concurrentLoginLimit,
 
       createdBy: currentUserId,
 
@@ -2371,6 +2846,7 @@ const createSupport = async (req, res) => {
         assignedSupportClients: supportUser.assignedSupportClients || [],
         assignedConsultants: supportUser.assignedConsultants || [],
         profileImage: supportUser.profileImage || null,
+        concurrentLoginLimit: supportUser.concurrentLoginLimit || null,
       },
       sync: {
         clientsUpdated,
@@ -3929,9 +4405,23 @@ async function handleClientAdminDeletion(userToDelete, deletedBy) {
   // If deleting employee head, deactivate their employees
   if (userToDelete.userType === "client_employee_head") {
     details.preDeletionTasks = async () => {
+      // FIX Bug #2 (supplemental): Mark subordinate employees as BOTH
+      // isActive: false AND isDeleted: true so that:
+      //   1. They cannot log in or be re-activated.
+      //   2. syncUserTypeUsedCounts excludes them correctly
+      //      (it filters isDeleted: { $ne: true }).
+      //   3. The quota release in deleteUser can identify them by
+      //      isDeleted: true and release their slots.
+      // Previously only isActive: false was set, creating an ambiguous
+      // state where the users appeared deactivated but not deleted.
       await User.updateMany(
-        { employeeHeadId: userToDelete._id },
-        { isActive: false }
+        { employeeHeadId: userToDelete._id, userType: 'employee' },
+        {
+          isActive:  false,
+          isDeleted: true,
+          deletedAt: new Date(),
+          deletedBy: userToDelete._id, // attributed to the cascade from head deletion
+        }
       );
     };
   }
@@ -4019,6 +4509,25 @@ const updateUser = async (req, res) => {
       });
     }
 
+    // ── permissionToEdit guard (self-update only) ─────────────────────
+    const isSelfUpdate = String(userToUpdate._id) === String(currentUserId);
+
+    if (isSelfUpdate) {
+      // Re-read from DB so we always have the live value, not the JWT snapshot
+      const freshUser = await User.findById(currentUserId)
+        .select("permissionToEdit")
+        .lean();
+
+      if (freshUser && freshUser.permissionToEdit === false) {
+        return res.status(403).json({
+          message:
+            "Profile editing has been disabled for your account. Please contact your administrator.",
+          code: "EDIT_PERMISSION_DENIED",
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     // -------------------------------------
     // REMOVE IMMUTABLE FIELDS + accessControls VALIDATION
     // -------------------------------------
@@ -4071,9 +4580,7 @@ const updateUser = async (req, res) => {
       await replaceUserProfileImage(req, userToUpdate);
     }
 
-    const updatedUser = await User.findById(userId)
-      .select("-password")
-      .lean();
+    const updatedUser = await User.findById(userId).select("-password").lean();
 
     return res.status(200).json({
       message: "User updated successfully",
@@ -4231,6 +4738,66 @@ const deleteUser = async (req, res) => {
     userToDelete.deletedBy = req.user.id;
 
     await userToDelete.save();
+
+    // ── Release quota slot on deletion ─────────────────────────────────────────
+    // FIX Bug #1: The original code passed null as consultantId, causing
+    // releaseUserTypeSlot to immediately return (no-op) on every call.
+    // Every deleted user was permanently inflating usedCount, which eventually
+    // blocks new user creation even after deletions.
+    // Fix: resolve consultantId via getAssignedConsultantId() first.
+    //
+    // FIX Bug #2: When a client_employee_head is deleted, handleClientAdminDeletion
+    // deactivates their subordinate employees via updateMany({ isActive: false }).
+    // Those employees' quota slots were never released, leaving usedCount inflated
+    // for 'employee' even though those users are now non-functional.
+    // Fix: find the deactivated employees (isActive: false, isDeleted: true from
+    // preDeletionTasks) and release a slot for each of them.
+    const QUOTA_CONTROLLED = ['client_employee_head', 'employee', 'viewer', 'auditor'];
+    if (QUOTA_CONTROLLED.includes(userToDelete.userType) && userToDelete.clientId) {
+      getAssignedConsultantId(userToDelete.clientId)
+        .then(async (consultantId) => {
+          if (!consultantId) return; // no consultant assigned → no quota doc → nothing to release
+
+          // Release slot for the directly-deleted user.
+          await releaseUserTypeSlot(
+            userToDelete.clientId,
+            userToDelete.userType,
+            consultantId
+          );
+
+          // FIX Bug #2: If an employee_head was deleted, preDeletionTasks
+          // cascaded isActive: false + isDeleted: true onto their employees.
+          // Their usedCount slots were never released — release them now.
+          if (userToDelete.userType === 'client_employee_head') {
+            const deactivatedEmployees = await User.find({
+              employeeHeadId: userToDelete._id,
+              clientId:       userToDelete.clientId,
+              userType:       'employee',
+              isActive:       false,
+              isDeleted:      true,   // set by updated preDeletionTasks
+            }).select('_id').lean();
+
+            for (let i = 0; i < deactivatedEmployees.length; i++) {
+              await releaseUserTypeSlot(
+                userToDelete.clientId,
+                'employee',
+                consultantId
+              );
+            }
+
+            if (deactivatedEmployees.length > 0) {
+              console.log(
+                `[QUOTA] Released ${deactivatedEmployees.length} employee slot(s) ` +
+                `after head ${userToDelete.userName} (${userToDelete._id}) was deleted.`
+              );
+            }
+          }
+        })
+        .catch((e) =>
+          console.warn('[QUOTA] releaseUserTypeSlot after delete failed:', e.message)
+        );
+    }
+    // ── End quota release ───────────────────────────────────────────────────────
 
     // ------------------------------------------------
     // RESPONSE
@@ -4460,39 +5027,53 @@ const toggleUserStatus = async (req, res) => {
 const changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    
+
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ 
-        message: "Please provide current and new password" 
+      return res.status(400).json({
+        message: "Please provide current and new password",
       });
     }
-    
+
+    // ── permissionToEdit guard ────────────────────────────────────────
+    // Re-read from DB so we always have the live value, not the JWT snapshot
+    const callerForPwChange = await User.findById(req.user.id)
+      .select("permissionToEdit")
+      .lean();
+
+    if (callerForPwChange && callerForPwChange.permissionToEdit === false) {
+      return res.status(403).json({
+        message:
+          "Password changes have been disabled for your account. Please contact your administrator.",
+        code: "EDIT_PERMISSION_DENIED",
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     // Get user with password
     const user = await User.findById(req.user.id);
-    
+
     // Verify current password
     const isMatch = bcrypt.compareSync(currentPassword, user.password);
     if (!isMatch) {
-      return res.status(400).json({ 
-        message: "Current password is incorrect" 
+      return res.status(400).json({
+        message: "Current password is incorrect",
       });
     }
-    
+
     // Hash new password
     const hashedPassword = bcrypt.hashSync(newPassword, 10);
     user.password = hashedPassword;
     user.isFirstLogin = false;
     await user.save();
-    
+
     res.status(200).json({
-      message: "Password changed successfully"
+      message: "Password changed successfully",
     });
-    
   } catch (error) {
     console.error("Change password error:", error);
-    res.status(500).json({ 
-      message: "Failed to change password", 
-      error: error.message 
+    res.status(500).json({
+      message: "Failed to change password",
+      error: error.message,
     });
   }
 };
@@ -4502,40 +5083,55 @@ const changePassword = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     if (!email) {
-      return res.status(400).json({ 
-        message: "Please provide your email address" 
+      return res.status(400).json({
+        message: "Please provide your email address",
       });
     }
-    
+
     // Find user by email
-    const user = await User.findOne({ 
+    const user = await User.findOne({
       email: email.toLowerCase(),
-      isActive: true 
+      isActive: true,
     });
-    
+
     if (!user) {
       // Don't reveal if email exists or not for security
-      return res.status(200).json({ 
-        message: "If your email is registered, you will receive a password reset link shortly." 
+      return res.status(200).json({
+        message:
+          "If your email is registered, you will receive a password reset link shortly.",
       });
     }
-    
+
+    // ── permissionToEdit guard ────────────────────────────────────────
+    // NOTE: Return generic 200 to avoid account enumeration / lock-state leakage.
+    if (user.permissionToEdit === false) {
+      console.log(
+        `[FORGOT-PW] Blocked reset for ${user.email} — permissionToEdit=false`
+      );
+
+      return res.status(200).json({
+        message:
+          "If your email is registered, you will receive a password reset link shortly.",
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     // Generate reset token using JWT (valid for 15 minutes)
     const resetToken = jwt.sign(
-      { 
+      {
         userId: user._id,
         email: user.email,
-        purpose: "password-reset"
+        purpose: "password-reset",
       },
       process.env.JWT_SECRET + user.password, // Use current password hash as part of secret
       { expiresIn: "15m" }
     );
-    
+
     // Create reset URL
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
-    
+
     // Email content
     const emailSubject = "ZeroCarbon - Password Reset Request";
     const emailMessage = `
@@ -4558,28 +5154,30 @@ const forgotPassword = async (req, res) => {
       Best regards,
       ZeroCarbon Security Team
     `;
-    
+
     // Send email
     const emailSent = await sendMail(user.email, emailSubject, emailMessage);
-    
+
     if (!emailSent) {
-      return res.status(500).json({ 
-        message: "Failed to send reset email. Please try again later." 
+      return res.status(500).json({
+        message: "Failed to send reset email. Please try again later.",
       });
     }
-    
+
     // Log the password reset attempt for security
-    console.log(`Password reset requested for user: ${user.email} at ${new Date().toISOString()}`);
-    
+    console.log(
+      `Password reset requested for user: ${user.email} at ${new Date().toISOString()}`
+    );
+
     res.status(200).json({
-      message: "If your email is registered, you will receive a password reset link shortly."
+      message:
+        "If your email is registered, you will receive a password reset link shortly.",
     });
-    
   } catch (error) {
     console.error("Forgot password error:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: "An error occurred. Please try again later.",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -4588,20 +5186,20 @@ const forgotPassword = async (req, res) => {
 const resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body;
-    
+
     if (!token || !newPassword) {
-      return res.status(400).json({ 
-        message: "Please provide reset token and new password" 
+      return res.status(400).json({
+        message: "Please provide reset token and new password",
       });
     }
-    
+
     // Validate password strength (optional)
     if (newPassword.length < 8) {
-      return res.status(400).json({ 
-        message: "Password must be at least 8 characters long" 
+      return res.status(400).json({
+        message: "Password must be at least 8 characters long",
       });
     }
-    
+
     // Decode token to get userId
     let decoded;
     try {
@@ -4610,61 +5208,73 @@ const resetPassword = async (req, res) => {
       if (!preDecoded || !preDecoded.userId) {
         throw new Error("Invalid token format");
       }
-      
+
       // Get user to use their password hash as part of secret
       const user = await User.findById(preDecoded.userId);
       if (!user) {
         throw new Error("User not found");
       }
-      
+
       // Now verify with the correct secret
       decoded = jwt.verify(token, process.env.JWT_SECRET + user.password);
-      
+
       // Extra validation
       if (decoded.purpose !== "password-reset") {
         throw new Error("Invalid token purpose");
       }
-      
     } catch (jwtError) {
       if (jwtError.name === "TokenExpiredError") {
-        return res.status(400).json({ 
-          message: "Password reset link has expired. Please request a new one." 
+        return res.status(400).json({
+          message: "Password reset link has expired. Please request a new one.",
         });
       }
-      return res.status(400).json({ 
-        message: "Invalid or expired reset link" 
+      return res.status(400).json({
+        message: "Invalid or expired reset link",
       });
     }
-    
+
     // Find user and verify they're active
     const user = await User.findOne({
       _id: decoded.userId,
       email: decoded.email,
-      isActive: true
+      isActive: true,
     });
-    
+
     if (!user) {
-      return res.status(400).json({ 
-        message: "Invalid reset link or user not found" 
+      return res.status(400).json({
+        message: "Invalid reset link or user not found",
       });
     }
-    
+
+    // ── permissionToEdit guard ────────────────────────────────────────
+    if (user.permissionToEdit === false) {
+      console.log(
+        `[RESET-PW] Blocked reset for ${user.email} — permissionToEdit=false`
+      );
+      return res.status(403).json({
+        message:
+          "Password reset has been disabled for this account. Please contact your administrator.",
+        code: "EDIT_PERMISSION_DENIED",
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     // Check if new password is same as current password
     const isSamePassword = bcrypt.compareSync(newPassword, user.password);
     if (isSamePassword) {
-      return res.status(400).json({ 
-        message: "New password must be different from your current password" 
+      return res.status(400).json({
+        message: "New password must be different from your current password",
       });
     }
-    
+
     // Hash new password
     const hashedPassword = bcrypt.hashSync(newPassword, 10);
-    
+
     // Update user password
     user.password = hashedPassword;
     user.isFirstLogin = false; // In case it was a first login scenario
     await user.save();
-    
+
     // Send confirmation email
     const confirmationSubject = "ZeroCarbon - Password Reset Successful";
     const confirmationMessage = `
@@ -4684,21 +5294,23 @@ const resetPassword = async (req, res) => {
       Best regards,
       ZeroCarbon Security Team
     `;
-    
+
     await sendMail(user.email, confirmationSubject, confirmationMessage);
-    
+
     // Log successful password reset
-    console.log(`Password reset successful for user: ${user.email} at ${new Date().toISOString()}`);
-    
+    console.log(
+      `Password reset successful for user: ${user.email} at ${new Date().toISOString()}`
+    );
+
     res.status(200).json({
-      message: "Password has been reset successfully. Please login with your new password."
+      message:
+        "Password has been reset successfully. Please login with your new password.",
     });
-    
   } catch (error) {
     console.error("Reset password error:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: "Failed to reset password. Please try again.",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -5469,10 +6081,214 @@ const assignSupportManagerToConsultant = async (req, res) => {
 
 
 
+/**
+ * ── Permission matrix (corrected) ───────────────────────────────────────
+ *
+ *  WHO can call this endpoint:
+ *  ┌─────────────────┬────────────────────────────────────────────────────┐
+ *  │ Requester       │ Which target users they can update                 │
+ *  ├─────────────────┼────────────────────────────────────────────────────┤
+ *  │ super_admin     │ Any user in the system                             │
+ *  ├─────────────────┼────────────────────────────────────────────────────┤
+ *  │ consultant_admin│ client_admin, client_employee_head, employee,      │
+ *  │                 │ auditor, viewer — whose clientId is in the         │
+ *  │                 │ consultant_admin's own assignedClients array       │
+ *  ├─────────────────┼────────────────────────────────────────────────────┤
+ *  │ consultant      │ client_admin, client_employee_head, employee,      │
+ *  │                 │ auditor, viewer — whose clientId is a client where │
+ *  │                 │ Client.leadInfo.assignedConsultantId === consultant │
+ *  │                 │ (same lookup used by getUsers / getUserById)       │
+ *  ├─────────────────┼────────────────────────────────────────────────────┤
+ *  │ client_admin    │ ❌ NOT ALLOWED — client_admin cannot set limits    │
+ *  └─────────────────┴────────────────────────────────────────────────────┘
+ *
+ *  ENDPOINT:  PATCH /api/users/:userId/session-limit
+ *  BODY:      { "concurrentLoginLimit": <integer 1–10> }
+ *  HEADER:    Authorization: Bearer <token>
+ */
+const setConcurrentLoginLimit = async (req, res) => {
+  try {
+    const { userId }  = req.params;
+    const requester   = req.user; // set by auth middleware
+
+    // ── 1. Validate userId format ──────────────────────────────────────
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid userId" });
+    }
+
+    // ── 2. Validate the new limit value ───────────────────────────────
+    const rawLimit = req.body.concurrentLoginLimit;
+
+    if (rawLimit === undefined || rawLimit === null || rawLimit === '') {
+      return res.status(400).json({
+        message: "concurrentLoginLimit is required",
+        field: "concurrentLoginLimit"
+      });
+    }
+
+    const limit = parseInt(rawLimit, 10);
+
+    if (isNaN(limit) || limit < 1 || limit > 10) {
+      return res.status(400).json({
+        message: "concurrentLoginLimit must be a whole number between 1 and 10",
+        field: "concurrentLoginLimit",
+        received: rawLimit,
+        allowed: "1–10"
+      });
+    }
+
+    // ── 3. Prevent self-update ─────────────────────────────────────────
+    if (String(userId) === String(requester.id)) {
+      return res.status(400).json({
+        message: "You cannot change your own concurrent login limit"
+      });
+    }
+
+    // ── 4. Load target user ────────────────────────────────────────────
+    const targetUser = await User.findById(userId).select('-password');
+
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // ── 5. Authorization check ─────────────────────────────────────────
+    const authResult = await _checkSessionLimitAuthority(requester, targetUser);
+
+    if (!authResult.allowed) {
+      console.log(
+        `[SESSION LIMIT] DENIED — ${requester.userType} (${requester.email}) ` +
+        `tried to update ${targetUser.userType} (${targetUser.email}): ${authResult.reason}`
+      );
+      return res.status(403).json({ message: authResult.reason });
+    }
+
+    // ── 6. Apply the update ────────────────────────────────────────────
+    const previousLimit = targetUser.concurrentLoginLimit ?? 1;
+    targetUser.concurrentLoginLimit = limit;
+    await targetUser.save();
+
+    console.log(
+      `[SESSION LIMIT] ${requester.userType} (${requester.email}) ` +
+      `updated ${targetUser.userType} (${targetUser.email}): ` +
+      `${previousLimit} → ${limit}`
+    );
+
+    return res.status(200).json({
+      message: "Concurrent login limit updated successfully",
+      user: {
+        id:                   targetUser._id,
+        userName:             targetUser.userName,
+        email:                targetUser.email,
+        userType:             targetUser.userType,
+        clientId:             targetUser.clientId || null,
+        previousLimit,
+        concurrentLoginLimit: targetUser.concurrentLoginLimit
+      }
+    });
+
+  } catch (error) {
+    // Mongoose schema-level validation (min/max)
+    if (error.name === 'ValidationError') {
+      const msgs = Object.values(error.errors).map(e => e.message);
+      return res.status(400).json({ message: "Validation failed", errors: msgs });
+    }
+
+    console.error("[SESSION LIMIT] Unexpected error:", error);
+    return res.status(500).json({
+      message: "Failed to update concurrent login limit",
+      error: process.env.NODE_ENV === 'development' ? error.message : "Internal server error"
+    });
+  }
+};
+
+
+/**
+ * Internal authority resolver.
+ *
+ * Returns { allowed: true }
+ *      or { allowed: false, reason: "<human-readable message>" }
+ *
+ * Uses the SAME data patterns as getUsers/getUserById:
+ *   • consultant_admin → their assignedClients array on the User document
+ *   • consultant       → Client.leadInfo.assignedConsultantId (DB lookup)
+ */
+async function _checkSessionLimitAuthority(requester, targetUser) {
+  const reqType = requester.userType;
+  const tgtType = targetUser.userType;
+
+  // ── Target must always be a client-side user ─────────────────────────
+  const CLIENT_SIDE_TYPES = [
+    'client_admin',
+    'client_employee_head',
+    'employee',
+    'auditor',
+    'viewer'
+  ];
+
+  if (!CLIENT_SIDE_TYPES.includes(tgtType)) {
+    return {
+      allowed: false,
+      reason: `Only client-side users (client_admin, client_employee_head, employee, auditor, viewer) can have their session limit updated by this endpoint`
+    };
+  }
+
+  // ── RULE 0: super_admin — unrestricted ───────────────────────────────
+  if (reqType === 'super_admin') {
+    return { allowed: true };
+  }
+
+  // ── RULE 1: consultant_admin ─────────────────────────────────────────
+  // Authority: their own assignedClients array contains targetUser.clientId
+  // This is exactly how createClientAdmin and getUsers determine ownership.
+  if (reqType === 'consultant_admin') {
+    if (!targetUser.clientId) {
+      return {
+        allowed: false,
+        reason: "Target user has no clientId — cannot verify organisation ownership"
+      };
+    }
+
+    // Fetch live assignedClients from DB (not from JWT — it may be stale)
+    const requesterDoc = await User.findById(requester.id)
+      .select('assignedClients')
+      .lean();
+
+    const assignedClients = requesterDoc?.assignedClients || [];
+
+    if (assignedClients.includes(targetUser.clientId)) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      reason: `You can only set session limits for users whose organisation (${targetUser.clientId}) is in your assigned clients list`
+    };
+  }
+
+
+
+  // ── RULE 3: client_admin — explicitly blocked ────────────────────────
+  if (reqType === 'client_admin') {
+    return {
+      allowed: false,
+      reason: "client_admin does not have permission to set concurrent login limits. Only super_admin, consultant_admin, or consultant can do this."
+    };
+  }
+
+  // ── Default deny for all other roles ─────────────────────────────────
+  return {
+    allowed: false,
+    reason: "You do not have permission to set concurrent login limits"
+  };
+}
+
 
 module.exports = {
   initializeSuperAdmin,
   login,
+  logout,
+  logoutAllDevices,
+  setUserPermissions,
   createConsultantAdmin,
   createConsultant,
   createClientAdmin,
@@ -5506,4 +6322,5 @@ module.exports = {
   getAllSupportUsers,
   deleteSupportManager,
   deleteSupportUser,
+  setConcurrentLoginLimit,
 };

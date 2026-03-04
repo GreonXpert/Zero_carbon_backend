@@ -45,6 +45,14 @@ const {
   logProcessFlowAllocationUpdate,
 } = require('../../services/audit/processFlowchartAuditLog');
 
+   const {
+     checkFlowchartQuota,
+     getAssignedConsultantId,
+     isQuotaSubject,
+     getQuotaStatus,
+   } = require('../../services/quota/quotaService');
+
+
 // Enhanced validation for scope details (excerpt from flowchartController.js)
 // const validateScopeDetails = (scopeDetails, nodeId) => {
 //   if (!Array.isArray(scopeDetails)) {
@@ -182,6 +190,7 @@ const {
 
 
 // Save or update process flowchart
+// Save or update process flowchart
 const saveProcessFlowchart = async (req, res) => {
   try {
     const { clientId, flowchartData } = req.body;
@@ -251,6 +260,52 @@ const saveProcessFlowchart = async (req, res) => {
       });
     }
 
+    // ─────────────────────────────────────────────────────────
+    // 5.5) QUOTA CHECK
+    // ─────────────────────────────────────────────────────────
+    if (isQuotaSubject(req.user.userType)) {
+      const assignedConsultantId = await getAssignedConsultantId(clientId);
+
+      if (!assignedConsultantId) {
+        return res.status(403).json({
+          success: false,
+          message: 'This client does not have an assigned consultant. Assign a consultant first.',
+          code: 'NO_ASSIGNED_CONSULTANT',
+        });
+      }
+
+      const incomingNodes = Array.isArray(flowchartData.nodes) ? flowchartData.nodes : [];
+      const countableNodes = incomingNodes.map((n) => ({
+        details: {
+          scopeDetails: (n.details?.scopeDetails || []).filter((s) => !s.isDeleted),
+        },
+      }));
+
+      const quotaResult = await checkFlowchartQuota({
+        clientId,
+        consultantId: assignedConsultantId,
+        nodes:        countableNodes,
+        chartType:    'processFlowchart',
+      });
+
+      if (!quotaResult.allowed) {
+        return res.status(422).json({
+          success: false,
+          message: 'Process flowchart creation quota exceeded.',
+          code: 'QUOTA_EXCEEDED',
+          quotaErrors: quotaResult.errors.map((e) => ({
+            resource:  e.resource,
+            limit:     e.limit,
+            used:      e.used,
+            remaining: e.remaining,
+            attempted: e.newTotal,
+            message:   e.message,
+          })),
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────
+
     // 6) Normalize nodes based on assessmentLevel
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'processFlowchart');
     
@@ -262,13 +317,6 @@ const saveProcessFlowchart = async (req, res) => {
 
     // ============================================================================
     // 🆕 VALIDATE ALLOCATION PERCENTAGES (COMPLETE FLOWCHART STATE)
-    // ============================================================================
-    // When saving the complete flowchart, we validate that shared scopeIdentifiers
-    // have allocations that sum to 100%. This ensures data integrity.
-    //
-    // RULES:
-    // - If scopeIdentifier appears in ONLY ONE node: allocationPct defaults to 100
-    // - If scopeIdentifier appears in MULTIPLE nodes: sum must equal 100% (±0.01%)
     // ============================================================================
     const allocationValidation = validateAllocations(normalizedNodesWithComments, {
       includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
@@ -312,7 +360,6 @@ const saveProcessFlowchart = async (req, res) => {
 
     if (processFlowchart) {
       // Update existing
-      // 🆕 Use normalizedNodesWithComments (includes allocation data)
       processFlowchart.nodes = normalizedNodesWithComments;
       processFlowchart.edges = normalizedEdges;
       processFlowchart.lastModifiedBy = userId;
@@ -322,7 +369,6 @@ const saveProcessFlowchart = async (req, res) => {
       isNew = true;
       processFlowchart = new ProcessFlowchart({
         clientId,
-        // 🆕 Use normalizedNodesWithComments (includes allocation data)
         nodes: normalizedNodesWithComments,
         edges: normalizedEdges,
         createdBy: userId,
@@ -382,6 +428,25 @@ const saveProcessFlowchart = async (req, res) => {
       updatedAt: processFlowchart.updatedAt
     };
 
+    // 11.5) Attach quota info (supplemental; non-fatal if it fails)
+    if (isQuotaSubject(req.user.userType)) {
+      try {
+        const assignedConsultantId = await getAssignedConsultantId(clientId);
+        if (assignedConsultantId) {
+          const quotaStatus = await getQuotaStatus(clientId, assignedConsultantId);
+          const status = quotaStatus?.status || {};
+          responseData.quota = {
+            processFlowchartNodes:
+              status.processFlowchartNodes ?? status.processNodes ?? status.processFlowNodes,
+            processFlowchartScopeDetails:
+              status.processFlowchartScopeDetails ?? status.processScopeDetails ?? status.processScopeDetails,
+          };
+        }
+      } catch (_) {
+        // Non-fatal: quota info is supplemental
+      }
+    }
+
     const hasOrg  = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
     const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
 
@@ -393,7 +458,7 @@ const saveProcessFlowchart = async (req, res) => {
       responseData.message = 'Process flowchart saved with basic details only (full scope details available in the main flowchart).';
     }
 
-    res.status(isNew ? 201 : 200).json({ 
+    return res.status(isNew ? 201 : 200).json({ 
       message: isNew ? 'Process flowchart created successfully' : 'Process flowchart updated successfully',
       flowchart: responseData
     });
@@ -402,13 +467,11 @@ const saveProcessFlowchart = async (req, res) => {
     console.error('Save process flowchart error:', error);
     
     // ** UPDATED ERROR HANDLING **
-    // The pre-save hook will throw an error that gets caught here.
-    // We can check for the custom status code we set.
     if (error.statusCode === 400) {
-        return res.status(400).json({
-            message: 'Process flowchart validation failed.',
-            error: error.message
-        });
+      return res.status(400).json({
+        message: 'Process flowchart validation failed.',
+        error: error.message
+      });
     }
 
     if (error.code === 11000) {
@@ -419,13 +482,12 @@ const saveProcessFlowchart = async (req, res) => {
       });
     }
 
-    res.status(500).json({ 
+    return res.status(500).json({ 
       message: 'Failed to save process flowchart', 
       error: error.message 
     });
   }
 };
-
 
 
 // -------------------------------------------------------
@@ -1058,6 +1120,53 @@ const updateProcessFlowchartNode = async (req, res) => {
     // Log warnings but allow save to proceed
     if (allocationValidation.warnings.length > 0) {
       console.warn('⚠️ Allocation warnings for client', clientId, ':', allocationValidation.warnings);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // QUOTA CHECK — runs AFTER node merge, BEFORE DB save
+    //
+    // saveProcessFlowchart checks quota when the ENTIRE nodes array is replaced.
+    // updateProcessFlowchartNode patches a SINGLE node (including scopeDetails)
+    // and saves directly — bypassing saveProcessFlowchart and its quota check.
+    // Without this, a consultant can add unlimited scopeDetails through this
+    // endpoint even after the processScopeDetails limit is set.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (isQuotaSubject(req.user.userType)) {
+      try {
+        const _quotaConsultantId = await getAssignedConsultantId(clientId);
+        if (_quotaConsultantId) {
+          // Build the would-be full nodes array with the merged node applied.
+          const _updatedNodes = processFlowchart.nodes.map((n, i) =>
+            i === nodeIndex
+              ? mergedNode
+              : (typeof n.toObject === 'function' ? n.toObject() : n)
+          );
+          const _quotaResult = await checkFlowchartQuota({
+            clientId,
+            consultantId: _quotaConsultantId,
+            nodes:        _updatedNodes,
+            chartType:    'processFlowchart',
+          });
+          if (!_quotaResult.allowed) {
+            return res.status(422).json({
+              success:     false,
+              message:     'Process flowchart quota exceeded.',
+              code:        'QUOTA_EXCEEDED',
+              quotaErrors: _quotaResult.errors.map((e) => ({
+                resource:  e.resource,
+                limit:     e.limit,
+                used:      e.used,
+                remaining: e.remaining,
+                attempted: e.newTotal,
+                message:   e.message,
+              })),
+            });
+          }
+        }
+      } catch (qErr) {
+        console.error('❌ Quota check error in updateProcessFlowchartNode:', qErr);
+        throw qErr;
+      }
     }
 
     // ============================================================================

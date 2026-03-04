@@ -39,6 +39,14 @@ const {
   getSupportManagerForClient
 } = require("../../controllers/CMS/clientController");
 
+// // 🆕 QUOTA MANAGEMENT
+// const {
+//   getClientQuota,
+//   updateClientQuota,
+//   resetClientQuota,
+// } = require("../../controllers/CMS/quotaController");
+
+
 // Apply auth middleware to all routes
 router.use(auth);
 
@@ -77,6 +85,81 @@ router.patch("/:clientId/assign-consultant", assignConsultant);
 router.patch("/:clientId/change-consultant", changeConsultant);
 router.patch("/:clientId/remove-consultant", removeConsultant);
 router.get("/:clientId/consultant-history", getConsultantHistory);
+
+
+// // ===================================================================
+// // 🆕 QUOTA MANAGEMENT ROUTES
+// // ===================================================================
+
+// /**
+//  * Get current quota status (limits + live usage) for the assigned consultant.
+//  *
+//  * GET /api/clients/:clientId/quota
+//  *
+//  * Access:
+//  *   - super_admin      : any client
+//  *   - consultant_admin : clients whose assigned consultant is under their team
+//  *   - consultant       : their own assigned clients
+//  *
+//  * Response:
+//  * {
+//  *   "success": true,
+//  *   "data": {
+//  *     "clientId": "Greon017",
+//  *     "consultantId": "...",
+//  *     "limits": { "flowchartNodes": 50, "reductionProjects": null, ... },
+//  *     "usage":  { "flowchartNodes": 12, "reductionProjects": 3, ... },
+//  *     "status": {
+//  *       "flowchartNodes": { "limit": 50, "used": 12, "remaining": 38, "unlimited": false, "canAdd": true },
+//  *       "reductionProjects": { "limit": "unlimited", "used": 3, "remaining": "unlimited", "unlimited": true, "canAdd": true },
+//  *       ...
+//  *     }
+//  *   }
+//  * }
+//  */
+// router.get("/:clientId/quota", getClientQuota);
+
+// /**
+//  * Update quota limits for the assigned consultant of a client.
+//  *
+//  * PATCH /api/clients/:clientId/quota
+//  *
+//  * Access:
+//  *   - super_admin      : any client
+//  *   - consultant_admin : consultants under their team only
+//  *
+//  * Body:
+//  * {
+//  *   "limits": {
+//  *     "flowchartNodes": 50,           // set specific limit
+//  *     "flowchartScopeDetails": 200,
+//  *     "processNodes": 30,
+//  *     "processScopeDetails": 150,
+//  *     "reductionProjects": 10,
+//  *     "transportFlows": 5,
+//  *     "sbtiTargets": 2,
+//  *     "reductionProjects": null       // null = restore unlimited for this resource
+//  *   },
+//  *   "notes": "Updated after Q3 review"  // optional
+//  * }
+//  *
+//  * Notes:
+//  *   - Setting a value to null restores unlimited access for that resource.
+//  *   - You can send partial limits (only the keys you want to change).
+//  *   - If new limit < current usage, further creation is blocked (remaining=0)
+//  *     but existing data is NOT deleted.
+//  */
+// router.patch("/:clientId/quota", updateClientQuota);
+
+// /**
+//  * Reset ALL quota limits to unlimited (null) for the assigned consultant.
+//  *
+//  * POST /api/clients/:clientId/quota/reset
+//  *
+//  * Access: super_admin only
+//  */
+// router.post("/:clientId/quota/reset", resetClientQuota);
+
 
 // ===================================================================
 // 🆕 SUPPORT MANAGEMENT ROUTES

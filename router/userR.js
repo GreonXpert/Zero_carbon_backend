@@ -6,6 +6,9 @@ const {
   login,
   verifyLoginOTP,
   resendLoginOTP,
+  logout,
+  logoutAllDevices,
+  setUserPermissions,
   createConsultantAdmin,
   createConsultant,
   createEmployeeHead,
@@ -40,6 +43,7 @@ const {
   removeAssignment,
   deleteSupportManager,
   deleteSupportUser,
+  setConcurrentLoginLimit,
 } = require("../controllers/userController");
 
  const { PRESET_TEMPLATES } = require('../utils/Permissions/accessControlPermission');
@@ -62,6 +66,40 @@ router.post("/verify-reset-token", verifyResetToken);
 // ===================================================================
 
 router.use(auth);
+
+// ✅ ADD it here — auth runs first, sets req.sessionId, then logout executes
+router.post("/logout", logout);
+
+/**
+ * Logout from all other devices
+ * POST /api/users/me/logout-all-devices
+ *
+ * Revokes all active sessions for the authenticated user,
+ * EXCEPT the current session (Option B — stay logged in on current device).
+ *
+ * Requires: canLogoutAllDevices === true on the User document.
+ *
+ * Response 200: { success: true, message: "...", revokedCount: <n> }
+ * Response 403: if canLogoutAllDevices is false
+ */
+ router.post("/me/logout-all-devices", logoutAllDevices);
+
+ /**
+ * Set user permission badges (canLogoutAllDevices, permissionToEdit)
+ * PATCH /api/admin/users/:userId/user-permissions
+ *
+ * Body: { "canLogoutAllDevices": true, "permissionToEdit": true }
+ *       (one or both fields required)
+ *
+ * Allowed callers:
+ *   super_admin       — any user
+ *   consultant_admin  — users in their assignedClients
+ *
+ * Response 200: updated user object with previous + new values
+ * Response 403: if caller role not allowed, or target client not in scope
+ */
+ router.patch("/admin/:userId/user-permissions", setUserPermissions);
+
 
 // ===================================================================
 // CONSULTANT MANAGEMENT ROUTES
@@ -363,6 +401,20 @@ router.patch("/:userId/toggle-status", toggleUserStatus);
  * PATCH /api/users/change-password
  */
 router.patch("/change-password", changePassword);
+
+/**
+  * Set Concurrent Login Limit
+  * PATCH /api/users/:userId/session-limit
+  * Body: { concurrentLoginLimit: <1–10> }
+  *
+  * Allowed callers:
+  *   super_admin      → any client-side user
+  *   consultant_admin → client-side users of their assigned clients
+  *   consultant       → client-side users of their assigned clients
+  *   client_admin     → ❌ NOT ALLOWED
+  */
+ router.patch("/:userId/session-limit", setConcurrentLoginLimit);
+
 
 // ===================================================================
 // HELPER ROUTES

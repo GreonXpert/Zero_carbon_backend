@@ -33,6 +33,13 @@ const {
   logFlowchartScopeAssign,
   logFlowchartScopeUnassign,
 } = require('../../services/audit/flowchartAuditLog');
+
+const {
+  checkFlowchartQuota,
+  getAssignedConsultantId,
+  isQuotaSubject,
+  getQuotaStatus,
+} = require('../../services/quota/quotaService');
  
 // ============================================================================
 // PERMISSION HELPERS
@@ -301,7 +308,7 @@ const saveFlowchart = async (req, res) => {
 
     // Ensure we have a consistent userId
     const userId = req.user._id || req.user.id;
-    
+
     // 1) Basic request validation
     if (!clientId || !flowchartData || !Array.isArray(flowchartData.nodes)) {
       return res.status(400).json({
@@ -358,9 +365,62 @@ const saveFlowchart = async (req, res) => {
       });
     }
 
+    // 6.5) QUOTA CHECK — only for consultant/consultant_admin
+    if (isQuotaSubject(req.user.userType)) {
+      const assignedConsultantId = await getAssignedConsultantId(clientId);
+      if (!assignedConsultantId) {
+        return res.status(403).json({
+          success: false,
+          message: 'This client does not have an assigned consultant. Assign a consultant first.',
+          code: 'NO_ASSIGNED_CONSULTANT',
+        });
+      }
+
+      // We pre-normalize nodes here just to count — the actual normalization happens in step 7.
+      // Count nodes and scopeDetails in the INCOMING payload to check quota before save.
+      const incomingNodes = Array.isArray(flowchartData.nodes) ? flowchartData.nodes : [];
+      const _incomingNodeCount = incomingNodes.length; // optional diagnostic (kept to match patch intent)
+      const _incomingScopeCount = incomingNodes.reduce(
+        (sum, node) =>
+          sum + (Array.isArray(node.details?.scopeDetails)
+            ? node.details.scopeDetails.filter((s) => !s.isDeleted).length
+            : 0),
+        0
+      );
+
+      const quotaResult = await checkFlowchartQuota({
+        clientId,
+        consultantId: assignedConsultantId,
+        nodes: incomingNodes.map((n) => ({
+          ...n,
+          details: {
+            ...n.details,
+            scopeDetails: (n.details?.scopeDetails || []).filter((s) => !s.isDeleted),
+          },
+        })),
+        chartType: 'flowchart',
+      });
+
+      if (!quotaResult.allowed) {
+        return res.status(422).json({
+          success: false,
+          message: 'Flowchart creation quota exceeded.',
+          code: 'QUOTA_EXCEEDED',
+          quotaErrors: quotaResult.errors.map((e) => ({
+            resource: e.resource,
+            limit:     e.limit,
+            used:      e.used,
+            remaining: e.remaining,
+            attempted: e.newTotal,
+            message:   e.message,
+          })),
+        });
+      }
+    }
+
     // 7) Normalize & validate nodes - flowchart always includes full scope details when available
     const normalizedNodes = normalizeNodes(flowchartData.nodes, assessmentLevel, 'flowchart');
-    
+
     // ⬇️ guarantee comment fields on all custom EF values
     const normalizedNodesWithComments = addCEFCommentsToNodes(normalizedNodes);
 
@@ -368,7 +428,7 @@ const saveFlowchart = async (req, res) => {
     const normalizedEdges = normalizeEdges(flowchartData.edges);
 
     // 9) Create vs. Update
-    let flowchart = await Flowchart.findOne({ clientId });
+    let flowchart = await Flowchart.findOne({ clientId, isActive: true });
     let isNew = false;
 
     if (flowchart) {
@@ -378,7 +438,11 @@ const saveFlowchart = async (req, res) => {
       flowchart.lastModifiedBy = userId;
       flowchart.version       += 1;
       await flowchart.save();
-      await logFlowchartUpdate(req, flowchart, `Flowchart updated — client: ${clientId}, nodes: ${normalizedNodes.length}, version: ${flowchart.version}`);
+      await logFlowchartUpdate(
+        req,
+        flowchart,
+        `Flowchart updated — client: ${clientId}, nodes: ${normalizedNodes.length}, version: ${flowchart.version}`
+      );
     } else {
       // CREATE new flowchart
       isNew = true;
@@ -394,12 +458,12 @@ const saveFlowchart = async (req, res) => {
       });
       await flowchart.save();
     }
-    
+
     // 10) Auto‐start flowchart status
     if (['consultant','consultant_admin'].includes(req.user.userType) && isNew) {
       await Client.findOneAndUpdate(
         { clientId },
-        { 
+        {
           $set: {
             'workflowTracking.flowchartStatus': 'on_going',
             'workflowTracking.flowchartStartedAt': new Date()
@@ -427,6 +491,22 @@ const saveFlowchart = async (req, res) => {
       assessmentLevel: assessmentLevel
     };
 
+    // 12.5) Attach quota info to response (if consultant/consultant_admin)
+    if (isQuotaSubject(req.user.userType)) {
+      try {
+        const assignedConsultantId = await getAssignedConsultantId(clientId);
+        if (assignedConsultantId) {
+          const quotaStatus = await getQuotaStatus(clientId, assignedConsultantId);
+          responseData.quota = {
+            flowchartNodes:        quotaStatus.status.flowchartNodes,
+            flowchartScopeDetails: quotaStatus.status.flowchartScopeDetails,
+          };
+        }
+      } catch (_) {
+        // Non-fatal: quota info is supplemental
+      }
+    }
+
     const hasOrg = Array.isArray(assessmentLevel) && assessmentLevel.includes('organization');
     const hasProc = Array.isArray(assessmentLevel) && assessmentLevel.includes('process');
 
@@ -447,7 +527,7 @@ const saveFlowchart = async (req, res) => {
       return res.status(400).json({
         message: 'Duplicate key error - check for duplicate identifiers',
         error:   error.message,
-        details:'This might be caused by duplicate edge IDs or scope identifiers'
+        details: 'This might be caused by duplicate edge IDs or scope identifiers'
       });
     }
 
@@ -456,7 +536,7 @@ const saveFlowchart = async (req, res) => {
       error:   error.message
     });
   }
-}
+};
 
 // Get single Flowchart with proper permissions
 // Get single Flowchart with proper permissions
@@ -1295,7 +1375,8 @@ const updateFlowchartNode = async (req, res) => {
       id: nodeId,
       details: {
         ...existingNode.details,
-        ...incomingNode.details
+        ...incomingNode.details,
+         scopeDetails: existingNode.details?.scopeDetails ?? [],
       }
     };
 
@@ -1448,6 +1529,61 @@ const updateFlowchartNode = async (req, res) => {
 
       mergedNode.details.scopeDetails = mergedScopes;
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 4.5) QUOTA CHECK — runs AFTER merge, BEFORE save
+    //
+    // saveFlowchart checks quota when the ENTIRE nodes array is replaced.
+    // updateFlowchartNode patches a SINGLE node (including its scopeDetails)
+    // and saves directly — completely bypassing saveFlowchart and its quota
+    // check. Without this, a consultant can add unlimited scopeDetails through
+    // this endpoint even after the flowchartScopeDetails limit is set.
+    // ─────────────────────────────────────────────────────────────────────
+   // flowchartController.js — inside the isQuotaSubject block at step 4.5
+if (isQuotaSubject(req.user.userType)) {
+  try {
+    const _quotaConsultantId = await getAssignedConsultantId(clientId);
+
+    // ✅ FIX: Enforce same rule as saveFlowchart — 403 if no consultant
+    if (!_quotaConsultantId) {
+      return res.status(403).json({
+        success: false,
+        message: 'This client does not have an assigned consultant. Assign a consultant first.',
+        code: 'NO_ASSIGNED_CONSULTANT',
+      });
+    }
+
+    const _updatedNodes = flowchart.nodes.map((n, i) =>
+      i === nodeIndex
+        ? mergedNode
+        : (typeof n.toObject === 'function' ? n.toObject() : n)
+    );
+    const _quotaResult = await checkFlowchartQuota({
+      clientId,
+      consultantId: _quotaConsultantId,
+      nodes:        _updatedNodes,
+      chartType:    'flowchart',
+    });
+    if (!_quotaResult.allowed) {
+      return res.status(422).json({
+        success:     false,
+        message:     'Flowchart quota exceeded.',
+        code:        'QUOTA_EXCEEDED',
+        quotaErrors: _quotaResult.errors.map((e) => ({
+          resource:  e.resource,
+          limit:     e.limit,
+          used:      e.used,
+          remaining: e.remaining,
+          attempted: e.newTotal,
+          message:   e.message,
+        })),
+      });
+    }
+  } catch (qErr) {
+    console.error('❌ Quota check error in updateFlowchartNode:', qErr);
+    throw qErr;
+  }
+}
 
     // 5) Persist
     flowchart.nodes[nodeIndex] = mergedNode;

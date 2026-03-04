@@ -9,13 +9,19 @@ const { normalizeEdges } = require('../../utils/chart/chartHelpers');
 
 // Audit log helpers for the transport_flowchart module
 const {
-  logTransportFlowCreate,
   logTransportFlowUpdate,
   logTransportFlowDelete,
   logTransportFlowNodeAssign,
   logTransportFlowScopeAssign,
   logTransportFlowScopeUnassign,
 } = require('../../services/audit/transportFlowchartAuditLog');
+
+   const {
+     checkQuota,
+     getAssignedConsultantId,
+     isQuotaSubject,
+     getQuotaStatus,
+   } = require('../../services/quota/quotaService');
 
 /**
  * Internal helper: extract upstream / downstream transportation scopes
@@ -271,6 +277,61 @@ exports.saveTransportFlowchart = async (req, res) => {
       }
     }
 
+    // ─────────────────────────────────────────────────────────
+    // QUOTA CHECK — transport flowchart creation
+    // ─────────────────────────────────────────────────────────
+    if (isQuotaSubject(req.user.userType)) {
+      const assignedConsultantId = await getAssignedConsultantId(clientId);
+
+      if (!assignedConsultantId) {
+        return res.status(403).json({
+          success: false,
+          message: 'This client does not have an assigned consultant. Assign a consultant first.',
+          code: 'NO_ASSIGNED_CONSULTANT',
+        });
+      }
+
+      // Check if this specific transportType already exists (upsert case — no new creation)
+      const existingChart = await TransportFlowchart.exists({
+        clientId,
+        transportType,
+        isActive: true,
+      });
+
+      if (!existingChart) {
+        // It's a CREATE — check quota
+        const currentCount = await TransportFlowchart.countDocuments({
+          clientId,
+          isActive: true,
+        });
+        const newTotal = currentCount + 1;
+
+        const quotaCheck = await checkQuota(
+          clientId,
+          assignedConsultantId,
+          'transportFlows',
+          newTotal
+        );
+
+        if (!quotaCheck.allowed) {
+          return res.status(422).json({
+            success: false,
+            message: 'Transport flow creation quota exceeded.',
+            code: 'QUOTA_EXCEEDED',
+            quota: {
+              resource:  'transportFlows',
+              limit:     quotaCheck.limit,
+              used:      quotaCheck.used,
+              remaining: quotaCheck.remaining,
+              attempted: newTotal,
+              message:   quotaCheck.message,
+            },
+          });
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────
+
     const levels = await getNormalizedAssessmentLevels(clientId);
 
     // Normalize nodes & edges
@@ -323,7 +384,6 @@ exports.saveTransportFlowchart = async (req, res) => {
         lastModifiedBy: userId,
         assessmentLevels: levels
       });
-      await logTransportFlowCreate(req, saved);
     }
 
     return res.status(200).json({
@@ -337,7 +397,6 @@ exports.saveTransportFlowchart = async (req, res) => {
     return res.status(500).json({ message: 'Failed to save transport flowchart', error: err.message });
   }
 };
-
 /**
  * GET /api/transport-flowchart/:clientId
  *

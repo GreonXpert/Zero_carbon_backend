@@ -13,6 +13,12 @@ const {
   logSbtiCalculate,
 } = require('../../services/audit/sbtiAuditLog');
 
+const {
+     checkQuota,
+     getAssignedConsultantId,
+     isQuotaSubject,
+   } = require('../../services/quota/quotaService');
+
 // Optional: real-time updates like your summaries do
 let io;
 const setSocketIO = (socketIO) => { io = socketIO; };
@@ -151,43 +157,95 @@ function inferDefaultMinimumReductionPercent(alignment, targetType, targetYear) 
 // POST /api/sbti/:clientId/targets
 const upsertTarget = async (req, res) => {
   try {
-        const { clientId } = req.params;
+    const { clientId } = req.params;
 
     // 0) auth required
-if (!req.user || (!req.user._id && !req.user.id)) {
-  return res.status(401).json({ success: false, message: 'Authentication required' });
-}
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
 
-// 1) role gate (same as flowchart manage)
-if (!['super_admin','consultant_admin','consultant'].includes(req.user.userType)) {
-  return res.status(403).json({ success: false, message: 'Only Super Admin, Consultant Admin, or Consultant can manage SBTi targets' });
-}
+    // 1) role gate (same as flowchart manage)
+    if (!['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Super Admin, Consultant Admin, or Consultant can manage SBTi targets',
+      });
+    }
 
-// 2) permission check (client scoping)
-const managePerm = await canManageFlowchart(req.user, clientId);
-if (!managePerm.allowed) {
-  return res.status(403).json({ success: false, message: 'Permission denied', reason: managePerm.reason });
-}
+    // 2) permission check (client scoping)
+    const managePerm = await canManageFlowchart(req.user, clientId);
+    if (!managePerm.allowed) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Permission denied', reason: managePerm.reason });
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // 2.5) QUOTA CHECK — only enforced on NEW target creation
+    //       (upsert: if targetType already exists, it's an update, no quota consumed)
+    // ─────────────────────────────────────────────────────────
+    if (isQuotaSubject(req.user.userType)) {
+      const { targetType: tType } = req.body;
+
+      // Check if a target with this targetType already exists for this client
+      const existingTarget = await SbtiTarget.exists({ clientId, targetType: tType });
+
+      if (!existingTarget) {
+        // It's a CREATE — check quota
+        const assignedConsultantId = await getAssignedConsultantId(clientId);
+
+        if (!assignedConsultantId) {
+          return res.status(403).json({
+            success: false,
+            message: 'This client does not have an assigned consultant. Assign a consultant first.',
+            code: 'NO_ASSIGNED_CONSULTANT',
+          });
+        }
+
+        const currentCount = await SbtiTarget.countDocuments({ clientId });
+        const newTotal = currentCount + 1;
+
+        const quotaCheck = await checkQuota(clientId, assignedConsultantId, 'sbtiTargets', newTotal);
+
+        if (!quotaCheck.allowed) {
+          return res.status(422).json({
+            success: false,
+            message: 'SBTi target creation quota exceeded.',
+            code: 'QUOTA_EXCEEDED',
+            quota: {
+              resource: 'sbtiTargets',
+              limit: quotaCheck.limit,
+              used: quotaCheck.used,
+              remaining: quotaCheck.remaining,
+              attempted: newTotal,
+              message: quotaCheck.message,
+            },
+          });
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────
 
     const {
       alignment = 'SBTi',
-      targetType,               // 'near_term' | 'net_zero'
-      method,                   // 'absolute' | 'sda'
-      baseYear, targetYear,
+      targetType, // 'near_term' | 'net_zero'
+      method, // 'absolute' | 'sda'
+      baseYear,
+      targetYear,
 
-       // NEW: considered scope and per-scope bases (tCO2e)
-      scopeSet = 'S1S2',        // 'S1S2' or 'S3'
+      // NEW: considered scope and per-scope bases (tCO2e)
+      scopeSet = 'S1S2', // 'S1S2' or 'S3'
       baseScope1_tCO2e = 0,
       baseScope2_tCO2e = 0,
       baseScope3_tCO2e = 0,
 
       baseEmission_tCO2e,
 
-      perScopeBase_tCO2e,       // optional map
+      perScopeBase_tCO2e, // optional map
 
       // absolute
-      minimumReductionPercent,  // optional; defaulted if SBTi near/net
-      annualRateHintPercent,    // optional override
+      minimumReductionPercent, // optional; defaulted if SBTi near/net
+      annualRateHintPercent, // optional override
 
       // sda
       baseActivity,
@@ -199,24 +257,23 @@ if (!managePerm.allowed) {
       coverage, // {scope12CoveragePercent, scope3ShareOfTotalPercent, scope3CoveragePercent}
 
       // flag
-      flag,     // {flagSharePercent, scope1CoveragePercent, scope3CoveragePercent}
+      flag, // {flagSharePercent, scope1CoveragePercent, scope3CoveragePercent}
 
       // tool version
-      toolVersion, toolUpdatedAt,
+      toolVersion,
+      toolUpdatedAt,
     } = req.body;
 
-        // >>> INSERT THIS BLOCK RIGHT HERE (immediately after destructuring) <<<
+    // >>> INSERT THIS BLOCK RIGHT HERE (immediately after destructuring) <<<
     // Auto-compute base emission depending on considered scope
     const s1 = Number(baseScope1_tCO2e || 0);
     const s2 = Number(baseScope2_tCO2e || 0);
     const s3 = Number(baseScope3_tCO2e || 0);
 
-    const baseEmissionComputed = (scopeSet === 'S3') ? s3 : (s1 + s2);
-    const perScopeBaseMap = (scopeSet === 'S3')
-      ? { 'Scope 3': s3 }
-      : { 'Scope 1': s1, 'Scope 2': s2 };
+    const baseEmissionComputed = scopeSet === 'S3' ? s3 : s1 + s2;
+    const perScopeBaseMap =
+      scopeSet === 'S3' ? { 'Scope 3': s3 } : { 'Scope 1': s1, 'Scope 2': s2 };
     // >>> END INSERT <<<
-
 
     if (!['near_term', 'net_zero'].includes(targetType)) {
       return res.status(400).json({ success: false, message: 'Invalid targetType' });
@@ -225,55 +282,74 @@ if (!managePerm.allowed) {
       return res.status(400).json({ success: false, message: 'Invalid method' });
     }
 
-    const N = Math.max(1, (targetYear - baseYear));
+    const N = Math.max(1, targetYear - baseYear);
     let trajectory = [];
     const updateDoc = {
-  clientId,
-  alignment, targetType, method,
-  baseYear, targetYear,
+      clientId,
+      alignment,
+      targetType,
+      method,
+      baseYear,
+      targetYear,
 
-  // NEW: persist separate bases and which scope set is considered
-  scopeSet,
-  baseScope1_tCO2e: s1,
-  baseScope2_tCO2e: s2,
-  baseScope3_tCO2e: s3,
+      // NEW: persist separate bases and which scope set is considered
+      scopeSet,
+      baseScope1_tCO2e: s1,
+      baseScope2_tCO2e: s2,
+      baseScope3_tCO2e: s3,
 
-  // Auto-computed base and per-scope map (server is source of truth)
-  baseEmission_tCO2e: baseEmissionComputed,
-  perScopeBase_tCO2e: new Map(Object.entries(perScopeBaseMap)),
+      // Auto-computed base and per-scope map (server is source of truth)
+      baseEmission_tCO2e: baseEmissionComputed,
+      perScopeBase_tCO2e: new Map(Object.entries(perScopeBaseMap)),
 
-  updatedBy: req.user?._id
-};
+      updatedBy: req.user?._id,
+    };
 
     // --- Compute trajectory by method ---
     if (method === 'absolute') {
-      const minRed = (minimumReductionPercent != null)
-        ? minimumReductionPercent
-        : inferDefaultMinimumReductionPercent(alignment, targetType, targetYear);
+      const minRed =
+        minimumReductionPercent != null
+          ? minimumReductionPercent
+          : inferDefaultMinimumReductionPercent(alignment, targetType, targetYear);
 
       if (minRed == null) {
-        return res.status(400).json({ success: false, message: 'minimumReductionPercent is required for absolute method (no default inferred)' });
+        return res.status(400).json({
+          success: false,
+          message:
+            'minimumReductionPercent is required for absolute method (no default inferred)',
+        });
       }
 
       const { annualRatePercent, points } = buildAbsoluteTrajectory(
-        baseEmissionComputed, baseYear, targetYear, minRed
+        baseEmissionComputed,
+        baseYear,
+        targetYear,
+        minRed
       );
 
       updateDoc.absolute = {
         minimumReductionPercent: minRed,
-        annualRatePercent: (annualRateHintPercent != null) ? annualRateHintPercent : Number(annualRatePercent.toFixed(6))
+        annualRatePercent:
+          annualRateHintPercent != null
+            ? annualRateHintPercent
+            : Number(annualRatePercent.toFixed(6)),
       };
       trajectory = points;
-
     } else if (method === 'sda') {
       if (!(baseActivity > 0) || !(targetIntensity >= 0) || !(activityTarget >= 0)) {
-        return res.status(400).json({ success: false, message: 'SDA requires baseActivity, targetIntensity, activityTarget' });
+        return res.status(400).json({
+          success: false,
+          message: 'SDA requires baseActivity, targetIntensity, activityTarget',
+        });
       }
 
       const out = buildSdaTrajectory({
-        baseEmission:baseEmissionComputed,
-        baseActivity, targetIntensity, activityTarget,
-        baseYear, targetYear
+        baseEmission: baseEmissionComputed,
+        baseActivity,
+        targetIntensity,
+        activityTarget,
+        baseYear,
+        targetYear,
       });
 
       updateDoc.sda = {
@@ -285,7 +361,7 @@ if (!managePerm.allowed) {
         intensityReductionPercent: out.intensityReductionPercent,
         absoluteTargetEmission_tCO2e: out.absoluteTargetEmission_tCO2e,
         absoluteReductionPercent: out.absoluteReductionPercent,
-        annualReductionPercent: out.annualReductionPercent
+        annualReductionPercent: out.annualReductionPercent,
       };
       trajectory = out.points;
     }
@@ -313,14 +389,19 @@ if (!managePerm.allowed) {
 
     // Audit log — create or update
     if (_existedBefore) {
-      await logSbtiUpdate(req, saved, `SBTi target updated — client: ${clientId}, targetType: ${targetType}, targetYear: ${saved.targetYear ?? 'N/A'}, method: ${saved.method}`);
+      await logSbtiUpdate(
+        req,
+        saved,
+        `SBTi target updated — client: ${clientId}, targetType: ${targetType}, targetYear: ${
+          saved.targetYear ?? 'N/A'
+        }, method: ${saved.method}`
+      );
     } else {
       await logSbtiCreate(req, saved);
     }
 
     emitSbtiUpdate(clientId, { type: 'sbti-upsert', targetType, id: saved._id });
     return res.status(200).json({ success: true, data: saved });
-
   } catch (err) {
     console.error('upsertTarget error:', err);
     return res.status(500).json({ success: false, message: err.message });

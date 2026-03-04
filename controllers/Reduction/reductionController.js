@@ -10,7 +10,6 @@ const { uploadReductionMedia, saveReductionFiles } = require('../../utils/upload
 
 // Audit log helpers for the reduction module
 const {
-  logReductionCreate,
   logReductionUpdate,
   logReductionDelete,
   logReductionHardDelete,
@@ -18,7 +17,12 @@ const {
   logReductionCalculate,
 } = require('../../services/audit/reductionAuditLog');
 
-
+   const {
+     checkQuota,
+     getAssignedConsultantId,
+     isQuotaSubject,
+     getQuotaStatus,
+   } = require('../../services/quota/quotaService');
 
 
 /** Permission: consultant_admin who created the lead OR assigned consultant */
@@ -469,6 +473,52 @@ exports.createReduction = async (req, res) => {
       return res.status(403).json({ success: false, message: perm.reason });
     }
 
+    // ─────────────────────────────────────────────────────────
+    // QUOTA CHECK — reduction project creation
+    // ─────────────────────────────────────────────────────────
+    if (isQuotaSubject(req.user.userType)) {
+      const assignedConsultantId = await getAssignedConsultantId(clientId);
+
+      if (!assignedConsultantId) {
+        return res.status(403).json({
+          success: false,
+          message: 'This client does not have an assigned consultant. Assign a consultant first.',
+          code: 'NO_ASSIGNED_CONSULTANT',
+        });
+      }
+
+      // Count existing active reduction projects for this client
+      const currentCount = await Reduction.countDocuments({
+        clientId,
+        isDeleted: { $ne: true },
+      });
+      const newTotal = currentCount + 1;
+
+      const quotaCheck = await checkQuota(
+        clientId,
+        assignedConsultantId,
+        'reductionProjects',
+        newTotal
+      );
+
+      if (!quotaCheck.allowed) {
+        return res.status(422).json({
+          success: false,
+          message: 'Reduction project quota exceeded.',
+          code: 'QUOTA_EXCEEDED',
+          quota: {
+            resource:  'reductionProjects',
+            limit:     quotaCheck.limit,
+            used:      quotaCheck.used,
+            remaining: quotaCheck.remaining,
+            attempted: newTotal,
+            message:   quotaCheck.message,
+          },
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────
+
     const body = req.body || {};
 
     // ✅ Parse nested JSON safely (multipart/form-data safe)
@@ -498,8 +548,6 @@ exports.createReduction = async (req, res) => {
 
     // ✅ Keep your existing M3 validation (but ensure it receives parsed object shape)
     if (body.calculationMethodology === "methodology3") {
-      // if validateM3Input expects body.m3 etc, make sure body.m3 is object
-      // (we don't mutate req.body; we validate using a safe copy)
       const validateBody = { ...body, m3: m3In };
       validateM3Input(validateBody);
     }
@@ -561,8 +609,7 @@ exports.createReduction = async (req, res) => {
     await doc.validate();
     await doc.save();
 
-    // Audit log — reduction project created
-    await logReductionCreate(req, doc);
+    
 
     notifyReductionEvent({
       actor: req.user,
@@ -571,10 +618,23 @@ exports.createReduction = async (req, res) => {
       doc
     }).catch(() => {});
 
+    // Attach quota info to response (supplemental)
+    let quotaInfo = null;
+    if (isQuotaSubject(req.user.userType)) {
+      try {
+        const assignedConsultantId = await getAssignedConsultantId(clientId);
+        if (assignedConsultantId) {
+          const qStatus = await getQuotaStatus(clientId, assignedConsultantId);
+          quotaInfo = qStatus.status.reductionProjects;
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
     return res.status(201).json({
       success: true,
       message: "Reduction project created",
-      data: doc
+      data: doc,
+      quota: quotaInfo
     });
   } catch (err) {
     console.error("createReduction error:", err);

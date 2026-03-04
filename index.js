@@ -72,6 +72,11 @@ const ticketController = require('./controllers/Ticket/ticketController');
 // Audit log routes
 const auditLogRoutes     = require('./router/AuditLog/auditLogRoutes');
 const auditLogController = require('./controllers/AuditLog/auditLogController');
+
+// Quota log routes 
+const quotaRoutes = require('./router/CMS/quotaRoutes');
+
+
 const { logLogin }       = require('./services/audit/auditLogService');
 
 // SLA checker import
@@ -168,6 +173,9 @@ app.use('/api/tickets', ticketRoutes);
 
 // Audit logs
 app.use('/api/audit-logs', auditLogRoutes);
+
+// Quota routes
+app.use('/api/quota', quotaRoutes);
 
 // // In your main app.js or routes/index.js
 // const debugRoutes = require('./router/debug');
