@@ -45,7 +45,40 @@ const UserSession = require('../models/UserSession');
 
 'use strict';
 
-// ─── Quota enforcement helpers (import in userController.js) ──
+// ─── FormData-safe accessControls parser ─────────────────────────────────────
+// FormData (multipart/form-data) serialises every field as a string, so when
+// the frontend sends:   formData.append('accessControls', JSON.stringify({...}))
+// the backend receives a JSON string, not an object.
+// This helper handles both cases transparently so create AND update endpoints
+// work whether the request is application/json or multipart/form-data.
+//
+// Returns: { ok: true,  value: <parsed object> }
+//       or { ok: false, error: <human-readable message> }
+const parseAccessControls = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { ok: true, value: null }; // absent → caller uses default checklist
+  }
+
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return { ok: true, value: raw }; // already an object (application/json path)
+  }
+
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+        return { ok: false, error: 'accessControls must be a JSON object, not an array or primitive.' };
+      }
+      return { ok: true, value: parsed };
+    } catch (_) {
+      return { ok: false, error: 'accessControls is not valid JSON. Send it as a stringified object.' };
+    }
+  }
+
+  return { ok: false, error: 'accessControls must be an object (or a JSON-stringified object for FormData requests).' };
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const {
   reserveUserTypeSlot,
   releaseUserTypeSlot,
@@ -2041,10 +2074,16 @@ const createAuditor = async (req, res) => {
       return res.status(409).json({ message: 'Email or Username already exists' });
     }
 
-    // ── Validate + sanitize accessControls ──────────────────────────────────
+    // ── Parse + validate accessControls ─────────────────────────────────────
+    // parseAccessControls handles both application/json (object) and
+    // multipart/form-data (JSON string) transparently.
     let resolvedAccessControls;
-    if (accessControls) {
-      const validation = validateAndSanitizeChecklist(accessControls);
+    const acParsed = parseAccessControls(accessControls);
+    if (!acParsed.ok) {
+      return res.status(400).json({ message: `Invalid accessControls: ${acParsed.error}` });
+    }
+    if (acParsed.value) {
+      const validation = validateAndSanitizeChecklist(acParsed.value);
       if (!validation.valid) {
         return res.status(400).json({
           message: `Invalid accessControls: ${validation.error}`,
@@ -2161,10 +2200,16 @@ const createViewer = async (req, res) => {
       return res.status(409).json({ message: 'Email or Username already exists' });
     }
 
-    // ── Validate + sanitize accessControls ──────────────────────────────────
+    // ── Parse + validate accessControls ─────────────────────────────────────
+    // parseAccessControls handles both application/json (object) and
+    // multipart/form-data (JSON string) transparently.
     let resolvedAccessControls;
-    if (accessControls) {
-      const validation = validateAndSanitizeChecklist(accessControls);
+    const acParsed = parseAccessControls(accessControls);
+    if (!acParsed.ok) {
+      return res.status(400).json({ message: `Invalid accessControls: ${acParsed.error}` });
+    }
+    if (acParsed.value) {
+      const validation = validateAndSanitizeChecklist(acParsed.value);
       if (!validation.valid) {
         return res.status(400).json({
           message: `Invalid accessControls: ${validation.error}`,
@@ -3849,11 +3894,75 @@ const getUserById = async (req, res) => {
       case "super_admin":
         break;
 
-      case "consultant_admin":
-        baseQuery = {
-          $or: [{ createdBy: req.user.id }, { consultantAdminId: req.user.id }],
-        };
+      case "consultant_admin": {
+        // ── Source of truth: Client collection ──────────────────────────────
+        // A consultant_admin has authority over a client when ANY of these is true:
+        //   (a) client.leadInfo.consultantAdminId === this admin
+        //   (b) client.leadInfo.createdBy         === this admin
+        //   (c) a consultant under this admin is currently assigned to the client
+        //       (leadInfo.assignedConsultantId OR workflowTracking.assignedConsultantId
+        //        OR any active consultantHistory entry)
+        //
+        // We also fall back to User.assignedClients as a supplemental source
+        // in case some clients were assigned via a different flow.
+        // ────────────────────────────────────────────────────────────────────
+
+        const adminId = req.user.id;
+
+        // Get all consultants under this admin
+        const myConsultants = await User.find({
+          consultantAdminId: adminId,
+          userType: "consultant",
+        }).select("_id").lean();
+        const myConsultantIds = myConsultants.map((c) => String(c._id));
+
+        // Find all clients this admin has authority over (from Client collection)
+        const authorisedClients = await Client.find({
+          $or: [
+            { "leadInfo.consultantAdminId": adminId },
+            { "leadInfo.createdBy": adminId },
+            { "leadInfo.assignedConsultantId": { $in: myConsultantIds } },
+            { "workflowTracking.assignedConsultantId": { $in: myConsultantIds } },
+            {
+              "leadInfo.consultantHistory": {
+                $elemMatch: { consultantId: { $in: myConsultantIds }, isActive: true },
+              },
+            },
+          ],
+        }).select("clientId").lean();
+
+        const clientIdsFromDb = authorisedClients.map((c) => c.clientId);
+
+        // Also include User.assignedClients as supplemental (some flows set this directly)
+        const consultantAdminDoc = await User.findById(adminId)
+          .select("assignedClients")
+          .lean();
+        const clientIdsFromUser = consultantAdminDoc?.assignedClients || [];
+
+        // Merge + deduplicate
+        const allClientIds = [...new Set([...clientIdsFromDb, ...clientIdsFromUser])];
+
+        // Build query:
+        //   • Own consultant team  (createdBy / consultantAdminId)
+        //   • ALL users of every authorised client
+        //     (client_admin, client_employee_head, employee, auditor, viewer)
+        const orClauses = [
+          { createdBy: adminId },           // consultants this admin created directly
+          { consultantAdminId: adminId },   // consultants linked via consultantAdminId
+        ];
+
+        if (allClientIds.length > 0) {
+          orClauses.push({
+            clientId: { $in: allClientIds },
+            userType: {
+              $in: ["client_admin", "client_employee_head", "employee", "auditor", "viewer"],
+            },
+          });
+        }
+
+        baseQuery = { $or: orClauses };
         break;
+      }
 
       case "consultant": {
         const assignedClients = await Client.find({
@@ -3872,7 +3981,7 @@ const getUserById = async (req, res) => {
         baseQuery = { createdBy: req.user.id };
         break;
 
-      // ✅ NEW: supportManager can access self + their team members
+      // ✅ supportManager can access self + their team members
       case "supportManager": {
         const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
         baseQuery = {
@@ -3961,14 +4070,76 @@ const getUsers = async (req, res) => {
       case "super_admin":
         break;
 
-      case "consultant_admin":
-        baseQuery = {
+      case "consultant_admin": {
+        // ── Source of truth: Client collection ──────────────────────────────
+        // Same authority logic as permissions.js canManageFlowchart:
+        //   (a) client.leadInfo.consultantAdminId === this admin
+        //   (b) client.leadInfo.createdBy         === this admin
+        //   (c) a consultant under this admin is assigned to the client
+        //       (leadInfo.assignedConsultantId, workflowTracking.assignedConsultantId,
+        //        or any active consultantHistory entry)
+        // Also merges User.assignedClients as a supplemental source.
+        // ────────────────────────────────────────────────────────────────────
+
+        const caAdminId = req.user.id;
+
+        // Step 1: All consultants under this admin
+        const caConsultants = await User.find({
+          consultantAdminId: caAdminId,
+          userType: "consultant",
+        }).select("_id").lean();
+        const caConsultantIds = caConsultants.map((c) => String(c._id));
+
+        // Step 2: All clients this admin has authority over (Client collection)
+        const caAuthorisedClients = await Client.find({
           $or: [
-            { createdBy: req.user.id },
-            { consultantAdminId: req.user.id }
-          ]
-        };
+            { "leadInfo.consultantAdminId": caAdminId },
+            { "leadInfo.createdBy": caAdminId },
+            ...(caConsultantIds.length > 0
+              ? [
+                  { "leadInfo.assignedConsultantId": { $in: caConsultantIds } },
+                  { "workflowTracking.assignedConsultantId": { $in: caConsultantIds } },
+                  {
+                    "leadInfo.consultantHistory": {
+                      $elemMatch: { consultantId: { $in: caConsultantIds }, isActive: true },
+                    },
+                  },
+                ]
+              : []),
+          ],
+        }).select("clientId").lean();
+
+        const caClientIdsFromDb = caAuthorisedClients.map((c) => c.clientId);
+
+        // Step 3: Supplemental — User.assignedClients (populated by some flows)
+        const caAdminDoc = await User.findById(caAdminId)
+          .select("assignedClients")
+          .lean();
+        const caClientIdsFromUser = caAdminDoc?.assignedClients || [];
+
+        // Step 4: Merge + deduplicate
+        const caAllClientIds = [
+          ...new Set([...caClientIdsFromDb, ...caClientIdsFromUser]),
+        ];
+
+        // Step 5: Build $or — own consultant team + all users of authorised clients
+        const caOrClauses = [
+          { createdBy: caAdminId },         // consultants created directly by this admin
+          { consultantAdminId: caAdminId }, // consultants linked via consultantAdminId field
+        ];
+
+        if (caAllClientIds.length > 0) {
+          caOrClauses.push({
+            clientId: { $in: caAllClientIds },
+            userType: {
+              $in: ["client_admin", "client_employee_head", "employee", "auditor", "viewer"],
+            },
+          });
+        }
+
+        baseQuery = { $or: caOrClauses };
         break;
+      }
 
       case "consultant": {
         const assignedClients = await Client.find({
@@ -3987,7 +4158,7 @@ const getUsers = async (req, res) => {
         baseQuery = { createdBy: req.user.id };
         break;
 
-      // ✅ NEW: Support Manager can see their OWN team + self
+      // ✅ Support Manager can see their OWN team + self
       case "supportManager": {
         const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
         baseQuery = {
@@ -4063,8 +4234,21 @@ const getUsers = async (req, res) => {
       ];
     }
 
-    // 5. Merge queries
-    const finalQuery = { ...baseQuery, ...filterQuery };
+    // 5. Merge queries — use $and to safely combine baseQuery + filterQuery
+    //    so that a search $or never clobbers the hierarchy $or in baseQuery.
+    let finalQuery;
+    const hasBase   = Object.keys(baseQuery).length > 0;
+    const hasFilter = Object.keys(filterQuery).length > 0;
+
+    if (hasBase && hasFilter) {
+      finalQuery = { $and: [baseQuery, filterQuery] };
+    } else if (hasBase) {
+      finalQuery = baseQuery;
+    } else if (hasFilter) {
+      finalQuery = filterQuery;
+    } else {
+      finalQuery = {};
+    }
 
     // 6. Sorting
     let sortObj = {};
@@ -4554,8 +4738,15 @@ const updateUser = async (req, res) => {
         // accessControls only applies to viewer/auditor
         delete updateData.accessControls;
       } else {
-        // Validate and sanitize the incoming checklist
-        const validation = validateAndSanitizeChecklist(updateData.accessControls);
+        // Parse first (handles FormData JSON string → object), then validate.
+        const acParsed = parseAccessControls(updateData.accessControls);
+        if (!acParsed.ok) {
+          return res.status(400).json({
+            message: `Invalid accessControls: ${acParsed.error}`,
+          });
+        }
+
+        const validation = validateAndSanitizeChecklist(acParsed.value ?? updateData.accessControls);
 
         if (!validation.valid) {
           return res.status(400).json({
