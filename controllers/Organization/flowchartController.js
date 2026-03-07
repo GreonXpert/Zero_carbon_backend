@@ -538,6 +538,322 @@ const saveFlowchart = async (req, res) => {
   }
 };
 
+// ============================================================================
+// UPDATED FUNCTION: addNodeToFlowchart
+// ============================================================================
+// PATCH /api/flowchart/:flowchartId/add-node
+//
+// Appends ONE or MANY nodes (and optional edges) to an existing Flowchart.
+// Increments version ONCE per request regardless of how many nodes are added.
+//
+// ── Supported request body shapes ────────────────────────────────────────────
+//
+//  Single node (backward-compatible):
+//  {
+//    "node":  { ...NodeSchema object },
+//    "edge":  { ...EdgeSchema object }   // optional
+//  }
+//
+//  Multiple nodes (new):
+//  {
+//    "nodes": [ { ...NodeSchema }, { ...NodeSchema }, ... ],
+//    "edges": [ { ...EdgeSchema }, { ...EdgeSchema }, ... ]   // optional
+//  }
+//
+//  Rule: "nodes" array takes priority over singular "node" key.
+//        "edges" array takes priority over singular "edge" key.
+//
+// ── Success response (200) ────────────────────────────────────────────────────
+//  {
+//    "message":    "2 node(s) added successfully",
+//    "flowchartId": "<mongo _id>",
+//    "clientId":   "<clientId>",
+//    "version":    4,
+//    "totalNodes": 7,
+//    "addedNodes": [ ...normalized node objects ],
+//    "addedEdges": [ ...normalized edge objects ]   // [] when no edges sent
+//  }
+// ============================================================================
+
+const addNodeToFlowchart = async (req, res) => {
+  try {
+    const { flowchartId } = req.params;
+
+    // ── 0) Auth guard ─────────────────────────────────────────────────────────
+    if (!req.user || (!req.user._id && !req.user.id)) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+    const userId = req.user._id || req.user.id;
+
+    // ── 1) Normalise input — accept both singular and plural keys ─────────────
+    let rawNodes = [];
+    if (Array.isArray(req.body.nodes) && req.body.nodes.length > 0) {
+      // "nodes" array wins
+      rawNodes = req.body.nodes;
+    } else if (
+      req.body.node &&
+      typeof req.body.node === 'object' &&
+      !Array.isArray(req.body.node)
+    ) {
+      // fall back to singular "node"
+      rawNodes = [req.body.node];
+    }
+
+    let rawEdges = [];
+    if (Array.isArray(req.body.edges)) {
+      rawEdges = req.body.edges;
+    } else if (
+      req.body.edge &&
+      typeof req.body.edge === 'object' &&
+      !Array.isArray(req.body.edge)
+    ) {
+      rawEdges = [req.body.edge];
+    }
+
+    if (rawNodes.length === 0) {
+      return res.status(400).json({
+        message:
+          'Request body must include a "node" object or a "nodes" array with at least one entry'
+      });
+    }
+
+    // ── 2) Per-node structural validation ─────────────────────────────────────
+    for (let i = 0; i < rawNodes.length; i++) {
+      const n   = rawNodes[i];
+      const pfx = rawNodes.length > 1 ? `nodes[${i}]: ` : '';
+
+      if (!n || typeof n !== 'object' || Array.isArray(n)) {
+        return res.status(400).json({ message: `${pfx}each node must be a plain object` });
+      }
+      if (!n.id || typeof n.id !== 'string' || !n.id.trim()) {
+        return res.status(400).json({
+          message: `${pfx}node.id is required and must be a non-empty string`
+        });
+      }
+      if (!n.label || typeof n.label !== 'string' || !n.label.trim()) {
+        return res.status(400).json({
+          message: `${pfx}node.label is required and must be a non-empty string`
+        });
+      }
+      if (
+        !n.position ||
+        typeof n.position.x !== 'number' ||
+        typeof n.position.y !== 'number'
+      ) {
+        return res.status(400).json({
+          message: `${pfx}node.position with numeric x and y coordinates is required`
+        });
+      }
+    }
+
+    // Duplicate ids within the request payload itself
+    const incomingNodeIds = rawNodes.map(n => n.id.trim());
+    const incomingNodeIdSet = new Set(incomingNodeIds);
+    if (incomingNodeIdSet.size !== incomingNodeIds.length) {
+      return res.status(400).json({
+        message:
+          'Duplicate node ids found within the request payload. Each node must have a unique id.'
+      });
+    }
+
+    // ── 3) Load flowchart ─────────────────────────────────────────────────────
+    if (!mongoose.Types.ObjectId.isValid(flowchartId)) {
+      return res.status(400).json({ message: 'Invalid flowchartId format' });
+    }
+
+    const flowchart = await Flowchart.findById(flowchartId);
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Flowchart not found' });
+    }
+    if (!flowchart.isActive) {
+      return res.status(409).json({
+        message: 'Cannot add nodes to an inactive (deleted) flowchart'
+      });
+    }
+
+    const { clientId } = flowchart;
+
+    // ── 4) Permission check ───────────────────────────────────────────────────
+    if (
+      !['super_admin', 'consultant_admin', 'consultant'].includes(req.user.userType)
+    ) {
+      return res.status(403).json({
+        message:
+          'Only Super Admin, Consultant Admin, and Consultants can modify flowcharts'
+      });
+    }
+
+    const perm = await canManageFlowchart(req.user, clientId);
+    if (!perm.allowed) {
+      return res.status(403).json({ message: 'Permission denied', reason: perm.reason });
+    }
+
+    // ── 5) Duplicate node-id guard (against existing DB nodes) ───────────────
+    const existingNodeIds = new Set(flowchart.nodes.map(n => n.id));
+    const duplicates = incomingNodeIds.filter(id => existingNodeIds.has(id));
+    if (duplicates.length > 0) {
+      return res.status(409).json({
+        message: `Node id(s) already exist in this flowchart: ${duplicates.join(', ')}. Use unique ids.`,
+        code:         'DUPLICATE_NODE_ID',
+        duplicateIds: duplicates
+      });
+    }
+
+    // ── 6) Validate edges ─────────────────────────────────────────────────────
+    // Build the full projected node-id set (existing + all incoming) so that
+    // edges can reference newly added nodes within the same request.
+    const allNodeIds      = new Set([...existingNodeIds, ...incomingNodeIdSet]);
+    const normalizedEdges = [];
+
+    if (rawEdges.length > 0) {
+      const existingEdgeIds = new Set(flowchart.edges.map(e => e.id));
+      const seenInPayload   = new Set();
+
+      for (let i = 0; i < rawEdges.length; i++) {
+        const e   = rawEdges[i];
+        const pfx = rawEdges.length > 1 ? `edges[${i}]: ` : '';
+
+        if (!e || typeof e !== 'object') {
+          return res.status(400).json({
+            message: `${pfx}each edge must be a plain object`
+          });
+        }
+        if (!e.id || !e.source || !e.target) {
+          return res.status(400).json({
+            message: `${pfx}edge must include id, source, and target fields`
+          });
+        }
+        if (existingEdgeIds.has(e.id)) {
+          return res.status(409).json({
+            message: `${pfx}edge id "${e.id}" already exists in this flowchart. Use a unique id.`,
+            code: 'DUPLICATE_EDGE_ID'
+          });
+        }
+        if (seenInPayload.has(e.id)) {
+          return res.status(400).json({
+            message: `Duplicate edge id "${e.id}" found within the request payload.`
+          });
+        }
+        seenInPayload.add(e.id);
+
+        if (!allNodeIds.has(e.source)) {
+          return res.status(400).json({
+            message: `${pfx}edge source "${e.source}" does not match any node in this flowchart`
+          });
+        }
+        if (!allNodeIds.has(e.target)) {
+          return res.status(400).json({
+            message: `${pfx}edge target "${e.target}" does not match any node in this flowchart`
+          });
+        }
+
+        normalizedEdges.push({ id: e.id, source: e.source, target: e.target });
+      }
+    }
+
+    // ── 7) Normalise all incoming nodes via shared helpers ────────────────────
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ message: 'Associated client not found' });
+    }
+    const assessmentLevel = getNormalizedLevels(client);
+
+    const normalizedNodes = addCEFCommentsToNodes(
+      normalizeNodes(rawNodes, assessmentLevel, 'flowchart')
+    );
+
+    // ── 8) Quota check (mirrors saveFlowchart / updateFlowchartNode) ──────────
+    if (isQuotaSubject(req.user.userType)) {
+      const assignedConsultantId = await getAssignedConsultantId(clientId);
+      if (!assignedConsultantId) {
+        return res.status(403).json({
+          success: false,
+          message:
+            'This client does not have an assigned consultant. Assign a consultant first.',
+          code: 'NO_ASSIGNED_CONSULTANT'
+        });
+      }
+
+      // Project: all existing nodes + every incoming normalised node
+      const projectedNodes = [
+        ...flowchart.nodes.map(n =>
+          typeof n.toObject === 'function' ? n.toObject() : n
+        ),
+        ...normalizedNodes
+      ];
+
+      const quotaResult = await checkFlowchartQuota({
+        clientId,
+        consultantId: assignedConsultantId,
+        nodes:        projectedNodes,
+        chartType:    'flowchart'
+      });
+
+      if (!quotaResult.allowed) {
+        return res.status(422).json({
+          success: false,
+          message: `Flowchart quota exceeded. Cannot add ${normalizedNodes.length} node(s).`,
+          code:        'QUOTA_EXCEEDED',
+          quotaErrors: quotaResult.errors.map(e => ({
+            resource:  e.resource,
+            limit:     e.limit,
+            used:      e.used,
+            remaining: e.remaining,
+            attempted: e.newTotal,
+            message:   e.message
+          }))
+        });
+      }
+    }
+
+    // ── 9) Append all nodes and edges — single save ───────────────────────────
+    for (const node of normalizedNodes) {
+      flowchart.nodes.push(node);
+    }
+    for (const edge of normalizedEdges) {
+      flowchart.edges.push(edge);
+    }
+
+    flowchart.markModified('nodes');
+    if (normalizedEdges.length > 0) flowchart.markModified('edges');
+    flowchart.lastModifiedBy = userId;
+    flowchart.version        = (flowchart.version || 1) + 1;
+
+    await flowchart.save();
+
+    // ── 10) Audit log ─────────────────────────────────────────────────────────
+    const addedIds = normalizedNodes.map(n => n.id).join(', ');
+    await logFlowchartUpdate(
+      req,
+      flowchart,
+      `${normalizedNodes.length} node(s) added via PATCH — nodeIds: [${addedIds}], client: ${clientId}, version: ${flowchart.version}`
+    );
+
+    // ── 11) Return the freshly saved nodes ────────────────────────────────────
+    const totalNodes = flowchart.nodes.length;
+    const addedNodes = flowchart.nodes.slice(totalNodes - normalizedNodes.length);
+
+    return res.status(200).json({
+      message:     `${normalizedNodes.length} node(s) added successfully`,
+      flowchartId: flowchart._id,
+      clientId,
+      version:     flowchart.version,
+      totalNodes,
+      addedNodes,
+      addedEdges:  normalizedEdges
+    });
+
+  } catch (error) {
+    console.error('Error in addNodeToFlowchart:', error);
+    return res.status(500).json({
+      message: 'Failed to add node(s) to flowchart',
+      error:   error.message
+    });
+  }
+};
+
+
+
 // Get single Flowchart with proper permissions
 // Get single Flowchart with proper permissions
 const getFlowchart = async (req, res) => {
@@ -1754,6 +2070,7 @@ const hardDeleteScopeDetail = async (req, res) => {
 
 module.exports = {
   saveFlowchart,
+  addNodeToFlowchart,
   getFlowchart,
   getAllFlowcharts,
   deleteFlowchart,

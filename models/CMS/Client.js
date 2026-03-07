@@ -102,7 +102,7 @@ const clientSchema = new mongoose.Schema(
     
     stage: {
       type: String,
-      enum: ["lead", "registered", "proposal", "active"],
+      enum: ["lead", "registered", "proposal", "quota_pending", "active"],
       default: "lead",
       required: true
     },
@@ -116,6 +116,8 @@ const clientSchema = new mongoose.Schema(
         "pending", "submitted", "rejected", "moved_to_proposal",
         // Proposal statuses
         "proposal_pending", "proposal_submitted", "proposal_rejected", "proposal_accepted",
+        // Quota setup stage (between proposal accepted and active)
+        "quota_pending", "quota_completed",
         // Active statuses
         "active", "suspended", "expired", "renewed",
         //
@@ -863,6 +865,7 @@ clientSchema.statics.buildClientIdForStage = function (sequenceNumber, stage) {
 
   if (stage === "lead") return `Lead_Greon${padded}`;        // Lead_Greon001
   if (stage === "registered") return `Sandbox_Greon${padded}`; // Sandbox_Greon001
+  if (stage === "quota_pending") return `Sandbox_Greon${padded}`; // keep Sandbox_ prefix during quota setup
   if (stage === "active") return `Greon${padded}`;             // Greon001
 
   // Fallback – treat others as final

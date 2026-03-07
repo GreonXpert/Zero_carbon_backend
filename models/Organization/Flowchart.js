@@ -209,65 +209,71 @@ fromOtherChart: {
   // After the customEmissionFactor field, add:
 emissionFactorValues: {
   // For DEFRA
-  defraData: {
-
-    uom: { type: String },
-    ghgUnits: [{ 
-      unit: { type: String },
-      ghgconversionFactor: { type: Number },
-      gwpValue: { type: Number, default: 0 },
-      gwpSearchField: { type: String, default: null },
-      gwpLastUpdated: { type: Date, default: null }
-
-    }],
-   
-  },
-  
-  // For IPCC
-  ipccData: {
-   
-    fuelDensityLiter: { type: Number, default: null },
-    fuelDensityM3: { type: Number, default: null },
+ defraData: {
+  uom: { type: String },
+  ghgUnits: [{ 
     unit: { type: String },
-    ghgUnits: [{ 
-      unit: { type: String },
-      ghgconversionFactor: { type: Number },
-      gwpValue: { type: Number, default: 0 },
-      gwpSearchField: { type: String, default: null },
-      gwpLastUpdated: { type: Date, default: null }
-
-    }],
-    
-  },
+    ghgconversionFactor: { type: Number },
+    ghgconversionFactor_comment: { type: String, default: '' },   // ← ADD
+    conversionFactor: { type: Number, default: null },             // ← ADD
+    conversionFactor_comment: { type: String, default: '' },       // ← ADD
+    gwpValue: { type: Number, default: 0 },
+    gwpSearchField: { type: String, default: null },
+    gwpLastUpdated: { type: Date, default: null }
+  }],
+},
+  // For IPCC
+ipccData: {
+  fuelDensityLiter: { type: Number, default: null },
+  fuelDensityM3: { type: Number, default: null },
+  unit: { type: String },
+  conversionFactor: { type: Number, default: null },             // ← ADD (top-level for IPCC)
+  conversionFactor_comment: { type: String, default: '' },       // ← ADD
+  ghgUnits: [{ 
+    unit: { type: String },
+    ghgconversionFactor: { type: Number },
+    ghgconversionFactor_comment: { type: String, default: '' },   // ← ADD
+    conversionFactor: { type: Number, default: null },             // ← ADD
+    conversionFactor_comment: { type: String, default: '' },       // ← ADD
+    gwpValue: { type: Number, default: 0 },
+    gwpSearchField: { type: String, default: null },
+    gwpLastUpdated: { type: Date, default: null }
+  }],
+},
   
   // For EPA
-  epaData: {
-   
-    uomEPA: { type: String },
-    ghgUnitsEPA: [{
-      unit: { type: String },
-      ghgconversionFactor: { type: Number },
-       gwpValue: { type: Number, default: 0 },
-      gwpSearchField: { type: String, default: null },
-      gwpLastUpdated: { type: Date, default: null }
-    }],
-    
-  },
-   countryData: {
-      C: String,
-      regionGrid: String,
-      emissionFactor: String,
-      reference: String,
-      unit: String,
-      yearlyValues: [{
-        from: String,       // dd/mm/yyyy
-        to: String,         // dd/mm/yyyy
-        periodLabel: String,
-        value: Number
-      }]
-    },
+epaData: {
+  uomEPA: { type: String },
+  ghgUnitsEPA: [{
+    unit: { type: String },
+    ghgconversionFactor: { type: Number },
+    ghgconversionFactor_comment: { type: String, default: '' },   // ← ADD
+    conversionFactor: { type: Number, default: null },             // ← ADD
+    conversionFactor_comment: { type: String, default: '' },       // ← ADD
+    gwpValue: { type: Number, default: 0 },
+    gwpSearchField: { type: String, default: null },
+    gwpLastUpdated: { type: Date, default: null }
+  }],
+},
+countryData: {
+  C: String,
+  regionGrid: String,
+  emissionFactor: String,
+  reference: String,
+  unit: String,
+  conversionFactor: { type: Number, default: null },           // ← ADD
+  conversionFactor_comment: { type: String, default: '' },     // ← ADD
+  yearlyValues: [{
+    from: String,
+    to: String,
+    periodLabel: String,
+    value: Number,
+    conversionFactor: { type: Number, default: null },         // ← ADD (per-year factor)
+    conversionFactor_comment: { type: String, default: '' }    // ← ADD
+  }]
+},
 
-     customEmissionFactor: {
+customEmissionFactor: {
       CO2:  { type: Number, default: null },
       CH4:  { type: Number, default: null },
       N2O:  { type: Number, default: null },
@@ -309,6 +315,8 @@ CH4_comment:  { type: String, default: '' },
 N2O_comment:  { type: String, default: '' },
 CO2e_comment: { type: String, default: '' },
 unit_comment: { type: String, default: '' },
+conversionFactor: { type: Number, default: null },         // ← ADD
+conversionFactor_comment: { type: String, default: '' },   // ← ADD
 
 industryAverageEmissionFactor_comment: { type: String, default: '' },
 stoichiometicFactor_comment:           { type: String, default: '' },
@@ -331,20 +339,21 @@ N2O_gwp_comment:  { type: String, default: '' },
 CO2e_gwp_comment: { type: String, default: '' },
     },
   // Emission factor value // For EmissionFactorHub
-    emissionFactorHubData: {
-      scope:{type:String},
-      category: { type: String },
-      activity: { type: String },
-      itemName: {type: String},
-      unit: { type: String },
-      value: { type: Number },
-      source: { type: String },
-      reference: { type: String },
-      // ADD GWP VALUE FOR EMISSIONFACTORHUB
-      gwpValue: { type: Number, default: 0 },
-      gwpSearchField: { type: String, default: null },
-      gwpLastUpdated: { type: Date, default: null }
-    },
+emissionFactorHubData: {
+  scope: { type: String },
+  category: { type: String },
+  activity: { type: String },
+  itemName: { type: String },
+  unit: { type: String },
+  value: { type: Number },
+  source: { type: String },
+  reference: { type: String },
+  conversionFactor: { type: Number, default: null },         // ← ADD
+  conversionFactor_comment: { type: String, default: '' },   // ← ADD
+  gwpValue: { type: Number, default: 0 },
+  gwpSearchField: { type: String, default: null },
+  gwpLastUpdated: { type: Date, default: null }
+},
   
   // Common metadata
   dataSource: {

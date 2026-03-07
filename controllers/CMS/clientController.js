@@ -177,7 +177,24 @@ async function updateClientIdReferencesOnActivation(oldClientId, newClientId, ac
     results.sbtiTargets = { warning: err.message };
   }
 
-  // 7) Write an audit log entry (who, when, what)
+  // 7) Update ConsultantClientQuota — rename clientId so quota records
+  //    follow the client when it moves from Sandbox_Greon→ Greon.
+  try {
+    const ConsultantClientQuota = require('../../models/Quota/ConsultantClientQuota');
+    const quotaRes = await ConsultantClientQuota.updateMany(
+      { clientId: oldClientId },
+      { $set: { clientId: newClientId } }
+    );
+    results.consultantClientQuota = {
+      matched:  quotaRes.matchedCount  ?? quotaRes.n         ?? 0,
+      modified: quotaRes.modifiedCount ?? quotaRes.nModified ?? 0,
+    };
+  } catch (err) {
+    console.error('[updateClientIdReferencesOnActivation] ConsultantClientQuota update error:', err.message);
+    results.consultantClientQuota = { error: err.message };
+  }
+
+  // 8) Write an audit log entry (who, when, what)
   try {
     if (actorUserId) {
       await SandboxAudit.create({
@@ -2861,11 +2878,11 @@ const updateProposalStatus = async (req, res) => {
 
       const prevStage = client.stage;
 
-      // 2) Move to Active stage (as per your requirement)
-      client.stage = "active";
-      client.status = "active"; // 🔹 explicitly set active
+      // 2) Move to quota_pending stage — quota must be configured before going active
+      client.stage = "quota_pending";
+      client.status = "quota_pending";
 
-      // 3) Build / keep sequence and generate ACTIVE clientId (GreonXXX)
+      // 3) Keep the Sandbox_ clientId during quota setup (sequence already exists)
       if (!client.clientSequenceNumber) {
         const match = client.clientId && client.clientId.match(/(\d+)$/);
         if (match) {
@@ -2876,92 +2893,30 @@ const updateProposalStatus = async (req, res) => {
         }
       }
 
-      const newClientId = Client.buildClientIdForStage(
-        client.clientSequenceNumber,
-        "active"
-      );
-      client.clientId = newClientId;
+      // clientId stays as Sandbox_GreonXXX during quota_pending
+      // It will be renamed to GreonXXX only when moveToActive is called
 
-      // 4) Sandbox handling (NEW LOGIC)
-      //
-      // - If sandboxStatus is provided (true/false) → override sandbox flag
-      // - If sandboxStatus is NOT provided → DO NOT modify sandbox value
+      // 4) Sandbox flag — respect sandboxStatus if provided
       if (typeof sandboxStatus === "boolean") {
         client.sandbox = sandboxStatus;
       }
-      // (previously you had: client.sandbox = false; we removed that to respect sandboxStatus)
 
-      // 5) Initialize / update account details for active subscription
-      if (!client.accountDetails) {
-        client.accountDetails = {};
-      }
-
-      client.accountDetails.subscriptionStartDate = new Date();
-      client.accountDetails.subscriptionEndDate = moment()
-        .add(1, "year")
-        .toDate();
-      client.accountDetails.subscriptionStatus = "active";
-      client.accountDetails.isActive = true;
-
-      // Keep existing counts if present, otherwise set defaults
-      if (
-        typeof client.accountDetails.activeUsers !== "number" ||
-        client.accountDetails.activeUsers <= 0
-      ) {
-        client.accountDetails.activeUsers = 1;
-      }
-      if (typeof client.accountDetails.dataSubmissions !== "number") {
-        client.accountDetails.dataSubmissions = 0;
-      }
-
-      // 6) Timeline entry
+      // 5) Timeline entry
       client.timeline.push({
-        stage: "active",
-        status: "active",
-        action: "Proposal accepted and account activated",
+        stage: "quota_pending",
+        status: "quota_pending",
+        action: "Proposal accepted — awaiting quota setup",
         performedBy: req.user.id,
         notes:
           reason ||
-          (typeof sandboxStatus === "boolean"
-            ? `Client activation; sandboxStatus = ${sandboxStatus}`
-            : "Client subscription activated for 1 year"),
+          "Proposal accepted. Please configure quota before activating the client.",
         timestamp: new Date(),
       });
 
-      // 7) Save client FIRST (so newClientId is persistent)
+      // 6) Save
       await client.save();
 
-      // 8) Update references in all related collections
-      //    - Users (sandbox → active, clientId updated)
-      //    - Flowchart / ProcessFlowchart
-      //    - Reduction
-      //    - Decarbonization
-      try {
-        await updateClientIdReferencesOnActivation(
-          oldClientId,
-          newClientId,
-          req.user.id,
-          "proposal_accept"
-        );
-      } catch (err) {
-        console.error(
-          "updateClientIdReferencesOnActivation error:",
-          err.message
-        );
-        // We don't fail the main request for this, but we log it.
-      }
-
-      // 9) Best-effort: create a client admin if needed
-      try {
-        await createClientAdmin(newClientId, {
-          consultantId: req.user.id,
-          sandbox: typeof sandboxStatus === "boolean" ? sandboxStatus : false,
-        });
-      } catch (err) {
-        console.warn(`createClientAdmin warning: ${err.message}`);
-      }
-
-      // 10) Real-time events
+      // 7) Real-time events
       try {
         await emitClientStageChange(client, prevStage, req.user.id);
       } catch (err) {
@@ -2974,14 +2929,13 @@ const updateProposalStatus = async (req, res) => {
         console.warn(`emitClientListUpdate warning: ${err.message}`);
       }
 
-      // 11) Response
+      // 8) Response
       return res.status(200).json({
-        message: "Proposal accepted and client account activated",
+        message: "Proposal accepted. Client moved to quota_pending — configure quota then activate.",
         client: {
           clientId: client.clientId,
           stage: client.stage,
-          status: client.accountDetails.subscriptionStatus,
-          subscriptionEndDate: client.accountDetails.subscriptionEndDate,
+          status: client.status,
           sandbox: client.sandbox,
         },
       });
@@ -5780,6 +5734,258 @@ const getSupportManagerForClient = async (req, res) => {
 };
 
 
+// ============================================================
+// QUOTA STAGE FUNCTIONS
+// ============================================================
+
+/**
+ * Mark quota as created (quota_pending → status: quota_completed)
+ * The client stays in quota_pending STAGE but status moves to quota_completed,
+ * signalling that quota has been configured and the client is ready to go active.
+ *
+ * PATCH /api/clients/:clientId/quota-created
+ * Access: consultant_admin, super_admin
+ */
+const markQuotaCreated = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { notes } = req.body;
+
+    // Permission check
+    if (!["consultant_admin", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Consultant Admin or Super Admin can mark quota as created",
+      });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Must be in quota_pending stage with quota_pending status
+    if (client.stage !== "quota_pending" || client.status !== "quota_pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Client must be in quota_pending stage with quota_pending status. Current: stage=${client.stage}, status=${client.status}`,
+      });
+    }
+
+    // Move status to quota_completed (stage stays quota_pending)
+    client.status = "quota_completed";
+
+    client.timeline.push({
+      stage: "quota_pending",
+      status: "quota_completed",
+      action: "Quota configured — ready to activate",
+      performedBy: req.user.id,
+      notes: notes || "Quota has been set up. Client can now be moved to active.",
+      timestamp: new Date(),
+    });
+
+    await client.save();
+
+    try {
+      await emitClientListUpdate(client, "updated", req.user.id);
+    } catch (err) {
+      console.warn(`emitClientListUpdate warning: ${err.message}`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Quota marked as created. Use the move-to-active endpoint to activate the client.",
+      client: {
+        clientId: client.clientId,
+        stage: client.stage,
+        status: client.status,
+        sandbox: client.sandbox,
+      },
+    });
+  } catch (error) {
+    console.error("markQuotaCreated error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to mark quota as created",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
+/**
+ * Move client from quota_pending (quota_completed status) → active
+ * This is the final activation step. Generates the real GreonXXX clientId,
+ * runs all reference updates, creates the client admin, and starts the subscription.
+ *
+ * PATCH /api/clients/:clientId/move-to-active
+ * Access: consultant_admin, super_admin
+ * Body (optional): { reason, sandboxStatus, extensionDays }
+ */
+const moveToActive = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { reason, sandboxStatus, extensionDays } = req.body;
+
+    // Permission check
+    if (!["consultant_admin", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Consultant Admin or Super Admin can activate a client",
+      });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Must be in quota_pending stage AND quota_completed status
+    if (client.stage !== "quota_pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Client must be in quota_pending stage to activate. Current stage: ${client.stage}`,
+      });
+    }
+
+    if (client.status !== "quota_completed") {
+      return res.status(400).json({
+        success: false,
+        message: `Quota must be marked as created (status=quota_completed) before activating. Current status: ${client.status}. Call PATCH /:clientId/quota-created first.`,
+      });
+    }
+
+    const prevStage = client.stage;
+    const oldClientId = client.clientId;
+
+    // 1) Build the real active clientId (GreonXXX)
+    if (!client.clientSequenceNumber) {
+      const match = client.clientId && client.clientId.match(/(\d+)$/);
+      if (match) {
+        client.clientSequenceNumber = parseInt(match[1], 10);
+      } else {
+        const seq = await Client.getNextClientSequence();
+        client.clientSequenceNumber = seq;
+      }
+    }
+
+    const newClientId = Client.buildClientIdForStage(
+      client.clientSequenceNumber,
+      "active"
+    );
+    client.clientId = newClientId;
+
+    // 2) Move to active stage + status
+    client.stage = "active";
+    client.status = "active";
+
+    // 3) Sandbox flag
+    if (typeof sandboxStatus === "boolean") {
+      client.sandbox = sandboxStatus;
+    } else {
+      client.sandbox = false; // default: real client on activation
+    }
+
+    // 4) Initialize subscription
+    if (!client.accountDetails) client.accountDetails = {};
+
+    const subscriptionDays =
+      Number.isFinite(Number(extensionDays)) && Number(extensionDays) > 0
+        ? Number(extensionDays)
+        : 365;
+
+    client.accountDetails.subscriptionStartDate = new Date();
+    client.accountDetails.subscriptionEndDate = moment()
+      .add(subscriptionDays, "days")
+      .toDate();
+    client.accountDetails.subscriptionStatus = "active";
+    client.accountDetails.isActive = true;
+
+    if (
+      typeof client.accountDetails.activeUsers !== "number" ||
+      client.accountDetails.activeUsers <= 0
+    ) {
+      client.accountDetails.activeUsers = 1;
+    }
+    if (typeof client.accountDetails.dataSubmissions !== "number") {
+      client.accountDetails.dataSubmissions = 0;
+    }
+
+    // 5) Timeline entry
+    client.timeline.push({
+      stage: "active",
+      status: "active",
+      action: "Client activated after quota setup",
+      performedBy: req.user.id,
+      notes:
+        reason ||
+        `Client activated. Subscription valid for ${subscriptionDays} days until ${client.accountDetails.subscriptionEndDate.toISOString().split("T")[0]}.`,
+      timestamp: new Date(),
+    });
+
+    // 6) Save
+    await client.save();
+
+    // 7) Update all collection references (clientId rename: Sandbox_Greon → Greon)
+    try {
+      await updateClientIdReferencesOnActivation(
+        oldClientId,
+        newClientId,
+        req.user.id,
+        "quota_to_active"
+      );
+    } catch (err) {
+      console.error("updateClientIdReferencesOnActivation error:", err.message);
+      // Not fatal — log and continue
+    }
+
+    // 8) Create client admin user
+    try {
+      await createClientAdmin(newClientId, {
+        consultantId: req.user.id,
+        sandbox: client.sandbox,
+      });
+    } catch (err) {
+      console.warn(`createClientAdmin warning: ${err.message}`);
+    }
+
+    // 9) Real-time events
+    try {
+      await emitClientStageChange(client, prevStage, req.user.id);
+    } catch (err) {
+      console.warn(`emitClientStageChange warning: ${err.message}`);
+    }
+
+    try {
+      await emitClientListUpdate(client, "updated", req.user.id);
+    } catch (err) {
+      console.warn(`emitClientListUpdate warning: ${err.message}`);
+    }
+
+    // 10) Response
+    return res.status(200).json({
+      success: true,
+      message: "Client successfully activated",
+      client: {
+        clientId: client.clientId,
+        stage: client.stage,
+        status: client.status,
+        subscriptionStartDate: client.accountDetails.subscriptionStartDate,
+        subscriptionEndDate: client.accountDetails.subscriptionEndDate,
+        sandbox: client.sandbox,
+      },
+    });
+  } catch (error) {
+    console.error("moveToActive error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to activate client",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+
 module.exports = {
   createLead,
   updateLead,
@@ -5816,5 +6022,7 @@ module.exports = {
   purgeClientCompletely,
   assignSupportManager,
   changeSupportManager,
-  getSupportManagerForClient
+  getSupportManagerForClient,
+  markQuotaCreated,
+  moveToActive,
 };

@@ -10,6 +10,7 @@ const {
   updateFlowchartNode,
   restoreFlowchart,
   assignOrUnassignEmployeeHeadToNode,
+  addNodeToFlowchart,
  
   hardDeleteScopeDetail
  
@@ -32,6 +33,7 @@ router.get('/:clientId/summary', getFlowchartSummary);
 
 // Flowchart operations
 router.post('/save', saveFlowchart); 
+router.patch('/:flowchartId/add-node', addNodeToFlowchart);
 router.get('/all', getAllFlowcharts); 
 router.get('/:clientId', getFlowchart); 
 router.delete('/:clientId', deleteFlowchart); 

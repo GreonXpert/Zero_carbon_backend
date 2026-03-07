@@ -47,13 +47,20 @@ const ALLOWED_USER_TYPE_QUOTA_KEYS = ['employeeHead', 'employee', 'viewer', 'aud
 // ─────────────────────────────────────────────────────────────
 async function resolveClientConsultant(clientId, user) {
   const client = await Client.findOne({ clientId })
-    .select('stage status workflowTracking.assignedConsultantId leadInfo.consultantAdminId')
+    .select('stage status sandbox workflowTracking.assignedConsultantId leadInfo.assignedConsultantId leadInfo.consultantAdminId')
     .lean();
   if (!client) {
     return { error: { status: 404, message: 'Client not found' } };
   }
 
-  const assignedConsultantId = client.workflowTracking?.assignedConsultantId;
+  // For active clients, the consultant lives in workflowTracking.
+  // For sandbox/registered clients (stage === 'registered'), the consultant
+  // lives in leadInfo.assignedConsultantId — fall back to that so quota
+  // can be created before the client is promoted to active.
+  const assignedConsultantId =
+    client.workflowTracking?.assignedConsultantId ||
+    client.leadInfo?.assignedConsultantId;
+
   if (!assignedConsultantId) {
     return {
       error: {

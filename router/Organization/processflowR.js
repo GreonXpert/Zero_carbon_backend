@@ -4,6 +4,7 @@ const { auth, checkRole } = require('../../middleware/auth');
 
 const {
   saveProcessFlowchart,
+  addNodeToProcessFlowchart,
   getProcessFlowchart,
   getAllProcessFlowcharts,
   updateProcessFlowchartNode,
@@ -50,6 +51,7 @@ const viewRoles = [
 
 // Process flowchart operations
 router.post('/save', saveProcessFlowchart);                             // Create/Update process flowchart
+router.patch('/:flowchartId/add-node', addNodeToProcessFlowchart);   // Add new node to existing flowchart
 router.get('/all', getAllProcessFlowcharts);                           // Get all process flowcharts (hierarchy-based)
 router.get('/:clientId', getProcessFlowchart);                         // Get single process flowchart
 router.get('/:clientId/summary', getProcessFlowchartSummary);          // Get process flowchart summary

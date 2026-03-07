@@ -36,7 +36,10 @@ const {
   // 🆕 SUPPORT MANAGEMENT FUNCTIONS
   assignSupportManager,
   changeSupportManager,
-  getSupportManagerForClient
+  getSupportManagerForClient,
+  // 🆕 QUOTA STAGE FUNCTIONS
+  markQuotaCreated,
+  moveToActive,
 } = require("../../controllers/CMS/clientController");
 
 // // 🆕 QUOTA MANAGEMENT
@@ -182,6 +185,30 @@ router.patch("/:clientId/change-support-manager", changeSupportManager);
  * GET /api/clients/:clientId/support-manager
  */
 router.get("/support-manager", getSupportManagerForClient);
+
+// ===================================================================
+// QUOTA STAGE (Stage 3.5 — between proposal and active)
+// ===================================================================
+
+/**
+ * Mark quota as created (quota_pending → quota_completed status)
+ * Must be called BEFORE move-to-active.
+ * Access: consultant_admin, super_admin
+ *
+ * PATCH /api/clients/:clientId/quota-created
+ */
+router.patch("/:clientId/quota-created", markQuotaCreated);
+
+/**
+ * Move client from quota_pending (quota_completed) → active
+ * Generates the real GreonXXX clientId, starts subscription, creates client admin.
+ * Access: consultant_admin, super_admin
+ *
+ * Optional body: { reason, sandboxStatus, extensionDays }
+ *
+ * PATCH /api/clients/:clientId/move-to-active
+ */
+router.patch("/:clientId/move-to-active", moveToActive);
 
 // ===================================================================
 // SUBSCRIPTION MANAGEMENT
