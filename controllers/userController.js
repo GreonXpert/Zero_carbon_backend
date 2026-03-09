@@ -6284,6 +6284,7 @@ const assignSupportManagerToConsultant = async (req, res) => {
  *  │ consultant_admin│ client_admin, client_employee_head, employee,      │
  *  │                 │ auditor, viewer — whose clientId is in the         │
  *  │                 │ consultant_admin's own assignedClients array       │
+ *  │                 │ OR belongs to a client_admin created by them       │
  *  ├─────────────────┼────────────────────────────────────────────────────┤
  *  │ consultant      │ client_admin, client_employee_head, employee,      │
  *  │                 │ auditor, viewer — whose clientId is a client where │
@@ -6299,8 +6300,8 @@ const assignSupportManagerToConsultant = async (req, res) => {
  */
 const setConcurrentLoginLimit = async (req, res) => {
   try {
-    const { userId }  = req.params;
-    const requester   = req.user; // set by auth middleware
+    const { userId } = req.params;
+    const requester = req.user; // set by auth middleware
 
     // ── 1. Validate userId format ──────────────────────────────────────
     if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -6336,7 +6337,7 @@ const setConcurrentLoginLimit = async (req, res) => {
     }
 
     // ── 4. Load target user ────────────────────────────────────────────
-    const targetUser = await User.findById(userId).select('-password');
+    const targetUser = await User.findById(userId).select("-password");
 
     if (!targetUser) {
       return res.status(404).json({ message: "User not found" });
@@ -6367,11 +6368,11 @@ const setConcurrentLoginLimit = async (req, res) => {
     return res.status(200).json({
       message: "Concurrent login limit updated successfully",
       user: {
-        id:                   targetUser._id,
-        userName:             targetUser.userName,
-        email:                targetUser.email,
-        userType:             targetUser.userType,
-        clientId:             targetUser.clientId || null,
+        id: targetUser._id,
+        userName: targetUser.userName,
+        email: targetUser.email,
+        userType: targetUser.userType,
+        clientId: targetUser.clientId || null,
         previousLimit,
         concurrentLoginLimit: targetUser.concurrentLoginLimit
       }
@@ -6379,15 +6380,15 @@ const setConcurrentLoginLimit = async (req, res) => {
 
   } catch (error) {
     // Mongoose schema-level validation (min/max)
-    if (error.name === 'ValidationError') {
-      const msgs = Object.values(error.errors).map(e => e.message);
+    if (error.name === "ValidationError") {
+      const msgs = Object.values(error.errors).map((e) => e.message);
       return res.status(400).json({ message: "Validation failed", errors: msgs });
     }
 
     console.error("[SESSION LIMIT] Unexpected error:", error);
     return res.status(500).json({
       message: "Failed to update concurrent login limit",
-      error: process.env.NODE_ENV === 'development' ? error.message : "Internal server error"
+      error: process.env.NODE_ENV === "development" ? error.message : "Internal server error"
     });
   }
 };
@@ -6401,6 +6402,7 @@ const setConcurrentLoginLimit = async (req, res) => {
  *
  * Uses the SAME data patterns as getUsers/getUserById:
  *   • consultant_admin → their assignedClients array on the User document
+ *                        OR client ownership derived through created client_admin
  *   • consultant       → Client.leadInfo.assignedConsultantId (DB lookup)
  */
 async function _checkSessionLimitAuthority(requester, targetUser) {
@@ -6409,29 +6411,31 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
 
   // ── Target must always be a client-side user ─────────────────────────
   const CLIENT_SIDE_TYPES = [
-    'client_admin',
-    'client_employee_head',
-    'employee',
-    'auditor',
-    'viewer'
+    "client_admin",
+    "client_employee_head",
+    "employee",
+    "auditor",
+    "viewer"
   ];
 
   if (!CLIENT_SIDE_TYPES.includes(tgtType)) {
     return {
       allowed: false,
-      reason: `Only client-side users (client_admin, client_employee_head, employee, auditor, viewer) can have their session limit updated by this endpoint`
+      reason: "Only client-side users (client_admin, client_employee_head, employee, auditor, viewer) can have their session limit updated by this endpoint"
     };
   }
 
   // ── RULE 0: super_admin — unrestricted ───────────────────────────────
-  if (reqType === 'super_admin') {
+  if (reqType === "super_admin") {
     return { allowed: true };
   }
 
   // ── RULE 1: consultant_admin ─────────────────────────────────────────
-  // Authority: their own assignedClients array contains targetUser.clientId
-  // This is exactly how createClientAdmin and getUsers determine ownership.
-  if (reqType === 'consultant_admin') {
+  // Authority:
+  //  1) their own assignedClients contains targetUser.clientId
+  //  2) target client_admin was created by them
+  //  3) target user belongs to a client whose client_admin was created by them
+  if (reqType === "consultant_admin") {
     if (!targetUser.clientId) {
       return {
         allowed: false,
@@ -6441,25 +6445,73 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
 
     // Fetch live assignedClients from DB (not from JWT — it may be stale)
     const requesterDoc = await User.findById(requester.id)
-      .select('assignedClients')
+      .select("assignedClients")
       .lean();
 
     const assignedClients = requesterDoc?.assignedClients || [];
 
-    if (assignedClients.includes(targetUser.clientId)) {
+    // 1) Existing logic: assignedClients
+    if (assignedClients.map(String).includes(String(targetUser.clientId))) {
+      return { allowed: true };
+    }
+
+    // 2) Direct ownership of client_admin via createdBy
+    if (
+      targetUser.userType === "client_admin" &&
+      String(targetUser.createdBy) === String(requester.id)
+    ) {
+      return { allowed: true };
+    }
+
+    // 3) Indirect ownership of all client-side users under a client_admin created by this consultant_admin
+    const ownedClientAdmin = await User.findOne({
+      userType: "client_admin",
+      clientId: targetUser.clientId,
+      createdBy: requester.id
+    })
+      .select("_id clientId")
+      .lean();
+
+    if (ownedClientAdmin) {
       return { allowed: true };
     }
 
     return {
       allowed: false,
-      reason: `You can only set session limits for users whose organisation (${targetUser.clientId}) is in your assigned clients list`
+      reason: `You can only set session limits for users whose organisation (${targetUser.clientId}) is in your assigned clients list or belongs to a client_admin created by you`
     };
   }
 
+  // ── RULE 2: consultant ───────────────────────────────────────────────
+  // Keep this only if your file already has Client imported and the same
+  // consultant ownership pattern is used elsewhere in the controller.
+  if (reqType === "consultant") {
+    if (!targetUser.clientId) {
+      return {
+        allowed: false,
+        reason: "Target user has no clientId — cannot verify consultant ownership"
+      };
+    }
 
+    const ownedClient = await Client.findOne({
+      clientId: targetUser.clientId,
+      "leadInfo.assignedConsultantId": requester.id
+    })
+      .select("_id clientId")
+      .lean();
+
+    if (ownedClient) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      reason: `You can only set session limits for users whose organisation (${targetUser.clientId}) is assigned to you`
+    };
+  }
 
   // ── RULE 3: client_admin — explicitly blocked ────────────────────────
-  if (reqType === 'client_admin') {
+  if (reqType === "client_admin") {
     return {
       allowed: false,
       reason: "client_admin does not have permission to set concurrent login limits. Only super_admin, consultant_admin, or consultant can do this."
@@ -6472,7 +6524,6 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
     reason: "You do not have permission to set concurrent login limits"
   };
 }
-
 
 module.exports = {
   initializeSuperAdmin,
