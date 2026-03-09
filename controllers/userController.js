@@ -271,13 +271,13 @@ const verifyLoginOTP = async (req, res) => {
     console.log(`[LOGIN STEP 2] Verifying OTP`);
 
     // ==========================================================
-    // 1. VERIFY TEMPORARY TOKEN  (unchanged)
+    // 1. VERIFY TEMPORARY TOKEN
     // ==========================================================
     let decoded;
     try {
       decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
 
-      if (decoded.stage !== 'otp_pending' || decoded.purpose !== '2fa_verification') {
+      if (decoded.stage !== "otp_pending" || decoded.purpose !== "2fa_verification") {
         return res.status(401).json({ message: "Invalid temporary token" });
       }
     } catch (err) {
@@ -288,7 +288,7 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 2. FIND USER  (unchanged)
+    // 2. FIND USER
     // ==========================================================
     const user = await User.findById(decoded.userId).populate("createdBy", "userName email");
 
@@ -297,7 +297,7 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 3. VERIFY OTP  (unchanged)
+    // 3. VERIFY OTP
     // ==========================================================
     const otpResult = verifyOTP(user.email, otp);
 
@@ -313,16 +313,21 @@ const verifyLoginOTP = async (req, res) => {
     console.log(`[LOGIN STEP 2] OTP verified successfully for ${user.email}`);
 
     // ==========================================================
-    // 4. CONCURRENT SESSION ENFORCEMENT  ← NEW
-    //
-    // Count active (non-expired) sessions for this user.
-    // If the count is already at the user's limit, reject the login.
-    //
-    // We count on the DB side for accuracy under concurrent requests.
-    // Expired sessions are handled automatically by MongoDB's TTL index
-    // and are therefore never included in this count.
+    // 4. CONCURRENT SESSION ENFORCEMENT
     // ==========================================================
-    const limit = user.concurrentLoginLimit ?? 1; // schema default = 1
+    const limit = user.concurrentLoginLimit ?? 1;
+
+    // Cleanup stale expired sessions first
+    await UserSession.updateMany(
+      {
+        userId: user._id,
+        isActive: true,
+        expiresAt: { $lt: new Date() }
+      },
+      {
+        $set: { isActive: false }
+      }
+    );
 
     const activeSessionCount = await UserSession.countDocuments({
       userId: user._id,
@@ -346,42 +351,31 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 4b. QUOTA-LEVEL CONCURRENT SESSION CHECK  ← FIX Bug #3
-    //
-    // The per-user check above (step 4) enforces the user-level cap
-    // stored on User.concurrentLoginLimit.
-    // This additional check enforces the per-userType cap configured by
-    // consultant_admin via PATCH /quota/user-types → concurrentLoginLimit.
-    //
-    // These are two independent limits:
-    //   - User-level:  user.concurrentLoginLimit (set via setConcurrentLoginLimit)
-    //   - Quota-level: ConsultantClientQuota.userTypeQuotas.*.concurrentLoginLimit
-    //
-    // Both must pass. The more restrictive of the two takes effect.
-    // Non-quota userTypes (super_admin, consultant_admin, consultant,
-    // client_admin, supportManager, support) are skipped — they have no
-    // ConsultantClientQuota doc and calling the service would be a no-op.
+    // 4b. QUOTA-LEVEL CONCURRENT SESSION CHECK
     // ==========================================================
-    const QUOTA_CONCURRENT_TYPES = ['client_employee_head', 'employee', 'viewer', 'auditor'];
+    const QUOTA_CONCURRENT_TYPES = ["client_employee_head", "employee", "viewer", "auditor"];
+
     if (QUOTA_CONCURRENT_TYPES.includes(user.userType) && user.clientId) {
-      const { checkConcurrentLoginLimit } = require('../services/quota/quotaService');
+      const { checkConcurrentLoginLimit } = require("../services/quota/quotaService");
       const concurrentCheck = await checkConcurrentLoginLimit(user);
+
       if (!concurrentCheck.allowed) {
         console.log(
           `[LOGIN STEP 2] Quota concurrent session limit reached for ${user.email}: ` +
           `${concurrentCheck.activeCount}/${concurrentCheck.limit}`
         );
+
         return res.status(429).json({
-          message:     concurrentCheck.message,
-          code:        'QUOTA_SESSION_LIMIT_REACHED',
-          limit:       concurrentCheck.limit,
-          activeCount: concurrentCheck.activeCount,
+          message: concurrentCheck.message,
+          code: "QUOTA_SESSION_LIMIT_REACHED",
+          limit: concurrentCheck.limit,
+          activeCount: concurrentCheck.activeCount
         });
       }
     }
 
     // ==========================================================
-    // 5. UPDATE FIRST LOGIN FLAG  (unchanged)
+    // 5. UPDATE FIRST LOGIN FLAG
     // ==========================================================
     if (user.isFirstLogin) {
       user.isFirstLogin = false;
@@ -389,24 +383,16 @@ const verifyLoginOTP = async (req, res) => {
     }
 
     // ==========================================================
-    // 6. CREATE SESSION RECORD  ← NEW
-    //
-    // sessionId is a cryptographically random 32-byte hex string.
-    // It will be embedded in the JWT and verified on every request
-    // by the auth middleware.
-    //
-    // expiresAt matches the JWT's own "24h" expiry so that the TTL
-    // index cleans up the session document exactly when the token
-    // would expire anyway.
+    // 6. CREATE SESSION RECORD
     // ==========================================================
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 h
+    const sessionId = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    const userAgent = req.headers['user-agent'] || 'unknown';
+    const userAgent = req.headers["user-agent"] || "unknown";
     const ip =
-      req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
       req.socket?.remoteAddress ||
-      'unknown';
+      "unknown";
 
     await UserSession.create({
       userId: user._id,
@@ -420,7 +406,7 @@ const verifyLoginOTP = async (req, res) => {
     console.log(`[LOGIN STEP 2] Session created: ${sessionId.slice(0, 8)}… for ${user.email}`);
 
     // ==========================================================
-    // 7. CREATE FINAL JWT TOKEN  (sessionId added to payload)
+    // 7. CREATE FINAL JWT TOKEN
     // ==========================================================
     const tokenPayload = {
       id: user._id,
@@ -431,7 +417,7 @@ const verifyLoginOTP = async (req, res) => {
       permissions: user.permissions,
       sandbox: user.sandbox === true,
       assessmentLevel: user.assessmentLevel || [],
-      sessionId                                // ← NEW: ties token to one session row
+      sessionId
     };
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
@@ -439,7 +425,7 @@ const verifyLoginOTP = async (req, res) => {
     });
 
     // ==========================================================
-    // 8. PREPARE USER DATA  (unchanged)
+    // 8. PREPARE USER DATA
     // ==========================================================
     const userData = {
       id: user._id,
@@ -458,12 +444,12 @@ const verifyLoginOTP = async (req, res) => {
     };
 
     // ==========================================================
-    // 9. SUCCESS RESPONSE  (unchanged shape)
+    // 9. SUCCESS RESPONSE
     // ==========================================================
     logLogin(req, user).catch(() => {});
     console.log(`[LOGIN STEP 2] Login successful for ${user.email}`);
 
-    res.status(200).json({
+    return res.status(200).json({
       user: userData,
       token,
       message: "Login successful"
@@ -471,7 +457,7 @@ const verifyLoginOTP = async (req, res) => {
 
   } catch (error) {
     console.error("[LOGIN STEP 2] Error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       message: "OTP verification failed",
       error: error.message
     });
