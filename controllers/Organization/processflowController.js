@@ -419,6 +419,7 @@ const saveProcessFlowchart = async (req, res) => {
 
     // 11) Prepare response based on assessmentLevel
     const responseData = {
+      _id:processFlowchart._id,
       clientId: processFlowchart.clientId,
       nodes: processFlowchart.nodes,
       edges: processFlowchart.edges,
