@@ -859,6 +859,7 @@ const addNodeToFlowchart = async (req, res) => {
 const getFlowchart = async (req, res) => {
   try {
     const { clientId } = req.params;
+
     if (!clientId) {
       return res.status(400).json({ message: 'clientId is required' });
     }
@@ -866,7 +867,9 @@ const getFlowchart = async (req, res) => {
     // 1) Permission gate
     const permissionCheck = await canViewFlowchart(req.user, clientId);
     if (!permissionCheck.allowed) {
-      return res.status(403).json({ message: 'You do not have permission to view this flowchart' });
+      return res.status(403).json({
+        message: 'You do not have permission to view this flowchart'
+      });
     }
 
     // 2) Load flowchart
@@ -886,12 +889,15 @@ const getFlowchart = async (req, res) => {
 
     const normalizeLevels = (raw) => {
       const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+
       let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
       arr = arr
         .map(v => String(v || '').trim().toLowerCase())
         .flatMap(v => v === 'both' ? ['organization', 'process'] : [v])
         .filter(v => ALLOWED.includes(v))
         .filter((v, i, a) => a.indexOf(v) === i);
+
       return arr;
     };
 
@@ -902,7 +908,6 @@ const getFlowchart = async (req, res) => {
     const privilegedRoles = ['super_admin', 'consultant_admin', 'consultant'];
     const isPrivileged = privilegedRoles.includes(req.user.userType);
 
-    // Only restrict when neither side includes organization
     if (!isPrivileged && !effectiveLevels.includes('organization')) {
       return res.status(403).json({
         message: 'Flowchart is not available for this client',
@@ -912,32 +917,41 @@ const getFlowchart = async (req, res) => {
       });
     }
 
-    // 4) Filter nodes based on role (keep existing code)
+    // 4) Filter nodes based on role
     let filteredNodes = flowchart.nodes;
 
     if (req.user.userType === 'client_employee_head' && !permissionCheck.fullAccess) {
+
       const assigned = flowchart.nodes.filter(n =>
         n?.details?.employeeHeadId &&
         n.details.employeeHeadId.toString?.() === req.user.id
       );
-      filteredNodes = assigned.length > 0 ? assigned : flowchart.nodes.filter(n =>
-        n?.details?.department === req.user.department ||
-        n?.details?.location === req.user.location
-      );
+
+      filteredNodes = assigned.length > 0
+        ? assigned
+        : flowchart.nodes.filter(n =>
+            n?.details?.department === req.user.department ||
+            n?.details?.location === req.user.location
+          );
     }
 
-    // Return data
+    const flowchartObject = flowchart.toObject();
+
     return res.status(200).json({
       success: true,
       clientId,
+      flowchartId: flowchartObject._id,   // ✅ Explicit Flowchart ID
       totalNodes: filteredNodes.length,
       flowchart: {
-        ...flowchart.toObject(),
+        ...flowchartObject,
+        _id: flowchartObject._id,         // ✅ Ensure _id present
         nodes: filteredNodes
       }
     });
+
   } catch (error) {
     console.error('❌ Error fetching flowchart:', error);
+
     return res.status(500).json({
       message: 'Failed to fetch flowchart',
       error: error.message

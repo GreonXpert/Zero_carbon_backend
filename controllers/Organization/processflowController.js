@@ -903,6 +903,7 @@ function includesProcess(levels) {
 const getProcessFlowchart = async (req, res) => {
   try {
     const { clientId } = req.params;
+
     if (!clientId) {
       return res.status(400).json({ message: "clientId is required" });
     }
@@ -926,7 +927,9 @@ const getProcessFlowchart = async (req, res) => {
     } else if (userType === "client_admin") {
       allowed = userClientId === clientId;
       fullAccess = allowed;
-    } else if (["client_employee_head", "employee", "auditor", "viewer"].includes(userType)) {
+    } else if (
+      ["client_employee_head", "employee", "auditor", "viewer"].includes(userType)
+    ) {
       allowed = userClientId === clientId;
       fullAccess = false;
     }
@@ -949,6 +952,7 @@ const getProcessFlowchart = async (req, res) => {
 
     // ---------------- LOAD CLIENT + ASSESSMENT LEVEL ----
     const client = await Client.findOne({ clientId }).lean();
+
     if (!client) {
       return res.status(404).json({ message: "Client not found" });
     }
@@ -961,7 +965,7 @@ const getProcessFlowchart = async (req, res) => {
       return res.status(403).json({
         message: "Process flowchart is not available for this client",
         reason: 'assessmentLevel does not include "process"',
-        assessmentLevel: effectiveLevels,
+        assessmentLevel: effectiveLevels
       });
     }
 
@@ -975,21 +979,22 @@ const getProcessFlowchart = async (req, res) => {
     // Safe node (strip sensitive fields)
     const safeNode = (node) => {
       const base = node.toObject ? node.toObject() : node;
-      const scopes = (base.details?.scopeDetails || []).filter(s => !s.isDeleted);
+      const scopes = (base.details?.scopeDetails || []).filter((s) => !s.isDeleted);
 
       return {
         ...base,
         details: {
           ...base.details,
-          scopeDetails: scopes.map(s => ({
+          scopeDetails: scopes.map((s) => ({
+            _id: s._id, // optional, keep if needed
             scopeIdentifier: s.scopeIdentifier,
             scopeType: s.scopeType,
-            inputType: s.inputType || s.dataCollectionType,
+            inputType: s.inputType || s.dataCollectionType
           })),
           emissionFactors: undefined,
           gwp: undefined,
           calculations: undefined,
-          formulas: undefined,
+          formulas: undefined
         }
       };
     };
@@ -997,11 +1002,11 @@ const getProcessFlowchart = async (req, res) => {
     if (!fullAccess) {
       if (userType === "client_employee_head") {
         const assigned = nodes.filter(
-          n => String(n.details?.employeeHeadId || '') === userId
+          (n) => String(n.details?.employeeHeadId || "") === userId
         );
 
         const fallback = nodes.filter(
-          n =>
+          (n) =>
             n.details?.department === user.department ||
             n.details?.location === user.location
         );
@@ -1014,14 +1019,17 @@ const getProcessFlowchart = async (req, res) => {
           const base = node.toObject ? node.toObject() : node;
           const scopes = base.details?.scopeDetails || [];
 
-          const assignedScopes = scopes.filter(s =>
-            (s.assignedEmployees || []).map(x => String(x)).includes(userId)
+          const assignedScopes = scopes.filter((s) =>
+            (s.assignedEmployees || []).map((x) => String(x)).includes(userId)
           );
 
           if (assignedScopes.length > 0) {
             acc.push({
               ...base,
-              details: { ...base.details, scopeDetails: assignedScopes }
+              details: {
+                ...base.details,
+                scopeDetails: assignedScopes
+              }
             });
           }
 
@@ -1035,18 +1043,20 @@ const getProcessFlowchart = async (req, res) => {
     }
 
     // ---------------- FILTER EDGES -----------------------
-    const getNodeId = (n) =>
-      n.id || (n._id && n._id.toString()) || n.data?.id;
+    const getNodeId = (n) => n.id || (n._id && n._id.toString()) || n.data?.id;
 
     const visible = new Set(filteredNodes.map(getNodeId).filter(Boolean));
 
     const filteredEdges = (processFlowchart.edges || []).filter(
-      e => visible.has(e.source) && visible.has(e.target)
+      (e) => visible.has(e.source) && visible.has(e.target)
     );
 
     // ---------------- RETURN -----------------------------
     return res.status(200).json({
+      success: true,
+      processFlowchartId: processFlowchart._id, // explicit top-level id
       flowchart: {
+        _id: processFlowchart._id, // explicit inside flowchart object
         clientId: processFlowchart.clientId,
         nodes: filteredNodes,
         edges: filteredEdges,
@@ -1056,13 +1066,14 @@ const getProcessFlowchart = async (req, res) => {
         updatedAt: processFlowchart.updatedAt
       }
     });
-
   } catch (err) {
     console.error("PROCESS FLOWCHART ERROR:", err);
-    return res.status(500).json({ message: "Failed to fetch process flowchart", error: err.message });
+    return res.status(500).json({
+      message: "Failed to fetch process flowchart",
+      error: err.message
+    });
   }
 };
-
 
 
 // Get all process flowcharts (based on user hierarchy)
