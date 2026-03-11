@@ -2832,7 +2832,7 @@ const getClientProposalData = async (req, res) => {
 const updateProposalStatus = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { action, reason, sandboxStatus } = req.body; // 🔹 NEW: sandboxStatus
+    const { action, reason, sandboxStatus } = req.body;
 
     // Only consultant_admin can change proposal status
     if (req.user.userType !== "consultant_admin") {
@@ -2846,8 +2846,15 @@ const updateProposalStatus = async (req, res) => {
       return res.status(404).json({ message: "Client not found" });
     }
 
-    // Must be in proposal stage with a submitted proposal
-    if (client.stage !== "proposal" || client.status !== "proposal_submitted") {
+    // Allow both normal proposal flow and legacy quota flow
+    const canActOnProposal =
+      (client.stage === "proposal" && client.status === "proposal_submitted") ||
+      (
+        client.stage === "quota_pending" &&
+        (client.status === "quota_pending" || client.status === "quota_completed")
+      );
+
+    if (!canActOnProposal) {
       return res.status(400).json({
         message: "No submitted proposal to act on for this client",
       });
@@ -2858,14 +2865,10 @@ const updateProposalStatus = async (req, res) => {
       client.proposalData = {};
     }
 
-    // ⬅️ Save the OLD clientId before we change it
     const oldClientId = client.clientId;
 
-    // ==========================
     // ACCEPT FLOW
-    // ==========================
     if (action === "accept") {
-      // 1) Mark proposal as accepted (business meaning)
       client.status = "proposal_accepted";
       client.proposalData.clientApprovalDate = new Date();
 
@@ -2878,11 +2881,10 @@ const updateProposalStatus = async (req, res) => {
 
       const prevStage = client.stage;
 
-      // 2) Move to quota_pending stage — quota must be configured before going active
+      // Move to quota_pending stage
       client.stage = "quota_pending";
       client.status = "quota_pending";
 
-      // 3) Keep the Sandbox_ clientId during quota setup (sequence already exists)
       if (!client.clientSequenceNumber) {
         const match = client.clientId && client.clientId.match(/(\d+)$/);
         if (match) {
@@ -2893,15 +2895,10 @@ const updateProposalStatus = async (req, res) => {
         }
       }
 
-      // clientId stays as Sandbox_GreonXXX during quota_pending
-      // It will be renamed to GreonXXX only when moveToActive is called
-
-      // 4) Sandbox flag — respect sandboxStatus if provided
       if (typeof sandboxStatus === "boolean") {
         client.sandbox = sandboxStatus;
       }
 
-      // 5) Timeline entry
       client.timeline.push({
         stage: "quota_pending",
         status: "quota_pending",
@@ -2913,10 +2910,8 @@ const updateProposalStatus = async (req, res) => {
         timestamp: new Date(),
       });
 
-      // 6) Save
       await client.save();
 
-      // 7) Real-time events
       try {
         await emitClientStageChange(client, prevStage, req.user.id);
       } catch (err) {
@@ -2929,7 +2924,6 @@ const updateProposalStatus = async (req, res) => {
         console.warn(`emitClientListUpdate warning: ${err.message}`);
       }
 
-      // 8) Response
       return res.status(200).json({
         message: "Proposal accepted. Client moved to quota_pending — configure quota then activate.",
         client: {
@@ -2941,15 +2935,13 @@ const updateProposalStatus = async (req, res) => {
       });
     }
 
-    // ==========================
     // REJECT FLOW
-    // ==========================
     else if (action === "reject") {
       client.status = "proposal_rejected";
       client.proposalData.rejectionReason = reason;
 
       client.timeline.push({
-        stage: "proposal",
+        stage: client.stage,
         status: "proposal_rejected",
         action: "Proposal rejected",
         performedBy: req.user.id,
@@ -2976,9 +2968,7 @@ const updateProposalStatus = async (req, res) => {
       });
     }
 
-    // ==========================
     // INVALID ACTION
-    // ==========================
     else {
       return res.status(400).json({
         message: "Invalid action. Use 'accept' or 'reject'",
@@ -2992,7 +2982,6 @@ const updateProposalStatus = async (req, res) => {
     });
   }
 };
-
 
 
 
@@ -5764,15 +5753,27 @@ const markQuotaCreated = async (req, res) => {
       return res.status(404).json({ success: false, message: "Client not found" });
     }
 
-    // Must be in quota_pending stage with quota_pending status
-    if (client.stage !== "quota_pending" || client.status !== "quota_pending") {
+    // Allow normal quota flow and legacy proposal flow
+    const isNormalQuotaFlow =
+      client.stage === "quota_pending" && client.status === "quota_pending";
+
+    const isLegacyFlow =
+      client.stage === "proposal" && client.status === "proposal_submitted";
+
+    if (!isNormalQuotaFlow && !isLegacyFlow) {
       return res.status(400).json({
         success: false,
-        message: `Client must be in quota_pending stage with quota_pending status. Current: stage=${client.stage}, status=${client.status}`,
+        message: `Client must be in quota_pending/quota_pending or legacy proposal/proposal_submitted state. Current: stage=${client.stage}, status=${client.status}`,
       });
     }
 
-    // Move status to quota_completed (stage stays quota_pending)
+    // Auto-migrate legacy clients before marking quota completed
+    if (isLegacyFlow) {
+      client.stage = "quota_pending";
+      client.status = "quota_pending";
+    }
+
+    // Move status to quota_completed
     client.status = "quota_completed";
 
     client.timeline.push({
