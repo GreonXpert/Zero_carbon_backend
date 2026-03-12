@@ -123,7 +123,8 @@ const auth = async (req, res, next) => {
         sandbox: user.sandbox === true,
         assessmentLevel: user.assessmentLevel || [],
         department: user.department,
-        location: user.location
+        location: user.location,
+        accessControls: user.accessControls,
       };
 
       req.sessionId = decoded.sessionId; // ← available to logout controller
