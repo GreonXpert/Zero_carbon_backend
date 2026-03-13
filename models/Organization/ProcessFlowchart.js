@@ -358,7 +358,15 @@ CO2e_gwp_comment: { type: String, default: '' },
     default: 0,
     description: 'Emission Factor Uncertainty percentage'
   },
-  
+  // ISO 14064-1 conservative mode — per scopeIdentifier.
+  // false (default): report base emission E with range E ± ΔE
+  // true: report only the conservative upper estimate E + ΔE
+  conservativeMode: {
+    type:    Boolean,
+    default: false,
+    description: 'false = default inventory mode (E ± ΔE range); true = conservative upper estimate only (E + ΔE)'
+  },
+
   categoryName: { 
     type: String,
     description: 'Category name (e.g., Energy Industries, Manufacturing Industries)'
@@ -531,6 +539,8 @@ const ProcessFlowchartSchema = new mongoose.Schema({
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   version: { type: Number, default: 1 },
   isActive: { type: Boolean, default: true }
+  // NOTE: conservativeMode is now per-ScopeDetail (ScopeDetailSchema.conservativeMode)
+  //       so it can be set individually per scopeIdentifier.
 }, { timestamps: true });
 
 // ** NEW CODE: Pre-save hook for edge validation **

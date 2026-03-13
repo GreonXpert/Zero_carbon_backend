@@ -5,23 +5,269 @@ const Flowchart = require('../../models/Organization/Flowchart');
 const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
 const Client = require('../../models/CMS/Client'); 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
-const {calculateUncertainty} = require('../../utils/Calculation/CalculateUncertainity');
+const {
+  calculateUncertainty,
+  formatUncertaintyResult
+} = require('../../utils/Calculation/CalculateUncertainity');
 
 
-function normalizeSignedUncertainty(u) {
-  if (u == null || isNaN(Number(u))) return 0;
-
-  let val = Number(u);
-
-  // Convert percentages like 10, -10 to 0.10, -0.10
-  if (Math.abs(val) > 1) {
-    val = val / 100;
-  }
-
-  return val; // keep the sign (+ or -)
+// ─── UNCERTAINTY HELPER ───────────────────────────────────────────────────────
+// Sum all CO2e / emission values from the cumulative emission buckets.
+// This total is passed to formatUncertaintyResult() as the single cumulative
+// emission value — uncertainty is NEVER calculated per-row.
+function sumCumulativeCO2e(cumulativeObj) {
+  if (!cumulativeObj || typeof cumulativeObj !== 'object') return 0;
+  return Object.values(cumulativeObj).reduce((sum, bucket) => {
+    if (!bucket || typeof bucket !== 'object') return sum;
+    return sum + (Number(bucket.CO2e) || Number(bucket.emission) || 0);
+  }, 0);
 }
+// ─────────────────────────────────────────────────────────────────────────────
 
+// ─── CALCULATION BREAKDOWN BUILDER ───────────────────────────────────────────
+// Builds a step-by-step explanation of how emissions and uncertainty were
+// calculated. Attached to every calculation response (no DB save).
+// ─────────────────────────────────────────────────────────────────────────────
+function buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode) {
+  try {
+    const { scopeType, categoryName, calculationModel: tier, emissionFactor: efSource, activity } = scopeConfig;
+    const c = scopeConfig.emissionFactorValues?.customEmissionFactor || {};
 
+    // Helper: round to 6 decimal places for display
+    const r6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+
+    const breakdown = {
+      scopeType,
+      category: categoryName,
+      tier,
+      emissionFactorSource: efSource,
+      inputValues: { ...dataValues },
+      steps: {}
+    };
+
+    // ─── SCOPE 1: COMBUSTION (Stationary / Mobile) ────────────────────────
+    if (
+      scopeType === 'Scope 1' &&
+      (categoryName.includes('Stationary Combustion') ||
+       categoryName.includes('Mobile Combustion') ||
+       categoryName.includes('Combustion'))
+    ) {
+      breakdown.emissionFactors = {
+        CO2: efValues.CO2,
+        CH4: efValues.CH4,
+        N2O: efValues.N2O,
+        unit: c.unit || '',
+        source: efSource
+      };
+      breakdown.gwpValues = {
+        CO2: gwpValues.CO2,
+        CH4: gwpValues.CH4,
+        N2O: gwpValues.N2O,
+        standard: 'AR6'
+      };
+
+      // STEP 1 — Individual gas emissions: gas = activityData × emissionFactor
+      const step1 = { formula: 'gas_emission = activityData × emissionFactor' };
+      for (const [key, value] of Object.entries(dataValues)) {
+        const inc = emissions.incoming?.[key];
+        if (!inc) continue;
+        step1[key] = { inputValue: value };
+        if (efValues.CO2 != null) step1[key].CO2 = { calculation: `${value} × ${efValues.CO2} = ${r6(inc.CO2)}`, result: r6(inc.CO2) };
+        if (efValues.CH4 != null) step1[key].CH4 = { calculation: `${value} × ${efValues.CH4} = ${r6(inc.CH4)}`, result: r6(inc.CH4) };
+        if (efValues.N2O != null) step1[key].N2O = { calculation: `${value} × ${efValues.N2O} = ${r6(inc.N2O)}`, result: r6(inc.N2O) };
+      }
+      breakdown.steps.step1_individual_gas_emissions = step1;
+
+      // STEP 2 — CO2e conversion: CO2e = (CO2 × GWP_CO2) + (CH4 × GWP_CH4) + (N2O × GWP_N2O)
+      const step2 = { formula: 'CO2e = (CO2 × GWP_CO2) + (CH4 × GWP_CH4) + (N2O × GWP_N2O)' };
+      for (const [key] of Object.entries(dataValues)) {
+        const inc = emissions.incoming?.[key];
+        if (!inc) continue;
+        const co2Contrib = r6(inc.CO2  * gwpValues.CO2);
+        const ch4Contrib = r6(inc.CH4  * gwpValues.CH4);
+        const n2oContrib = r6(inc.N2O  * gwpValues.N2O);
+        step2[key] = {
+          calculation: `(${r6(inc.CO2)} × ${gwpValues.CO2}) + (${r6(inc.CH4)} × ${gwpValues.CH4}) + (${r6(inc.N2O)} × ${gwpValues.N2O}) = ${co2Contrib} + ${ch4Contrib} + ${n2oContrib}`,
+          result: r6(inc.CO2e)
+        };
+      }
+      breakdown.steps.step2_co2e_conversion = step2;
+    }
+
+    // ─── SCOPE 1: PROCESS EMISSIONS ──────────────────────────────────────
+    else if (
+      scopeType === 'Scope 1' &&
+      (categoryName.includes('Process Emission') || categoryName.includes('Process Emissions'))
+    ) {
+      const incResult = r6(emissions.incoming?.process?.CO2e ?? 0);
+      if (tier === 'tier 2') {
+        const stoich = c.stoichiometicFactor ?? 0;
+        const conv   = c.conversionEfficiency ?? 0;
+        const raw    = dataValues.rawMaterialInput ?? 0;
+        breakdown.emissionFactors = { stoichiometricFactor: stoich, conversionEfficiency: conv, source: efSource };
+        breakdown.steps.step1_process_emission = {
+          formula: 'CO2e = rawMaterialInput × stoichiometricFactor × conversionEfficiency',
+          calculation: `${raw} × ${stoich} × ${conv} = ${incResult}`,
+          result: incResult
+        };
+      } else {
+        const iaef = c.industryAverageEmissionFactor ?? 0;
+        const prod = dataValues.productionOutput ?? 0;
+        breakdown.emissionFactors = { industryAverageEmissionFactor: iaef, source: efSource };
+        breakdown.steps.step1_process_emission = {
+          formula: 'CO2e = productionOutput × industryAverageEmissionFactor',
+          calculation: `${prod} × ${iaef} = ${incResult}`,
+          result: incResult
+        };
+      }
+    }
+
+    // ─── SCOPE 1: FUGITIVE — REFRIGERANT ─────────────────────────────────
+    else if (scopeType === 'Scope 1' && /ref.*?geration/i.test(activity)) {
+      const units  = dataValues.numberOfUnits ?? 0;
+      const leak   = c.leakageRate ?? dataValues.leakageRate ?? 0;
+      const gwpRef = c.Gwp_refrigerant ?? 0;
+      const result = r6(emissions.incoming?.fugitive?.emission ?? 0);
+      breakdown.emissionFactors = { chargeType: c.chargeType || '', leakageRate: leak, GWP_refrigerant: gwpRef, source: efSource };
+      breakdown.steps.step1_fugitive_refrigerant = {
+        formula: 'CO2e = numberOfUnits × leakageRate × GWP_refrigerant',
+        calculation: `${units} × ${leak} × ${gwpRef} = ${result}`,
+        result
+      };
+    }
+
+    // ─── SCOPE 1: FUGITIVE — SF6 ──────────────────────────────────────────
+    else if (scopeType === 'Scope 1' && categoryName.includes('Fugitive') && /SF6/i.test(activity)) {
+      const gwpSF6 = c.GWP_SF6 ?? 0;
+      const result = r6(emissions.incoming?.SF6?.CO2e ?? 0);
+      breakdown.emissionFactors = { GWP_SF6: gwpSF6, source: efSource };
+      if (tier === 'tier 1') {
+        const cap      = dataValues.nameplateCapacity ?? 0;
+        const leakRate = dataValues.defaultLeakageRate ?? c.defaultLeakageRate ?? 0;
+        breakdown.steps.step1_sf6_fugitive = {
+          formula: 'CO2e = nameplateCapacity × defaultLeakageRate × GWP_SF6',
+          calculation: `${cap} × ${leakRate} × ${gwpSF6} = ${result}`,
+          result
+        };
+      } else {
+        const dec  = dataValues.decreaseInventory ?? 0;
+        const acq  = dataValues.acquisitions ?? 0;
+        const disb = dataValues.disbursements ?? 0;
+        const net  = dataValues.netCapacityIncrease ?? 0;
+        breakdown.steps.step1_sf6_fugitive = {
+          formula: 'CO2e = (decreaseInventory + acquisitions - disbursements - netCapacityIncrease) × GWP_SF6',
+          calculation: `(${dec} + ${acq} - ${disb} - ${net}) × ${gwpSF6} = ${result}`,
+          result
+        };
+      }
+    }
+
+    // ─── SCOPE 1: FUGITIVE — CH4 LEAKS ───────────────────────────────────
+    else if (scopeType === 'Scope 1' && /CH4[_\s]?Leaks?/i.test(activity)) {
+      const result = r6(emissions.incoming?.CH4_leaks?.CO2e ?? 0);
+      if (tier === 'tier 1') {
+        const efLeak  = c.EmissionFactorFugitiveCH4Leak ?? 0;
+        const gwpLeak = c.GWP_CH4_leak ?? 0;
+        const dataVal = dataValues.activityData ?? 0;
+        breakdown.emissionFactors = { EmissionFactorFugitiveCH4Leak: efLeak, GWP_CH4_leak: gwpLeak, source: efSource };
+        breakdown.steps.step1_ch4_leaks = {
+          formula: 'CO2e = activityData × EmissionFactorFugitiveCH4Leak × GWP_CH4_leak',
+          calculation: `${dataVal} × ${efLeak} × ${gwpLeak} = ${result}`,
+          result
+        };
+      } else {
+        const efComp  = c.EmissionFactorFugitiveCH4Component ?? 0;
+        const gwpComp = c.GWP_CH4_Component ?? 0;
+        const comps   = dataValues.numberOfComponents ?? 0;
+        breakdown.emissionFactors = { EmissionFactorFugitiveCH4Component: efComp, GWP_CH4_Component: gwpComp, source: efSource };
+        breakdown.steps.step1_ch4_leaks = {
+          formula: 'CO2e = numberOfComponents × EmissionFactorFugitiveCH4Component × GWP_CH4_Component',
+          calculation: `${comps} × ${efComp} × ${gwpComp} = ${result}`,
+          result
+        };
+      }
+    }
+
+    // ─── SCOPE 2 ──────────────────────────────────────────────────────────
+    else if (scopeType === 'Scope 2') {
+      const factor = efValues.CO2;
+      const fieldMap = {
+        'Purchased Electricity': 'consumed_electricity',
+        'Purchased Steam':       'consumed_steam',
+        'Purchased Heating':     'consumed_heating',
+        'Purchased Cooling':     'consumed_cooling'
+      };
+      let fieldKey = fieldMap[categoryName];
+      if (!fieldKey || dataValues[fieldKey] == null) {
+        fieldKey = Object.keys(dataValues).find(k => typeof dataValues[k] === 'number') || Object.keys(dataValues)[0];
+      }
+      const qty    = dataValues[fieldKey] ?? 0;
+      const result = r6(emissions.incoming?.[fieldKey]?.CO2e ?? 0);
+      breakdown.emissionFactors = { emissionFactor: factor, source: efSource };
+      breakdown.steps.step1_co2e_calculation = {
+        formula: 'CO2e = activityData × emissionFactor',
+        field: fieldKey,
+        calculation: `${qty} × ${factor} = ${result}`,
+        result
+      };
+    }
+
+    // ─── SCOPE 3 ──────────────────────────────────────────────────────────
+    else if (scopeType === 'Scope 3') {
+      const yearlyVals  = scopeConfig.emissionFactorValues?.countryData?.yearlyValues || [];
+      const co2eEF = (c.CO2e != null && c.CO2e !== 0)
+        ? c.CO2e
+        : (yearlyVals.length ? yearlyVals[yearlyVals.length - 1].value : 0);
+      breakdown.emissionFactors = { CO2e: co2eEF, source: efSource };
+
+      const incomingBucket = emissions.incoming || {};
+      const bucketKey      = Object.keys(incomingBucket)[0];
+      const inputKey       = Object.keys(dataValues)[0];
+      const inputVal       = dataValues[inputKey] ?? 0;
+      const result         = r6(incomingBucket[bucketKey]?.CO2e ?? 0);
+
+      breakdown.steps.step1_co2e_calculation = {
+        formula: 'CO2e = activityData × emissionFactor',
+        field: inputKey,
+        calculation: `${inputVal} × ${co2eEF} = ${result}`,
+        result
+      };
+    }
+
+    // ─── STEP 3: UNCERTAINTY (always included) ────────────────────────────
+    // Formula: UE(%) = sqrt(UAD² + UEF²)  [Root-Sum-of-Squares — ISO 14064-1 / IPCC]
+    // Example: UAD=1.5, UEF=2 → sqrt(1.5²+2²) = sqrt(2.25+4) = sqrt(6.25) = 2.5%
+    const cumulativeCO2e = Object.values(emissions.cumulative || {}).reduce(
+      (sum, b) => sum + (Number(b?.CO2e) || Number(b?.emission) || 0), 0
+    );
+    const UE     = Math.sqrt(Math.pow(UAD, 2) + Math.pow(UEF, 2));
+    const deltaE = Math.abs(cumulativeCO2e) * (UE / 100);
+
+    breakdown.steps.step3_uncertainty = {
+      explanation: 'ISO 14064-1 Root-Sum-of-Squares: UE = sqrt(UAD² + UEF²). UAD and UEF are already in % — no division before squaring.',
+      formula: 'UE(%) = sqrt(UAD² + UEF²)',
+      UAD,
+      UEF,
+      calculation: `sqrt(${UAD}² + ${UEF}²) = sqrt(${UAD ** 2} + ${UEF ** 2}) = sqrt(${UAD ** 2 + UEF ** 2}) = ${r6(UE)}`,
+      uncertaintyPercent: r6(UE),
+      deltaE_formula: 'ΔE = cumulativeCO2e × (UE / 100)',
+      deltaE_calculation: `${r6(cumulativeCO2e)} × (${r6(UE)} / 100) = ${r6(deltaE)}`,
+      deltaE: r6(deltaE),
+      cumulativeCO2e: r6(cumulativeCO2e),
+      range: {
+        low:  r6(cumulativeCO2e - deltaE),
+        high: r6(cumulativeCO2e + deltaE)
+      }
+    };
+
+    return breakdown;
+  } catch (err) {
+    // Never crash the main calculation because of breakdown builder errors
+    console.error('[buildCalculationBreakdown] Error:', err.message);
+    return null;
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ADD: helper to read latest S1+S2 CO2e for the current node from Calculation Summary
 async function getNodeS1S2FromLatestSummary(clientId, nodeId) {
@@ -526,7 +772,8 @@ const calculateEmissions = async (req, res) => {
       emissionFactor: emissionFactorSource,
       emissionFactorValues,
       UAD = 0,
-      UEF = 0
+      UEF = 0,
+      conservativeMode = false   // ← per-scopeIdentifier conservative mode flag
     } = scopeConfig;
 
     // 4. Get EF and GWP
@@ -537,13 +784,13 @@ const calculateEmissions = async (req, res) => {
     let calculationResult;
     switch (scopeType) {
       case 'Scope 1':
-        calculationResult = await calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
+        calculationResult = await calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF, conservativeMode);
         break;
       case 'Scope 2':
-        calculationResult = await calculateScope2Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
+        calculationResult = await calculateScope2Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF, conservativeMode);
         break;
       case 'Scope 3':
-        calculationResult = await calculateScope3Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF);
+        calculationResult = await calculateScope3Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF, conservativeMode);
         break;
       default:
         return res.status(400).json({ success: false, message: 'Invalid scope type' });
@@ -679,7 +926,7 @@ function extractEmissionFactorValues(scopeConfig) {
 /**
  * Calculate Scope 1 emissions
  */
-async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF) {
+async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpValues, UAD, UEF, conservativeMode = false) {
   const { categoryName, activity, calculationModel: tier } = scopeConfig;
   const dataValues = dataEntry.dataValues instanceof Map
     ? Object.fromEntries(dataEntry.dataValues)
@@ -692,10 +939,15 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
 
   // 0️⃣ Tier 3 not yet supported
   if (tier === 'tier 3') {
-    return {
+   return {
       success: true,
       message: 'Calculation for Tier 3 is under development.',
-      emissions: { uncertainty: calculateUncertainty(0, UAD, UEF) }
+      emissions: {
+        incoming: {},
+        cumulative: {},
+        uncertainty: formatUncertaintyResult(0, UAD, UEF, conservativeMode)
+      },
+      calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, { incoming: {}, cumulative: {} }, UAD, UEF, conservativeMode)
     };
   }
 
@@ -716,18 +968,13 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
       const n2o_cum  = cumData * efValues.N2O;
       const co2e_cum = co2_cum + (ch4_cum * gwpValues.CH4) + (n2o_cum * gwpValues.N2O);
 
-      const uInc = calculateUncertainty(co2e_in, UAD, UEF);
-      const uCum = calculateUncertainty(co2e_cum, UAD, UEF);
-
       emissions.incoming[key] = {
         CO2: co2_in, CH4: ch4_in, N2O: n2o_in,
-        CO2e: co2e_in, combinedUncertainty: uInc,
-        CO2eWithUncertainty: co2e_in + uInc
+        CO2e: co2e_in
       };
       emissions.cumulative[key] = {
         CO2: co2_cum, CH4: ch4_cum, N2O: n2o_cum,
-        CO2e: co2e_cum, combinedUncertainty: uCum,
-        CO2eWithUncertainty: co2e_cum + uCum
+        CO2e: co2e_cum
       };
     }
   }
@@ -744,18 +991,12 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
     if (tier === 'tier 1' && units > 0 && leak > 0 && gwpRef > 0) {
       const inc  = units  * leak * gwpRef;
       const cumE = cumUnits * leak * gwpRef;
-      const uInc = calculateUncertainty(inc,  UAD, UEF);
-      const uCum = calculateUncertainty(cumE, UAD, UEF);
 
       emissions.incoming['fugitive'] = {
-        emission: inc,
-        combinedUncertainty: uInc,
-        emissionWithUncertainty: inc + uInc
+        emission: inc
       };
       emissions.cumulative['fugitive'] = {
-        emission: cumE,
-        combinedUncertainty: uCum,
-        emissionWithUncertainty: cumE + uCum
+        emission: cumE
       };
     } else {
       // Tier 2 stock‐change fallback
@@ -772,27 +1013,25 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
 
       const inc2  = delta    * gFug;
       const cumE2= cumDelta * gFug;
-      const uInc2= calculateUncertainty(inc2,  UAD, UEF);
-      const uCum2= calculateUncertainty(cumE2, UAD, UEF);
 
       emissions.incoming['fugitive'] = {
-        emission: inc2,
-        combinedUncertainty: uInc2,
-        emissionWithUncertainty: inc2 + uInc2
+        emission: inc2
       };
       emissions.cumulative['fugitive'] = {
-        emission: cumE2,
-        combinedUncertainty: uCum2,
-        emissionWithUncertainty: cumE2 + uCum2
+        emission: cumE2
       };
     }
 
+   emissions.uncertainty = formatUncertaintyResult(
+      sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+    );
     return {
       success:   true,
       scopeType: 'Scope 1',
       category:  categoryName,
       tier,
-      emissions
+      emissions,
+      calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
     };
   }
 
@@ -814,20 +1053,14 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
       const sf6Cum  = cumCap      * cumLeakRate;
       const co2eInc = sf6Inc * gwpSF6;
       const co2eCum = sf6Cum * gwpSF6;
-      const uInc    = calculateUncertainty(co2eInc, UAD, UEF);
-      const uCum    = calculateUncertainty(co2eCum, UAD, UEF);
 
       emissions.incoming['SF6'] = {
         emission: sf6Inc,
-        CO2e: co2eInc,
-        combinedUncertainty: uInc,
-        emissionWithUncertainty: co2eInc + uInc
+        CO2e: co2eInc
       };
       emissions.cumulative['SF6'] = {
         emission: sf6Cum,
-        CO2e: co2eCum,
-        combinedUncertainty: uCum,
-        emissionWithUncertainty: co2eCum + uCum
+        CO2e: co2eCum
       };
     } else if (tier === 'tier 2') {
       const decInv = dataValues.decreaseInventory       ?? 0;
@@ -843,29 +1076,27 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
       const deltaCum = cumDec + cumAcq - cumDisb - cumNet;
       const co2eInc  = deltaInc * gwpSF6;
       const co2eCum  = deltaCum * gwpSF6;
-      const uInc     = calculateUncertainty(co2eInc, UAD, UEF);
-      const uCum     = calculateUncertainty(co2eCum, UAD, UEF);
 
       emissions.incoming['SF6'] = {
         emission: deltaInc,
-        CO2e: co2eInc,
-        combinedUncertainty: uInc,
-        emissionWithUncertainty: co2eInc + uInc
+        CO2e: co2eInc
       };
       emissions.cumulative['SF6'] = {
         emission: deltaCum,
-        CO2e: co2eCum,
-        combinedUncertainty: uCum,
-        emissionWithUncertainty: co2eCum + uCum
+        CO2e: co2eCum
       };
     }
 
+   emissions.uncertainty = formatUncertaintyResult(
+      sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+    );
     return {
       success:   true,
       scopeType: 'Scope 1',
       category:  categoryName,
       tier,
-      emissions
+      emissions,
+      calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
     };
   }
   // 3️⃣ 🔹 CH₄-Leaks fugitive
@@ -881,23 +1112,17 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
      const gwpLeak = c.GWP_CH4_leak                   ?? 0;
      const ch4In   = dataVal * efLeak;
      const co2In   = ch4In   * gwpLeak;
-     const uInc    = calculateUncertainty(co2In, UAD, UEF);
      const cumVal = cumulativeValues.activityData      ?? 0;
      const ch4Cum = cumVal * efLeak;
      const co2Cum = ch4Cum * gwpLeak;
-     const uCum   = calculateUncertainty(co2Cum, UAD, UEF);
 
      emissions.incoming['CH4_leaks'] = {
        emission:    ch4In,
-       CO2e:   co2In,
-       combinedUncertainty: uInc,
-       emissionWithUncertainty: co2In + uInc
+       CO2e:   co2In
      };
      emissions.cumulative['CH4_leaks'] = {
        emission:    ch4Cum,
-       CO2e:   co2Cum,
-       combinedUncertainty: uCum,
-       emissionWithUncertainty: co2Cum + uCum
+       CO2e:   co2Cum
      };
    }
    // Tier 2
@@ -907,37 +1132,33 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
      const gwpComp = c.GWP_CH4_Component                 ?? 0;
      const ch4In   = comps * efComp;
      const co2In   = ch4In * gwpComp;
-     const uInc    = calculateUncertainty(co2In, UAD, UEF);
 
      const cumComps= cumulativeValues.numberOfComponents ?? 0;
      const ch4Cum  = cumComps * efComp;
      const co2Cum  = ch4Cum * gwpComp;
-     const uCum    = calculateUncertainty(co2Cum, UAD, UEF);
 
      emissions.incoming['CH4_leaks'] = {
        emission:    ch4In,
-       CO2e:   co2In,
-       combinedUncertainty: uInc,
-       emissionWithUncertainty: co2In + uInc
+       CO2e:   co2In
      };
      emissions.cumulative['CH4_leaks'] = {
        emission:    ch4Cum,
-       CO2e:   co2Cum,
-       combinedUncertainty: uCum,
-       emissionWithUncertainty: co2Cum + uCum
+       CO2e:   co2Cum
      };
    }
 
+    emissions.uncertainty = formatUncertaintyResult(
+     sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+   );
    return {
      success:   true,
      scopeType: 'Scope 1',
      category:  categoryName,
      tier,
-     emissions
+     emissions,
+     calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
    };
  }
-
-
   // 4️⃣ Process Emission (Custom)
   else if (
     (categoryName.includes('Process Emission') || categoryName.includes('Process Emissions')) &&
@@ -953,39 +1174,32 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
       const iaef = c.industryAverageEmissionFactor || 0;
       const inc  = prodOutput * iaef;
       const cum  = cumProd    * iaef;
-      const uInc = calculateUncertainty(inc,  UAD, UEF);
-      const uCum = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['process'] = {
-        CO2e: inc,
-        combinedUncertainty: uInc,
-        emissionWithUncertainty: inc + uInc
+        CO2e: inc
       };
       emissions.cumulative['process'] = {
-        CO2e: cum,
-        combinedUncertainty: uCum,
-        emissionWithUncertainty: cum + uCum
+        CO2e: cum
       };
     } else if (tier === 'tier 2' && rawInput > 0) {
       const stoich = c.stoichiometicFactor   ?? 0;
       const conv   = c.conversionEfficiency ?? 0;
       const inc    = rawInput * stoich * conv;
       const cum    = cumRaw  * stoich * conv;
-      const uInc   = calculateUncertainty(inc, UAD, UEF);
-      const uCum   = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['process'] = {
-        CO2e: inc,
-        combinedUncertainty: uInc,
-        emissionWithUncertainty: inc + uInc
+        CO2e: inc
       };
       emissions.cumulative['process'] = {
-        CO2e: cum,
-        combinedUncertainty: uCum,
-        emissionWithUncertainty: cum + uCum
+        CO2e: cum
       };
     }
   }
+
+  // 🔚 Compute cumulative uncertainty once (covers Combustion + Process Emission fall-throughs)
+  emissions.uncertainty = formatUncertaintyResult(
+    sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+  );
 
   // 🔚 final catch-all
   return {
@@ -993,7 +1207,8 @@ async function calculateScope1Emissions(dataEntry, scopeConfig, efValues, gwpVal
     scopeType: 'Scope 1',
     category:  categoryName,
     tier,
-    emissions
+    emissions,
+    calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
   };
 }
 
@@ -1016,7 +1231,8 @@ async function calculateScope2Emissions(
   efValues,    // { CO2: <the factor you pulled from flowchart> }
   gwpValues,
   UAD,
-  UEF
+  UEF,
+  conservativeMode = false
 ) {
   const { categoryName, calculationModel: tier } = scopeConfig;
  
@@ -1065,27 +1281,27 @@ async function calculateScope2Emissions(
   // calculate
   const inc = incomingQty  * factor;
   const cum = cumulativeQty * factor;
-  const uInc = calculateUncertainty(inc, UAD, UEF);
-  const uCum = calculateUncertainty(cum, UAD, UEF);
  
   const emissions = { incoming: {}, cumulative: {} };
   emissions.incoming[fieldKey] = {
-    CO2e: inc,
-    combinedUncertainty: uInc,
-    CO2eWithUncertainty: inc + uInc
+    CO2e: inc
   };
   emissions.cumulative[fieldKey] = {
-    CO2e: cum,
-    combinedUncertainty: uCum,
-    CO2eWithUncertainty: cum + uCum
+    CO2e: cum
   };
+
+  // Apply uncertainty on cumulative total only
+  emissions.uncertainty = formatUncertaintyResult(
+    sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+  );
  
-  return {
+return {
     success:   true,
     scopeType: 'Scope 2',
     category:  categoryName,
     tier,
-    emissions
+    emissions,
+    calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumValues, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
   };
 }
  
@@ -1098,7 +1314,8 @@ async function calculateScope3Emissions(
   efValues,
   gwpValues,
   UAD,
-  UEF
+  UEF,
+  conservativeMode = false
 ) {
   const { categoryName, calculationModel: tier, emissionFactor } = scopeConfig;
   const dataValues = dataEntry.dataValues instanceof Map
@@ -1165,36 +1382,24 @@ async function calculateScope3Emissions(
         const cumSpend = cumulativeVals.procurementSpend ?? 0;
         const inc      = spend * ef;
         const cum      = cumSpend * ef;
-        const uInc     = calculateUncertainty(inc, UAD, UEF);
-        const uCum     = calculateUncertainty(cum, UAD, UEF);
 
         emissions.incoming['purchased_goods_services'] = {
           CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
         };
         emissions.cumulative['purchased_goods_services'] = {
           CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
         };
       } else if (tier === 'tier 2') {
         const qty    = dataValues.physicalQuantity     ?? 0;
         const cumQty = cumulativeVals.physicalQuantity ?? 0;
         const inc    = qty * ef;
         const cum    = cumQty * ef;
-        const uInc   = calculateUncertainty(inc, UAD, UEF);
-        const uCum   = calculateUncertainty(cum, UAD, UEF);
 
         emissions.incoming['purchased_goods_services'] = {
           CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
         };
         emissions.cumulative['purchased_goods_services'] = {
           CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
         };
       }
       break;
@@ -1207,18 +1412,12 @@ async function calculateScope3Emissions(
     const cumSpend = cumulativeVals.procurementSpend ?? 0;
     const inc      = spend * ef;
     const cum      = cumSpend * ef;
-    const uInc     = calculateUncertainty(inc, UAD, UEF);
-    const uCum     = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming['capital_goods'] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative['capital_goods'] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   } else if (tier === 'tier 2') {
  } else if (tier === 'tier 2') {
@@ -1236,18 +1435,12 @@ async function calculateScope3Emissions(
   const inc  = (qty    * ef) / assetLifetime;
   const cum  = (cumQty * ef) / assetLifetime;
 
-  const uInc = calculateUncertainty(inc, UAD, UEF);
-  const uCum = calculateUncertainty(cum, UAD, UEF);
 
   emissions.incoming['capital_goods'] = {
     CO2e: inc,
-    combinedUncertainty: uInc,
-    CO2eWithUncertainty: inc + uInc
   };
   emissions.cumulative['capital_goods'] = {
     CO2e: cum,
-    combinedUncertainty: uCum,
-    CO2eWithUncertainty: cum + uCum
   };
 }
   break;
@@ -1287,17 +1480,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
   {
     const incA = fc    * upstreamEF;
     const cumA = cumFc * upstreamEF;
-    const uA   = calculateUncertainty(incA, UAD, UEF);
 
     emissions.incoming['upstream_fuel'] = {
       CO2e:                 incA,
-      combinedUncertainty:  uA,
-      CO2eWithUncertainty:  incA + uA
     };
     emissions.cumulative['upstream_fuel'] = {
       CO2e:                 cumA,
-      combinedUncertainty:  calculateUncertainty(cumA, UAD, UEF),
-      CO2eWithUncertainty:  cumA + calculateUncertainty(cumA, UAD, UEF)
     };
   }
 
@@ -1305,17 +1493,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
   {
     const incB = cf     * WTTEF;
     const cumB = cumCf * WTTEF;
-    const uB   = calculateUncertainty(incB, UAD, UEF);
 
     emissions.incoming['WTT'] = {
       CO2e:                 incB,
-      combinedUncertainty:  uB,
-      CO2eWithUncertainty:  incB + uB
     };
     emissions.cumulative['WTT'] = {
       CO2e:                 cumB,
-      combinedUncertainty:  calculateUncertainty(cumB, UAD, UEF),
-      CO2eWithUncertainty:  cumB + calculateUncertainty(cumB, UAD, UEF)
     };
   }
 
@@ -1324,17 +1507,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
     console.log('[T&D DEBUG]', { ec, td, gridEF });
     const incC = ec    * td * gridEF;
     const cumC = cumEc * td * gridEF;
-    const uC   = calculateUncertainty(incC, UAD, UEF);
 
     emissions.incoming['T&D losses'] = {
       CO2e:                 incC,
-      combinedUncertainty:  uC,
-      CO2eWithUncertainty:  incC + uC
     };
     emissions.cumulative['T&D losses'] = {
       CO2e:                 cumC,
-      combinedUncertainty:  calculateUncertainty(cumC, UAD, UEF),
-      CO2eWithUncertainty:  cumC + calculateUncertainty(cumC, UAD, UEF)
     };
   }
 
@@ -1348,15 +1526,11 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
           const cumSpend = cumulativeVals.transportationSpend ?? 0;
           const inc      = spend * ef;
           const cum      = cumSpend * ef;
-          const uInc     = calculateUncertainty(inc, UAD, UEF);
-          const uCum     = calculateUncertainty(cum, UAD, UEF);
 
           emissions.incoming['upstream_transport_and_distribution'] = {
-            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-          };
+            CO2e: inc,          };
           emissions.cumulative['upstream_transport_and_distribution'] = {
-            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-          };
+            CO2e: cum,          };
         } else if (tier === 'tier 2') {
           // 🔁 CHANGED: use allocation × distance × EF (fallback from legacy mass)
           const allocation = (dataValues.allocation ?? dataValues.mass ?? 0);
@@ -1367,15 +1541,11 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
           const cumD = (cumulativeVals.distance   ?? 0);
           const cum  = cumA * cumD * ef;
 
-          const uInc = calculateUncertainty(inc, UAD, UEF);
-          const uCum = calculateUncertainty(cum, UAD, UEF);
 
           emissions.incoming['upstream_transport_and_distribution'] = {
-            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-          };
+            CO2e: inc,          };
           emissions.cumulative['upstream_transport_and_distribution'] = {
-            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-          };
+            CO2e: cum,          };
         }
         break;
       }
@@ -1408,18 +1578,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
     const inc = mass    * ef * (1 - effRate);
     const cum = cumMass * ef * (1 - effRate);
 
-    const uInc = calculateUncertainty(inc, UAD, UEF);
-    const uCum = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming['waste_generated_in_operation'] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative['waste_generated_in_operation'] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   }
   else if (tier === 'tier 2') {
@@ -1428,18 +1592,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
     const cumMass = cumulativeVals.wasteMass ?? 0;
     const inc     = mass * ef;
     const cum     = cumMass * ef;
-    const uInc    = calculateUncertainty(inc, UAD, UEF);
-    const uCum    = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming['waste_generated_in_operation'] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative['waste_generated_in_operation'] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   }
   break;
@@ -1461,27 +1619,19 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
     if (act === 'travelbased') {
       const inc  = travelSpend    * ef;
       const cum  = cumTravelSpend * ef;
-      const uInc = calculateUncertainty(inc, UAD, UEF);
-      const uCum = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['business_travel'] = {
-        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-      };
+        CO2e: inc,      };
       emissions.cumulative['business_travel'] = {
-        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-      };
+        CO2e: cum,      };
     } else if (act === 'hotelbased') {
       const inc  = hotelNights    * ef;
       const cum  = cumHotelNights * ef;
-      const uInc = calculateUncertainty(inc, UAD, UEF);
-      const uCum = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['accommodation'] = {
-        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-      };
+        CO2e: inc,      };
       emissions.cumulative['accommodation'] = {
-        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-      };
+        CO2e: cum,      };
     } else {
       // Fallback: keep your existing dual-line behavior (spend + nights) if activity isn’t set
       const travelInc = travelSpend * ef;
@@ -1491,23 +1641,15 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
 
       emissions.incoming['business_travel'] = {
         CO2e: travelInc,
-        combinedUncertainty: calculateUncertainty(travelInc, UAD, UEF),
-        CO2eWithUncertainty: travelInc + calculateUncertainty(travelInc, UAD, UEF)
       };
       emissions.incoming['accommodation'] = {
         CO2e: hotelInc,
-        combinedUncertainty: calculateUncertainty(hotelInc, UAD, UEF),
-        CO2eWithUncertainty: hotelInc + calculateUncertainty(hotelInc, UAD, UEF)
       };
       emissions.cumulative['business_travel'] = {
         CO2e: cumTravel,
-        combinedUncertainty: calculateUncertainty(cumTravel, UAD, UEF),
-        CO2eWithUncertainty: cumTravel + calculateUncertainty(cumTravel, UAD, UEF)
       };
       emissions.cumulative['accommodation'] = {
         CO2e: cumHotel,
-        combinedUncertainty: calculateUncertainty(cumHotel, UAD, UEF),
-        CO2eWithUncertainty: cumHotel + calculateUncertainty(cumHotel, UAD, UEF)
       };
     }
   } else if (tier === 'tier 2') {
@@ -1524,40 +1666,28 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
     if (act === 'travelbased') {
       const inc  = passengers * distance * ef;
       const cum  = (cumPassengers * cumDistance) * ef;
-      const uInc = calculateUncertainty(inc, UAD, UEF);
-      const uCum = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['business_travel'] = {
-        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-      };
+        CO2e: inc,      };
       emissions.cumulative['business_travel'] = {
-        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-      };
+        CO2e: cum,      };
     } else if (act === 'hotelbased') {
       const inc  = hotelNights    * ef;
       const cum  = cumHotelNights * ef;
-      const uInc = calculateUncertainty(inc, UAD, UEF);
-      const uCum = calculateUncertainty(cum, UAD, UEF);
 
       emissions.incoming['accommodation'] = {
-        CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-      };
+        CO2e: inc,      };
       emissions.cumulative['accommodation'] = {
-        CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-      };
+        CO2e: cum,      };
     } else {
       // Fallback to your current “two-option” logic if activity isn’t set
       const tripInc = passengers * distance * ef;
       const tripCum = (cumPassengers * cumDistance) * ef;
       emissions.incoming['business_travel'] = {
         CO2e: tripInc,
-        combinedUncertainty: calculateUncertainty(tripInc, UAD, UEF),
-        CO2eWithUncertainty: tripInc + calculateUncertainty(tripInc, UAD, UEF)
       };
       emissions.cumulative['business_travel'] = {
         CO2e: tripCum,
-        combinedUncertainty: calculateUncertainty(tripCum, UAD, UEF),
-        CO2eWithUncertainty: tripCum + calculateUncertainty(tripCum, UAD, UEF)
       };
 
       if (hotelNights > 0 || cumHotelNights > 0) {
@@ -1565,13 +1695,9 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
         const hotelCum = cumHotelNights * ef;
         emissions.incoming['accommodation'] = {
           CO2e: hotelInc,
-          combinedUncertainty: calculateUncertainty(hotelInc, UAD, UEF),
-          CO2eWithUncertainty: hotelInc + calculateUncertainty(hotelInc, UAD, UEF)
         };
         emissions.cumulative['accommodation'] = {
           CO2e: hotelCum,
-          combinedUncertainty: calculateUncertainty(hotelCum, UAD, UEF),
-          CO2eWithUncertainty: hotelCum + calculateUncertainty(hotelCum, UAD, UEF)
         };
       }
     }
@@ -1594,18 +1720,12 @@ const { value: cumEc, key: cumEcKey } = pickNumber(
                     * (cumulativeVals.workingDays          ?? 0)
                     * commuteEF;
 
-          const uInc = calculateUncertainty(inc, UAD, UEF);
-          const uCum = calculateUncertainty(cum, UAD, UEF);
 
           emissions.incoming['employee_commuting'] = {
             CO2e: inc,
-            combinedUncertainty: uInc,
-            CO2eWithUncertainty: inc + uInc
           };
           emissions.cumulative['employee_commuting'] = {
             CO2e: cum,
-            combinedUncertainty: uCum,
-            CO2eWithUncertainty: cum + uCum
           };
         }
         else if (tier === 'tier 2') {
@@ -1658,18 +1778,12 @@ case 'Downstream Leased Assets': {
     // area × EF
     const inc  = area * ef;           // ef should already be resolved by your getCO2eEF()
     const cum  = cumArea * ef;
-    const uInc = calculateUncertainty(inc, UAD, UEF);
-    const uCum = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming[key] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative[key] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   } else if (tier === 'tier 2') {
   const act = normActivity(scopeConfig.activity); // 'energybased' | 'areabased' | ''
@@ -1683,11 +1797,9 @@ case 'Downstream Leased Assets': {
 
     const incA  = ec    * ef;
     const cumA  = cumEc * ef;
-    const uA    = calculateUncertainty(incA, UAD, UEF);
-    const uCumA = calculateUncertainty(cumA, UAD, UEF);
 
-    emissions.incoming[key] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
-    emissions.cumulative[key] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+    emissions.incoming[key] = { CO2e: incA };
+    emissions.cumulative[key] = { CO2e: cumA };
   }
   // Case B: area-ratio × BuildingTotalS1_S2
   else if (doCaseB) {
@@ -1697,11 +1809,9 @@ case 'Downstream Leased Assets': {
     const incB  = ratio    * buildingTotal;
     const cumB  = cumRatio * buildingTotal;
 
-    const uB    = calculateUncertainty(incB, UAD, UEF);
-    const uCumB = calculateUncertainty(cumB, UAD, UEF);
 
-    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
-    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+    emissions.incoming[key]  = { CO2e: incB };
+    emissions.cumulative[key]= { CO2e: cumB };
   }
   // Fallback to your old heuristic (A if energyConsumption present, else B) when activity isn’t set
   else if (toNum(dataValues?.energyConsumption) > 0) {
@@ -1710,11 +1820,9 @@ case 'Downstream Leased Assets': {
 
     const incA  = ec    * ef;
     const cumA  = cumEc * ef;
-    const uA    = calculateUncertainty(incA, UAD, UEF);
-    const uCumA = calculateUncertainty(cumA, UAD, UEF);
 
-    emissions.incoming[key] = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
-    emissions.cumulative[key] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+    emissions.incoming[key] = { CO2e: incA };
+    emissions.cumulative[key] = { CO2e: cumA };
   } else {
     const ratio    = (tot > 0 && occ > 0) ? (area / (tot * occ)) : 0;
     const cumRatio = (cumTot > 0 && occ > 0) ? (cumArea / (cumTot * occ)) : 0;
@@ -1722,11 +1830,9 @@ case 'Downstream Leased Assets': {
     const incB  = ratio    * buildingTotal;
     const cumB  = cumRatio * buildingTotal;
 
-    const uB    = calculateUncertainty(incB, UAD, UEF);
-    const uCumB = calculateUncertainty(cumB, UAD, UEF);
 
-    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
-    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+    emissions.incoming[key]  = { CO2e: incB };
+    emissions.cumulative[key]= { CO2e: cumB };
   }
 }
   break;
@@ -1741,15 +1847,11 @@ case 'Downstream Leased Assets': {
           const inc      = spend * ef;
           const cum      = cumSpend * ef;
 
-          const uInc = calculateUncertainty(inc, UAD, UEF);
-          const uCum = calculateUncertainty(cum, UAD, UEF);
 
           emissions.incoming['downstream_transport_and_distribution'] = {
-            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-          };
+            CO2e: inc,          };
           emissions.cumulative['downstream_transport_and_distribution'] = {
-            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-          };
+            CO2e: cum,          };
         } else if (tier === 'tier 2') {
           // 🔁 CHANGED: use allocation × distance × EF (fallback from legacy mass)
           const allocation = (dataValues.allocation ?? dataValues.mass ?? 0);
@@ -1760,15 +1862,11 @@ case 'Downstream Leased Assets': {
           const cumD  = (cumulativeVals.distance   ?? 0);
           const cum   = cumA * cumD * ef;
 
-          const uInc  = calculateUncertainty(inc, UAD, UEF);
-          const uCum  = calculateUncertainty(cum, UAD, UEF);
 
           emissions.incoming['downstream_transport_and_distribution'] = {
-            CO2e: inc, combinedUncertainty: uInc, CO2eWithUncertainty: inc + uInc
-          };
+            CO2e: inc,          };
           emissions.cumulative['downstream_transport_and_distribution'] = {
-            CO2e: cum, combinedUncertainty: uCum, CO2eWithUncertainty: cum + uCum
-          };
+            CO2e: cum,          };
         }
         break;
       }
@@ -1782,18 +1880,12 @@ case 'Downstream Leased Assets': {
         // Tier 1: productQuantity × averageProcessingEF
         const inc  = qty * ef;
         const cum  = cumQty * ef;
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
 
         emissions.incoming['processing_of_sold_products'] = {
           CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
         };
         emissions.cumulative['processing_of_sold_products'] = {
           CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
         };
       }
       else if (tier === 'tier 2') {
@@ -1801,18 +1893,12 @@ case 'Downstream Leased Assets': {
         // (ef already pulled for the correct customerType by extractEmissionFactorValues)
         const inc  = qty * ef;
         const cum  = cumQty * ef;
-        const uInc = calculateUncertainty(inc, UAD, UEF);
-        const uCum = calculateUncertainty(cum, UAD, UEF);
 
         emissions.incoming['processing_of_sold_products'] = {
           CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
         };
         emissions.cumulative['processing_of_sold_products'] = {
           CO2e: cum,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cum + uCum
         };
       }
       break;
@@ -1836,18 +1922,12 @@ case 'Use of Sold Products': {
     const inc  = qty    * avgLifeIn  * ef;
     const cum  = cumQty * avgLifeCum * ef;
 
-    const uInc = calculateUncertainty(inc, UAD, UEF);
-    const uCum = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming['use_of_sold_products'] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative['use_of_sold_products'] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   }
   else if (tier === 'tier 2') {
@@ -1864,18 +1944,12 @@ case 'Use of Sold Products': {
     const inc2  = qty    * patternIn  * effIn  * gridEF;
     const cum2  = cumQty * patternCum * effCum * gridEF;
 
-    const uInc2 = calculateUncertainty(inc2, UAD, UEF);
-    const uCum2 = calculateUncertainty(cum2, UAD, UEF);
 
     emissions.incoming['use_of_sold_products'] = {
       CO2e: inc2,
-      combinedUncertainty: uInc2,
-      CO2eWithUncertainty: inc2 + uInc2
     };
     emissions.cumulative['use_of_sold_products'] = {
       CO2e: cum2,
-      combinedUncertainty: uCum2,
-      CO2eWithUncertainty: cum2 + uCum2
     };
   }
   break;
@@ -1911,49 +1985,34 @@ case 'End-of-Life Treatment of Sold Products': {
     // 1️⃣ Disposal
     const incDisp = mass * dIn * efDisp;
     const cumDisp = (cumulativeVals.massEol ?? 0) * dCum * efDisp;
-    const uDisp   = calculateUncertainty(incDisp, UAD, UEF);
 
     emissions.incoming['eol_disposal'] = {
       CO2e: incDisp,
-      combinedUncertainty: uDisp,
-      CO2eWithUncertainty: incDisp + uDisp
     };
     emissions.cumulative['eol_disposal'] = {
       CO2e: cumDisp,
-      combinedUncertainty: calculateUncertainty(cumDisp, UAD, UEF),
-      CO2eWithUncertainty: cumDisp + calculateUncertainty(cumDisp, UAD, UEF)
     };
 
     // 2️⃣ Landfill
     const incLand = mass * lIn * efLand;
     const cumLand = (cumulativeVals.massEol ?? 0) * lCum * efLand;
-    const uLand   = calculateUncertainty(incLand, UAD, UEF);
 
     emissions.incoming['eol_landfill'] = {
       CO2e: incLand,
-      combinedUncertainty: uLand,
-      CO2eWithUncertainty: incLand + uLand
     };
     emissions.cumulative['eol_landfill'] = {
       CO2e: cumLand,
-      combinedUncertainty: calculateUncertainty(cumLand, UAD, UEF),
-      CO2eWithUncertainty: cumLand + calculateUncertainty(cumLand, UAD, UEF)
     };
 
     // 3️⃣ Incineration
     const incInc = mass * iIn * efInc;
     const cumInc = (cumulativeVals.massEol ?? 0) * iCum * efInc;
-    const uInc2  = calculateUncertainty(incInc, UAD, UEF);
 
     emissions.incoming['eol_incineration'] = {
       CO2e: incInc,
-      combinedUncertainty: uInc2,
-      CO2eWithUncertainty: incInc + uInc2
     };
     emissions.cumulative['eol_incineration'] = {
       CO2e: cumInc,
-      combinedUncertainty: calculateUncertainty(cumInc, UAD, UEF),
-      CO2eWithUncertainty: cumInc + calculateUncertainty(cumInc, UAD, UEF)
     };
   }
   break;
@@ -1974,18 +2033,12 @@ case 'End-of-Life Treatment of Sold Products': {
         const avgEF = data.avgEmissionPerFranchise  || efFactor;
         const inc   = count * avgEF;
         const cumV  = (cum.franchiseCount ?? 0) * avgEF;
-        const uInc  = calculateUncertainty(inc, UAD, UEF);
-        const uCum  = calculateUncertainty(cumV, UAD, UEF);
 
         emissions.incoming[key] = {
           CO2e: inc,
-          combinedUncertainty: uInc,
-          CO2eWithUncertainty: inc + uInc
         };
         emissions.cumulative[key] = {
           CO2e: cumV,
-          combinedUncertainty: uCum,
-          CO2eWithUncertainty: cumV + uCum
         };
       } else if (tier === 'tier 2') {
   // Case A: Emission Based (S1+S2)
@@ -1998,22 +2051,18 @@ case 'End-of-Life Treatment of Sold Products': {
     const incA = s1 + s2;
     const cumA = (cum.franchiseTotalS1Emission ?? 0) + (cum.franchiseTotalS2Emission ?? 0);
 
-    const uA    = calculateUncertainty(incA, UAD, UEF);
-    const uCumA = calculateUncertainty(cumA, UAD, UEF);
 
-    emissions.incoming[key]  = { CO2e: incA, combinedUncertainty: uA, CO2eWithUncertainty: incA + uA };
-    emissions.cumulative[key]= { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+    emissions.incoming[key]  = { CO2e: incA };
+    emissions.cumulative[key]= { CO2e: cumA };
   }
   else if (act === 'energybased') {
     const ec   = data.energyConsumption ?? 0;
     const incB = ec * efFactor;
     const cumB = (cum.energyConsumption ?? 0) * efFactor;
 
-    const uB    = calculateUncertainty(incB, UAD, UEF);
-    const uCumB = calculateUncertainty(cumB, UAD, UEF);
 
-    emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: uB, CO2eWithUncertainty: incB + uB };
-    emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+    emissions.incoming[key]  = { CO2e: incB };
+    emissions.cumulative[key]= { CO2e: cumB };
   }
   else {
     // Fallback to your previous A-then-B logic if activity isn’t set
@@ -2022,14 +2071,14 @@ case 'End-of-Life Treatment of Sold Products': {
     if (s1 > 0 || s2 > 0) {
       const incA = s1 + s2;
       const cumA = (cum.franchiseTotalS1Emission ?? 0) + (cum.franchiseTotalS2Emission ?? 0);
-      emissions.incoming[key]  = { CO2e: incA, combinedUncertainty: calculateUncertainty(incA, UAD, UEF), CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF) };
-      emissions.cumulative[key]= { CO2e: cumA, combinedUncertainty: calculateUncertainty(cumA, UAD, UEF), CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF) };
+      emissions.incoming[key]  = { CO2e: incA };
+      emissions.cumulative[key]= { CO2e: cumA };
     } else {
       const ec   = data.energyConsumption ?? 0;
       const incB = ec * efFactor;
       const cumB = (cum.energyConsumption ?? 0) * efFactor;
-      emissions.incoming[key]  = { CO2e: incB, combinedUncertainty: calculateUncertainty(incB, UAD, UEF), CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF) };
-      emissions.cumulative[key]= { CO2e: cumB, combinedUncertainty: calculateUncertainty(cumB, UAD, UEF), CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF) };
+      emissions.incoming[key]  = { CO2e: incB };
+      emissions.cumulative[key]= { CO2e: cumB };
     }
   }
 }
@@ -2064,18 +2113,12 @@ const cumShr = (eqCfg !== null)
 
 const cum = cumRev * ef * cumShr;
 
-    const uInc = calculateUncertainty(inc, UAD, UEF);
-    const uCum = calculateUncertainty(cum, UAD, UEF);
 
     emissions.incoming['investments'] = {
       CO2e: inc,
-      combinedUncertainty: uInc,
-      CO2eWithUncertainty: inc + uInc
     };
     emissions.cumulative['investments'] = {
       CO2e: cum,
-      combinedUncertainty: uCum,
-      CO2eWithUncertainty: cum + uCum
     };
   } else if (tier === 'tier 2') {
     // Case A: (Scope1 + Scope2) × equity%
@@ -2109,11 +2152,9 @@ const cumShr = (eqCfg !== null)
 const cumA = (cumS1 + cumS2) * cumShr;
 
 
-      const uA    = calculateUncertainty(incA, UAD, UEF);
-      const uCumA = calculateUncertainty(cumA, UAD, UEF);
 
-      emissions.incoming['investments']  = { CO2e: incA, combinedUncertainty: uA,    CO2eWithUncertainty: incA + uA };
-      emissions.cumulative['investments'] = { CO2e: cumA, combinedUncertainty: uCumA, CO2eWithUncertainty: cumA + uCumA };
+      emissions.incoming['investments']  = { CO2e: incA };
+      emissions.cumulative['investments'] = { CO2e: cumA };
     }
     else if (act === 'energybased') {
       const ec    = dataValues.energyConsumption ?? 0;
@@ -2122,11 +2163,9 @@ const cumA = (cumS1 + cumS2) * cumShr;
       const incB  = ec * ef;
       const cumB  = cumEc * ef;
 
-      const uB    = calculateUncertainty(incB, UAD, UEF);
-      const uCumB = calculateUncertainty(cumB, UAD, UEF);
 
-      emissions.incoming['investments']   = { CO2e: incB, combinedUncertainty: uB,    CO2eWithUncertainty: incB + uB };
-      emissions.cumulative['investments'] = { CO2e: cumB, combinedUncertainty: uCumB, CO2eWithUncertainty: cumB + uCumB };
+      emissions.incoming['investments']   = { CO2e: incB };
+      emissions.cumulative['investments'] = { CO2e: cumB };
     }
     else {
       // Fallback to your old A-then-B heuristic when activity isn’t set
@@ -2147,13 +2186,9 @@ const cumA = (cumS1 + cumS2) * cumShr;
 
         emissions.incoming['investments']   = {
           CO2e: incA,
-          combinedUncertainty: calculateUncertainty(incA, UAD, UEF),
-          CO2eWithUncertainty: incA + calculateUncertainty(incA, UAD, UEF)
         };
         emissions.cumulative['investments'] = {
           CO2e: cumA,
-          combinedUncertainty: calculateUncertainty(cumA, UAD, UEF),
-          CO2eWithUncertainty: cumA + calculateUncertainty(cumA, UAD, UEF)
         };
       } else if ((dataValues.energyConsumption ?? 0) > 0) {
         const ec    = dataValues.energyConsumption;
@@ -2163,13 +2198,9 @@ const cumA = (cumS1 + cumS2) * cumShr;
 
         emissions.incoming['investments']   = {
           CO2e: incB,
-          combinedUncertainty: calculateUncertainty(incB, UAD, UEF),
-          CO2eWithUncertainty: incB + calculateUncertainty(incB, UAD, UEF)
         };
         emissions.cumulative['investments'] = {
           CO2e: cumB,
-          combinedUncertainty: calculateUncertainty(cumB, UAD, UEF),
-          CO2eWithUncertainty: cumB + calculateUncertainty(cumB, UAD, UEF)
         };
       }
     }
@@ -2185,15 +2216,20 @@ const cumA = (cumS1 + cumS2) * cumShr;
       break;
   }
 
-  return {
+  // Apply uncertainty on cumulative total only (ISO 14064-1: once per scope calculation)
+  emissions.uncertainty = formatUncertaintyResult(
+    sumCumulativeCO2e(emissions.cumulative), UAD, UEF, conservativeMode
+  );
+
+ return {
     success:   true,
     scopeType: 'Scope 3',
     category:  categoryName,
     tier,
-    emissions
+    emissions,
+    calculationBreakdown: buildCalculationBreakdown(scopeConfig, dataValues, cumulativeVals, efValues, gwpValues, emissions, UAD, UEF, conservativeMode)
   };
 }
-
 
 
 /**

@@ -274,11 +274,25 @@ countryData: {
 },
 
 customEmissionFactor: {
-      CO2:  { type: Number, default: null },
-      CH4:  { type: Number, default: null },
-      N2O:  { type: Number, default: null },
-      CO2e: { type: Number, default: null },
-      unit: { type: String, default: '' },
+       CO2: { type: Number, default: null },
+  CO2_comment: { type: String, default: '' },
+  CO2_conversionFactor: { type: Number, default: null },
+  CO2_conversionFactor_comment: { type: String, default: '' },
+
+  CH4: { type: Number, default: null },
+  CH4_comment: { type: String, default: '' },
+  CH4_conversionFactor: { type: Number, default: null },
+  CH4_conversionFactor_comment: { type: String, default: '' },
+
+  N2O: { type: Number, default: null },
+  N2O_comment: { type: String, default: '' },
+  N2O_conversionFactor: { type: Number, default: null },
+  N2O_conversionFactor_comment: { type: String, default: '' },
+
+  CO2e: { type: Number, default: null },
+  CO2e_comment: { type: String, default: '' },
+  CO2e_conversionFactor: { type: Number, default: null },
+  CO2e_conversionFactor_comment: { type: String, default: '' },
       // Process Emission value 
       industryAverageEmissionFactor: { type: Number, default: null },
       stoichiometicFactor: { type: Number, default: null },
@@ -310,11 +324,9 @@ customEmissionFactor: {
       gwpLastUpdated: { type: Date, default: null },
 
       // ⬇️ ADD inside emissionFactorValues.customEmissionFactor (Flowchart.js)
-CO2_comment:  { type: String, default: '' },
-CH4_comment:  { type: String, default: '' },
-N2O_comment:  { type: String, default: '' },
-CO2e_comment: { type: String, default: '' },
-unit_comment: { type: String, default: '' },
+  unit: { type: String, default: '' },
+  unit_comment: { type: String, default: '' },
+
 conversionFactor: { type: Number, default: null },         // ← ADD
 conversionFactor_comment: { type: String, default: '' },   // ← ADD
 
@@ -374,7 +386,15 @@ emissionFactorHubData: {
     default: 0,
     description: 'Emission Factor Uncertainty percentage'
   },
-  
+  // ISO 14064-1 conservative mode — per scopeIdentifier.
+  // false (default): report base emission E with range E ± ΔE
+  // true: report only the conservative upper estimate E + ΔE
+  npm: {
+    type:    Boolean,
+    default: false,
+    description: 'false = default inventory mode (E ± ΔE range); true = conservative upper estimate only (E + ΔE)'
+  },
+
   categoryName: { 
     type: String,
     description: 'Category name (e.g., Energy Industries, Manufacturing Industries)'
@@ -549,6 +569,8 @@ const FlowchartSchema = new mongoose.Schema({
   // Metadata
   version: { type: Number, default: 1 },
   isActive: { type: Boolean, default: true }
+  // NOTE: conservativeMode is now per-ScopeDetail (ScopeDetailSchema.conservativeMode)
+  //       so it can be set individually per scopeIdentifier.
 }, {
   timestamps: true
 });

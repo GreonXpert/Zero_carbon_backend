@@ -2,8 +2,9 @@ const EPAData = require('../../models/EmissionFactor/EPAData');
 const IPCCData = require('../../models/EmissionFactor/IPCCData');
 const DefraData = require('../../models/EmissionFactor/DefraData');
 // Make sure you create & export your CountryEmissionFactor model at models/EmissionFactor/CountryEmissionFactor.js
-const CountryEF = require('../../models/EmissionFactor/contryEmissionFactorModel');
+const CountryEF = require('../../models/EmissionFactor/countryEmissionFactorModel');
 const GWP  =require('../../models/EmissionFactor/GWP');
+const searchService = require('../../services/emissionFactorSearch.service');
 
 // Enhanced helper function with better matching and fallback options
 async function getLatestGWPValue(chemicalUnit) {
@@ -510,5 +511,76 @@ exports.getDistinctValues = async (req, res) => {
   } catch (err) {
     console.error('distinct error:', err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+};
+/**
+ * GET /api/emission-factors/search
+ *
+ * Super Search across one or all emission-factor sources.
+ *
+ * Query params:
+ *   q       {string}  required – search string; comma-separated for multi-token
+ *   source  {string}  optional – "defra"|"epa"|"ipcc"|"country"|"all"  (default: "all")
+ *   page    {number}  optional – page number (default: 1)
+ *   limit   {number}  optional – results per page, max 50 (default: 20)
+ *   fields  {string}  optional – comma-separated list of fields to include in data payload
+ *
+ * Response shape:
+ * {
+ *   query:   { q, source, page, limit },
+ *   results: [{ source, id, score, matchReason, data }],
+ *   meta:    { totalReturned, totalMatched, page, limit, timedOutSources, warnings }
+ * }
+ */
+exports.superSearch = async (req, res) => {
+  try {
+    const {
+      q,
+      source = 'all',
+      page   = 1,
+      limit  = 20,
+      fields,
+    } = req.query;
+
+    // Parse optional fields restriction
+    const fieldList = fields
+      ? fields.split(',').map(f => f.trim()).filter(Boolean)
+      : null;
+
+    const { results, meta } = await searchService.search({
+      q,
+      source,
+      page,
+      limit,
+      fields: fieldList,
+    });
+
+    return res.status(200).json({
+      query: {
+        q,
+        source,
+        page:  parseInt(page,  10) || 1,
+        limit: parseInt(limit, 10) || 20,
+      },
+      results,
+      meta,
+    });
+
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({
+        success: false,
+        code:    err.code || 'BAD_REQUEST',
+        message: err.message,
+        allowedSources: searchService.ALLOWED_SOURCES,
+      });
+    }
+
+    console.error('[SuperSearch] Unexpected error:', err);
+    return res.status(500).json({
+      success: false,
+      code:    'INTERNAL_ERROR',
+      message: 'An unexpected error occurred during search.',
+    });
   }
 };

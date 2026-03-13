@@ -1754,11 +1754,11 @@ const saveManualData = async (req, res) => {
           emissionCalculationStatus: entry.emissionCalculationStatus,
           calculatedEmissions: entry.calculatedEmissions || null,
           calculationResponse: calcResult?.data || null,
+          // calculationBreakdown: calcResult?.data?.calculationBreakdown || null,
 
           // ✅ NEW: include dataEntryCumulative for each saved entry
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
-
         
 
       } catch (err) {
@@ -1970,7 +1970,7 @@ const uploadCSVData = async (req, res) => {
           dataEntryId: entry._id,
           emissionCalculationStatus: entry.emissionCalculationStatus,
           calculatedEmissions: entry.calculatedEmissions || null,
-          calculationResponse: calcResult?.data || null,
+          calculationBreakdown: calcResult?.data?.calculationBreakdown || null,
 
           // ✅ NEW: include dataEntryCumulative per saved row
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)

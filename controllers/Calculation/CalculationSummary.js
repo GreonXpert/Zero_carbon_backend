@@ -81,7 +81,7 @@ function convertKgToTonnes(valueInKg) {
 }
 
 function extractEmissionValues(calculatedEmissions) {
-  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0 };
+  const totals = { CO2e: 0, CO2: 0, CH4: 0, N2O: 0, uncertainty: 0 };
 
   if (!calculatedEmissions || typeof calculatedEmissions !== 'object') {
     return totals;
@@ -171,6 +171,11 @@ function extractEmissionValues(calculatedEmissions) {
     addBucket(incoming);
   }
 
+  // ── Uncertainty: read deltaE from the new emissions.uncertainty block ──────
+  // formatUncertaintyResult() stores absolute uncertainty as `deltaE`.
+  // This is the ISO 14064-1 ΔE = E × (UE / 100) for the cumulative total.
+  totals.uncertainty = Number(calculatedEmissions?.uncertainty?.deltaE) || 0;
+
   return totals;
 }
 
@@ -185,6 +190,7 @@ function addEmissionValues(target, source, incrementCount = false) {
   target.CO2  += (source.CO2  || 0);
   target.CH4  += (source.CH4  || 0);
   target.N2O  += (source.N2O  || 0);
+  target.uncertainty = (target.uncertainty || 0) + (source.uncertainty || 0);
   if (incrementCount && target.dataPointCount !== undefined) {
     target.dataPointCount += 1;
   }
