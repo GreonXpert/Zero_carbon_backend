@@ -1,9 +1,9 @@
 const express = require('express');
-const { 
-  saveFlowchart, 
+const {
+  saveFlowchart,
   getFlowchart,
-  getAllFlowcharts, 
-  deleteFlowchart, 
+  getAllFlowcharts,
+  deleteFlowchart,
   deleteFlowchartNode,
   getFlowchartSummary,
   getConsolidatedSummary,
@@ -11,42 +11,81 @@ const {
   restoreFlowchart,
   assignOrUnassignEmployeeHeadToNode,
   addNodeToFlowchart,
- 
-  hardDeleteScopeDetail
- 
+  hardDeleteScopeDetail,
 } = require('../../controllers/Organization/flowchartController');
-// CHANGED: Use the same auth middleware as other routes
-const { auth, checkRole } = require('../../middleware/auth');
+
+const {
+  requireOrgFlowchartRead,
+  requireOrgFlowchartWrite,
+  requireOrgFlowchartAssign,
+} = require('../../utils/Permissions/accessPermissionFlowchartandProcessflowchart');
+
+const { auth } = require('../../middleware/auth');
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(auth); // CHANGED: Use proper auth middleware
+router.use(auth);
 
-// Define roles that can access emission factor data
-const viewRoles = ['consultant', 'consultant_admin', 'super_admin', 'client_admin', 'employee_head', 'employee'];
-const editRoles = ['consultant_admin', 'super_admin', 'client_admin'];
+// ─────────────────────────────────────────────────────────────────────────────
+// Summary routes — READ ('view' section)
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Summary routes
-router.get('/summary', getConsolidatedSummary); 
-router.get('/:clientId/summary', getFlowchartSummary); 
+// Get consolidated summary across all clients
+router.get('/summary', requireOrgFlowchartRead('view'), getConsolidatedSummary);
 
-// Flowchart operations
-router.post('/save', saveFlowchart); 
-router.patch('/:flowchartId/add-node', addNodeToFlowchart);
-router.get('/all', getAllFlowcharts); 
-router.get('/:clientId', getFlowchart); 
-router.delete('/:clientId', deleteFlowchart); 
-router.delete('/:clientId/node/:nodeId', deleteFlowchartNode); 
-router.patch('/:clientId/node/:nodeId', updateFlowchartNode); 
-router.patch('/:clientId/restore', restoreFlowchart); 
-router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
+// Get summary for a specific client
+router.get('/:clientId/summary', requireOrgFlowchartRead('view'), getFlowchartSummary);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Flowchart — READ operations
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Hard delete a scopeDetail (permanent)
-router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteScopeDetail);
+// Get all flowcharts (hierarchy-based)
+router.get('/all', requireOrgFlowchartRead('view'), getAllFlowcharts);
 
+// Get single flowchart for a client
+router.get('/:clientId', requireOrgFlowchartRead('view'), getFlowchart);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Flowchart — WRITE operations
+// ─────────────────────────────────────────────────────────────────────────────
 
+// Create / Update flowchart
+router.post('/save', requireOrgFlowchartWrite(), saveFlowchart);
+
+// Add new node to an existing flowchart
+router.patch('/:flowchartId/add-node', requireOrgFlowchartWrite(), addNodeToFlowchart);
+
+// Update a specific node
+router.patch('/:clientId/node/:nodeId', requireOrgFlowchartWrite(), updateFlowchartNode);
+
+// Soft delete entire flowchart
+router.delete('/:clientId', requireOrgFlowchartWrite(), deleteFlowchart);
+
+// Soft delete a specific node
+router.delete('/:clientId/node/:nodeId', requireOrgFlowchartWrite(), deleteFlowchartNode);
+
+// Restore a soft-deleted flowchart
+router.patch('/:clientId/restore', requireOrgFlowchartWrite(), restoreFlowchart);
+
+// Hard delete a scopeDetail (permanent) — FIX: was missing requireOrgFlowchartWrite()
+router.delete(
+  '/:clientId/node/:nodeId/scope/:scopeIdentifier',
+  requireOrgFlowchartWrite(),
+  hardDeleteScopeDetail
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flowchart — Assign Head
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Assign / unassign employee head to a node
+// FIX: removed redundant checkRole(...editRoles) — requireOrgFlowchartAssign() handles all role logic internally
+router.post(
+  '/:clientId/nodes/:nodeId/assign-head',
+  requireOrgFlowchartAssign(),
+  assignOrUnassignEmployeeHeadToNode
+);
 
 module.exports = router;

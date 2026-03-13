@@ -14,76 +14,126 @@ const {
   restoreProcessFlowchart,
   assignOrUnassignEmployeeHeadToNode,
   assignScopeToProcessNode,
-  removeAssignmentProcess,  
- 
+  removeAssignmentProcess,
+
   hardDeleteProcessScopeDetail,
-  // 🆕 NEW: Allocation endpoints
+
+  // Allocation endpoints
   getAllocations,
   updateAllocations,
 
-    // ProcessEmissionDataEntry
-    getProcessEmissionEntries,
-    getProcessEmissionEntriesByNode,
-    getProcessEmissionEntriesByScope,
-    getProcessEmissionEntryById,
-    getProcessEmissionStats,
-    getProcessEmissionEntriesMinimal,
-    getProcessEmissionNodeSummary,
+  // ProcessEmissionDataEntry
+  getProcessEmissionEntries,
+  getProcessEmissionEntriesByNode,
+  getProcessEmissionEntriesByScope,
+  getProcessEmissionEntryById,
+  getProcessEmissionStats,
+  getProcessEmissionEntriesMinimal,
+  getProcessEmissionNodeSummary,
 } = require('../../controllers/Organization/processflowController');
+
+const {
+  requireProcessFlowchartRead,
+  requireProcessFlowchartWrite,
+  requireProcessFlowchartAssign,
+} = require('../../utils/Permissions/accessPermissionFlowchartandProcessflowchart');
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(auth);
 
-const editRoles = ['consultant_admin', 'super_admin', 'client_admin'];
+// Roles allowed to assign/remove scope (employee head level)
 const employeeRoles = ['employee_head', 'client_employee_head'];
-const viewRoles = [
-  'super_admin',
-  'consultant_admin',
-  'consultant',
-  'client_admin',
-  'client_employee_head',
-  'employee',
-  'auditor',
-];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Process Flowchart — Core WRITE operations
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Process flowchart operations
-router.post('/save', saveProcessFlowchart);                             // Create/Update process flowchart
-router.patch('/:flowchartId/add-node', addNodeToProcessFlowchart);   // Add new node to existing flowchart
-router.get('/all', getAllProcessFlowcharts);                           // Get all process flowcharts (hierarchy-based)
-router.get('/:clientId', getProcessFlowchart);                         // Get single process flowchart
-router.get('/:clientId/summary', getProcessFlowchartSummary);          // Get process flowchart summary
-router.patch('/:clientId/node/:nodeId', updateProcessFlowchartNode);   // Update specific node
-router.delete('/:clientId', deleteProcessFlowchart);                   // Delete process flowchart (soft)
-router.delete('/:clientId/node/:nodeId', deleteProcessNode);           // Delete specific node
-router.patch('/:clientId/restore', restoreProcessFlowchart);           // Restore deleted flowchart (super admin only)
-router.post('/:clientId/nodes/:nodeId/assign-head', checkRole(...editRoles), assignOrUnassignEmployeeHeadToNode);
+// Create / Update process flowchart
+router.post('/save', requireProcessFlowchartWrite(), saveProcessFlowchart);
+
+// Add new node to existing flowchart
+router.patch('/:flowchartId/add-node', requireProcessFlowchartWrite(), addNodeToProcessFlowchart);
+
+// Update specific node
+router.patch('/:clientId/node/:nodeId', requireProcessFlowchartWrite(), updateProcessFlowchartNode);
+
+// Delete process flowchart (soft delete)
+router.delete('/:clientId', requireProcessFlowchartWrite(), deleteProcessFlowchart);
+
+// Delete specific node
+router.delete('/:clientId/node/:nodeId', requireProcessFlowchartWrite(), deleteProcessNode);
+
+// Restore deleted flowchart
+router.patch('/:clientId/restore', requireProcessFlowchartWrite(), restoreProcessFlowchart);
+
+// Hard delete a scopeDetail (permanent)
+router.delete(
+  '/:clientId/node/:nodeId/scope/:scopeIdentifier',
+  requireProcessFlowchartWrite(),
+  hardDeleteProcessScopeDetail
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Process Flowchart — Core READ operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Get all process flowcharts (hierarchy-based)
+router.get('/all', requireProcessFlowchartRead('view'), getAllProcessFlowcharts);
+
+// Get single process flowchart
+router.get('/:clientId', requireProcessFlowchartRead('view'), getProcessFlowchart);
+
+// Get process flowchart summary
+router.get('/:clientId/summary', requireProcessFlowchartRead('view'), getProcessFlowchartSummary);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Process Flowchart — Assign Head
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Assign / unassign employee head to a node (admin level)
+router.post(
+  '/:clientId/nodes/:nodeId/assign-head',
+  requireProcessFlowchartAssign(),
+  assignOrUnassignEmployeeHeadToNode
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Process Flowchart — Scope Assignment (Employee Head only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Assign scope to a process node
 router.post(
   '/:clientId/nodes/:nodeId/assign-scope',
   checkRole(...employeeRoles),
   assignScopeToProcessNode
 );
 
-// Remove employees from a PROCESS node scope (Employee Head only)
+// Remove scope assignment from a process node
 router.delete(
   '/:clientId/nodes/:nodeId/remove-scope-assignment',
   checkRole(...employeeRoles),
   removeAssignmentProcess
 );
 
-
-
-// Hard delete a scopeDetail (process)
-router.delete('/:clientId/node/:nodeId/scope/:scopeIdentifier', hardDeleteProcessScopeDetail);
+// ─────────────────────────────────────────────────────────────────────────────
+// Allocations
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Get allocation summary for a client's process flowchart
-router.get('/:clientId/allocations', getAllocations);
+router.get(
+  '/:clientId/allocations',
+  requireProcessFlowchartRead('entries'),
+  getAllocations
+);
 
 // Update allocations for specific scopeIdentifiers
-router.patch('/:clientId/allocations', checkRole(...editRoles), updateAllocations);
-
+router.patch(
+  '/:clientId/allocations',
+  requireProcessFlowchartWrite(),
+  updateAllocations
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ProcessEmissionDataEntry endpoints
@@ -104,7 +154,7 @@ router.patch('/:clientId/allocations', checkRole(...editRoles), updateAllocation
  */
 router.get(
   '/:clientId/process-emission-entries',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntries
 );
 
@@ -120,7 +170,7 @@ router.get(
  */
 router.get(
   '/:clientId/process-emission-entries/stats',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionStats
 );
 
@@ -136,7 +186,7 @@ router.get(
  */
 router.get(
   '/:clientId/process-emission-entries/minimal',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesMinimal
 );
 
@@ -155,7 +205,7 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/process-emission-entries',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesByNode
 );
 
@@ -169,7 +219,7 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/process-emission-entries/summary',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionNodeSummary
 );
 
@@ -186,7 +236,7 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/process-emission-entries',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesByScope
 );
 
@@ -194,12 +244,15 @@ router.get(
  * GET /process-emission-entries/:entryId
  * Returns a single ProcessEmissionDataEntry by its MongoDB _id.
  *
+ * NOTE: This route has no /:clientId — clientId is resolved from req.user in the middleware.
+ * Place this BEFORE any /:clientId wildcard routes to avoid param collision.
+ *
  * Example:
  *   GET /api/processflow/process-emission-entries/665f1a2b3c4d5e6f7a8b9c0d
  */
 router.get(
   '/process-emission-entries/:entryId',
-  checkRole(...viewRoles),
+  requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntryById
 );
 
