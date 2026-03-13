@@ -1,49 +1,122 @@
-const EmissionFactor = require('../../models/EmissionFactor/contryEmissionFactorModel');
+const EmissionFactor = require('../../models/EmissionFactor/countryEmissionFactorModel');
 const csvtojson = require('csvtojson');
 const fs = require('fs');
 
-// Add new country emission factor
-const addEmissionFactor = async (req, res) => {
-    try {
-        const data = req.body;
 
-        // Generate periodLabel for each yearly value
-        if (data.yearlyValues) {
-            data.yearlyValues = data.yearlyValues.map(value => {
-                const [fromDay, fromMonth, fromYear] = value.from.split('/');
-                const [toDay, toMonth, toYear] = value.to.split('/');
-
-                if (!fromDay || !fromMonth || !fromYear || !toDay || !toMonth || !toYear) {
-                    throw new Error('Invalid date format. Expected dd/mm/yyyy');
-                }
-
-                const fromLabel = `${getMonthName(fromMonth)}-${fromYear}`;
-                const toLabel = `${getMonthName(toMonth)}-${toYear}`;
-                return {
-                    ...value,
-                    from: `${fromDay}/${fromMonth}/${fromYear}`,
-                    to: `${toDay}/${toMonth}/${toYear}`,
-                    periodLabel: `${fromLabel} to ${toLabel}`
-                };
-            });
-        }
-
-        const newEmissionFactor = new EmissionFactor(data);
-        await newEmissionFactor.save();
-        return res.status(201).json({ message: 'Emission factor added successfully', data: newEmissionFactor });
-    } catch (error) {
-        return res.status(500).json({ message: 'Error adding emission factor', error: error.message });
-    }
-};
-
-
-// bring in your month-name helper
 const getMonthName = (month) => {
   const months = [
     'january', 'february', 'march', 'april', 'may', 'june',
     'july', 'august', 'september', 'october', 'november', 'december'
   ];
   return months[parseInt(month, 10) - 1];
+};
+
+
+// Add new country emission factor
+const addEmissionFactor = async (req, res) => {
+  try {
+    const r = req.body;
+
+    if (Array.isArray(r)) {
+      return res.status(400).json({
+        message: 'For /add send a single object, not an array. Use /bulk-import for array payloads.'
+      });
+    }
+
+    const country = (r.Country || r.country || '').trim();
+    const regionGrid = (r.RegionGrid || r.regionGrid || '').trim();
+    const emissionFactor = (r.EmissionFactor || r.emissionFactor || '').trim();
+    const reference = (r.Reference || r.reference || '').trim();
+    const unit = (r.Unit || r.unit || 'kWh').trim();
+    const fromRaw = r.From || r.from;
+    const toRaw = r.To || r.to;
+    const valueRaw = r.Value ?? r.value;
+
+    if (!country || !regionGrid || !emissionFactor) {
+      return res.status(400).json({
+        message: 'Missing required fields: Country, RegionGrid, or EmissionFactor.'
+      });
+    }
+
+    let yearlyValues = [];
+
+    if (Array.isArray(r.yearlyValues) && r.yearlyValues.length > 0) {
+      yearlyValues = r.yearlyValues.map((value) => {
+        const [fromDay, fromMonth, fromYear] = value.from.split('/');
+        const [toDay, toMonth, toYear] = value.to.split('/');
+
+        if (!fromDay || !fromMonth || !fromYear || !toDay || !toMonth || !toYear) {
+          throw new Error('Invalid date format. Expected dd/mm/yyyy');
+        }
+
+        const fromLabel = `${getMonthName(fromMonth)}-${fromYear}`;
+        const toLabel = `${getMonthName(toMonth)}-${toYear}`;
+
+        return {
+          from: `${fromDay}/${fromMonth}/${fromYear}`,
+          to: `${toDay}/${toMonth}/${toYear}`,
+          periodLabel: `${fromLabel} to ${toLabel}`,
+          value: Number(value.value)
+        };
+      });
+    } else if (fromRaw && toRaw && valueRaw != null) {
+      const [fd, fm, fy] = fromRaw.split('/');
+      const [td, tm, ty] = toRaw.split('/');
+
+      if (![fd, fm, fy, td, tm, ty].every(Boolean)) {
+        return res.status(400).json({
+          message: 'Invalid date format in From/To, expected dd/mm/yyyy.'
+        });
+      }
+
+      const value = parseFloat(valueRaw);
+      if (isNaN(value)) {
+        return res.status(400).json({ message: 'Invalid number in Value.' });
+      }
+
+      const fromLabel = `${getMonthName(fm)}-${fy}`;
+      const toLabel = `${getMonthName(tm)}-${ty}`;
+
+      yearlyValues = [{
+        from: fromRaw,
+        to: toRaw,
+        periodLabel: `${fromLabel} to ${toLabel}`,
+        value
+      }];
+    } else {
+      return res.status(400).json({
+        message: 'Provide either yearlyValues or From/To/Value.'
+      });
+    }
+
+    const exists = await EmissionFactor.findOne({ country, regionGrid, emissionFactor });
+    if (exists) {
+      return res.status(409).json({
+        message: 'Emission factor already exists for this country, region grid, and emission factor.'
+      });
+    }
+
+    const newEmissionFactor = new EmissionFactor({
+      country,
+      regionGrid,
+      emissionFactor,
+      reference,
+      unit,
+      yearlyValues
+    });
+
+    await newEmissionFactor.save();
+
+    return res.status(201).json({
+      message: 'Emission factor added successfully',
+      data: newEmissionFactor
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: 'Error adding emission factor',
+      error: error.message
+    });
+  }
 };
 
 // Bulk import country emission factors (CSV upload)

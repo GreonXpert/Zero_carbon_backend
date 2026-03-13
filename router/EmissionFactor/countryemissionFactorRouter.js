@@ -50,26 +50,26 @@ const editRoles = ['consultant_admin', 'super_admin'];
 
 
 // Add new country emission factor
-router.post('/add',checkRole(editRoles), addEmissionFactor);
+router.post('/add',checkRole(...editRoles), addEmissionFactor);
 
 // 1. bulk import via CSV upload (field name: csvFile)
 router.post('/bulk-import', checkRole(editRoles),upload.single('csvFile'), bulkImportCountryEmissionFactors);
 
 // 2. download a CSV template
-router.get('/template',checkRole(editRoles), downloadCountryEmissionFactorsTemplate);
+router.get('/template',checkRole(...editRoles), downloadCountryEmissionFactorsTemplate);
 
 // Get all country emission factors
-router.get('/all',checkRole(viewRoles), getAllEmissionFactors);
+router.get('/all',checkRole(...viewRoles), getAllEmissionFactors);
 
 // Get single country emission factor by ID
-router.get('/:id',checkRole(viewRoles), getEmissionFactorById);
+router.get('/:id',checkRole(...viewRoles), getEmissionFactorById);
 
 
 
 // Update country emission factor by ID
-router.put('/update/:id', checkRole(editRoles),updateEmissionFactor);
+router.put('/update/:id', checkRole(...editRoles),updateEmissionFactor);
 
 // Delete country emission factor by ID
-router.delete('/delete/:id', checkRole(editRoles),deleteEmissionFactor);
+router.delete('/delete/:id', checkRole(...editRoles),deleteEmissionFactor);
 
 module.exports = router;
