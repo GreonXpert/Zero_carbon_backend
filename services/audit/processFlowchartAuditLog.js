@@ -236,6 +236,42 @@ async function logProcessFlowAllocationUpdate(req, processFlow, nodeId, oldAlloc
   }
 }
 
+/**
+ * Log emission factor(s) being changed on a scope within a process flowchart node.
+ * Fires when the emissionFactors array is updated on an Employee Commuting Tier 2 scope.
+ *
+ * @param {object}   req             - Express request
+ * @param {object}   processFlow     - ProcessFlowchart document (post-save)
+ * @param {string}   nodeId          - Node containing the scope
+ * @param {string}   scopeIdentifier - Scope whose EFs changed
+ * @param {Array}    previousEFs     - Snapshot of emissionFactors before the change
+ * @param {Array}    newEFs          - Snapshot of emissionFactors after the change
+ */
+async function logProcessFlowEmissionFactorUpdate(req, processFlow, nodeId, scopeIdentifier, previousEFs, newEFs) {
+  try {
+    await logEvent({
+      req,
+      module:        'process_flowchart',
+      action:        'update',
+      subAction:     'emission_factor_change',
+      entityType:    'ProcessFlowchart',
+      entityId:      _id(processFlow),
+      clientId:      processFlow.clientId,
+      changeSummary: `Emission factor(s) updated — node: ${nodeId}, scope: ${scopeIdentifier}`,
+      metadata: {
+        nodeId,
+        scopeIdentifier,
+        previousEmissionFactors: previousEFs,
+        newEmissionFactors: newEFs,
+        changedAt: new Date().toISOString(),
+      },
+      severity: 'warning',
+    });
+  } catch (err) {
+    console.error('[processFlowchartAuditLog] logProcessFlowEmissionFactorUpdate:', err.message);
+  }
+}
+
 // ─── exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -246,4 +282,5 @@ module.exports = {
   logProcessFlowScopeAssign,
   logProcessFlowScopeUnassign,
   logProcessFlowAllocationUpdate,
+  logProcessFlowEmissionFactorUpdate,
 };
