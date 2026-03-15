@@ -43,7 +43,52 @@ const {
   logProcessFlowScopeAssign,
   logProcessFlowScopeUnassign,
   logProcessFlowAllocationUpdate,
+  logProcessFlowEmissionFactorUpdate,
 } = require('../../services/audit/processFlowchartAuditLog');
+
+/**
+ * Returns true if two emissionFactors arrays differ (by JSON comparison).
+ */
+const _pfEmissionFactorsChanged = (existingEFs = [], incomingEFs = []) =>
+  JSON.stringify(existingEFs) !== JSON.stringify(incomingEFs);
+
+/**
+ * For an array of scopeDetail objects, detect Employee Commuting Tier 2 scopes
+ * whose emissionFactors changed, append to their emissionFactorHistory, and
+ * return a list of { scopeIdentifier, previousEFs, newEFs } for audit logging.
+ */
+const _pfDetectAndRecordEFChanges = (prevScopesArr, newScopesArr, changedByUserId) => {
+  const efChanges = [];
+  const prevMap = new Map((prevScopesArr || []).map(s => [s.scopeIdentifier, s]));
+
+  for (const scope of (newScopesArr || [])) {
+    const isECTier2 = (
+      scope.scopeType === 'Scope 3' &&
+      (scope.categoryName || '').toLowerCase() === 'employee commuting' &&
+      scope.calculationModel === 'tier 2'
+    );
+    if (!isECTier2) continue;
+    if (!Array.isArray(scope.emissionFactors)) continue;
+
+    const prev = prevMap.get(scope.scopeIdentifier);
+    const previousEFs = prev?.emissionFactors ?? [];
+    const newEFs = scope.emissionFactors;
+
+    if (_pfEmissionFactorsChanged(previousEFs, newEFs)) {
+      scope.emissionFactorHistory = [
+        ...(prev?.emissionFactorHistory ?? []),
+        {
+          previousEmissionFactors: previousEFs,
+          newEmissionFactors: newEFs,
+          changedAt: new Date(),
+          changedBy: changedByUserId ?? null,
+        },
+      ];
+      efChanges.push({ scopeIdentifier: scope.scopeIdentifier, previousEFs, newEFs });
+    }
+  }
+  return efChanges;
+};
 
    const {
      checkFlowchartQuota,
@@ -360,6 +405,20 @@ const saveProcessFlowchart = async (req, res) => {
 
     if (processFlowchart) {
       // Update existing
+
+      // ── EC Tier 2 EF change detection (per-node, per-scope) ───────────────
+      const _savePFEFChanges = [];
+      const _oldPFNodeMap = new Map((processFlowchart.nodes || []).map(n => [n.id, n]));
+      for (const newNode of normalizedNodesWithComments) {
+        const oldNode = _oldPFNodeMap.get(newNode.id);
+        const oldScopes = oldNode?.details?.scopeDetails ?? [];
+        const newScopes = newNode?.details?.scopeDetails ?? [];
+        const changes = _pfDetectAndRecordEFChanges(oldScopes, newScopes, userId);
+        for (const c of changes) {
+          _savePFEFChanges.push({ nodeId: newNode.id, ...c });
+        }
+      }
+
       processFlowchart.nodes = normalizedNodesWithComments;
       processFlowchart.edges = normalizedEdges;
       processFlowchart.lastModifiedBy = userId;
@@ -391,6 +450,12 @@ const saveProcessFlowchart = async (req, res) => {
         processFlowchart,
         `Process flowchart updated — client: ${clientId}, nodes: ${processFlowchart.nodes.length}, version: ${processFlowchart.version}`
       );
+      // Fire per-scope EF audit logs (only for update path where _savePFEFChanges is defined)
+      if (typeof _savePFEFChanges !== 'undefined') {
+        for (const c of _savePFEFChanges) {
+          await logProcessFlowEmissionFactorUpdate(req, processFlowchart, c.nodeId, c.scopeIdentifier, c.previousEFs, c.newEFs);
+        }
+      }
     }
 
     // 9) Auto-start flowchart status
@@ -1557,6 +1622,14 @@ const updateProcessFlowchartNode = async (req, res) => {
     // ============================================================================
     // SAVE TO DATABASE
     // ============================================================================
+
+    // ── EC Tier 2 EF change detection ─────────────────────────────────────────
+    const _updatePFEFChanges = _pfDetectAndRecordEFChanges(
+      existingNode.details?.scopeDetails ?? [],
+      mergedNode.details?.scopeDetails ?? [],
+      req.user?._id || req.user?.id || null
+    );
+
     processFlowchart.markModified('nodes'); // ensure Mongoose tracks deep nested changes
     processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
 
@@ -1566,6 +1639,11 @@ const updateProcessFlowchartNode = async (req, res) => {
       processFlowchart,
       `Process node updated — nodeId: ${nodeId}, client: ${clientId}, version: ${processFlowchart.version}`
     );
+
+    // Fire per-scope EF audit logs
+    for (const c of _updatePFEFChanges) {
+      await logProcessFlowEmissionFactorUpdate(req, processFlowchart, nodeId, c.scopeIdentifier, c.previousEFs, c.newEFs);
+    }
 
     return res.status(200).json({
       message: 'Node updated successfully',

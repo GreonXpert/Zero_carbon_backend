@@ -26,6 +26,45 @@ const numOrNull = (v) => {
   return Number.isNaN(n) ? null : n;
 };
 
+/**
+ * Auto-calculates collection dates given a start date and EC frequency.
+ * Used for Employee Commuting Tier 2 employeeCommutingConfig.collectionDates.
+ *
+ * annually:   [startDate]                              (1 date)
+ * half-yearly:[startDate, startDate+6m]                (2 dates)
+ * quarterly:  [startDate, +3m, +6m, +9m]              (4 dates)
+ * monthly:    [startDate, +1m, +2m, ..., +11m]        (12 dates)
+ *
+ * @param {Date|string|null} startDate
+ * @param {string} frequency - 'annually' | 'half-yearly' | 'quarterly' | 'monthly'
+ * @returns {Date[]}
+ */
+const calculateCollectionDates = (startDate, frequency) => {
+  if (!startDate || !frequency) return [];
+  const start = new Date(startDate);
+  if (isNaN(start.getTime())) return [];
+
+  const addMonths = (date, months) => {
+    const d = new Date(date);
+    d.setMonth(d.getMonth() + months);
+    return d;
+  };
+
+  const config = {
+    annually:     { count: 1,  intervalMonths: 12 },
+    'half-yearly':{ count: 2,  intervalMonths: 6  },
+    quarterly:    { count: 4,  intervalMonths: 3  },
+    monthly:      { count: 12, intervalMonths: 1  },
+  };
+
+  const { count = 0, intervalMonths = 0 } = config[frequency] || {};
+  const dates = [];
+  for (let i = 0; i < count; i++) {
+    dates.push(addMonths(start, i * intervalMonths));
+  }
+  return dates;
+};
+
 
 
 /**
@@ -101,8 +140,39 @@ const normalizeScopeDetail = (scope) => {
     },
     reductionCalculationMode: scope.reductionCalculationMode || 'advanced',
     allocationPct: typeof scope.allocationPct === 'number' ? scope.allocationPct : 100,
-  
+
   };
+
+  // ── Employee Commuting Tier 2 config ─────────────────────────────────────────
+  // employeeCommutingConfig.collectionFrequency uses EC-specific enum values
+  // (annually/half-yearly/quarterly/monthly) — distinct from the top-level
+  // collectionFrequency field which handles general data collection scheduling.
+  if (
+    scope.scopeType === 'Scope 3' &&
+    (scope.categoryName || '').toLowerCase() === 'employee commuting' &&
+    scope.calculationModel === 'tier 2'
+  ) {
+    const ec = scope.employeeCommutingConfig || {};
+    const freq = ec.collectionFrequency || '';
+    const startDate = ec.collectionStartDate ? new Date(ec.collectionStartDate) : null;
+    normalizedScope.employeeCommutingConfig = {
+      numberOfEmployees: numOrNull(ec.numberOfEmployees),
+      collectionFrequency: freq,
+      collectionStartDate: startDate,
+      collectionDates: calculateCollectionDates(startDate, freq),
+      responseMode: ec.responseMode || ''
+    };
+  }
+
+  // ── Multiple emission factors (EC Tier 2) ─────────────────────────────────────
+  if (Array.isArray(scope.emissionFactors)) {
+    normalizedScope.emissionFactors = scope.emissionFactors;
+  }
+
+  // ── Preserve emissionFactorHistory (append-only; controller manages this) ─────
+  if (Array.isArray(scope.emissionFactorHistory)) {
+    normalizedScope.emissionFactorHistory = scope.emissionFactorHistory;
+  }
   // ── Custom values (optional, with alias support) ─────────────────────────────
   const rawCV = scope.customValues || scope.customValue || {};
   normalizedScope.customValues = {
@@ -643,5 +713,6 @@ module.exports = {
   getChartUnavailableMessage,
   addCEFCommentsToNodes,
   ensureCEFComments,
-  numOrNull
+  numOrNull,
+  calculateCollectionDates
 };

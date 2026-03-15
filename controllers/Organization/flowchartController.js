@@ -26,13 +26,64 @@ const {canManageFlowchart,canViewFlowchart, canAssignHeadToNode, canAccessModule
 
 // Audit log helpers for the organization_flowchart module
 const {
-  
+
   logFlowchartUpdate,
   logFlowchartDelete,
   logFlowchartNodeAssign,
   logFlowchartScopeAssign,
   logFlowchartScopeUnassign,
+  logFlowchartEmissionFactorUpdate,
 } = require('../../services/audit/flowchartAuditLog');
+
+/**
+ * Returns true if two emissionFactors arrays differ (by JSON comparison).
+ * Used to decide whether to record a history entry and fire an audit log.
+ */
+const _emissionFactorsChanged = (existingEFs = [], incomingEFs = []) =>
+  JSON.stringify(existingEFs) !== JSON.stringify(incomingEFs);
+
+/**
+ * For an array of scopeDetail objects, detect Employee Commuting Tier 2 scopes
+ * whose emissionFactors changed, append to their emissionFactorHistory, and
+ * return a list of { scopeIdentifier, previousEFs, newEFs } for audit logging.
+ *
+ * @param {Array} prevScopesArr   - Existing scopeDetails from DB (plain objects)
+ * @param {Array} newScopesArr    - Merged/new scopeDetails about to be saved
+ * @param {*}     changedByUserId - req.user._id
+ * @returns {{ scopeIdentifier, previousEFs, newEFs }[]}
+ */
+const _detectAndRecordEFChanges = (prevScopesArr, newScopesArr, changedByUserId) => {
+  const efChanges = [];
+  const prevMap = new Map((prevScopesArr || []).map(s => [s.scopeIdentifier, s]));
+
+  for (const scope of (newScopesArr || [])) {
+    const isECTier2 = (
+      scope.scopeType === 'Scope 3' &&
+      (scope.categoryName || '').toLowerCase() === 'employee commuting' &&
+      scope.calculationModel === 'tier 2'
+    );
+    if (!isECTier2) continue;
+    if (!Array.isArray(scope.emissionFactors)) continue;
+
+    const prev = prevMap.get(scope.scopeIdentifier);
+    const previousEFs = prev?.emissionFactors ?? [];
+    const newEFs = scope.emissionFactors;
+
+    if (_emissionFactorsChanged(previousEFs, newEFs)) {
+      scope.emissionFactorHistory = [
+        ...(prev?.emissionFactorHistory ?? []),
+        {
+          previousEmissionFactors: previousEFs,
+          newEmissionFactors: newEFs,
+          changedAt: new Date(),
+          changedBy: changedByUserId ?? null,
+        },
+      ];
+      efChanges.push({ scopeIdentifier: scope.scopeIdentifier, previousEFs, newEFs });
+    }
+  }
+  return efChanges;
+};
 
 const {
   checkFlowchartQuota,
@@ -433,6 +484,22 @@ const saveFlowchart = async (req, res) => {
 
     if (flowchart) {
       // UPDATE existing flowchart
+
+      // ── EC Tier 2 EF change detection (per-node, per-scope) ───────────────
+      // Before replacing nodes, detect emission factor changes for
+      // Employee Commuting Tier 2 scopes and record history entries.
+      const _saveFlowchartEFChanges = []; // { nodeId, scopeIdentifier, previousEFs, newEFs }
+      const _oldNodeMap = new Map((flowchart.nodes || []).map(n => [n.id, n]));
+      for (const newNode of normalizedNodes) {
+        const oldNode = _oldNodeMap.get(newNode.id);
+        const oldScopes = oldNode?.details?.scopeDetails ?? [];
+        const newScopes = newNode?.details?.scopeDetails ?? [];
+        const changes = _detectAndRecordEFChanges(oldScopes, newScopes, userId);
+        for (const c of changes) {
+          _saveFlowchartEFChanges.push({ nodeId: newNode.id, ...c });
+        }
+      }
+
       flowchart.nodes          = normalizedNodes;
       flowchart.edges          = normalizedEdges;
       flowchart.lastModifiedBy = userId;
@@ -443,6 +510,11 @@ const saveFlowchart = async (req, res) => {
         flowchart,
         `Flowchart updated — client: ${clientId}, nodes: ${normalizedNodes.length}, version: ${flowchart.version}`
       );
+
+      // Fire per-scope EF audit logs
+      for (const c of _saveFlowchartEFChanges) {
+        await logFlowchartEmissionFactorUpdate(req, flowchart, c.nodeId, c.scopeIdentifier, c.previousEFs, c.newEFs);
+      }
     } else {
       // CREATE new flowchart
       isNew = true;
@@ -1916,6 +1988,16 @@ if (isQuotaSubject(req.user.userType)) {
 }
 
     // 5) Persist
+
+    // ── EC Tier 2 EF change detection ─────────────────────────────────────────
+    // Detect emission factor changes in Employee Commuting Tier 2 scopes and
+    // append history entries before saving. prevScopes is defined above at step 4.
+    const _updateNodeEFChanges = _detectAndRecordEFChanges(
+      prevScopes,
+      mergedNode.details?.scopeDetails ?? [],
+      userId
+    );
+
     flowchart.nodes[nodeIndex] = mergedNode;
     flowchart.markModified('nodes'); // 👈 ensure Mongoose tracks deep changes
     flowchart.lastModifiedBy = userId;
@@ -1923,6 +2005,11 @@ if (isQuotaSubject(req.user.userType)) {
 
     await flowchart.save();
     await logFlowchartUpdate(req, flowchart, `Node updated — nodeId: ${nodeId}, client: ${clientId}, version: ${flowchart.version}`);
+
+    // Fire per-scope EF audit logs
+    for (const c of _updateNodeEFChanges) {
+      await logFlowchartEmissionFactorUpdate(req, flowchart, nodeId, c.scopeIdentifier, c.previousEFs, c.newEFs);
+    }
 
     return res.status(200).json({
       message: 'Node updated successfully',

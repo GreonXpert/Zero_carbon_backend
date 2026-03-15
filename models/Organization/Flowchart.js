@@ -470,6 +470,56 @@ fromOtherChart: {
 isDeleted: { type: Boolean, default: false },
 deletedAt: { type: Date },
 deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+// ─── Employee Commuting Tier 2 Configuration ──────────────────────────────
+// Only populated when: scopeType === 'Scope 3' && categoryName === 'Employee Commuting' && calculationModel === 'tier 2'
+// NOTE: collectionFrequency here uses EC-specific values — separate from the
+//       top-level collectionFrequency field (real-time/daily/weekly/monthly/quarterly/annually)
+employeeCommutingConfig: {
+  numberOfEmployees: { type: Number, default: null },
+  collectionFrequency: {
+    type: String,
+    enum: ['annually', 'half-yearly', 'quarterly', 'monthly', ''],
+    default: ''
+  },
+  collectionStartDate: { type: Date, default: null },
+  collectionDates: [{ type: Date }],   // auto-calculated from frequency + startDate; never sent by client
+  responseMode: {
+    type: String,
+    enum: ['anonymous', 'unique', ''],
+    default: ''
+  }
+},
+
+// ─── Multiple Emission Factors (Employee Commuting Tier 2) ─────────────────
+// Supports multiple EF entries per scope. Each entry stores the source type
+// and the corresponding data. Existing single emissionFactor/emissionFactorValues
+// fields are preserved for backwards compatibility with other scopes.
+emissionFactors: [{
+  source: {
+    type: String,
+    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country', ''],
+    default: ''
+  },
+  defraData:            { type: mongoose.Schema.Types.Mixed },
+  ipccData:             { type: mongoose.Schema.Types.Mixed },
+  epaData:              { type: mongoose.Schema.Types.Mixed },
+  countryData:          { type: mongoose.Schema.Types.Mixed },
+  customEmissionFactor: { type: mongoose.Schema.Types.Mixed },
+  emissionFactorHubData:{ type: mongoose.Schema.Types.Mixed },
+  addedAt:  { type: Date, default: Date.now },
+  addedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+}],
+
+// ─── Emission Factor History (audit trail within scope detail) ─────────────
+// A record is appended each time emissionFactors changes.
+// Also mirrored to AuditLog via logFlowchartEmissionFactorUpdate().
+emissionFactorHistory: [{
+  previousEmissionFactors: { type: mongoose.Schema.Types.Mixed },
+  newEmissionFactors:      { type: mongoose.Schema.Types.Mixed },
+  changedAt: { type: Date, default: Date.now },
+  changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+}],
 });
 
 // Add a pre-save hook to validate custom emission factor
