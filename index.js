@@ -53,6 +53,7 @@ const sbtiController = require('./controllers/Decabonization/sbtiController');
 const transportFlowRouter = require('./router/Organization/transportFlowR');
 const sandboxRoutes = require('./router/CMS/sandboxRoutes');
 const apiKeyRoutes = require('./router/apiKeyRoutes');
+const { surveyAuthRouter, surveyPublicRouter } = require('./router/Organization/surveyRoutes');
 const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
 
 // Import models for real-time features
@@ -170,6 +171,10 @@ app.use('/api/iot', iotRouter);
 
 app.use('/api', apiKeyRoutes);
 app.use('/api/tickets', ticketRoutes);
+
+// Survey routes (Tier-2 Employee Commuting)
+app.use('/api/surveys', surveyAuthRouter);  // authenticated management endpoints
+app.use('/api/survey',  surveyPublicRouter); // public respondent endpoints (no auth)
 
 // Audit logs
 app.use('/api/audit-logs', auditLogRoutes);
