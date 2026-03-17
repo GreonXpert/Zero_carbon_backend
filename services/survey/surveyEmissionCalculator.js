@@ -84,25 +84,133 @@ function weeksForFrequency(collectionFrequency) {
 
 /**
  * Look up the emission factor (kg CO2e per km) for a given mode/vehicle/fuel combination.
- * This is a stub that returns 0 by default; in production this delegates to the
- * emissionFactors array from the ScopeDetail (injected by the caller).
- *
- * The emissionFactors array may contain entries from DEFRA, EPA, IPCC, Custom, etc.
- * The caller passes the relevant factor value directly via `efValue`.
  *
  * @param {string}      modeCode
  * @param {string|null} vehicleType
  * @param {string|null} fuelType
- * @param {number}      efValue  — kg CO2e per km resolved by the caller from the EF library
+ * @param {number}      efValue  — kg CO2e per km pre-resolved by the caller
  * @returns {number}
  */
 function getEmissionFactor(modeCode, vehicleType, fuelType, efValue) {
-  // If caller provides an explicit factor, use it.
   if (typeof efValue === 'number' && efValue >= 0) return efValue;
-  // Zero-emission modes always return 0 regardless.
   if (ZERO_EMISSION_MODES.has(modeCode)) return 0;
-  // Default to 0 when no factor is available (signals incomplete EF config).
   return 0;
+}
+
+/**
+ * Extract the numeric kg CO2e per km value from one emissionFactors[] entry.
+ * Applies the conversionFactor if present (defaults to 1 if absent or zero).
+ *
+ * @param {object} entry  – one item from scope.emissionFactors[]
+ * @returns {number|null}  – numeric value, or null if it cannot be determined
+ */
+function extractEFValue(entry) {
+  if (!entry || !entry.source) return null;
+
+  const cf = (v) => (typeof v === 'number' && v > 0 ? v : 1);
+
+  switch (entry.source) {
+    case 'Custom': {
+      const d = entry.customEmissionFactor;
+      if (!d) return null;
+      const v = typeof d.CO2e === 'number' ? d.CO2e : null;
+      return v !== null ? v * cf(d.conversionFactor) : null;
+    }
+    case 'DEFRA': {
+      const unit = entry.defraData?.ghgUnits?.[0];
+      if (!unit) return null;
+      const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
+      return v !== null ? v * cf(unit.conversionFactor) : null;
+    }
+    case 'IPCC': {
+      const unit = entry.ipccData?.ghgUnits?.[0];
+      if (!unit) return null;
+      const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
+      return v !== null ? v * cf(unit.conversionFactor) : null;
+    }
+    case 'EPA': {
+      const unit = entry.epaData?.ghgUnitsEPA?.[0];
+      if (!unit) return null;
+      const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
+      return v !== null ? v * cf(unit.conversionFactor) : null;
+    }
+    case 'Country': {
+      const d = entry.countryData;
+      if (!d) return null;
+      // Prefer the latest yearlyValues entry if available
+      if (Array.isArray(d.yearlyValues) && d.yearlyValues.length > 0) {
+        const latest = d.yearlyValues[d.yearlyValues.length - 1];
+        const v = typeof latest.value === 'number' ? latest.value : null;
+        return v !== null ? v * cf(latest.conversionFactor) : null;
+      }
+      const v = typeof d.emissionFactor === 'number' ? d.emissionFactor : null;
+      return v !== null ? v * cf(d.conversionFactor) : null;
+    }
+    case 'EmissionFactorHub': {
+      const d = entry.emissionFactorHubData;
+      if (!d) return null;
+      const v = typeof d.value === 'number' ? d.value : null;
+      return v !== null ? v * cf(d.conversionFactor) : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build a transport-mode emission factor lookup function from a scope's emissionFactors[] array.
+ *
+ * Each entry in the array must have modeCode set; vehicleType and fuelType are optional
+ * (empty string means "applies to all" for that dimension).
+ *
+ * Lookup uses three specificity tiers (most → least specific):
+ *   Tier 1: modeCode + vehicleType + fuelType  (e.g. "PRIVATE_CAR|MEDIUM_CAR|PETROL")
+ *   Tier 2: modeCode + fuelType                (e.g. "PRIVATE_CAR||PETROL")
+ *   Tier 3: modeCode only                      (e.g. "PRIVATE_CAR||")
+ *
+ * @param {Array} emissionFactors  – scope.emissionFactors[] from the flowchart
+ * @returns {Function}  (modeCode, vehicleType, fuelType) => number (kg CO2e / km)
+ */
+function buildEFLookup(emissionFactors) {
+  const map = new Map();
+
+  if (!Array.isArray(emissionFactors) || emissionFactors.length === 0) return () => 0;
+
+  for (const entry of emissionFactors) {
+    const value = extractEFValue(entry);
+    if (value === null || value < 0) continue;
+
+    const mode    = (entry.modeCode    || '').trim();
+    const vehicle = (entry.vehicleType || '').trim();
+    const fuel    = (entry.fuelType    || '').trim();
+
+    if (!mode) continue; // entries without a modeCode cannot be matched
+
+    const key = `${mode}|${vehicle}|${fuel}`;
+    if (!map.has(key)) map.set(key, value); // first entry wins for duplicate keys
+  }
+
+  return function efLookup(modeCode, vehicleType, fuelType) {
+    if (ZERO_EMISSION_MODES.has(modeCode)) return 0;
+
+    const m = modeCode    || '';
+    const v = vehicleType || '';
+    const f = fuelType    || '';
+
+    // Tier 1: exact match — mode + vehicle + fuel
+    const k1 = `${m}|${v}|${f}`;
+    if (map.has(k1)) return map.get(k1);
+
+    // Tier 2: mode + fuel (ignore vehicle type)
+    const k2 = `${m}||${f}`;
+    if (map.has(k2)) return map.get(k2);
+
+    // Tier 3: mode only
+    const k3 = `${m}||`;
+    if (map.has(k3)) return map.get(k3);
+
+    return 0; // no factor configured for this combination
+  };
 }
 
 /**
@@ -550,6 +658,7 @@ module.exports = {
   deriveOneWayKm,
   resolveCommutingDays,
   weeksForFrequency,
+  buildEFLookup,
   ZERO_EMISSION_MODES,
   VEHICLE_KM_MODES,
 };
