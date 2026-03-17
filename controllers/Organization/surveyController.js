@@ -431,12 +431,24 @@ async function getSurveyStatistics(req, res) {
     await refreshCycleStats(clientId, scopeIdentifier, Number(cycleIndex), cycle.responseMode);
     const updated = await SurveyCycle.findOne({ clientId, scopeIdentifier, cycleIndex: Number(cycleIndex) }).lean();
 
+    const s = updated.statistics || {};
     return res.status(200).json({
       cycleIndex: updated.cycleIndex,
       cycleDate: updated.cycleDate,
+      reportingYear: updated.reportingYear,
       status: updated.status,
-      totalLinks: updated.totalLinks,
-      statistics: updated.statistics,
+      responseMode: updated.responseMode,
+      // ── Headline numbers ───────────────────────────────────────────────────
+      total: updated.totalLinks,                           // total surveys issued
+      completed: s.submitted || 0,                        // submitted responses
+      remaining: (s.pending || 0) + (s.opened || 0),     // not yet submitted
+      // ── Breakdown ─────────────────────────────────────────────────────────
+      opened: s.opened || 0,
+      pending: s.pending || 0,
+      expired: s.expired || 0,
+      completionPct: s.completionPct || 0,
+      // ── Full statistics object for clients that need all fields ────────────
+      statistics: s,
     });
   } catch (err) {
     console.error('getSurveyStatistics error:', err);
