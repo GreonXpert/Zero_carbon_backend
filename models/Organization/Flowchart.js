@@ -491,13 +491,16 @@ employeeCommutingConfig: {
   }
 },
 
-// ─── Multiple Emission Factors (Employee Commuting Tier 2) ─────────────────
-// Supports multiple EF entries per scope. Each entry stores the source type
-// and the corresponding data. Existing single emissionFactor/emissionFactorValues
-// fields are preserved for backwards compatibility with other scopes.
-emissionFactors: [{
-  // Transport mode identifier — which mode/vehicle/fuel this factor applies to.
-  // modeCode is required; vehicleType and fuelType are optional (empty = applies to all).
+// ─── Employee Commuting Tier 2 — Per-Mode Emission Factors ──────────────────
+// One entry per transport mode / vehicle type / fuel type combination.
+// modeCode is required; vehicleType and fuelType are optional
+// (empty string = "applies to all" for that dimension).
+//
+// Each entry stores structured source data (DEFRA / IPCC / EPA / Custom /
+// EmissionFactorHub) plus a pre-computed valueKgCO2ePerKm that the emission
+// calculator reads directly — avoiding repeated raw-data extraction.
+employeeCommutingEmissionFactors: [{
+  // ── Transport mode identifiers ──────────────────────────────────────────────
   modeCode: {
     type: String,
     enum: [
@@ -516,7 +519,7 @@ emissionFactors: [{
       'SMALL_MOTORCYCLE', 'MEDIUM_MOTORCYCLE', 'LARGE_MOTORCYCLE',
       'SMALL_VAN', 'LARGE_VAN', 'OTHER', '',
     ],
-    default: ''  // empty = applies to all vehicle types for this mode
+    default: ''
   },
   fuelType: {
     type: String,
@@ -526,25 +529,104 @@ emissionFactors: [{
       'PLUG_IN_HYBRID_PETROL', 'PLUG_IN_HYBRID_DIESEL',
       'HYDROGEN', 'BIOFUEL', 'UNKNOWN', '',
     ],
-    default: ''  // empty = applies to all fuel types for this mode
-  },
-  source: {
-    type: String,
-    enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country', ''],
     default: ''
   },
-  defraData:            { type: mongoose.Schema.Types.Mixed },
-  ipccData:             { type: mongoose.Schema.Types.Mixed },
-  epaData:              { type: mongoose.Schema.Types.Mixed },
-  countryData:          { type: mongoose.Schema.Types.Mixed },
-  customEmissionFactor: { type: mongoose.Schema.Types.Mixed },
-  emissionFactorHubData:{ type: mongoose.Schema.Types.Mixed },
-  addedAt:  { type: Date, default: Date.now },
-  addedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+  // ── Emission factor source ──────────────────────────────────────────────────
+  source: {
+    type: String,
+    enum: ['DEFRA', 'IPCC', 'EPA', 'Custom', 'EmissionFactorHub', ''],
+    default: ''
+  },
+  // ── Pre-computed result (set by API when entry is saved) ───────────────────
+  // kg CO2e per passenger-km (or vehicle-km for private modes).
+  // The calculator reads this directly. Derived from the source data below.
+  valueKgCO2ePerKm: { type: Number, default: null },
+  // ── DEFRA source data ───────────────────────────────────────────────────────
+  // uom: unit of measure for the activity (e.g. 'passenger.km', 'vehicle.km').
+  // ghgUnits contains one row per GHG gas; the CO2e row is used for calculation.
+  defraData: {
+    uom: { type: String, default: '' },
+    ghgUnits: [{
+      unit:                       { type: String, default: '' },
+      ghgconversionFactor:        { type: Number, default: null },
+      ghgconversionFactor_comment:{ type: String, default: '' },
+      conversionFactor:           { type: Number, default: 1 },
+      conversionFactor_comment:   { type: String, default: '' },
+      gwpValue:                   { type: Number, default: 0 },
+      gwpSearchField:             { type: String, default: null },
+      gwpLastUpdated:             { type: Date,   default: null },
+    }],
+  },
+  // ── IPCC source data ────────────────────────────────────────────────────────
+  ipccData: {
+    unit:                     { type: String, default: '' },
+    conversionFactor:         { type: Number, default: 1 },
+    conversionFactor_comment: { type: String, default: '' },
+    fuelDensityLiter:         { type: Number, default: null },
+    fuelDensityM3:            { type: Number, default: null },
+    ghgUnits: [{
+      unit:                       { type: String, default: '' },
+      ghgconversionFactor:        { type: Number, default: null },
+      ghgconversionFactor_comment:{ type: String, default: '' },
+      conversionFactor:           { type: Number, default: 1 },
+      conversionFactor_comment:   { type: String, default: '' },
+      gwpValue:                   { type: Number, default: 0 },
+      gwpSearchField:             { type: String, default: null },
+      gwpLastUpdated:             { type: Date,   default: null },
+    }],
+  },
+  // ── EPA source data ─────────────────────────────────────────────────────────
+  epaData: {
+    uomEPA: { type: String, default: '' },
+    ghgUnitsEPA: [{
+      unit:                       { type: String, default: '' },
+      ghgconversionFactor:        { type: Number, default: null },
+      ghgconversionFactor_comment:{ type: String, default: '' },
+      conversionFactor:           { type: Number, default: 1 },
+      conversionFactor_comment:   { type: String, default: '' },
+      gwpValue:                   { type: Number, default: 0 },
+      gwpSearchField:             { type: String, default: null },
+      gwpLastUpdated:             { type: Date,   default: null },
+    }],
+  },
+  // ── Custom source data ──────────────────────────────────────────────────────
+  // CO2e is the direct kg CO2e per km value entered by the consultant.
+  // CO2e_conversionFactor converts if the raw entry is in a different unit.
+  customEmissionFactor: {
+    CO2e:                     { type: Number, default: null },
+    CO2e_comment:             { type: String, default: '' },
+    CO2e_conversionFactor:    { type: Number, default: 1 },
+    CO2e_conversionFactor_comment: { type: String, default: '' },
+    unit:                     { type: String, default: 'kg CO2e per km' },
+    unit_comment:             { type: String, default: '' },
+    conversionFactor:         { type: Number, default: 1 },
+    conversionFactor_comment: { type: String, default: '' },
+  },
+  // ── EmissionFactorHub source data ───────────────────────────────────────────
+  // value is the raw factor from the EF Hub database.
+  // conversionFactor converts to kg CO2e per km if the hub stores a different unit.
+  emissionFactorHubData: {
+    scope:                    { type: String, default: '' },
+    category:                 { type: String, default: '' },
+    activity:                 { type: String, default: '' },
+    itemName:                 { type: String, default: '' },
+    unit:                     { type: String, default: '' },
+    value:                    { type: Number, default: null },
+    source:                   { type: String, default: '' },
+    reference:                { type: String, default: '' },
+    conversionFactor:         { type: Number, default: 1 },
+    conversionFactor_comment: { type: String, default: '' },
+    gwpValue:                 { type: Number, default: 0 },
+    gwpSearchField:           { type: String, default: null },
+    gwpLastUpdated:           { type: Date,   default: null },
+  },
+  // ── Audit ───────────────────────────────────────────────────────────────────
+  addedAt:  { type: Date,                              default: Date.now },
+  addedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }],
 
 // ─── Emission Factor History (audit trail within scope detail) ─────────────
-// A record is appended each time emissionFactors changes.
+// A record is appended each time employeeCommutingEmissionFactors changes.
 // Also mirrored to AuditLog via logFlowchartEmissionFactorUpdate().
 emissionFactorHistory: [{
   previousEmissionFactors: { type: mongoose.Schema.Types.Mixed },
