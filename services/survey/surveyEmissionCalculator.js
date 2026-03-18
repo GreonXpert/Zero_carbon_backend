@@ -101,6 +101,10 @@ function getEmissionFactor(modeCode, vehicleType, fuelType, efValue) {
  * Extract the numeric kg CO2e per km value from one emissionFactors[] entry.
  * Applies the conversionFactor if present (defaults to 1 if absent or zero).
  *
+ * For DEFRA/IPCC/EPA the ghgUnits array may contain separate rows for CO2,
+ * CH4, N2O, and CO2e. This function searches for the CO2e row (unit field
+ * contains 'co2e', case-insensitive) and falls back to index [0] if none found.
+ *
  * @param {object} entry  – one item from scope.emissionFactors[]
  * @returns {number|null}  – numeric value, or null if it cannot be determined
  */
@@ -109,27 +113,40 @@ function extractEFValue(entry) {
 
   const cf = (v) => (typeof v === 'number' && v > 0 ? v : 1);
 
+  // Find the CO2e row in a ghgUnits / ghgUnitsEPA array.
+  // Prefers the entry whose unit string contains 'co2e'; falls back to [0].
+  function findCO2eUnit(arr) {
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    const hit = arr.find(u => typeof u.unit === 'string' && u.unit.toLowerCase().includes('co2e'));
+    return hit || arr[0];
+  }
+
   switch (entry.source) {
     case 'Custom': {
       const d = entry.customEmissionFactor;
       if (!d) return null;
       const v = typeof d.CO2e === 'number' ? d.CO2e : null;
-      return v !== null ? v * cf(d.conversionFactor) : null;
+      if (v === null) return null;
+      // Prefer CO2e_conversionFactor (schema-native field); fall back to generic conversionFactor
+      const convFactor = (typeof d.CO2e_conversionFactor === 'number' && d.CO2e_conversionFactor > 0)
+        ? d.CO2e_conversionFactor
+        : d.conversionFactor;
+      return v * cf(convFactor);
     }
     case 'DEFRA': {
-      const unit = entry.defraData?.ghgUnits?.[0];
+      const unit = findCO2eUnit(entry.defraData?.ghgUnits);
       if (!unit) return null;
       const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
       return v !== null ? v * cf(unit.conversionFactor) : null;
     }
     case 'IPCC': {
-      const unit = entry.ipccData?.ghgUnits?.[0];
+      const unit = findCO2eUnit(entry.ipccData?.ghgUnits);
       if (!unit) return null;
       const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
       return v !== null ? v * cf(unit.conversionFactor) : null;
     }
     case 'EPA': {
-      const unit = entry.epaData?.ghgUnitsEPA?.[0];
+      const unit = findCO2eUnit(entry.epaData?.ghgUnitsEPA);
       if (!unit) return null;
       const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
       return v !== null ? v * cf(unit.conversionFactor) : null;

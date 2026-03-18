@@ -29,6 +29,8 @@ const {
   buildEFLookup,
 } = require('../../services/survey/surveyEmissionCalculator');
 
+const { fetchScopeEFData } = require('../../services/survey/surveyEFHelper');
+
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -887,18 +889,18 @@ async function submitUniqueSurvey(req, res) {
       return res.status(422).json({ message: 'Validation failed.', errors, warnings });
     }
 
-    // Load flowchart to get collectionFrequency and emission factors
-    const flowchart = await Flowchart.findById(matched.flowchartId).lean();
+    // Load scope from Flowchart or ProcessFlowchart to get collectionFrequency and emission factors
+    const scopeEFData = await fetchScopeEFData(
+      matched.flowchartId,
+      matched.processFlowchartId,
+      matched.nodeId,
+      matched.scopeIdentifier
+    );
     let weeksInPeriod = 52; // default annual
     let efLookup = () => 0;
-    if (flowchart) {
-      const node = (flowchart.nodes || []).find(n => n.id === matched.nodeId);
-      const scope = (node?.details?.scopeDetails || []).find(s => s.scopeIdentifier === matched.scopeIdentifier);
-      if (scope) {
-        const freq = scope.employeeCommutingConfig?.collectionFrequency;
-        if (freq) weeksInPeriod = weeksForFrequency(freq);
-        efLookup = buildEFLookup(scope.emissionFactors || []);
-      }
+    if (scopeEFData.found) {
+      if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
+      efLookup = buildEFLookup(scopeEFData.emissionFactors);
     }
 
     const { analyticsData, ...calcData } = req.body;
@@ -1032,18 +1034,18 @@ async function submitAnonymousSurvey(req, res) {
       return res.status(422).json({ message: 'Validation failed.', errors, warnings });
     }
 
-    // Load flowchart for collectionFrequency and emission factors
-    const flowchart = await Flowchart.findById(codeDoc.flowchartId).lean();
+    // Load scope from Flowchart or ProcessFlowchart to get collectionFrequency and emission factors
+    const scopeEFData = await fetchScopeEFData(
+      codeDoc.flowchartId,
+      codeDoc.processFlowchartId,
+      codeDoc.nodeId,
+      codeDoc.scopeIdentifier
+    );
     let weeksInPeriod = 52;
     let efLookup = () => 0;
-    if (flowchart) {
-      const node = (flowchart.nodes || []).find(n => n.id === codeDoc.nodeId);
-      const scope = (node?.details?.scopeDetails || []).find(s => s.scopeIdentifier === codeDoc.scopeIdentifier);
-      if (scope) {
-        const freq = scope.employeeCommutingConfig?.collectionFrequency;
-        if (freq) weeksInPeriod = weeksForFrequency(freq);
-        efLookup = buildEFLookup(scope.emissionFactors || []);
-      }
+    if (scopeEFData.found) {
+      if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
+      efLookup = buildEFLookup(scopeEFData.emissionFactors);
     }
 
     const response = new SurveyResponse({
