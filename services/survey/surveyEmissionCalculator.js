@@ -99,22 +99,31 @@ function getEmissionFactor(modeCode, vehicleType, fuelType, efValue) {
 
 /**
  * Extract the numeric kg CO2e per km value from one emissionFactors[] entry.
- * Applies the conversionFactor if present (defaults to 1 if absent or zero).
+ *
+ * Resolution order:
+ *   1. entry.valueKgCO2ePerKm  — pre-computed and stored by the API at save time (fastest path)
+ *   2. Source-specific raw data — fallback when the pre-computed field is absent
  *
  * For DEFRA/IPCC/EPA the ghgUnits array may contain separate rows for CO2,
- * CH4, N2O, and CO2e. This function searches for the CO2e row (unit field
- * contains 'co2e', case-insensitive) and falls back to index [0] if none found.
+ * CH4, N2O, and CO2e. This searches for the CO2e row (unit contains 'co2e',
+ * case-insensitive) and falls back to index [0] if none is labelled CO2e.
  *
  * @param {object} entry  – one item from scope.emissionFactors[]
- * @returns {number|null}  – numeric value, or null if it cannot be determined
+ * @returns {number|null}  – numeric value in kg CO2e per km, or null
  */
 function extractEFValue(entry) {
-  if (!entry || !entry.source) return null;
+  if (!entry) return null;
+
+  // ── Fast path: pre-computed field set by the API ────────────────────────────
+  if (typeof entry.valueKgCO2ePerKm === 'number' && entry.valueKgCO2ePerKm >= 0) {
+    return entry.valueKgCO2ePerKm;
+  }
+
+  if (!entry.source) return null;
 
   const cf = (v) => (typeof v === 'number' && v > 0 ? v : 1);
 
   // Find the CO2e row in a ghgUnits / ghgUnitsEPA array.
-  // Prefers the entry whose unit string contains 'co2e'; falls back to [0].
   function findCO2eUnit(arr) {
     if (!Array.isArray(arr) || arr.length === 0) return null;
     const hit = arr.find(u => typeof u.unit === 'string' && u.unit.toLowerCase().includes('co2e'));
@@ -127,7 +136,6 @@ function extractEFValue(entry) {
       if (!d) return null;
       const v = typeof d.CO2e === 'number' ? d.CO2e : null;
       if (v === null) return null;
-      // Prefer CO2e_conversionFactor (schema-native field); fall back to generic conversionFactor
       const convFactor = (typeof d.CO2e_conversionFactor === 'number' && d.CO2e_conversionFactor > 0)
         ? d.CO2e_conversionFactor
         : d.conversionFactor;
@@ -150,18 +158,6 @@ function extractEFValue(entry) {
       if (!unit) return null;
       const v = typeof unit.ghgconversionFactor === 'number' ? unit.ghgconversionFactor : null;
       return v !== null ? v * cf(unit.conversionFactor) : null;
-    }
-    case 'Country': {
-      const d = entry.countryData;
-      if (!d) return null;
-      // Prefer the latest yearlyValues entry if available
-      if (Array.isArray(d.yearlyValues) && d.yearlyValues.length > 0) {
-        const latest = d.yearlyValues[d.yearlyValues.length - 1];
-        const v = typeof latest.value === 'number' ? latest.value : null;
-        return v !== null ? v * cf(latest.conversionFactor) : null;
-      }
-      const v = typeof d.emissionFactor === 'number' ? d.emissionFactor : null;
-      return v !== null ? v * cf(d.conversionFactor) : null;
     }
     case 'EmissionFactorHub': {
       const d = entry.emissionFactorHubData;
