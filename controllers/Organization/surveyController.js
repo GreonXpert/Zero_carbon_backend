@@ -900,7 +900,7 @@ async function submitUniqueSurvey(req, res) {
     let efLookup = () => 0;
     if (scopeEFData.found) {
       if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
-      efLookup = buildEFLookup(scopeEFData.emissionFactors);
+      efLookup = buildEFLookup(scopeEFData.employeeCommutingEmissionFactors);
     }
 
     const { analyticsData, ...calcData } = req.body;
@@ -1045,7 +1045,7 @@ async function submitAnonymousSurvey(req, res) {
     let efLookup = () => 0;
     if (scopeEFData.found) {
       if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
-      efLookup = buildEFLookup(scopeEFData.emissionFactors);
+      efLookup = buildEFLookup(scopeEFData.employeeCommutingEmissionFactors);
     }
 
     const response = new SurveyResponse({

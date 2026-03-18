@@ -68,11 +68,11 @@ const _pfDetectAndRecordEFChanges = (prevScopesArr, newScopesArr, changedByUserI
       scope.calculationModel === 'tier 2'
     );
     if (!isECTier2) continue;
-    if (!Array.isArray(scope.emissionFactors)) continue;
+    if (!Array.isArray(scope.employeeCommutingEmissionFactors)) continue;
 
     const prev = prevMap.get(scope.scopeIdentifier);
-    const previousEFs = prev?.emissionFactors ?? [];
-    const newEFs = scope.emissionFactors;
+    const previousEFs = prev?.employeeCommutingEmissionFactors ?? [];
+    const newEFs = scope.employeeCommutingEmissionFactors;
 
     if (_pfEmissionFactorsChanged(previousEFs, newEFs)) {
       scope.emissionFactorHistory = [
@@ -1056,7 +1056,7 @@ const getProcessFlowchart = async (req, res) => {
             scopeType: s.scopeType,
             inputType: s.inputType || s.dataCollectionType
           })),
-          emissionFactors: undefined,
+          employeeCommutingEmissionFactors: undefined,
           gwp: undefined,
           calculations: undefined,
           formulas: undefined

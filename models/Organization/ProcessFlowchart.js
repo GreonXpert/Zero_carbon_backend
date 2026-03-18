@@ -501,7 +501,7 @@ deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Each entry stores structured source data (DEFRA / IPCC / EPA / Custom /
   // EmissionFactorHub) plus a pre-computed valueKgCO2ePerKm that the emission
   // calculator reads directly — avoiding repeated raw-data extraction.
-  emissionFactors: [{
+  employeeCommutingEmissionFactors: [{
     // ── Transport mode identifiers ────────────────────────────────────────────
     modeCode: {
       type: String,
@@ -626,7 +626,7 @@ deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   }],
 
   // ─── Emission Factor History (audit trail within scope detail) ─────────────
-  // A record is appended each time emissionFactors changes.
+  // A record is appended each time employeeCommutingEmissionFactors changes.
   // Also mirrored to AuditLog via logProcessFlowEmissionFactorUpdate().
   emissionFactorHistory: [{
     previousEmissionFactors: { type: mongoose.Schema.Types.Mixed },
