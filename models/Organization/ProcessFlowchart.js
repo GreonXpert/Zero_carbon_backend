@@ -498,6 +498,38 @@ deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // and the corresponding data. Existing single emissionFactor/emissionFactorValues
   // fields are preserved for backwards compatibility with other scopes.
   emissionFactors: [{
+    // Transport mode identifier — which mode/vehicle/fuel this factor applies to.
+    // modeCode is required; vehicleType and fuelType are optional (empty = applies to all).
+    modeCode: {
+      type: String,
+      enum: [
+        'PRIVATE_CAR', 'PRIVATE_MOTORCYCLE', 'PRIVATE_VAN', 'CARPOOL',
+        'BUS_PUBLIC', 'BUS_PRIVATE_SHUTTLE', 'METRO_SUBWAY', 'COMMUTER_RAIL',
+        'LIGHT_RAIL_TRAM', 'FERRY', 'TAXI', 'RIDE_HAIL', 'E_SCOOTER_SHARED',
+        'BICYCLE', 'E_BICYCLE', 'WALKING', 'OTHER_MOTORIZED', 'OTHER_NON_MOTORIZED', '',
+      ],
+      default: ''
+    },
+    vehicleType: {
+      type: String,
+      enum: [
+        'SMALL_CAR', 'MEDIUM_CAR', 'LARGE_CAR', 'SUV',
+        'ELECTRIC_CAR', 'HYBRID_CAR_HEV', 'PHEV_CAR',
+        'SMALL_MOTORCYCLE', 'MEDIUM_MOTORCYCLE', 'LARGE_MOTORCYCLE',
+        'SMALL_VAN', 'LARGE_VAN', 'OTHER', '',
+      ],
+      default: ''  // empty = applies to all vehicle types for this mode
+    },
+    fuelType: {
+      type: String,
+      enum: [
+        'PETROL', 'DIESEL', 'CNG', 'LPG', 'ELECTRIC',
+        'HYBRID_PETROL', 'HYBRID_DIESEL',
+        'PLUG_IN_HYBRID_PETROL', 'PLUG_IN_HYBRID_DIESEL',
+        'HYDROGEN', 'BIOFUEL', 'UNKNOWN', '',
+      ],
+      default: ''  // empty = applies to all fuel types for this mode
+    },
     source: {
       type: String,
       enum: ['IPCC', 'DEFRA', 'EPA', 'EmissionFactorHub', 'Custom', 'Country', ''],

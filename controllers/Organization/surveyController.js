@@ -26,7 +26,10 @@ const {
   validateSurveyResponse,
   calculateResponseEmissions,
   weeksForFrequency,
+  buildEFLookup,
 } = require('../../services/survey/surveyEmissionCalculator');
+
+const { fetchScopeEFData } = require('../../services/survey/surveyEFHelper');
 
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
 
@@ -886,14 +889,18 @@ async function submitUniqueSurvey(req, res) {
       return res.status(422).json({ message: 'Validation failed.', errors, warnings });
     }
 
-    // Load flowchart to get collectionFrequency for emission calculation
-    const flowchart = await Flowchart.findById(matched.flowchartId).lean();
+    // Load scope from Flowchart or ProcessFlowchart to get collectionFrequency and emission factors
+    const scopeEFData = await fetchScopeEFData(
+      matched.flowchartId,
+      matched.processFlowchartId,
+      matched.nodeId,
+      matched.scopeIdentifier
+    );
     let weeksInPeriod = 52; // default annual
-    if (flowchart) {
-      const node = (flowchart.nodes || []).find(n => n.id === matched.nodeId);
-      const scope = (node?.details?.scopeDetails || []).find(s => s.scopeIdentifier === matched.scopeIdentifier);
-      const freq = scope?.employeeCommutingConfig?.collectionFrequency;
-      if (freq) weeksInPeriod = weeksForFrequency(freq);
+    let efLookup = () => 0;
+    if (scopeEFData.found) {
+      if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
+      efLookup = buildEFLookup(scopeEFData.emissionFactors);
     }
 
     const { analyticsData, ...calcData } = req.body;
@@ -933,7 +940,7 @@ async function submitUniqueSurvey(req, res) {
     });
 
     // Calculate emissions
-    const { emissionsKgCO2e, breakdown } = calculateResponseEmissions(response, weeksInPeriod, () => 0);
+    const { emissionsKgCO2e, breakdown } = calculateResponseEmissions(response, weeksInPeriod, efLookup);
     response.calculatedEmissions = emissionsKgCO2e;
     response.calculationBreakdown = breakdown;
 
@@ -1027,14 +1034,18 @@ async function submitAnonymousSurvey(req, res) {
       return res.status(422).json({ message: 'Validation failed.', errors, warnings });
     }
 
-    // Load flowchart for emission factor / frequency context
-    const flowchart = await Flowchart.findById(codeDoc.flowchartId).lean();
+    // Load scope from Flowchart or ProcessFlowchart to get collectionFrequency and emission factors
+    const scopeEFData = await fetchScopeEFData(
+      codeDoc.flowchartId,
+      codeDoc.processFlowchartId,
+      codeDoc.nodeId,
+      codeDoc.scopeIdentifier
+    );
     let weeksInPeriod = 52;
-    if (flowchart) {
-      const node = (flowchart.nodes || []).find(n => n.id === codeDoc.nodeId);
-      const scope = (node?.details?.scopeDetails || []).find(s => s.scopeIdentifier === codeDoc.scopeIdentifier);
-      const freq = scope?.employeeCommutingConfig?.collectionFrequency;
-      if (freq) weeksInPeriod = weeksForFrequency(freq);
+    let efLookup = () => 0;
+    if (scopeEFData.found) {
+      if (scopeEFData.collectionFrequency) weeksInPeriod = weeksForFrequency(scopeEFData.collectionFrequency);
+      efLookup = buildEFLookup(scopeEFData.emissionFactors);
     }
 
     const response = new SurveyResponse({
@@ -1067,7 +1078,7 @@ async function submitAnonymousSurvey(req, res) {
       surveyVersion: SURVEY_VERSION,
     });
 
-    const { emissionsKgCO2e, breakdown } = calculateResponseEmissions(response, weeksInPeriod, () => 0);
+    const { emissionsKgCO2e, breakdown } = calculateResponseEmissions(response, weeksInPeriod, efLookup);
     response.calculatedEmissions = emissionsKgCO2e;
     response.calculationBreakdown = breakdown;
 
