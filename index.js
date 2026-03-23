@@ -169,7 +169,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
 
-app.use('/api', apiKeyRoutes);
+app.use('/api/api-keys-mgmt', apiKeyRoutes);
 app.use('/api/tickets', ticketRoutes);
 
 // Survey routes (Tier-2 Employee Commuting)

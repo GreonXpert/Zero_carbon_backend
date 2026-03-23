@@ -927,8 +927,8 @@ async function submitUniqueSurvey(req, res) {
       tripType: calcData.tripType ?? null,
       isMixedMode: calcData.isMixedMode ?? null,
       primaryModeCode: calcData.primaryModeCode ?? null,
-      vehicleType: calcData.vehicleType ?? null,
-      fuelType: calcData.fuelType ?? null,
+      vehicleType: calcData.vehicleType || null,
+      fuelType:    calcData.fuelType    || null,
       occupancy: calcData.occupancy ?? null,
       legs: calcData.legs || [],
       // Analytics only

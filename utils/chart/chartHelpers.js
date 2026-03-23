@@ -165,8 +165,10 @@ const normalizeScopeDetail = (scope) => {
   }
 
   // ── Multiple emission factors (EC Tier 2) ─────────────────────────────────────
-  if (Array.isArray(scope.employeeCommutingEmissionFactors)) {
-    normalizedScope.employeeCommutingEmissionFactors = scope.employeeCommutingEmissionFactors;
+  // Accept both the new field name and the old alias (emissionFactors) for backwards compatibility
+  const ecEFs = scope.employeeCommutingEmissionFactors ?? scope.emissionFactors;
+  if (Array.isArray(ecEFs)) {
+    normalizedScope.employeeCommutingEmissionFactors = ecEFs;
   }
 
   // ── Preserve emissionFactorHistory (append-only; controller manages this) ─────

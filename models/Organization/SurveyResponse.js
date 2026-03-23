@@ -65,7 +65,7 @@ const SurveyResponseSchema = new mongoose.Schema(
 
     // unique mode — ref to the SurveyLink
     surveyLinkId: { type: mongoose.Schema.Types.ObjectId, ref: 'SurveyLink', default: null },
-    recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    recipientId: { type: String, default: null },
 
     // anonymous mode — stores the human-readable code label (no identity linkage)
     anonymousCodeId: { type: String, default: null },
@@ -103,10 +103,10 @@ const SurveyResponseSchema = new mongoose.Schema(
     primaryModeCode: { type: String, enum: TRANSPORT_MODES, default: null },
 
     // ─── Q9: Vehicle type (CALC_CRITICAL) ─────────────────────────────────────
-    vehicleType: { type: String, enum: [...VEHICLE_TYPES, null], default: null },
+    vehicleType: { type: String, enum: [...VEHICLE_TYPES, null, ''], default: null },
 
     // ─── Q10: Fuel type (CALC_CRITICAL) ───────────────────────────────────────
-    fuelType: { type: String, enum: [...FUEL_TYPES, null], default: null },
+    fuelType:    { type: String, enum: [...FUEL_TYPES, null, ''],   default: null },
 
     // ─── Q11: Occupancy (CALC_CRITICAL) ───────────────────────────────────────
     occupancy: { type: Number, min: 1, max: 10, default: null },

@@ -279,7 +279,10 @@ const MODES_NEEDING_VEHICLE_TYPE = new Set([
 const MOTORIZED_MODES = new Set([
   'PRIVATE_CAR', 'PRIVATE_MOTORCYCLE', 'PRIVATE_VAN', 'CARPOOL',
   'BUS_PUBLIC', 'BUS_PRIVATE_SHUTTLE', 'TAXI', 'RIDE_HAIL',
-  'OTHER_MOTORIZED', 'METRO_SUBWAY', 'COMMUTER_RAIL', 'LIGHT_RAIL_TRAM', 'FERRY',
+  'OTHER_MOTORIZED',
+  // REMOVED: 'METRO_SUBWAY', 'COMMUTER_RAIL', 'LIGHT_RAIL_TRAM', 'FERRY'
+  // Rail/metro/ferry fuel type is determined by the emission factor config,
+  // not by the employee respondent — no fuelType required from the user.
 ]);
 
 // Q11 condition: occupancy required when primary mode is one of these

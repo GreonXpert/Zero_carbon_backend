@@ -31,6 +31,27 @@ const {
 } = require('../../controllers/Organization/surveyController');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Public router  (prefix: /api/survey)
+// No auth middleware — respondents access these via their survey link/code.
+// ─────────────────────────────────────────────────────────────────────────────
+const surveyPublicRouter = express.Router();
+
+surveyPublicRouter.use((req, res, next) => {
+  console.log('[PUBLIC SURVEY ROUTER HIT]', req.method, req.path);
+  next();
+});
+
+
+// Unique mode
+surveyPublicRouter.get('/resolve/:token',    resolveUniqueToken);
+surveyPublicRouter.patch('/autosave/:token', saveUniqueAutosave);
+surveyPublicRouter.post('/submit/:token',    submitUniqueSurvey);
+
+// Anonymous mode
+surveyPublicRouter.post('/anonymous/resolve', resolveAnonymousCode);
+surveyPublicRouter.post('/anonymous/submit',  submitAnonymousSurvey);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Authenticated router  (prefix: /api/surveys)
 // ─────────────────────────────────────────────────────────────────────────────
 const surveyAuthRouter = express.Router();
@@ -57,19 +78,6 @@ surveyAuthRouter.get('/:clientId/export',                               exportSu
 surveyAuthRouter.patch('/:clientId/links/:linkId/invalidate',          invalidateSurveyLink);
 surveyAuthRouter.post('/:clientId/links/:linkId/resend',               resendSurveyLink);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public router  (prefix: /api/survey)
-// No auth middleware — respondents access these via their survey link/code.
-// ─────────────────────────────────────────────────────────────────────────────
-const surveyPublicRouter = express.Router();
 
-// Unique mode
-surveyPublicRouter.get('/resolve/:token',    resolveUniqueToken);
-surveyPublicRouter.patch('/autosave/:token', saveUniqueAutosave);
-surveyPublicRouter.post('/submit/:token',    submitUniqueSurvey);
-
-// Anonymous mode
-surveyPublicRouter.post('/anonymous/resolve', resolveAnonymousCode);
-surveyPublicRouter.post('/anonymous/submit',  submitAnonymousSurvey);
 
 module.exports = { surveyAuthRouter, surveyPublicRouter };
