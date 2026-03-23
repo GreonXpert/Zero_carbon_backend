@@ -22,7 +22,7 @@ const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
  * @param {string} nodeId
  * @param {string} scopeIdentifier
  * @returns {Promise<{
- *   emissionFactors: Array,
+ *   employeeCommutingEmissionFactors: Array,
  *   collectionFrequency: string|null,
  *   found: boolean
  * }>}
@@ -39,13 +39,13 @@ async function fetchScopeEFData(flowchartId, processFlowchartId, nodeId, scopeId
 
   // ── 2. Guard: document not found or no ID provided ─────────────────────────
   if (!doc) {
-    return { emissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
   }
 
   // ── 3. Locate the node ──────────────────────────────────────────────────────
   const node = (doc.nodes || []).find(n => n.id === nodeId);
   if (!node) {
-    return { emissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
   }
 
   // ── 4. Locate the scope detail ─────────────────────────────────────────────
@@ -53,12 +53,12 @@ async function fetchScopeEFData(flowchartId, processFlowchartId, nodeId, scopeId
     s => s.scopeIdentifier === scopeIdentifier
   );
   if (!scope) {
-    return { emissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
   }
 
   // ── 5. Return what the calculator needs ────────────────────────────────────
   return {
-    emissionFactors: scope.emissionFactors || [],
+    employeeCommutingEmissionFactors: scope.employeeCommutingEmissionFactors || [],
     collectionFrequency: scope.employeeCommutingConfig?.collectionFrequency || null,
     found: true,
   };

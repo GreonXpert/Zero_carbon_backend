@@ -63,11 +63,11 @@ const _detectAndRecordEFChanges = (prevScopesArr, newScopesArr, changedByUserId)
       scope.calculationModel === 'tier 2'
     );
     if (!isECTier2) continue;
-    if (!Array.isArray(scope.emissionFactors)) continue;
+    if (!Array.isArray(scope.employeeCommutingEmissionFactors)) continue;
 
     const prev = prevMap.get(scope.scopeIdentifier);
-    const previousEFs = prev?.emissionFactors ?? [];
-    const newEFs = scope.emissionFactors;
+    const previousEFs = prev?.employeeCommutingEmissionFactors ?? [];
+    const newEFs = scope.employeeCommutingEmissionFactors;
 
     if (_emissionFactorsChanged(previousEFs, newEFs)) {
       scope.emissionFactorHistory = [
