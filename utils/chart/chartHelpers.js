@@ -193,7 +193,14 @@ const normalizeScopeDetail = (scope) => {
                             rawCV.defaultRecyclingRate ??
                             rawCV.defaultRecylingRate ?? // common typo accepted
                             rawCV.defaultRecycleRate
-                          )
+                          ),
+    averageLifetimeEnergyConsumption: numOrNull(rawCV.averageLifetimeEnergyConsumption),
+    usePattern:               numOrNull(rawCV.usePattern),
+    energyEfficiency:         numOrNull(rawCV.energyEfficiency),
+    percentageToIncineration: numOrNull(rawCV.percentageToIncineration),
+    percentageToLandfill:     numOrNull(rawCV.percentageToLandfill),
+    percentageToDisposal:     numOrNull(rawCV.percentageToDisposal),
+    equitySharePercentage:    numOrNull(rawCV.equitySharePercentage),
   };
 
 // Handle custom emission factor
