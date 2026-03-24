@@ -17,6 +17,7 @@ const {
   getSurveySchedule,
   getSurveyStatistics,
   cancelSurvey,
+  finalizeSurvey,
   getSurveyResponses,
   getResponseRates,
   invalidateSurveyLink,
@@ -68,6 +69,9 @@ surveyAuthRouter.get('/:clientId/cycles/:cycleIndex/statistics',        getSurve
 
 // Cancel a cycle
 surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/cancel',           cancelSurvey);
+
+// Finalize a cycle (close + average-fill for non-respondents)
+surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/finalize',         finalizeSurvey);
 
 // Response data
 surveyAuthRouter.get('/:clientId/responses',                            getSurveyResponses);

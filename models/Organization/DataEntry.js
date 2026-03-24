@@ -349,6 +349,11 @@ const DataEntrySchema = new mongoose.Schema({
   tags: [String],
   notes: String,
   externalId: String, // For external system integration
+  // Survey-specific: true when pending responses were filled using average extrapolation
+  isFinalizedWithAverage: {
+    type: Boolean,
+    default: false,
+  },
 },
 {
   timestamps: true,

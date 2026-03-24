@@ -3,6 +3,7 @@
 const DataEntry = require('../../models/Organization/DataEntry');
 const Flowchart = require('../../models/Organization/Flowchart');
 const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
+const SurveyResponse = require('../../models/Organization/SurveyResponse');
 const Client = require('../../models/CMS/Client'); 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 const {
@@ -2357,9 +2358,196 @@ const getEmissionSummary = async (req, res) => {
   }
 };
 
+// ─── SURVEY EMISSION AGGREGATION HELPERS ────────────────────────────────────
+
+/**
+ * Derive a period timestamp and summaryPeriod from a collectionFrequency + cycleDate.
+ * @param {string} collectionFrequency  'monthly'|'quarterly'|'half-yearly'|'annually'
+ * @param {Date|string} cycleDate
+ * @param {number} reportingYear
+ * @returns {{ timestamp: Date, periodMonth: number, periodYear: number }}
+ */
+function deriveSurveyPeriod(collectionFrequency, cycleDate, reportingYear) {
+  const d = new Date(cycleDate);
+  const year = isNaN(d.getFullYear()) ? reportingYear : d.getFullYear();
+  const month = d.getMonth() + 1; // 1-12
+
+  switch (collectionFrequency) {
+    case 'monthly':
+      return { timestamp: new Date(year, month - 1, 1), periodMonth: month, periodYear: year };
+    case 'quarterly': {
+      const qStart = Math.floor((month - 1) / 3) * 3 + 1;
+      return { timestamp: new Date(year, qStart - 1, 1), periodMonth: qStart, periodYear: year };
+    }
+    case 'half-yearly': {
+      const hStart = month <= 6 ? 1 : 7;
+      return { timestamp: new Date(year, hStart - 1, 1), periodMonth: hStart, periodYear: year };
+    }
+    case 'annually':
+    default:
+      return { timestamp: new Date(reportingYear, 0, 1), periodMonth: 1, periodYear: reportingYear };
+  }
+}
+
+/**
+ * Format a Date as "DD:MM:YYYY" (DataEntry's date field format).
+ */
+function formatDateDDMMYYYY(date) {
+  const d = new Date(date);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}:${mm}:${yyyy}`;
+}
+
+/**
+ * Aggregate all calculatedEmissions for a cycle and upsert a DataEntry document.
+ * Called fire-and-forget after every survey submission (unique or anonymous).
+ *
+ * @param {{ clientId, nodeId, scopeIdentifier, cycleIndex, cycleDate,
+ *           reportingYear, flowchartId, collectionFrequency }} params
+ */
+async function aggregateAndSaveSurveyEmissions({
+  clientId, nodeId, scopeIdentifier, cycleIndex,
+  cycleDate, reportingYear, flowchartId, collectionFrequency,
+}) {
+  try {
+    // 1. Fetch all submitted responses for this cycle
+    const responses = await SurveyResponse.find(
+      { clientId, scopeIdentifier, cycleIndex },
+      { calculatedEmissions: 1 }
+    ).lean();
+
+    const submittedCount = responses.length;
+    const sumActual = responses.reduce((s, r) => s + (Number(r.calculatedEmissions) || 0), 0);
+
+    // 2. Derive time period
+    const period = deriveSurveyPeriod(collectionFrequency || 'annually', cycleDate, reportingYear);
+
+    // 3. Upsert one DataEntry per cycle (keyed by externalId)
+    const externalId = `survey_cycle_${cycleIndex}`;
+    const filter = { clientId, nodeId, scopeIdentifier, isSummary: true, externalId };
+
+    await DataEntry.findOneAndUpdate(
+      filter,
+      {
+        $set: {
+          scopeType: 'Scope 3',
+          inputType: 'manual',
+          isSummary: true,
+          externalId,
+          timestamp: period.timestamp,
+          date: formatDateDDMMYYYY(period.timestamp),
+          summaryPeriod: { year: period.periodYear, month: period.periodMonth },
+          dataValues: new Map([['totalEmployeeCommutingKgCO2e', sumActual]]),
+          'emissionsSummary.totalCO2e': sumActual,
+          'emissionsSummary.unit': 'kgCO2e',
+          processingStatus: 'processed',
+          emissionCalculationStatus: 'completed',
+          emissionCalculatedAt: new Date(),
+          lastCalculated: new Date(),
+          'sourceDetails.dataSource': 'employee_commuting_survey_tier2',
+          isFinalizedWithAverage: false,
+          notes: `Actual: ${submittedCount} response(s), running sum: ${sumActual.toFixed(4)} kgCO2e.`,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`[aggregateAndSaveSurveyEmissions] cycle=${cycleIndex} scope=${scopeIdentifier} submissions=${submittedCount} sum=${sumActual}`);
+  } catch (err) {
+    console.error('[aggregateAndSaveSurveyEmissions] error:', err.message);
+    throw err; // let caller handle with .catch()
+  }
+}
+
+/**
+ * Finalize a survey cycle by applying average-fill for non-respondents.
+ *
+ * Formula:
+ *   pendingCount    = totalLinks − submittedCount
+ *   averageEmission = sumActual / submittedCount  (0 if none submitted)
+ *   pendingEmission = averageEmission × pendingCount
+ *   finalTotal      = sumActual + pendingEmission
+ *
+ * Upserts the same per-cycle DataEntry with the finalTotal and marks it
+ * isFinalizedWithAverage = true.
+ *
+ * @param {{ clientId, nodeId, scopeIdentifier, cycleIndex, cycleDate,
+ *           reportingYear, flowchartId, collectionFrequency, totalLinks }} params
+ * @returns {{ submittedCount, pendingCount, averageEmission, pendingEmission, finalTotal }}
+ */
+async function finalizeCycleEmissions({
+  clientId, nodeId, scopeIdentifier, cycleIndex,
+  cycleDate, reportingYear, flowchartId, collectionFrequency, totalLinks,
+}) {
+  // 1. Fetch all submitted responses
+  const responses = await SurveyResponse.find(
+    { clientId, scopeIdentifier, cycleIndex },
+    { calculatedEmissions: 1 }
+  ).lean();
+
+  const submittedCount = responses.length;
+  const sumActual = responses.reduce((s, r) => s + (Number(r.calculatedEmissions) || 0), 0);
+
+  // 2. Average-fill arithmetic
+  const total = Number(totalLinks) || 0;
+  const pendingCount = Math.max(0, total - submittedCount);
+  const averageEmission = submittedCount > 0 ? sumActual / submittedCount : 0;
+  const pendingEmission = averageEmission * pendingCount;
+  const finalTotal = sumActual + pendingEmission;
+
+  // 3. Derive time period
+  const period = deriveSurveyPeriod(collectionFrequency || 'annually', cycleDate, reportingYear);
+
+  // 4. Upsert DataEntry with finalized total
+  const externalId = `survey_cycle_${cycleIndex}`;
+  const filter = { clientId, nodeId, scopeIdentifier, isSummary: true, externalId };
+
+  const notesText =
+    `Finalized: ${submittedCount}/${total} responses. ` +
+    `Actual: ${sumActual.toFixed(4)} kgCO2e. ` +
+    `Extrapolated ${pendingCount} pending @ avg ${averageEmission.toFixed(4)} kgCO2e = ${pendingEmission.toFixed(4)} kgCO2e. ` +
+    `Final total: ${finalTotal.toFixed(4)} kgCO2e.`;
+
+  await DataEntry.findOneAndUpdate(
+    filter,
+    {
+      $set: {
+        scopeType: 'Scope 3',
+        inputType: 'manual',
+        isSummary: true,
+        externalId,
+        timestamp: period.timestamp,
+        date: formatDateDDMMYYYY(period.timestamp),
+        summaryPeriod: { year: period.periodYear, month: period.periodMonth },
+        dataValues: new Map([['totalEmployeeCommutingKgCO2e', finalTotal]]),
+        'emissionsSummary.totalCO2e': finalTotal,
+        'emissionsSummary.unit': 'kgCO2e',
+        processingStatus: 'processed',
+        emissionCalculationStatus: 'completed',
+        emissionCalculatedAt: new Date(),
+        lastCalculated: new Date(),
+        'sourceDetails.dataSource': 'employee_commuting_survey_tier2',
+        isFinalizedWithAverage: pendingCount > 0,
+        notes: notesText,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  console.log(`[finalizeCycleEmissions] cycle=${cycleIndex} scope=${scopeIdentifier} submitted=${submittedCount} pending=${pendingCount} final=${finalTotal}`);
+
+  return { submittedCount, pendingCount, averageEmission, pendingEmission, finalTotal };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 module.exports = {
   calculateEmissions,
   calculateBatchEmissions,
   saveCalculatedEmissions,
-  getEmissionSummary
+  getEmissionSummary,
+  aggregateAndSaveSurveyEmissions,
+  finalizeCycleEmissions,
 };

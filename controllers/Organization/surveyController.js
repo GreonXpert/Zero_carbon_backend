@@ -32,6 +32,10 @@ const {
 const { fetchScopeEFData } = require('../../services/survey/surveyEFHelper');
 
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
+const {
+  aggregateAndSaveSurveyEmissions,
+  finalizeCycleEmissions,
+} = require('../Calculation/emissionCalculationController');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const SURVEY_VERSION = '1.0';
@@ -154,7 +158,7 @@ async function generateSurveyLinks(req, res) {
     }
 
     const reportingYear = new Date(collectionDates[0]).getFullYear();
-    const expiresAt = calculateLinkExpiry(linkExpiryDays);
+    // Note: per-employee expiresAt is computed inside the employee loop below.
 
     const createdLinks = []; // { cycleIndex, cycleDate, employeeId, employeeName, token, surveyLinkId }
 
@@ -187,6 +191,10 @@ async function generateSurveyLinks(req, res) {
       }
 
       for (const emp of employees) {
+        // Per-employee expiry: use emp.linkExpiryDays if provided, else fall back to global default
+        const empExpiryDays = (emp.linkExpiryDays != null) ? emp.linkExpiryDays : linkExpiryDays;
+        const expiresAt = calculateLinkExpiry(empExpiryDays);
+
         const token = generateSurveyToken();
         const hash = await hashToken(token);
         const prefix = tokenPrefix(token);
@@ -244,6 +252,7 @@ async function generateSurveyLinks(req, res) {
           token,            // Plaintext — caller must distribute this securely
           surveyLinkId: link._id,
           status: 'pending',
+          expiresAt,        // Per-employee expiry date
         });
       }
     }
@@ -276,7 +285,7 @@ async function generateAnonymousCodes(req, res) {
       return res.status(403).json({ message: 'Access denied for this client.' });
     }
 
-    const { flowchartId, nodeId, scopeIdentifier, departmentName = 'GEN', clientShortName } = req.body;
+    const { flowchartId, nodeId, scopeIdentifier, departmentName = 'GEN', clientShortName, codeExpiryDays = 30 } = req.body;
     if (!flowchartId || !nodeId || !scopeIdentifier) {
       return res.status(400).json({ message: 'flowchartId, nodeId, scopeIdentifier are required.' });
     }
@@ -308,6 +317,7 @@ async function generateAnonymousCodes(req, res) {
 
     const shortName = clientShortName || clientId.substring(0, 8).toUpperCase();
     const reportingYear = new Date(collectionDates[0]).getFullYear();
+    const expiresAt = calculateLinkExpiry(codeExpiryDays);
     const batchSummary = [];
 
     for (let cycleIndex = 0; cycleIndex < collectionDates.length; cycleIndex++) {
@@ -358,6 +368,7 @@ async function generateAnonymousCodes(req, res) {
               anonymousCodeId: codeLabel,
               codeHash: hash,
               isRedeemed: false,
+              expiresAt,
               createdBy: req.user._id,
             },
           },
@@ -367,7 +378,7 @@ async function generateAnonymousCodes(req, res) {
         codes.push(codeLabel);
       }
 
-      batchSummary.push({ cycleIndex, cycleDate, batchId, codeCount: codes.length, codes });
+      batchSummary.push({ cycleIndex, cycleDate, batchId, codeCount: codes.length, codes, expiresAt });
     }
 
     return res.status(200).json({
@@ -508,8 +519,22 @@ async function cancelSurvey(req, res) {
     cycle.cancelledBy = req.user._id;
     await cycle.save();
 
+    // Auto-finalize: average-fill for non-respondents
+    const efData = await fetchScopeEFData(cycle.flowchartId, cycle.processFlowchartId, cycle.nodeId, scopeIdentifier);
+    finalizeCycleEmissions({
+      clientId,
+      nodeId: cycle.nodeId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+      cycleDate: cycle.cycleDate,
+      reportingYear: cycle.reportingYear,
+      flowchartId: cycle.flowchartId,
+      collectionFrequency: efData.collectionFrequency || 'annually',
+      totalLinks: cycle.totalLinks || 0,
+    }).catch(err => console.error('finalizeCycleEmissions error (cancelSurvey):', err));
+
     return res.status(200).json({
-      message: 'Survey cycle cancelled.',
+      message: 'Survey cycle cancelled. Average-fill finalization triggered for non-respondents.',
       expiredLinks: modifiedCount,
       cycle: { status: cycle.status, cancelledAt: cycle.cancelledAt },
     });
@@ -956,10 +981,23 @@ async function submitUniqueSurvey(req, res) {
     // Refresh cycle stats
     await refreshCycleStats(matched.clientId, matched.scopeIdentifier, matched.cycleIndex, 'unique');
 
+    // Aggregate and persist running survey emissions to DataEntry (fire-and-forget)
+    aggregateAndSaveSurveyEmissions({
+      clientId: matched.clientId,
+      nodeId: matched.nodeId,
+      scopeIdentifier: matched.scopeIdentifier,
+      cycleIndex: matched.cycleIndex,
+      cycleDate: matched.cycleDate,
+      reportingYear: matched.reportingYear,
+      flowchartId: matched.flowchartId,
+      collectionFrequency: scopeEFData.collectionFrequency || 'annually',
+    }).catch(err => console.error('aggregateAndSaveSurveyEmissions error (unique):', err));
+
     return res.status(201).json({
       message: 'Survey response submitted successfully.',
       responseId: response._id,
       calculatedEmissions: emissionsKgCO2e,
+      calculationBreakdown: breakdown,
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (err) {
@@ -985,6 +1023,11 @@ async function resolveAnonymousCode(req, res) {
 
     if (codeDoc.isRedeemed) {
       return res.status(409).json({ message: 'This code has already been used. Anonymous surveys cannot be resumed.' });
+    }
+
+    // Check expiry
+    if (codeDoc.expiresAt && new Date() > new Date(codeDoc.expiresAt)) {
+      return res.status(410).json({ message: 'This anonymous code has expired.' });
     }
 
     // Verify hash
@@ -1093,14 +1136,112 @@ async function submitAnonymousSurvey(req, res) {
     // Refresh cycle stats
     await refreshCycleStats(codeDoc.clientId, codeDoc.scopeIdentifier, codeDoc.cycleIndex, 'anonymous');
 
+    // Aggregate and persist running survey emissions to DataEntry (fire-and-forget)
+    aggregateAndSaveSurveyEmissions({
+      clientId: codeDoc.clientId,
+      nodeId: codeDoc.nodeId,
+      scopeIdentifier: codeDoc.scopeIdentifier,
+      cycleIndex: codeDoc.cycleIndex,
+      cycleDate: codeDoc.cycleDate,
+      reportingYear: codeDoc.reportingYear,
+      flowchartId: codeDoc.flowchartId,
+      collectionFrequency: scopeEFData.collectionFrequency || 'annually',
+    }).catch(err => console.error('aggregateAndSaveSurveyEmissions error (anonymous):', err));
+
     return res.status(201).json({
       message: 'Survey response submitted successfully.',
       responseId: response._id,
       calculatedEmissions: emissionsKgCO2e,
+      calculationBreakdown: breakdown,
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (err) {
     console.error('submitAnonymousSurvey error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+/**
+ * POST /api/surveys/:clientId/cycles/:cycleIndex/finalize
+ * Manually finalize a survey cycle: close it and apply average-fill for non-respondents.
+ *
+ * Body: { flowchartId, nodeId, scopeIdentifier }
+ * Allowed roles: client_employee_head, client_admin, super_admin, consultant
+ */
+async function finalizeSurvey(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    if (!assertClientAccess(req.user, clientId)) {
+      return res.status(403).json({ message: 'Access denied for this client.' });
+    }
+
+    const allowed = ['client_employee_head', 'client_admin', 'super_admin', 'consultant'];
+    if (!allowed.includes(req.user.userType)) {
+      return res.status(403).json({ message: 'Insufficient permissions to finalize a survey cycle.' });
+    }
+
+    const { scopeIdentifier, nodeId } = req.body;
+    if (!scopeIdentifier || !nodeId) {
+      return res.status(400).json({ message: 'scopeIdentifier and nodeId are required.' });
+    }
+
+    const cycle = await SurveyCycle.findOne({
+      clientId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ message: 'Survey cycle not found.' });
+    }
+    if (cycle.status === 'closed') {
+      return res.status(400).json({ message: 'Survey cycle is already closed.' });
+    }
+    if (cycle.status === 'cancelled') {
+      return res.status(400).json({ message: 'Cannot finalize a cancelled survey cycle.' });
+    }
+
+    // Fetch scope EF data to get collectionFrequency
+    const efData = await fetchScopeEFData(
+      cycle.flowchartId,
+      cycle.processFlowchartId,
+      nodeId,
+      scopeIdentifier
+    );
+
+    // Run average-fill calculation
+    const result = await finalizeCycleEmissions({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+      cycleDate: cycle.cycleDate,
+      reportingYear: cycle.reportingYear,
+      flowchartId: cycle.flowchartId,
+      collectionFrequency: efData.collectionFrequency || 'annually',
+      totalLinks: cycle.totalLinks || 0,
+    });
+
+    // Mark cycle as closed
+    cycle.status = 'closed';
+    cycle.closedAt = new Date();
+    cycle.totalEmissionsKgCO2e = result.finalTotal;
+    await cycle.save();
+
+    return res.status(200).json({
+      message: 'Survey cycle finalized successfully.',
+      cycleIndex: Number(cycleIndex),
+      scopeIdentifier,
+      submittedCount: result.submittedCount,
+      pendingCount: result.pendingCount,
+      averageEmissionKgCO2e: parseFloat(result.averageEmission.toFixed(4)),
+      pendingEmissionKgCO2e: parseFloat(result.pendingEmission.toFixed(4)),
+      finalTotalKgCO2e: parseFloat(result.finalTotal.toFixed(4)),
+      isFinalizedWithAverage: result.pendingCount > 0,
+      cycle: { status: cycle.status, closedAt: cycle.closedAt },
+    });
+  } catch (err) {
+    console.error('finalizeSurvey error:', err);
     return res.status(500).json({ message: 'Internal server error.', error: err.message });
   }
 }
@@ -1117,6 +1258,7 @@ module.exports = {
   invalidateSurveyLink,
   resendSurveyLink,
   exportSurveyResults,
+  finalizeSurvey,
   // Public
   resolveUniqueToken,
   saveUniqueAutosave,
