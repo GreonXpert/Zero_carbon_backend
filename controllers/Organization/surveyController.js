@@ -132,7 +132,7 @@ async function generateSurveyLinks(req, res) {
       return res.status(403).json({ message: 'Access denied for this client.' });
     }
 
-    const { flowchartId, nodeId, scopeIdentifier, employees, linkExpiryDays = 30 } = req.body;
+    const { flowchartId, nodeId, scopeIdentifier, employees, linkExpiryDays = 30, completionThresholdPct = 100 } = req.body;
     if (!flowchartId || !nodeId || !scopeIdentifier || !Array.isArray(employees) || employees.length === 0) {
       return res.status(400).json({ message: 'flowchartId, nodeId, scopeIdentifier and employees[] are required.' });
     }
@@ -180,11 +180,13 @@ async function generateSurveyLinks(req, res) {
           status: 'open',
           openedAt: new Date(),
           totalLinks: employees.length,
+          completionThresholdPct,
           generatedBy: req.user._id,
         });
       } else {
-        // Update totalLinks if regenerating
+        // Update totalLinks and threshold if regenerating
         cycle.totalLinks = employees.length;
+        cycle.completionThresholdPct = completionThresholdPct;
         cycle.status = 'open';
         if (!cycle.openedAt) cycle.openedAt = new Date();
         await cycle.save();
@@ -285,7 +287,7 @@ async function generateAnonymousCodes(req, res) {
       return res.status(403).json({ message: 'Access denied for this client.' });
     }
 
-    const { flowchartId, nodeId, scopeIdentifier, departmentName = 'GEN', clientShortName, codeExpiryDays = 30 } = req.body;
+    const { flowchartId, nodeId, scopeIdentifier, departmentName = 'GEN', clientShortName, codeExpiryDays = 30, completionThresholdPct = 100 } = req.body;
     if (!flowchartId || !nodeId || !scopeIdentifier) {
       return res.status(400).json({ message: 'flowchartId, nodeId, scopeIdentifier are required.' });
     }
@@ -339,10 +341,12 @@ async function generateAnonymousCodes(req, res) {
           status: 'open',
           openedAt: new Date(),
           totalLinks: numberOfEmployees,
+          completionThresholdPct,
           generatedBy: req.user._id,
         });
       } else {
         cycle.totalLinks = numberOfEmployees;
+        cycle.completionThresholdPct = completionThresholdPct;
         cycle.status = 'open';
         if (!cycle.openedAt) cycle.openedAt = new Date();
         await cycle.save();
@@ -507,6 +511,9 @@ async function cancelSurvey(req, res) {
     if (cycle.status === 'closed') {
       return res.status(400).json({ message: 'Cannot cancel a closed survey cycle.' });
     }
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot cancel an already-approved survey cycle.' });
+    }
 
     // Bulk-expire all non-submitted links
     const { modifiedCount } = await SurveyLink.updateMany(
@@ -519,22 +526,8 @@ async function cancelSurvey(req, res) {
     cycle.cancelledBy = req.user._id;
     await cycle.save();
 
-    // Auto-finalize: average-fill for non-respondents
-    const efData = await fetchScopeEFData(cycle.flowchartId, cycle.processFlowchartId, cycle.nodeId, scopeIdentifier);
-    finalizeCycleEmissions({
-      clientId,
-      nodeId: cycle.nodeId,
-      scopeIdentifier,
-      cycleIndex: Number(cycleIndex),
-      cycleDate: cycle.cycleDate,
-      reportingYear: cycle.reportingYear,
-      flowchartId: cycle.flowchartId,
-      collectionFrequency: efData.collectionFrequency || 'annually',
-      totalLinks: cycle.totalLinks || 0,
-    }).catch(err => console.error('finalizeCycleEmissions error (cancelSurvey):', err));
-
     return res.status(200).json({
-      message: 'Survey cycle cancelled. Average-fill finalization triggered for non-respondents.',
+      message: 'Survey cycle cancelled.',
       expiredLinks: modifiedCount,
       cycle: { status: cycle.status, cancelledAt: cycle.cancelledAt },
     });
@@ -981,18 +974,6 @@ async function submitUniqueSurvey(req, res) {
     // Refresh cycle stats
     await refreshCycleStats(matched.clientId, matched.scopeIdentifier, matched.cycleIndex, 'unique');
 
-    // Aggregate and persist running survey emissions to DataEntry (fire-and-forget)
-    aggregateAndSaveSurveyEmissions({
-      clientId: matched.clientId,
-      nodeId: matched.nodeId,
-      scopeIdentifier: matched.scopeIdentifier,
-      cycleIndex: matched.cycleIndex,
-      cycleDate: matched.cycleDate,
-      reportingYear: matched.reportingYear,
-      flowchartId: matched.flowchartId,
-      collectionFrequency: scopeEFData.collectionFrequency || 'annually',
-    }).catch(err => console.error('aggregateAndSaveSurveyEmissions error (unique):', err));
-
     return res.status(201).json({
       message: 'Survey response submitted successfully.',
       responseId: response._id,
@@ -1135,18 +1116,6 @@ async function submitAnonymousSurvey(req, res) {
 
     // Refresh cycle stats
     await refreshCycleStats(codeDoc.clientId, codeDoc.scopeIdentifier, codeDoc.cycleIndex, 'anonymous');
-
-    // Aggregate and persist running survey emissions to DataEntry (fire-and-forget)
-    aggregateAndSaveSurveyEmissions({
-      clientId: codeDoc.clientId,
-      nodeId: codeDoc.nodeId,
-      scopeIdentifier: codeDoc.scopeIdentifier,
-      cycleIndex: codeDoc.cycleIndex,
-      cycleDate: codeDoc.cycleDate,
-      reportingYear: codeDoc.reportingYear,
-      flowchartId: codeDoc.flowchartId,
-      collectionFrequency: scopeEFData.collectionFrequency || 'annually',
-    }).catch(err => console.error('aggregateAndSaveSurveyEmissions error (anonymous):', err));
 
     return res.status(201).json({
       message: 'Survey response submitted successfully.',

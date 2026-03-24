@@ -2510,7 +2510,7 @@ async function finalizeCycleEmissions({
     `Extrapolated ${pendingCount} pending @ avg ${averageEmission.toFixed(4)} kgCO2e = ${pendingEmission.toFixed(4)} kgCO2e. ` +
     `Final total: ${finalTotal.toFixed(4)} kgCO2e.`;
 
-  await DataEntry.findOneAndUpdate(
+  const savedEntry = await DataEntry.findOneAndUpdate(
     filter,
     {
       $set: {
@@ -2538,7 +2538,7 @@ async function finalizeCycleEmissions({
 
   console.log(`[finalizeCycleEmissions] cycle=${cycleIndex} scope=${scopeIdentifier} submitted=${submittedCount} pending=${pendingCount} final=${finalTotal}`);
 
-  return { submittedCount, pendingCount, averageEmission, pendingEmission, finalTotal };
+  return { submittedCount, pendingCount, averageEmission, pendingEmission, finalTotal, dataEntryId: savedEntry._id };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

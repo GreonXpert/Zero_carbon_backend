@@ -21,14 +21,21 @@ const SurveyCycleSchema = new mongoose.Schema(
     // ─── Status ───────────────────────────────────────────────────────────────
     status: {
       type: String,
-      enum: ['upcoming', 'open', 'closed', 'cancelled'],
+      enum: ['upcoming', 'open', 'closed', 'cancelled', 'approved'],
       default: 'upcoming',
       index: true,
     },
-    openedAt: { type: Date, default: null },
-    closedAt: { type: Date, default: null },
+    openedAt:    { type: Date, default: null },
+    closedAt:    { type: Date, default: null },
     cancelledAt: { type: Date, default: null },
     cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    approvedAt:  { type: Date, default: null },
+    approvedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // ─── Completion threshold ─────────────────────────────────────────────────
+    // Minimum submission % required before approve is allowed (0–100).
+    // Set at link/code generation time; can be updated via PATCH .../threshold.
+    completionThresholdPct: { type: Number, default: 100, min: 0, max: 100 },
 
     // ─── Completion statistics ────────────────────────────────────────────────
     // totalLinks is set when links/codes are generated (= numberOfEmployees for that cycle)

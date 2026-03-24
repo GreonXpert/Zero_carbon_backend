@@ -241,7 +241,7 @@ function buildEFLookup(emissionFactors) {
  */
 function calculateLegEmissions({ modeCode, vehicleType, fuelType, occupancy, oneWayKm, commutingDays, efValue }) {
   if (ZERO_EMISSION_MODES.has(modeCode)) {
-    return { distanceKm: 0, emissionsKgCO2e: 0, unitBasis: 'zero-emission' };
+    return { distanceKm: 0, emissionsKgCO2e: 0, unitBasis: 'zero-emission', _calc: { roundTripKm: 0, totalKm: 0, effectiveKm: 0, ef: 0, carpoolAdjusted: false } };
   }
 
   const roundTripKm = oneWayKm * 2;
@@ -249,6 +249,7 @@ function calculateLegEmissions({ modeCode, vehicleType, fuelType, occupancy, one
 
   let effectiveKm = totalKm;
   let unitBasis = 'passenger-km';
+  let carpoolAdjusted = false;
 
   if (VEHICLE_KM_MODES.has(modeCode)) {
     unitBasis = 'vehicle-km';
@@ -256,6 +257,7 @@ function calculateLegEmissions({ modeCode, vehicleType, fuelType, occupancy, one
       // Allocate per-person share of vehicle emissions
       effectiveKm = totalKm / occupancy;
       unitBasis = 'passenger-km (carpool-adjusted)';
+      carpoolAdjusted = true;
     } else {
       effectiveKm = totalKm;
     }
@@ -264,7 +266,13 @@ function calculateLegEmissions({ modeCode, vehicleType, fuelType, occupancy, one
   const ef = getEmissionFactor(modeCode, vehicleType, fuelType, efValue);
   const emissionsKgCO2e = effectiveKm * ef;
 
-  return { distanceKm: effectiveKm, emissionsKgCO2e, unitBasis };
+  return {
+    distanceKm: effectiveKm,
+    emissionsKgCO2e,
+    unitBasis,
+    // Internal calc details — used to build calculationSteps in caller
+    _calc: { roundTripKm, totalKm, effectiveKm, ef, carpoolAdjusted, occupancy },
+  };
 }
 
 // ─── Enum sets used in validation ────────────────────────────────────────────
@@ -555,6 +563,47 @@ function validateSurveyResponse(data) {
  *                                    Caller provides this; defaults to 0 if absent.
  * @returns {{ emissionsKgCO2e: number, breakdown: object }}
  */
+// ─── Display rounding helpers ────────────────────────────────────────────────
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const r4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
+
+/**
+ * Build a step-by-step calculation trace for a single leg.
+ * @param {{ modeCode, oneWayKm, commutingDays, _calc }} leg result
+ * @returns {object} calculationSteps
+ */
+function buildLegSteps(modeCode, oneWayKm, commutingDays, _calc) {
+  if (ZERO_EMISSION_MODES.has(modeCode)) {
+    return {
+      formula: 'Zero-emission mode — no emissions calculated.',
+      step1_mode: `${modeCode} is a zero-emission transport mode.`,
+      result: '0.0000 kgCO2e',
+    };
+  }
+
+  const { roundTripKm, totalKm, effectiveKm, ef, carpoolAdjusted, occupancy } = _calc;
+
+  const steps = {
+    formula: 'total_kgCO2e = effectiveKm × emissionFactor_kgCO2ePerKm',
+    step1_oneWayKm:    `${r2(oneWayKm)} km (one-way from survey answer)`,
+    step2_roundTripKm: `${r2(oneWayKm)} × 2 = ${r2(roundTripKm)} km (round-trip per day)`,
+    step3_totalKm:     `${r2(roundTripKm)} × ${commutingDays} commuting days = ${r2(totalKm)} km`,
+  };
+
+  if (carpoolAdjusted) {
+    steps.step4_carpoolAdjustment = `${r2(totalKm)} ÷ ${occupancy} occupants = ${r2(effectiveKm)} km (per-person share)`;
+    steps.step4_effectiveKm = `${r2(effectiveKm)} km (passenger-km, carpool-adjusted)`;
+  } else {
+    steps.step4_effectiveKm = `${r2(effectiveKm)} km (${VEHICLE_KM_MODES.has(modeCode) ? 'vehicle-km' : 'passenger-km'})`;
+  }
+
+  steps.step5_emissionFactor = `${r4(ef)} kgCO2e/km (from emission factor configuration)`;
+  steps.step6_final          = `${r2(effectiveKm)} × ${r4(ef)} = ${r4(effectiveKm * ef)} kgCO2e`;
+  steps.result               = `${r4(effectiveKm * ef)} kgCO2e`;
+
+  return steps;
+}
+
 function calculateResponseEmissions(response, weeksInPeriod, efLookup) {
   const ef = typeof efLookup === 'function' ? efLookup : () => 0;
 
@@ -562,7 +611,11 @@ function calculateResponseEmissions(response, weeksInPeriod, efLookup) {
   if (response.workArrangement === 'REMOTE_FULL') {
     return {
       emissionsKgCO2e: 0,
-      breakdown: { mode: 'REMOTE_FULL', note: 'No commuting emissions for fully remote employees.' },
+      breakdown: {
+        mode: 'REMOTE_FULL',
+        note: 'No commuting emissions for fully remote employees.',
+        calculationSteps: { formula: 'workArrangement = REMOTE_FULL → emissions = 0 kgCO2e' },
+      },
     };
   }
 
@@ -591,24 +644,43 @@ function calculateResponseEmissions(response, weeksInPeriod, efLookup) {
         commutingDays,
         efValue: ef(leg.legModeCode, leg.legVehicleType, leg.legFuelType),
       });
-      return { leg: idx + 1, ...result };
+      return {
+        leg: idx + 1,
+        modeCode: leg.legModeCode,
+        vehicleType: leg.legVehicleType || null,
+        fuelType: leg.legFuelType || null,
+        occupancy: leg.legOccupancy || null,
+        legOneWayKm,
+        distanceKm: result.distanceKm,
+        emissionsKgCO2e: result.emissionsKgCO2e,
+        unitBasis: result.unitBasis,
+        calculationSteps: buildLegSteps(leg.legModeCode, legOneWayKm, commutingDays, result._calc),
+      };
     });
 
     const totalEmissions = legResults.reduce((s, r) => s + r.emissionsKgCO2e, 0);
+    const legSummaryLines = legResults.map(r => `  Leg ${r.leg} (${r.modeCode}): ${r4(r.emissionsKgCO2e)} kgCO2e`).join('\n');
 
     return {
       emissionsKgCO2e: totalEmissions,
       breakdown: {
         mode: 'mixed',
-        oneWayKm,
         commutingDays,
         legs: legResults,
         totalEmissionsKgCO2e: totalEmissions,
+        calculationSteps: {
+          formula: 'total_kgCO2e = Σ (leg emissions)',
+          commutingDays: `${commutingDays} days in reporting period`,
+          legSummary: legSummaryLines,
+          step_total: `Σ legs = ${r4(totalEmissions)} kgCO2e`,
+          result: `${r4(totalEmissions)} kgCO2e`,
+        },
       },
     };
   }
 
   // ── Single-mode path ─────────────────────────────────────────────────────
+  const efValue = ef(response.primaryModeCode, response.vehicleType, response.fuelType);
   const result = calculateLegEmissions({
     modeCode: response.primaryModeCode,
     vehicleType: response.vehicleType,
@@ -616,19 +688,23 @@ function calculateResponseEmissions(response, weeksInPeriod, efLookup) {
     occupancy: response.occupancy,
     oneWayKm,
     commutingDays,
-    efValue: ef(response.primaryModeCode, response.vehicleType, response.fuelType),
+    efValue,
   });
 
   return {
     emissionsKgCO2e: result.emissionsKgCO2e,
     breakdown: {
       mode: response.primaryModeCode,
+      vehicleType: response.vehicleType || null,
+      fuelType: response.fuelType || null,
+      occupancy: response.occupancy || null,
       oneWayKm,
       commutingDays,
       distanceKm: result.distanceKm,
       unitBasis: result.unitBasis,
-      emissionFactor: ef(response.primaryModeCode, response.vehicleType, response.fuelType),
+      emissionFactor_kgCO2ePerKm: efValue,
       totalEmissionsKgCO2e: result.emissionsKgCO2e,
+      calculationSteps: buildLegSteps(response.primaryModeCode, oneWayKm, commutingDays, result._calc),
     },
   };
 }
