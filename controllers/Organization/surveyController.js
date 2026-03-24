@@ -1131,13 +1131,14 @@ async function submitAnonymousSurvey(req, res) {
 }
 
 /**
- * POST /api/surveys/:clientId/cycles/:cycleIndex/finalize
- * Manually finalize a survey cycle: close it and apply average-fill for non-respondents.
+ * POST /api/surveys/:clientId/cycles/:cycleIndex/approve
+ * Approve a survey cycle: applies average-fill for non-respondents and persists to DataEntry.
+ * Blocked until cycle.statistics.completionPct >= cycle.completionThresholdPct.
  *
- * Body: { flowchartId, nodeId, scopeIdentifier }
- * Allowed roles: client_employee_head, client_admin, super_admin, consultant
+ * Body:  { scopeIdentifier, nodeId }
+ * Roles: client_admin, client_employee_head, consultant, super_admin
  */
-async function finalizeSurvey(req, res) {
+async function approveSurvey(req, res) {
   try {
     const { clientId, cycleIndex } = req.params;
     if (!assertClientAccess(req.user, clientId)) {
@@ -1146,7 +1147,7 @@ async function finalizeSurvey(req, res) {
 
     const allowed = ['client_employee_head', 'client_admin', 'super_admin', 'consultant'];
     if (!allowed.includes(req.user.userType)) {
-      return res.status(403).json({ message: 'Insufficient permissions to finalize a survey cycle.' });
+      return res.status(403).json({ message: 'Insufficient permissions to approve a survey cycle.' });
     }
 
     const { scopeIdentifier, nodeId } = req.body;
@@ -1163,22 +1164,34 @@ async function finalizeSurvey(req, res) {
     if (!cycle) {
       return res.status(404).json({ message: 'Survey cycle not found.' });
     }
-    if (cycle.status === 'closed') {
-      return res.status(400).json({ message: 'Survey cycle is already closed.' });
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Survey cycle is already approved.' });
     }
     if (cycle.status === 'cancelled') {
-      return res.status(400).json({ message: 'Cannot finalize a cancelled survey cycle.' });
+      return res.status(400).json({ message: 'Cannot approve a cancelled survey cycle.' });
     }
 
-    // Fetch scope EF data to get collectionFrequency
+    // ── Threshold guard ───────────────────────────────────────────────────────
+    const currentPct  = cycle.statistics?.completionPct ?? 0;
+    const thresholdPct = cycle.completionThresholdPct ?? 100;
+    if (currentPct < thresholdPct) {
+      return res.status(400).json({
+        message: `Cannot approve: only ${currentPct}% of surveys submitted, minimum threshold is ${thresholdPct}%.`,
+        currentCompletionPct: currentPct,
+        completionThresholdPct: thresholdPct,
+      });
+    }
+
+    // ── Fetch collectionFrequency ─────────────────────────────────────────────
     const efData = await fetchScopeEFData(
       cycle.flowchartId,
       cycle.processFlowchartId,
       nodeId,
       scopeIdentifier
     );
+    const collectionFrequency = efData.collectionFrequency || 'annually';
 
-    // Run average-fill calculation
+    // ── Average-fill calculation + DataEntry upsert ───────────────────────────
     const result = await finalizeCycleEmissions({
       clientId,
       nodeId,
@@ -1187,30 +1200,120 @@ async function finalizeSurvey(req, res) {
       cycleDate: cycle.cycleDate,
       reportingYear: cycle.reportingYear,
       flowchartId: cycle.flowchartId,
-      collectionFrequency: efData.collectionFrequency || 'annually',
+      collectionFrequency,
       totalLinks: cycle.totalLinks || 0,
     });
 
-    // Mark cycle as closed
-    cycle.status = 'closed';
+    // ── Mark cycle as approved ────────────────────────────────────────────────
+    cycle.status = 'approved';
+    cycle.approvedAt = new Date();
+    cycle.approvedBy = req.user._id;
     cycle.closedAt = new Date();
     cycle.totalEmissionsKgCO2e = result.finalTotal;
     await cycle.save();
 
+    const r4 = (n) => parseFloat((Number(n) || 0).toFixed(4));
+    const totalLinks = cycle.totalLinks || 0;
+    const submissionPct = totalLinks > 0 ? Math.round((result.submittedCount / totalLinks) * 100) : 0;
+
     return res.status(200).json({
-      message: 'Survey cycle finalized successfully.',
+      message: 'Survey cycle approved. DataEntry saved with average-fill for non-respondents.',
       cycleIndex: Number(cycleIndex),
       scopeIdentifier,
-      submittedCount: result.submittedCount,
-      pendingCount: result.pendingCount,
-      averageEmissionKgCO2e: parseFloat(result.averageEmission.toFixed(4)),
-      pendingEmissionKgCO2e: parseFloat(result.pendingEmission.toFixed(4)),
-      finalTotalKgCO2e: parseFloat(result.finalTotal.toFixed(4)),
-      isFinalizedWithAverage: result.pendingCount > 0,
-      cycle: { status: cycle.status, closedAt: cycle.closedAt },
+      completionThresholdPct: thresholdPct,
+      approvedAt: cycle.approvedAt,
+      approvedBy: req.user._id,
+      submissionSummary: {
+        totalLinks,
+        submittedCount: result.submittedCount,
+        submissionPct,
+      },
+      emissionSummary: {
+        sumOfSubmitted: r4(result.sumActual ?? (result.finalTotal - result.pendingEmission)),
+        averagePerEmployee: r4(result.averageEmission),
+        pendingCount: result.pendingCount,
+        pendingEmission: r4(result.pendingEmission),
+        finalTotalKgCO2e: r4(result.finalTotal),
+        isFinalizedWithAverage: result.pendingCount > 0,
+      },
+      averageFillBreakdown: {
+        formula: 'finalTotal = sumOfSubmitted + (averagePerEmployee × pendingCount)',
+        step1_sumOfSubmitted:   `${r4(result.finalTotal - result.pendingEmission)} kgCO2e from ${result.submittedCount} submitted response(s)`,
+        step2_averagePerEmployee: result.submittedCount > 0
+          ? `${r4(result.finalTotal - result.pendingEmission)} / ${result.submittedCount} = ${r4(result.averageEmission)} kgCO2e per employee`
+          : '0 responses submitted — average = 0 kgCO2e',
+        step3_pendingCount:     `${totalLinks} total − ${result.submittedCount} submitted = ${result.pendingCount} pending`,
+        step4_pendingEmission:  `${r4(result.averageEmission)} × ${result.pendingCount} = ${r4(result.pendingEmission)} kgCO2e`,
+        step5_finalTotal:       `${r4(result.finalTotal - result.pendingEmission)} + ${r4(result.pendingEmission)} = ${r4(result.finalTotal)} kgCO2e`,
+      },
+      dataEntryId: result.dataEntryId,
+      cycle: { status: cycle.status, approvedAt: cycle.approvedAt, closedAt: cycle.closedAt },
     });
   } catch (err) {
-    console.error('finalizeSurvey error:', err);
+    console.error('approveSurvey error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+/**
+ * PATCH /api/surveys/:clientId/cycles/:cycleIndex/threshold
+ * Update the completion threshold % for a cycle.
+ *
+ * Body:  { scopeIdentifier, completionThresholdPct }
+ * Roles: client_admin, client_employee_head, super_admin
+ */
+async function updateSurveyThreshold(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    if (!assertClientAccess(req.user, clientId)) {
+      return res.status(403).json({ message: 'Access denied for this client.' });
+    }
+
+    const allowed = ['client_employee_head', 'client_admin', 'super_admin'];
+    if (!allowed.includes(req.user.userType)) {
+      return res.status(403).json({ message: 'Only client_employee_head, client_admin, or super_admin can update the threshold.' });
+    }
+
+    const { scopeIdentifier, completionThresholdPct } = req.body;
+    if (!scopeIdentifier) {
+      return res.status(400).json({ message: 'scopeIdentifier is required.' });
+    }
+    if (completionThresholdPct == null || isNaN(Number(completionThresholdPct))) {
+      return res.status(400).json({ message: 'completionThresholdPct must be a number.' });
+    }
+    const pct = Number(completionThresholdPct);
+    if (pct < 0 || pct > 100) {
+      return res.status(400).json({ message: 'completionThresholdPct must be between 0 and 100.' });
+    }
+
+    const cycle = await SurveyCycle.findOne({
+      clientId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ message: 'Survey cycle not found.' });
+    }
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot update threshold on an already-approved cycle.' });
+    }
+    if (cycle.status === 'cancelled') {
+      return res.status(400).json({ message: 'Cannot update threshold on a cancelled cycle.' });
+    }
+
+    cycle.completionThresholdPct = pct;
+    await cycle.save();
+
+    return res.status(200).json({
+      message: `Completion threshold updated to ${pct}%.`,
+      completionThresholdPct: pct,
+      currentCompletionPct: cycle.statistics?.completionPct ?? 0,
+      approveUnlocked: (cycle.statistics?.completionPct ?? 0) >= pct,
+      cycle: { status: cycle.status, completionThresholdPct: pct, statistics: cycle.statistics },
+    });
+  } catch (err) {
+    console.error('updateSurveyThreshold error:', err);
     return res.status(500).json({ message: 'Internal server error.', error: err.message });
   }
 }
@@ -1227,7 +1330,8 @@ module.exports = {
   invalidateSurveyLink,
   resendSurveyLink,
   exportSurveyResults,
-  finalizeSurvey,
+  approveSurvey,
+  updateSurveyThreshold,
   // Public
   resolveUniqueToken,
   saveUniqueAutosave,
