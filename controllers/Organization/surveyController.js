@@ -261,13 +261,26 @@ async function generateSurveyLinks(req, res) {
 
 /**
  * POST /api/surveys/:clientId/generate-codes
- * Anonymous mode: generate codes for numberOfEmployees per cycle.
+ * Anonymous mode: generate codes per department across every configured cycle.
  *
  * Body: {
- *   flowchartId, nodeId, scopeIdentifier,
- *   departmentName (optional),
- *   clientShortName (optional, used in code prefix)
+ *   flowchartId        (string)  — required unless processFlowchartId provided
+ *   processFlowchartId (string)  — required unless flowchartId provided
+ *   nodeId             (string)  — required
+ *   scopeIdentifier    (string)  — required
+ *   clientShortName    (string)  — optional; used as code prefix
+ *   departments        (array)   — required; [{ departmentName: string, count: number }, ...]
  * }
+ *
+ * Capacity rule: sum of all department counts (existing + new per cycle) must not
+ * exceed employeeCommutingConfig.numberOfEmployees on the scope.
+ *
+ * Example:
+ *   departments: [
+ *     { departmentName: 'Production', count: 100 },
+ *     { departmentName: 'Operations', count: 100 },
+ *     { departmentName: 'Finance',    count: 100 }
+ *   ]
  */
 async function generateAnonymousCodes(req, res) {
   try {
@@ -276,19 +289,63 @@ async function generateAnonymousCodes(req, res) {
       return res.status(403).json({ message: 'Access denied for this client.' });
     }
 
-    const { flowchartId, nodeId, scopeIdentifier, departmentName = 'GEN', clientShortName } = req.body;
-    if (!flowchartId || !nodeId || !scopeIdentifier) {
-      return res.status(400).json({ message: 'flowchartId, nodeId, scopeIdentifier are required.' });
+    const {
+      flowchartId,
+      processFlowchartId,
+      nodeId,
+      scopeIdentifier,
+      departments,
+      clientShortName,
+    } = req.body;
+
+    // ── 1. Basic field validation ─────────────────────────────────────────────
+    if (!nodeId || !scopeIdentifier) {
+      return res.status(400).json({ message: 'nodeId and scopeIdentifier are required.' });
+    }
+    if (!flowchartId && !processFlowchartId) {
+      return res.status(400).json({ message: 'flowchartId or processFlowchartId is required.' });
     }
 
-    const flowchart = await Flowchart.findById(flowchartId);
-    if (!flowchart || flowchart.clientId !== clientId) {
-      return res.status(404).json({ message: 'Flowchart not found.' });
+    // ── 2. Validate departments array ─────────────────────────────────────────
+    if (!Array.isArray(departments) || departments.length === 0) {
+      return res.status(400).json({
+        message: 'departments must be a non-empty array of { departmentName, count }.',
+      });
+    }
+    for (const dept of departments) {
+      if (!dept.departmentName || typeof dept.departmentName !== 'string') {
+        return res.status(400).json({ message: 'Each department entry must have a departmentName string.' });
+      }
+      if (!Number.isInteger(dept.count) || dept.count < 1) {
+        return res.status(400).json({
+          message: `Department "${dept.departmentName}": count must be a positive integer.`,
+        });
+      }
+    }
+    const totalRequested = departments.reduce((sum, d) => sum + d.count, 0);
+
+    // ── 3. Load Flowchart or ProcessFlowchart (processFlowchartId takes priority) ──
+    let chartDoc = null;
+    let isProcessFlowchart = false;
+    if (processFlowchartId) {
+      chartDoc = await ProcessFlowchart.findById(processFlowchartId);
+      if (!chartDoc || chartDoc.clientId !== clientId) {
+        return res.status(404).json({ message: 'ProcessFlowchart not found.' });
+      }
+      isProcessFlowchart = true;
+    } else {
+      chartDoc = await Flowchart.findById(flowchartId);
+      if (!chartDoc || chartDoc.clientId !== clientId) {
+        return res.status(404).json({ message: 'Flowchart not found.' });
+      }
     }
 
-    const scope = findECScope(flowchart, nodeId, scopeIdentifier);
+    // ── 4. Locate the EC Tier-2 scope ─────────────────────────────────────────
+    const scope = findECScope(chartDoc, nodeId, scopeIdentifier);
     if (!scope) {
-      return res.status(400).json({ message: 'No Employee Commuting Tier-2 scope found at this node (or fromOtherChart=true).' });
+      return res.status(400).json({
+        message: 'No Employee Commuting Tier-2 scope found at this node (or fromOtherChart=true).',
+      });
     }
 
     const ecConfig = scope.employeeCommutingConfig || {};
@@ -306,6 +363,28 @@ async function generateAnonymousCodes(req, res) {
       return res.status(400).json({ message: 'No collection dates configured.' });
     }
 
+    // ── 5. Capacity check: per cycle, existing + requested ≤ numberOfEmployees ──
+    const overflowCycles = [];
+    for (let ci = 0; ci < collectionDates.length; ci++) {
+      const existing = await AnonymousCode.countDocuments({ clientId, scopeIdentifier, cycleIndex: ci });
+      if (existing + totalRequested > numberOfEmployees) {
+        overflowCycles.push({
+          cycleIndex: ci,
+          existing,
+          requested: totalRequested,
+          capacity: numberOfEmployees,
+          available: Math.max(0, numberOfEmployees - existing),
+        });
+      }
+    }
+    if (overflowCycles.length > 0) {
+      return res.status(400).json({
+        message: `Total codes (existing + requested ${totalRequested}) would exceed numberOfEmployees (${numberOfEmployees}).`,
+        overflowCycles,
+      });
+    }
+
+    // ── 6. Generate codes per cycle per department ────────────────────────────
     const shortName = clientShortName || clientId.substring(0, 8).toUpperCase();
     const reportingYear = new Date(collectionDates[0]).getFullYear();
     const batchSummary = [];
@@ -314,12 +393,15 @@ async function generateAnonymousCodes(req, res) {
       const cycleDate = collectionDates[cycleIndex];
       const batchId = `${clientId}_${scopeIdentifier}_${cycleIndex}_${Date.now()}`;
 
+      const existingTotal = await AnonymousCode.countDocuments({ clientId, scopeIdentifier, cycleIndex });
+
       // Upsert SurveyCycle
       let cycle = await SurveyCycle.findOne({ clientId, scopeIdentifier, cycleIndex });
       if (!cycle) {
         cycle = await SurveyCycle.create({
           clientId,
-          flowchartId: flowchart._id,
+          flowchartId: isProcessFlowchart ? null : chartDoc._id,
+          processFlowchartId: isProcessFlowchart ? chartDoc._id : null,
           nodeId,
           scopeIdentifier,
           responseMode: 'anonymous',
@@ -328,50 +410,71 @@ async function generateAnonymousCodes(req, res) {
           reportingYear,
           status: 'open',
           openedAt: new Date(),
-          totalLinks: numberOfEmployees,
+          totalLinks: existingTotal + totalRequested,
           generatedBy: req.user._id,
         });
       } else {
-        cycle.totalLinks = numberOfEmployees;
+        cycle.totalLinks = existingTotal + totalRequested;
         cycle.status = 'open';
         if (!cycle.openedAt) cycle.openedAt = new Date();
         await cycle.save();
       }
 
-      const codes = [];
-      for (let seq = 1; seq <= numberOfEmployees; seq++) {
-        const codeLabel = generateAnonymousCode(shortName, departmentName, seq);
-        const hash = await hashToken(codeLabel);
+      // Generate codes per department
+      const deptBreakdown = [];
+      for (const dept of departments) {
+        // Offset seq by existing codes for this dept so top-up calls don't collide
+        const existingDeptCount = await AnonymousCode.countDocuments({
+          clientId, scopeIdentifier, cycleIndex, department: dept.departmentName,
+        });
 
-        await AnonymousCode.findOneAndUpdate(
-          { batchId, clientId, scopeIdentifier, cycleIndex, anonymousCodeId: codeLabel },
-          {
-            $setOnInsert: {
-              clientId,
-              flowchartId: flowchart._id,
-              nodeId,
-              scopeIdentifier,
-              cycleIndex,
-              cycleDate,
-              reportingYear,
-              batchId,
-              anonymousCodeId: codeLabel,
-              codeHash: hash,
-              isRedeemed: false,
-              createdBy: req.user._id,
+        const deptCodes = [];
+        for (let i = 1; i <= dept.count; i++) {
+          const seq = existingDeptCount + i;
+          const codeLabel = generateAnonymousCode(shortName, dept.departmentName, seq);
+          const hash = await hashToken(codeLabel);
+
+          await AnonymousCode.findOneAndUpdate(
+            { batchId, clientId, scopeIdentifier, cycleIndex, anonymousCodeId: codeLabel },
+            {
+              $setOnInsert: {
+                clientId,
+                flowchartId: isProcessFlowchart ? null : chartDoc._id,
+                processFlowchartId: isProcessFlowchart ? chartDoc._id : null,
+                nodeId,
+                scopeIdentifier,
+                cycleIndex,
+                cycleDate,
+                reportingYear,
+                batchId,
+                department: dept.departmentName,
+                anonymousCodeId: codeLabel,
+                codeHash: hash,
+                isRedeemed: false,
+                createdBy: req.user._id,
+              },
             },
-          },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+          );
 
-        codes.push(codeLabel);
+          deptCodes.push(codeLabel);
+        }
+
+        deptBreakdown.push({ departmentName: dept.departmentName, count: dept.count, codes: deptCodes });
       }
 
-      batchSummary.push({ cycleIndex, cycleDate, batchId, codeCount: codes.length, codes });
+      batchSummary.push({ cycleIndex, cycleDate, batchId, totalCodeCount: totalRequested, departments: deptBreakdown });
     }
 
+    // Remaining capacity after this generation (cycle 0 used as reference)
+    const usedAfter = await AnonymousCode.countDocuments({ clientId, scopeIdentifier, cycleIndex: 0 });
+
     return res.status(200).json({
-      message: `Anonymous codes generated for ${collectionDates.length} cycle(s), ${numberOfEmployees} code(s) each.`,
+      message: `Anonymous codes generated for ${collectionDates.length} cycle(s), ${totalRequested} code(s) across ${departments.length} department(s).`,
+      totalRequested,
+      capacityUsed: usedAfter,
+      capacityTotal: numberOfEmployees,
+      remainingCapacity: numberOfEmployees - usedAfter,
       batches: batchSummary,
     });
   } catch (err) {
