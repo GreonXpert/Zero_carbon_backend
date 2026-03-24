@@ -113,6 +113,7 @@ const auth = async (req, res, next) => {
 
       // ── 5. Attach to request ──────────────────────────────────────────────
       req.user = {
+        _id: user._id,
         id: user._id.toString(),
         email: user.email,
         userName: user.userName,

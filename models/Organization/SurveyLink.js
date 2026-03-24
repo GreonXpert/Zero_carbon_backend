@@ -18,7 +18,7 @@ const SurveyLinkSchema = new mongoose.Schema(
     reportingYear: { type: Number, required: true },
 
     // ─── Recipient ────────────────────────────────────────────────────────────
-    recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    recipientId: { type: String, default: null },
     recipientName: { type: String, default: '' },
 
     // ─── Token security ───────────────────────────────────────────────────────

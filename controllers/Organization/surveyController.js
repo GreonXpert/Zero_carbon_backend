@@ -32,6 +32,10 @@ const {
 const { fetchScopeEFData } = require('../../services/survey/surveyEFHelper');
 
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
+const {
+  aggregateAndSaveSurveyEmissions,
+  finalizeCycleEmissions,
+} = require('../Calculation/emissionCalculationController');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const SURVEY_VERSION = '1.0';
@@ -128,7 +132,7 @@ async function generateSurveyLinks(req, res) {
       return res.status(403).json({ message: 'Access denied for this client.' });
     }
 
-    const { flowchartId, nodeId, scopeIdentifier, employees, linkExpiryDays = 30 } = req.body;
+    const { flowchartId, nodeId, scopeIdentifier, employees, linkExpiryDays = 30, completionThresholdPct = 100 } = req.body;
     if (!flowchartId || !nodeId || !scopeIdentifier || !Array.isArray(employees) || employees.length === 0) {
       return res.status(400).json({ message: 'flowchartId, nodeId, scopeIdentifier and employees[] are required.' });
     }
@@ -154,7 +158,7 @@ async function generateSurveyLinks(req, res) {
     }
 
     const reportingYear = new Date(collectionDates[0]).getFullYear();
-    const expiresAt = calculateLinkExpiry(linkExpiryDays);
+    // Note: per-employee expiresAt is computed inside the employee loop below.
 
     const createdLinks = []; // { cycleIndex, cycleDate, employeeId, employeeName, token, surveyLinkId }
 
@@ -176,17 +180,23 @@ async function generateSurveyLinks(req, res) {
           status: 'open',
           openedAt: new Date(),
           totalLinks: employees.length,
+          completionThresholdPct,
           generatedBy: req.user._id,
         });
       } else {
-        // Update totalLinks if regenerating
+        // Update totalLinks and threshold if regenerating
         cycle.totalLinks = employees.length;
+        cycle.completionThresholdPct = completionThresholdPct;
         cycle.status = 'open';
         if (!cycle.openedAt) cycle.openedAt = new Date();
         await cycle.save();
       }
 
       for (const emp of employees) {
+        // Per-employee expiry: use emp.linkExpiryDays if provided, else fall back to global default
+        const empExpiryDays = (emp.linkExpiryDays != null) ? emp.linkExpiryDays : linkExpiryDays;
+        const expiresAt = calculateLinkExpiry(empExpiryDays);
+
         const token = generateSurveyToken();
         const hash = await hashToken(token);
         const prefix = tokenPrefix(token);
@@ -244,6 +254,7 @@ async function generateSurveyLinks(req, res) {
           token,            // Plaintext — caller must distribute this securely
           surveyLinkId: link._id,
           status: 'pending',
+          expiresAt,        // Per-employee expiry date
         });
       }
     }
@@ -296,6 +307,8 @@ async function generateAnonymousCodes(req, res) {
       scopeIdentifier,
       departments,
       clientShortName,
+      codeExpiryDays = 30,
+      completionThresholdPct = 100,
     } = req.body;
 
     // ── 1. Basic field validation ─────────────────────────────────────────────
@@ -387,6 +400,7 @@ async function generateAnonymousCodes(req, res) {
     // ── 6. Generate codes per cycle per department ────────────────────────────
     const shortName = clientShortName || clientId.substring(0, 8).toUpperCase();
     const reportingYear = new Date(collectionDates[0]).getFullYear();
+    const expiresAt = calculateLinkExpiry(codeExpiryDays);
     const batchSummary = [];
 
     for (let cycleIndex = 0; cycleIndex < collectionDates.length; cycleIndex++) {
@@ -411,10 +425,12 @@ async function generateAnonymousCodes(req, res) {
           status: 'open',
           openedAt: new Date(),
           totalLinks: existingTotal + totalRequested,
+          completionThresholdPct,
           generatedBy: req.user._id,
         });
       } else {
         cycle.totalLinks = existingTotal + totalRequested;
+        cycle.completionThresholdPct = completionThresholdPct;
         cycle.status = 'open';
         if (!cycle.openedAt) cycle.openedAt = new Date();
         await cycle.save();
@@ -451,6 +467,7 @@ async function generateAnonymousCodes(req, res) {
                 anonymousCodeId: codeLabel,
                 codeHash: hash,
                 isRedeemed: false,
+                expiresAt,
                 createdBy: req.user._id,
               },
             },
@@ -463,7 +480,7 @@ async function generateAnonymousCodes(req, res) {
         deptBreakdown.push({ departmentName: dept.departmentName, count: dept.count, codes: deptCodes });
       }
 
-      batchSummary.push({ cycleIndex, cycleDate, batchId, totalCodeCount: totalRequested, departments: deptBreakdown });
+      batchSummary.push({ cycleIndex, cycleDate, batchId, totalCodeCount: totalRequested, departments: deptBreakdown, expiresAt });
     }
 
     // Remaining capacity after this generation (cycle 0 used as reference)
@@ -598,6 +615,9 @@ async function cancelSurvey(req, res) {
     }
     if (cycle.status === 'closed') {
       return res.status(400).json({ message: 'Cannot cancel a closed survey cycle.' });
+    }
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot cancel an already-approved survey cycle.' });
     }
 
     // Bulk-expire all non-submitted links
@@ -1030,8 +1050,8 @@ async function submitUniqueSurvey(req, res) {
       tripType: calcData.tripType ?? null,
       isMixedMode: calcData.isMixedMode ?? null,
       primaryModeCode: calcData.primaryModeCode ?? null,
-      vehicleType: calcData.vehicleType ?? null,
-      fuelType: calcData.fuelType ?? null,
+      vehicleType: calcData.vehicleType || null,
+      fuelType:    calcData.fuelType    || null,
       occupancy: calcData.occupancy ?? null,
       legs: calcData.legs || [],
       // Analytics only
@@ -1063,6 +1083,7 @@ async function submitUniqueSurvey(req, res) {
       message: 'Survey response submitted successfully.',
       responseId: response._id,
       calculatedEmissions: emissionsKgCO2e,
+      calculationBreakdown: breakdown,
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (err) {
@@ -1088,6 +1109,11 @@ async function resolveAnonymousCode(req, res) {
 
     if (codeDoc.isRedeemed) {
       return res.status(409).json({ message: 'This code has already been used. Anonymous surveys cannot be resumed.' });
+    }
+
+    // Check expiry
+    if (codeDoc.expiresAt && new Date() > new Date(codeDoc.expiresAt)) {
+      return res.status(410).json({ message: 'This anonymous code has expired.' });
     }
 
     // Verify hash
@@ -1200,10 +1226,199 @@ async function submitAnonymousSurvey(req, res) {
       message: 'Survey response submitted successfully.',
       responseId: response._id,
       calculatedEmissions: emissionsKgCO2e,
+      calculationBreakdown: breakdown,
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (err) {
     console.error('submitAnonymousSurvey error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+/**
+ * POST /api/surveys/:clientId/cycles/:cycleIndex/approve
+ * Approve a survey cycle: applies average-fill for non-respondents and persists to DataEntry.
+ * Blocked until cycle.statistics.completionPct >= cycle.completionThresholdPct.
+ *
+ * Body:  { scopeIdentifier, nodeId }
+ * Roles: client_admin, client_employee_head, consultant, super_admin
+ */
+async function approveSurvey(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    if (!assertClientAccess(req.user, clientId)) {
+      return res.status(403).json({ message: 'Access denied for this client.' });
+    }
+
+    const allowed = ['client_employee_head', 'client_admin', 'super_admin', 'consultant'];
+    if (!allowed.includes(req.user.userType)) {
+      return res.status(403).json({ message: 'Insufficient permissions to approve a survey cycle.' });
+    }
+
+    const { scopeIdentifier, nodeId } = req.body;
+    if (!scopeIdentifier || !nodeId) {
+      return res.status(400).json({ message: 'scopeIdentifier and nodeId are required.' });
+    }
+
+    const cycle = await SurveyCycle.findOne({
+      clientId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ message: 'Survey cycle not found.' });
+    }
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Survey cycle is already approved.' });
+    }
+    if (cycle.status === 'cancelled') {
+      return res.status(400).json({ message: 'Cannot approve a cancelled survey cycle.' });
+    }
+
+    // ── Threshold guard ───────────────────────────────────────────────────────
+    const currentPct  = cycle.statistics?.completionPct ?? 0;
+    const thresholdPct = cycle.completionThresholdPct ?? 100;
+    if (currentPct < thresholdPct) {
+      return res.status(400).json({
+        message: `Cannot approve: only ${currentPct}% of surveys submitted, minimum threshold is ${thresholdPct}%.`,
+        currentCompletionPct: currentPct,
+        completionThresholdPct: thresholdPct,
+      });
+    }
+
+    // ── Fetch collectionFrequency ─────────────────────────────────────────────
+    const efData = await fetchScopeEFData(
+      cycle.flowchartId,
+      cycle.processFlowchartId,
+      nodeId,
+      scopeIdentifier
+    );
+    const collectionFrequency = efData.collectionFrequency || 'annually';
+
+    // ── Average-fill calculation + DataEntry upsert ───────────────────────────
+    const result = await finalizeCycleEmissions({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+      cycleDate: cycle.cycleDate,
+      reportingYear: cycle.reportingYear,
+      flowchartId: cycle.flowchartId,
+      collectionFrequency,
+      totalLinks: cycle.totalLinks || 0,
+    });
+
+    // ── Mark cycle as approved ────────────────────────────────────────────────
+    cycle.status = 'approved';
+    cycle.approvedAt = new Date();
+    cycle.approvedBy = req.user._id;
+    cycle.closedAt = new Date();
+    cycle.totalEmissionsKgCO2e = result.finalTotal;
+    await cycle.save();
+
+    const r4 = (n) => parseFloat((Number(n) || 0).toFixed(4));
+    const totalLinks = cycle.totalLinks || 0;
+    const submissionPct = totalLinks > 0 ? Math.round((result.submittedCount / totalLinks) * 100) : 0;
+
+    return res.status(200).json({
+      message: 'Survey cycle approved. DataEntry saved with average-fill for non-respondents.',
+      cycleIndex: Number(cycleIndex),
+      scopeIdentifier,
+      completionThresholdPct: thresholdPct,
+      approvedAt: cycle.approvedAt,
+      approvedBy: req.user._id,
+      submissionSummary: {
+        totalLinks,
+        submittedCount: result.submittedCount,
+        submissionPct,
+      },
+      emissionSummary: {
+        sumOfSubmitted: r4(result.sumActual ?? (result.finalTotal - result.pendingEmission)),
+        averagePerEmployee: r4(result.averageEmission),
+        pendingCount: result.pendingCount,
+        pendingEmission: r4(result.pendingEmission),
+        finalTotalKgCO2e: r4(result.finalTotal),
+        isFinalizedWithAverage: result.pendingCount > 0,
+      },
+      averageFillBreakdown: {
+        formula: 'finalTotal = sumOfSubmitted + (averagePerEmployee × pendingCount)',
+        step1_sumOfSubmitted:   `${r4(result.finalTotal - result.pendingEmission)} kgCO2e from ${result.submittedCount} submitted response(s)`,
+        step2_averagePerEmployee: result.submittedCount > 0
+          ? `${r4(result.finalTotal - result.pendingEmission)} / ${result.submittedCount} = ${r4(result.averageEmission)} kgCO2e per employee`
+          : '0 responses submitted — average = 0 kgCO2e',
+        step3_pendingCount:     `${totalLinks} total − ${result.submittedCount} submitted = ${result.pendingCount} pending`,
+        step4_pendingEmission:  `${r4(result.averageEmission)} × ${result.pendingCount} = ${r4(result.pendingEmission)} kgCO2e`,
+        step5_finalTotal:       `${r4(result.finalTotal - result.pendingEmission)} + ${r4(result.pendingEmission)} = ${r4(result.finalTotal)} kgCO2e`,
+      },
+      dataEntryId: result.dataEntryId,
+      cycle: { status: cycle.status, approvedAt: cycle.approvedAt, closedAt: cycle.closedAt },
+    });
+  } catch (err) {
+    console.error('approveSurvey error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+/**
+ * PATCH /api/surveys/:clientId/cycles/:cycleIndex/threshold
+ * Update the completion threshold % for a cycle.
+ *
+ * Body:  { scopeIdentifier, completionThresholdPct }
+ * Roles: client_admin, client_employee_head, super_admin
+ */
+async function updateSurveyThreshold(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    if (!assertClientAccess(req.user, clientId)) {
+      return res.status(403).json({ message: 'Access denied for this client.' });
+    }
+
+    const allowed = ['client_employee_head', 'client_admin', 'super_admin'];
+    if (!allowed.includes(req.user.userType)) {
+      return res.status(403).json({ message: 'Only client_employee_head, client_admin, or super_admin can update the threshold.' });
+    }
+
+    const { scopeIdentifier, completionThresholdPct } = req.body;
+    if (!scopeIdentifier) {
+      return res.status(400).json({ message: 'scopeIdentifier is required.' });
+    }
+    if (completionThresholdPct == null || isNaN(Number(completionThresholdPct))) {
+      return res.status(400).json({ message: 'completionThresholdPct must be a number.' });
+    }
+    const pct = Number(completionThresholdPct);
+    if (pct < 0 || pct > 100) {
+      return res.status(400).json({ message: 'completionThresholdPct must be between 0 and 100.' });
+    }
+
+    const cycle = await SurveyCycle.findOne({
+      clientId,
+      scopeIdentifier,
+      cycleIndex: Number(cycleIndex),
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ message: 'Survey cycle not found.' });
+    }
+    if (cycle.status === 'approved') {
+      return res.status(400).json({ message: 'Cannot update threshold on an already-approved cycle.' });
+    }
+    if (cycle.status === 'cancelled') {
+      return res.status(400).json({ message: 'Cannot update threshold on a cancelled cycle.' });
+    }
+
+    cycle.completionThresholdPct = pct;
+    await cycle.save();
+
+    return res.status(200).json({
+      message: `Completion threshold updated to ${pct}%.`,
+      completionThresholdPct: pct,
+      currentCompletionPct: cycle.statistics?.completionPct ?? 0,
+      approveUnlocked: (cycle.statistics?.completionPct ?? 0) >= pct,
+      cycle: { status: cycle.status, completionThresholdPct: pct, statistics: cycle.statistics },
+    });
+  } catch (err) {
+    console.error('updateSurveyThreshold error:', err);
     return res.status(500).json({ message: 'Internal server error.', error: err.message });
   }
 }
@@ -1220,6 +1435,8 @@ module.exports = {
   invalidateSurveyLink,
   resendSurveyLink,
   exportSurveyResults,
+  approveSurvey,
+  updateSurveyThreshold,
   // Public
   resolveUniqueToken,
   saveUniqueAutosave,

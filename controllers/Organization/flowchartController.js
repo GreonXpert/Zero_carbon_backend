@@ -1859,13 +1859,27 @@ const updateFlowchartNode = async (req, res) => {
           normalizedCEF
         );
 
+        // ── Merge emissionFactors array (EC Tier 2 multi-EF) ──────────────────
+        // Rules:
+        //   1. If incoming sends a non-empty emissionFactors array → use it (intended update)
+        //   2. If incoming sends [] explicitly OR omits the field → keep prev (no accidental wipe)
+        // This prevents emissionFactors being silently lost during any partial node update.
+        const mergedEmissionFactors = (() => {
+          const incEFs  = inc.emissionFactors;
+          const prevEFs = prev.emissionFactors;
+          if (Array.isArray(incEFs) && incEFs.length > 0) return incEFs;    // explicit update
+          if (Array.isArray(prevEFs) && prevEFs.length > 0) return prevEFs; // preserve existing
+          return [];
+        })();
+
         const finalScope = {
           ...prev,
           ...inc,
           scopeUid: inc.scopeUid || prev.scopeUid, // ensure stable UID
           scopeIdentifier: inc.scopeIdentifier || prev.scopeIdentifier, // if rename, new name wins
           emissionFactor: finalEmissionFactor,
-          emissionFactorValues: mergedEFV
+          emissionFactorValues: mergedEFV,
+          emissionFactors: mergedEmissionFactors, // ← always explicit; never lost on partial update
         };
 
         // Keep CEF comments logic as you already had

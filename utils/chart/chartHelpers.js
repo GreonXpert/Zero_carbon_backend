@@ -165,8 +165,10 @@ const normalizeScopeDetail = (scope) => {
   }
 
   // ── Multiple emission factors (EC Tier 2) ─────────────────────────────────────
-  if (Array.isArray(scope.employeeCommutingEmissionFactors)) {
-    normalizedScope.employeeCommutingEmissionFactors = scope.employeeCommutingEmissionFactors;
+  // Accept both the new field name and the old alias (emissionFactors) for backwards compatibility
+  const ecEFs = scope.employeeCommutingEmissionFactors ?? scope.emissionFactors;
+  if (Array.isArray(ecEFs)) {
+    normalizedScope.employeeCommutingEmissionFactors = ecEFs;
   }
 
   // ── Preserve emissionFactorHistory (append-only; controller manages this) ─────
@@ -483,6 +485,161 @@ if (scope.emissionFactor === 'Custom') {
       gwpSearchField: null,
       gwpLastUpdated: null
     };
+  }
+
+  // ── Back-populate emissionFactorValues from emissionFactors array ─────────────
+  // emissionFactorValues is now fully initialized above. Here we check if the
+  // new multi-EF array has data and mirror it into the legacy emissionFactorValues
+  // sub-keys so the calculation engine (which reads emissionFactorValues) works.
+  // Only runs when scope.emissionFactor was blank (multi-EF path).
+  // Never overwrites sub-keys that already have data (single-EF path).
+  if (
+    Array.isArray(normalizedScope.emissionFactors) &&
+    normalizedScope.emissionFactors.length > 0
+  ) {
+    for (const ef of normalizedScope.emissionFactors) {
+      const efSrc = ef.source;
+
+      if (efSrc === 'DEFRA' && ef.defraData) {
+        const d = ef.defraData;
+        const existing = normalizedScope.emissionFactorValues.defraData;
+        if (!existing || !Array.isArray(existing.ghgUnits) || existing.ghgUnits.length === 0) {
+          normalizedScope.emissionFactorValues.defraData = {
+            uom: d.uom || '',
+            conversionFactor: d.conversionFactor ?? null,
+            conversionFactor_comment: d.conversionFactor_comment || '',
+            ghgUnits: Array.isArray(d.ghgUnits)
+              ? d.ghgUnits.map(gu => ({
+                  unit: gu.unit,
+                  ghgconversionFactor: gu.ghgconversionFactor,
+                  ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
+                  conversionFactor: gu.conversionFactor ?? null,
+                  conversionFactor_comment: gu.conversionFactor_comment || '',
+                  gwpValue: gu.gwpValue ?? 0,
+                  gwpSearchField: gu.gwpSearchField ?? null,
+                  gwpLastUpdated: gu.gwpLastUpdated ?? null
+                }))
+              : [],
+            gwpValue: d.gwpValue || 0,
+            gwpSearchField: d.gwpSearchField || null,
+            gwpLastUpdated: d.gwpLastUpdated || null
+          };
+        }
+      }
+
+      if (efSrc === 'EPA' && ef.epaData) {
+        const e = ef.epaData;
+        const existing = normalizedScope.emissionFactorValues.epaData;
+        if (!existing || !Array.isArray(existing.ghgUnitsEPA) || existing.ghgUnitsEPA.length === 0) {
+          normalizedScope.emissionFactorValues.epaData = {
+            uomEPA: e.uomEPA || '',
+            conversionFactor: e.conversionFactor ?? null,
+            conversionFactor_comment: e.conversionFactor_comment || '',
+            ghgUnitsEPA: Array.isArray(e.ghgUnitsEPA)
+              ? e.ghgUnitsEPA.map(gu => ({
+                  unit: gu.unit,
+                  ghgconversionFactor: gu.ghgconversionFactor,
+                  ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
+                  conversionFactor: gu.conversionFactor ?? null,
+                  conversionFactor_comment: gu.conversionFactor_comment || '',
+                  gwpValue: gu.gwpValue ?? 0,
+                  gwpSearchField: gu.gwpSearchField ?? null,
+                  gwpLastUpdated: gu.gwpLastUpdated ?? null
+                }))
+              : [],
+            gwpValue: e.gwpValue || 0,
+            gwpSearchField: e.gwpSearchField || null,
+            gwpLastUpdated: e.gwpLastUpdated || null
+          };
+        }
+      }
+
+      if (efSrc === 'IPCC' && ef.ipccData) {
+        const ip = ef.ipccData;
+        const existing = normalizedScope.emissionFactorValues.ipccData;
+        if (!existing || !Array.isArray(existing.ghgUnits) || existing.ghgUnits.length === 0) {
+          normalizedScope.emissionFactorValues.ipccData = {
+            fuelDensityLiter: ip.fuelDensityLiter ?? null,
+            fuelDensityM3: ip.fuelDensityM3 ?? null,
+            unit: ip.unit || '',
+            conversionFactor: ip.conversionFactor ?? null,
+            conversionFactor_comment: ip.conversionFactor_comment || '',
+            ghgUnits: Array.isArray(ip.ghgUnits)
+              ? ip.ghgUnits.map(gu => ({
+                  unit: gu.unit,
+                  ghgconversionFactor: gu.ghgconversionFactor,
+                  ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
+                  conversionFactor: gu.conversionFactor ?? null,
+                  conversionFactor_comment: gu.conversionFactor_comment || '',
+                  gwpValue: gu.gwpValue ?? 0,
+                  gwpSearchField: gu.gwpSearchField ?? null,
+                  gwpLastUpdated: gu.gwpLastUpdated ?? null
+                }))
+              : [],
+            gwpValue: ip.gwpValue || 0,
+            gwpSearchField: ip.gwpSearchField || null,
+            gwpLastUpdated: ip.gwpLastUpdated || null
+          };
+        }
+      }
+
+      if (efSrc === 'Country' && ef.countryData) {
+        const c = ef.countryData;
+        const existing = normalizedScope.emissionFactorValues.countryData;
+        if (!existing || !Array.isArray(existing.yearlyValues) || existing.yearlyValues.length === 0) {
+          normalizedScope.emissionFactorValues.countryData = {
+            C: c.C || c.country || '',
+            regionGrid: c.regionGrid || '',
+            emissionFactor: c.emissionFactor || '',
+            reference: c.reference || '',
+            unit: c.unit || '',
+            conversionFactor: c.conversionFactor ?? null,
+            conversionFactor_comment: c.conversionFactor_comment || '',
+            yearlyValues: Array.isArray(c.yearlyValues)
+              ? c.yearlyValues.map(yv => ({
+                  from: yv.from,
+                  to: yv.to,
+                  periodLabel: yv.periodLabel,
+                  value: yv.value,
+                  conversionFactor: yv.conversionFactor ?? null,
+                  conversionFactor_comment: yv.conversionFactor_comment || ''
+                }))
+              : []
+          };
+        }
+      }
+
+      if (efSrc === 'EmissionFactorHub' && ef.emissionFactorHubData) {
+        const h = ef.emissionFactorHubData;
+        normalizedScope.emissionFactorValues.emissionFactorHubData = {
+          scope: h.scope || '',
+          category: h.category || '',
+          activity: h.activity || '',
+          itemName: h.itemName || '',
+          unit: h.unit || '',
+          value: h.value || 0,
+          source: h.source || '',
+          reference: h.reference || '',
+          conversionFactor: h.conversionFactor ?? null,
+          conversionFactor_comment: h.conversionFactor_comment || '',
+          gwpValue: h.gwpValue || 0,
+          gwpSearchField: h.gwpSearchField || null,
+          gwpLastUpdated: h.gwpLastUpdated || null
+        };
+      }
+    }
+
+    // If the legacy single-source string was blank, set it to the first source
+    // in the array so the calculation engine has a usable primary emissionFactor.
+    if (!normalizedScope.emissionFactor && normalizedScope.emissionFactors[0] && normalizedScope.emissionFactors[0].source) {
+      normalizedScope.emissionFactor = normalizedScope.emissionFactors[0].source;
+      normalizedScope.emissionFactorValues.dataSource = normalizedScope.emissionFactors[0].source;
+    }
+  }
+
+  // ── Emit multi-EF array even if scope.emissionFactors wasn't sent ─────────────
+  if (!Array.isArray(normalizedScope.emissionFactors)) {
+    normalizedScope.emissionFactors = [];
   }
 
   return normalizedScope;

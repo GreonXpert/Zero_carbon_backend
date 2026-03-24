@@ -31,6 +31,9 @@ const AnonymousCodeSchema = new mongoose.Schema(
     // codeHash: bcrypt hash — used for server-side validation; code itself is not stored
     codeHash: { type: String, required: true, unique: true },
 
+    // ─── Expiry ───────────────────────────────────────────────────────────────
+    expiresAt: { type: Date, default: null },
+
     // ─── Redemption state ─────────────────────────────────────────────────────
     isRedeemed: { type: Boolean, default: false, index: true },
     redeemedAt: { type: Date, default: null },
