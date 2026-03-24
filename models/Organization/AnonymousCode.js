@@ -20,6 +20,11 @@ const AnonymousCodeSchema = new mongoose.Schema(
     // ─── Batch groups codes from same dept/cycle generation ───────────────────
     batchId: { type: String, required: true, index: true },
 
+    // ─── Department this code belongs to ─────────────────────────────────────
+    // Set at generation time. Allows multiple department batches within one scope
+    // while tracking capacity against employeeCommutingConfig.numberOfEmployees.
+    department: { type: String, default: '' },
+
     // ─── Code ─────────────────────────────────────────────────────────────────
     // anonymousCodeId: human-readable label shown to respondent (e.g. ACME_Sales_001)
     anonymousCodeId: { type: String, required: true },
@@ -45,5 +50,6 @@ const AnonymousCodeSchema = new mongoose.Schema(
 // Compound index for fast look-up by batch
 AnonymousCodeSchema.index({ batchId: 1, cycleIndex: 1 });
 AnonymousCodeSchema.index({ clientId: 1, scopeIdentifier: 1, cycleIndex: 1 });
+AnonymousCodeSchema.index({ clientId: 1, scopeIdentifier: 1, cycleIndex: 1, department: 1 });
 
 module.exports = mongoose.model('AnonymousCode', AnonymousCodeSchema);
