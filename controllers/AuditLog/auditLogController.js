@@ -639,7 +639,8 @@ const restoreLogs = async (req, res) => {
  *
  * Body:
  * {
- *   deleteScope: 'all' | 'by_client' | 'by_employee_head' | 'by_employee' | 'by_actor',
+ *   deleteScope: 'all' | 'by_client' | 'by_employee_head' | 'by_employee' | 'by_actor' | 'by_ids',
+ *   ids?:        string[],   // required when deleteScope is 'by_ids'
  *   clientId?:   string,
  *   userId?:     string,
  *   confirm:     true
@@ -648,7 +649,7 @@ const restoreLogs = async (req, res) => {
 const deleteLogs = async (req, res) => {
   try {
     const user = req.user;
-    const { deleteScope, clientId, userId: targetUserId, confirm } = req.body;
+    const { deleteScope, clientId, userId: targetUserId, confirm, ids } = req.body;
 
     const permCheck = canDeleteLogs(user, deleteScope);
     if (!permCheck.allowed) {
@@ -681,6 +682,20 @@ const deleteLogs = async (req, res) => {
         }
         filter.actorUserId = new mongoose.Types.ObjectId(targetUserId);
         break;
+
+      case LOG_DELETE_SCOPES.BY_IDS: {
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return res.status(400).json({ success: false, message: 'ids array is required for by_ids scope.' });
+        }
+        const validIds = ids
+          .filter(id => mongoose.Types.ObjectId.isValid(id))
+          .map(id => new mongoose.Types.ObjectId(id));
+        if (validIds.length === 0) {
+          return res.status(400).json({ success: false, message: 'No valid ObjectIds provided in ids array.' });
+        }
+        filter._id = { $in: validIds };
+        break;
+      }
 
       default:
         return res.status(400).json({ success: false, message: 'Unknown deleteScope.' });
