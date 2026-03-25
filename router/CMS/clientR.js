@@ -18,6 +18,7 @@ const {
   getClientById,
   assignConsultant,
   manageSubscription,
+  reviewSubscription,
   getPendingSubscriptionApprovals,
   getClientsExpiringSoon,
   getDashboardMetrics,
@@ -214,6 +215,7 @@ router.patch("/:clientId/move-to-active", moveToActive);
 // SUBSCRIPTION MANAGEMENT
 // ===================================================================
 
+router.patch("/:clientId/subscription/review", reviewSubscription);
 router.patch("/:clientId/subscription", manageSubscription);
 router.get("/subscription/pending-approvals", getPendingSubscriptionApprovals);
 router.get("/subscription/expiring-soon", getClientsExpiringSoon);

@@ -531,7 +531,7 @@ accountDetails: {
   subscriptionEndDate: { type: Date },
   subscriptionStatus: {
     type: String,
-    enum: ["active", "suspended", "expired", "grace_period"],
+    enum: ["active", "suspended", "expired", "grace_period", "pending_suspension"],
     default: "active"
   },
   subscriptionType: { type: String },

@@ -3704,6 +3704,11 @@ const manageSubscription = async (req, res) => {
         reviewComment: undefined,
       };
 
+      // Mark status as pending_suspension so the UI can distinguish it
+      if (action === "suspend") {
+        client.accountDetails.subscriptionStatus = "pending_suspension";
+      }
+
       client.timeline.push({
         stage: client.stage,
         status: client.status,
@@ -3888,8 +3893,120 @@ const manageSubscription = async (req, res) => {
   }
 };
 
+const reviewSubscription = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { decision, reviewComment } = req.body;
+    const actor = req.user;
+    const actorType = actor.userType;
 
+    // 1) Auth guard
+    if (!["consultant_admin", "super_admin"].includes(actorType)) {
+      return res.status(403).json({
+        message:
+          "Only Consultant Admin and Super Admin can review subscription requests.",
+      });
+    }
 
+    // 2) Validate decision
+    if (!["approve", "reject"].includes(decision)) {
+      return res
+        .status(400)
+        .json({ message: "decision must be 'approve' or 'reject'." });
+    }
+
+    // 3) Load client
+    const client = await Client.findById(clientId);
+    if (!client) return res.status(404).json({ message: "Client not found." });
+
+    const pending = client.accountDetails.pendingSubscriptionRequest;
+
+    if (!pending || pending.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "No pending subscription request found." });
+    }
+
+    const now = new Date();
+
+    if (decision === "approve") {
+      const { action } = pending;
+
+      if (action === "suspend") {
+        client.accountDetails.subscriptionStatus = "suspended";
+        client.accountDetails.isActive = false;
+        client.accountDetails.suspensionReason =
+          pending.reason || "Suspended via approved request";
+        client.accountDetails.suspendedBy = actor._id;
+        client.accountDetails.suspendedAt = now;
+        client.status = "suspended";
+      } else if (action === "reactivate") {
+        client.accountDetails.subscriptionStatus = "active";
+        client.accountDetails.isActive = true;
+        client.accountDetails.suspensionReason = undefined;
+        client.accountDetails.suspendedBy = undefined;
+        client.accountDetails.suspendedAt = undefined;
+        client.status = "active";
+      }
+
+      // Mark request approved
+      client.accountDetails.pendingSubscriptionRequest.status = "approved";
+      client.accountDetails.pendingSubscriptionRequest.reviewedBy = actor._id;
+      client.accountDetails.pendingSubscriptionRequest.reviewedAt = now;
+      client.accountDetails.pendingSubscriptionRequest.reviewComment =
+        reviewComment || "";
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action:
+          action === "suspend"
+            ? "Subscription suspension approved"
+            : "Subscription reactivation approved",
+        performedBy: actor._id,
+        notes: reviewComment || "",
+      });
+    } else {
+      // REJECT — revert status to active, record rejection
+      client.accountDetails.subscriptionStatus = "active";
+      client.accountDetails.pendingSubscriptionRequest = {
+        action: pending.action,
+        status: "rejected",
+        reason: pending.reason,
+        requestedBy: pending.requestedBy,
+        requestedAt: pending.requestedAt,
+        reviewedBy: actor._id,
+        reviewedAt: now,
+        reviewComment: reviewComment || "",
+      };
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "Subscription request rejected",
+        performedBy: actor._id,
+        notes: reviewComment || "",
+      });
+    }
+
+    await client.save();
+
+    return res.status(200).json({
+      message: `Subscription request ${decision}d successfully.`,
+      client: {
+        _id: client._id,
+        subscriptionStatus: client.accountDetails.subscriptionStatus,
+        pendingSubscriptionRequest:
+          client.accountDetails.pendingSubscriptionRequest,
+      },
+    });
+  } catch (err) {
+    console.error("reviewSubscription error:", err);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: err.message });
+  }
+};
 
 const getPendingSubscriptionApprovals = async (req, res) => {
   try {
@@ -6005,6 +6122,7 @@ module.exports = {
   getClientById,
   assignConsultant,
   manageSubscription,
+  reviewSubscription,
   getPendingSubscriptionApprovals,
   getClientsExpiringSoon,  
   getDashboardMetrics,

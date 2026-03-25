@@ -99,6 +99,7 @@ const LOG_DELETE_SCOPES = {
   BY_EMPLOYEE_HEAD: 'by_employee_head',
   BY_EMPLOYEE:      'by_employee',
   BY_ACTOR:         'by_actor',
+  BY_IDS:           'by_ids',
 };
 
 // ─── Main query builder ───────────────────────────────────────────────────────

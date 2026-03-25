@@ -648,7 +648,7 @@ const restoreLogs = async (req, res) => {
 const deleteLogs = async (req, res) => {
   try {
     const user = req.user;
-    const { deleteScope, clientId, userId: targetUserId, confirm } = req.body;
+    const { deleteScope, clientId, userId: targetUserId, confirm, ids } = req.body;
 
     const permCheck = canDeleteLogs(user, deleteScope);
     if (!permCheck.allowed) {
@@ -680,6 +680,16 @@ const deleteLogs = async (req, res) => {
           return res.status(400).json({ success: false, message: 'Valid userId is required for this delete scope.' });
         }
         filter.actorUserId = new mongoose.Types.ObjectId(targetUserId);
+        break;
+
+      case LOG_DELETE_SCOPES.BY_IDS:
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return res.status(400).json({ success: false, message: 'ids must be a non-empty array for by_ids scope.' });
+        }
+        if (ids.some(id => !mongoose.Types.ObjectId.isValid(id))) {
+          return res.status(400).json({ success: false, message: 'All entries in ids must be valid ObjectIds.' });
+        }
+        filter._id = { $in: ids.map(id => new mongoose.Types.ObjectId(id)) };
         break;
 
       default:
