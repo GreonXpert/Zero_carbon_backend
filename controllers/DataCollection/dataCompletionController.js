@@ -509,8 +509,53 @@ async function calculateDataCompletionStatsForClient(clientId, referenceDate = n
   };
 }
 /**
+ * Derives the reporting frequency for a reduction project from its
+ * methodology variables' policy.schedule.frequency.
+ *
+ * Priority (most granular first): monthly > quarterly > semiannual > yearly
+ * Falls back to 'monthly' for M1 or if no policy is found.
+ */
+function getProjectReportingFrequency(reduction) {
+  const PRIORITY = { monthly: 1, quarterly: 2, semiannual: 3, yearly: 4 };
+  let bestFreq = null;
+
+  const pick = (freq) => {
+    if (!freq || freq === 'none') return;
+    const f = freq.toLowerCase();
+    if (!bestFreq || (PRIORITY[f] || 99) < (PRIORITY[bestFreq] || 99)) {
+      bestFreq = f;
+    }
+  };
+
+  const meth = (reduction.calculationMethodology || '').toLowerCase();
+
+  if (meth === 'methodology2' && reduction.m2 && reduction.m2.formulaRef && reduction.m2.formulaRef.variables) {
+    // variables is a Map stored as a plain object after .lean()
+    const vars = reduction.m2.formulaRef.variables;
+    const entries = vars instanceof Map ? vars.entries() : Object.entries(vars);
+    for (const [, varData] of entries) {
+      pick(varData && varData.policy && varData.policy.schedule && varData.policy.schedule.frequency);
+    }
+  } else if (meth === 'methodology3' && reduction.m3) {
+    const allItems = [
+      ...(reduction.m3.baselineEmissions || []),
+      ...(reduction.m3.projectEmissions  || []),
+      ...(reduction.m3.leakageEmissions  || [])
+    ];
+    for (const item of allItems) {
+      for (const variable of (item.variables || [])) {
+        pick(variable && variable.policy && variable.policy.schedule && variable.policy.schedule.frequency);
+      }
+    }
+  }
+
+  return bestFreq || 'monthly';
+}
+
+/**
  * Net Reduction data completion / frequency stats for a client.
- * Uses Reduction.reportingFrequency and NetReductionEntry timestamp window.
+ * Derives the reporting frequency from policy.schedule.frequency on each
+ * project's methodology variables, then checks NetReductionEntry for that window.
  */
 async function calculateNetReductionCompletionStatsForClient(clientId, now = new Date()) {
   const nowMoment = moment(now);
@@ -520,7 +565,7 @@ async function calculateNetReductionCompletionStatsForClient(clientId, now = new
     clientId,
     isDeleted: { $ne: true }
   })
-    .select('_id projectId projectName reportingFrequency')
+    .select('_id projectId projectName calculationMethodology m2 m3')
     .lean();
 
   const byProject = [];
@@ -528,14 +573,8 @@ async function calculateNetReductionCompletionStatsForClient(clientId, now = new
   let totalCompleted = 0;
 
   for (const reduction of reductions) {
-    // reportingFrequency might be string, object, or undefined.
-    // Normalize safely to a lowercase string with default "monthly".
-    const rawFreq =
-      (typeof reduction.reportingFrequency === 'string'
-        ? reduction.reportingFrequency
-        : 'monthly');
-
-    const frequency = rawFreq.toLowerCase();
+    // Derive frequency from the project's methodology variable policies.
+    const frequency = getProjectReportingFrequency(reduction);
 
     // Current time window for this project's reporting frequency
     const windowInfo = getCurrentWindowForFrequency(frequency, now);

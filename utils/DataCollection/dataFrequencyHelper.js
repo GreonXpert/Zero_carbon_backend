@@ -41,6 +41,15 @@ function getCurrentWindowForFrequency(collectionFrequency, now = new Date()) {
       break;
     }
 
+    case 'semiannual': {
+      // H1: Jan–Jun, H2: Jul–Dec (moment months are 0-based)
+      const isH1 = m.month() < 6;
+      from = isH1 ? m.clone().startOf('year') : m.clone().month(6).startOf('month');
+      to   = isH1 ? m.clone().month(5).endOf('month') : m.clone().endOf('year');
+      break;
+    }
+
+    case 'yearly':    // alias for annually
     case 'annually':
       from = m.clone().startOf('year');
       to   = m.clone().endOf('year');

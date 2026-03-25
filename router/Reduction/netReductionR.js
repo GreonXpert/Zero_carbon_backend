@@ -86,6 +86,13 @@ router.post('/:clientId/:projectId/:calculationMethodology/csv', upload.single('
 
 
 router.get('/', getNetReduction);
+
+/**
+ * NET REDUCTION DATA COMPLETION STATS (client-level, used by dashboard)
+ * GET /api/net-reduction/:clientId/data-completion
+ */
+router.get('/:clientId/data-completion', getNetReductionCompletionStats);
+
 /**
  * GET NET REDUCTION STATISTICS
  * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/stats
