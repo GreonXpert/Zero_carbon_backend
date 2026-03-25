@@ -3916,7 +3916,7 @@ const reviewSubscription = async (req, res) => {
     }
 
     // 3) Load client
-    const client = await Client.findById(clientId);
+    const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: "Client not found." });
 
     const pending = client.accountDetails.pendingSubscriptionRequest;
