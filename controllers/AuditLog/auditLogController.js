@@ -838,6 +838,7 @@ const permanentDeleteLogs = async (req, res) => {
       userId: targetUserId,
       onlyDeleted = false,
       confirm,
+      ids,
     } = req.body;
 
     if (confirm !== true) {
@@ -851,23 +852,35 @@ const permanentDeleteLogs = async (req, res) => {
     if (onlyDeleted) filter.isDeleted = true;
 
     switch (deleteScope) {
-      case 'all':
+      case LOG_DELETE_SCOPES.ALL:
         break;
 
-      case 'by_client':
+      case LOG_DELETE_SCOPES.BY_CLIENT:
         if (!clientId) return res.status(400).json({ success: false, message: 'clientId required for by_client scope.' });
         filter.clientId = clientId;
         break;
 
-      case 'by_actor':
+      case LOG_DELETE_SCOPES.BY_EMPLOYEE_HEAD:
+      case LOG_DELETE_SCOPES.BY_EMPLOYEE:
+      case LOG_DELETE_SCOPES.BY_ACTOR:
         if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
-          return res.status(400).json({ success: false, message: 'Valid userId required for by_actor scope.' });
+          return res.status(400).json({ success: false, message: 'Valid userId required for by_actor/by_employee scope.' });
         }
         filter.actorUserId = new mongoose.Types.ObjectId(targetUserId);
         break;
 
+      case LOG_DELETE_SCOPES.BY_IDS:
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return res.status(400).json({ success: false, message: 'ids must be a non-empty array for by_ids scope.' });
+        }
+        if (ids.some(id => !mongoose.Types.ObjectId.isValid(id))) {
+          return res.status(400).json({ success: false, message: 'All entries in ids must be valid ObjectIds.' });
+        }
+        filter._id = { $in: ids.map(id => new mongoose.Types.ObjectId(id)) };
+        break;
+
       default:
-        return res.status(400).json({ success: false, message: 'Unknown deleteScope. Use: all | by_client | by_actor' });
+        return res.status(400).json({ success: false, message: 'Unknown deleteScope.' });
     }
 
     const result = await AuditLog.deleteMany(filter);
