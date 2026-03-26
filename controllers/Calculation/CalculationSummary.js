@@ -1358,13 +1358,11 @@ async function buildProcessEmissionSummary(
       for (const node of processChart.nodes) {
         if (!node.id) continue;
         processNodeMap.set(node.id, {
-          label:         node.label || null,
-          department:    node.details?.department || null,
-          location:      node.details?.location   || null,
-          allocationPct: node.details?.allocationPercentage
-                         ?? node.allocationPercentage
-                         ?? 100,
-          scopeDetails:  node.details?.scopeDetails || []
+          label:        node.label || null,
+          department:   node.details?.department || null,
+          location:     node.details?.location   || null,
+          // allocationPct is per-scopeDetail, resolved per-entry via procScopeDetail below
+          scopeDetails: node.details?.scopeDetails || []
         });
       }
     }
@@ -1551,9 +1549,8 @@ async function buildProcessEmissionSummary(
         );
 
         const allocationPct = safeN(
-          emPack.allocationPct              ??
-          procScopeDetail?.allocationPercentage ??
-          procNode?.allocationPct           ??
+          emPack.allocationPct           ??
+          procScopeDetail?.allocationPct ??
           100
         );
 
