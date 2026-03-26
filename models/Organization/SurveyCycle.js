@@ -21,7 +21,7 @@ const SurveyCycleSchema = new mongoose.Schema(
     // ─── Status ───────────────────────────────────────────────────────────────
     status: {
       type: String,
-      enum: ['upcoming', 'open', 'closed', 'cancelled', 'approved'],
+      enum: ['upcoming', 'open', 'closed', 'cancelled', 'approved', 'missed'],
       default: 'upcoming',
       index: true,
     },
@@ -31,6 +31,10 @@ const SurveyCycleSchema = new mongoose.Schema(
     cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     approvedAt:  { type: Date, default: null },
     approvedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // ─── Missed cycle tracking ─────────────────────────────────────────────────
+    missedDetectedAt:    { type: Date, default: null },
+    autoFillDataEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DataEntry', default: null },
 
     // ─── Completion threshold ─────────────────────────────────────────────────
     // Minimum submission % required before approve is allowed (0–100).

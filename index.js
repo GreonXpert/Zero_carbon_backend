@@ -82,6 +82,8 @@ const { logLogin }       = require('./services/audit/auditLogService');
 
 // SLA checker import
 const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
+// Missed survey cycle detector
+const { startMissedCycleDetector } = require('./utils/jobs/missedCycleDetector');
 const { setTicketChatSocketIO } = require('./utils/sockets/ticketChatSocket');
 
 const helmet = require('helmet');
@@ -2301,6 +2303,9 @@ connectDB().then(() => {
     // Start API Key Expiry Checker
     console.log('🔐 Starting API Key expiry checker...');
     startApiKeyExpiryChecker();
+
+    // Start Missed Survey Cycle Detector (daily at 03:00 UTC)
+    startMissedCycleDetector();
 
     // Schedule cron jobs
     cron.schedule('0 2 * * *', async () => {

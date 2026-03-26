@@ -24,6 +24,10 @@ const {
   invalidateSurveyLink,
   resendSurveyLink,
   exportSurveyResults,
+  // Missed cycle average fill
+  calculateAverageSurvey,
+  approveCycleAverage,
+  rejectCycleAverage,
   // Public
   resolveUniqueToken,
   saveUniqueAutosave,
@@ -73,6 +77,11 @@ surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/cancel',            cancelS
 
 // Approve a cycle (threshold-gated; runs average-fill + saves DataEntry)
 surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/approve',           approveSurvey);
+
+// Missed cycle — cross-cycle average fill + consultant review
+surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/calculate-average', calculateAverageSurvey);
+surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/approve-average',   approveCycleAverage);
+surveyAuthRouter.post('/:clientId/cycles/:cycleIndex/reject-average',    rejectCycleAverage);
 
 // Update completion threshold % for a cycle
 surveyAuthRouter.patch('/:clientId/cycles/:cycleIndex/threshold',        updateSurveyThreshold);

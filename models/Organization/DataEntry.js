@@ -354,6 +354,21 @@ const DataEntrySchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  // Cross-cycle auto-fill tracking (missed cycle handling)
+  isAutoFilled: {
+    type: Boolean,
+    default: false,
+  },
+  autoFillReason: {
+    type: String,
+    default: null,
+    // 'cycle_missed_manual' | 'cycle_missed_auto' | 'manual_recalculate'
+  },
+  autoFillSourceCycles: {
+    type: [Number],
+    default: [],
+    // cycleIndex values used to compute the cross-cycle average
+  },
 },
 {
   timestamps: true,

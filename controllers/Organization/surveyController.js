@@ -31,11 +31,14 @@ const {
 
 const { fetchScopeEFData } = require('../../services/survey/surveyEFHelper');
 
+const DataEntry = require('../../models/Organization/DataEntry');
 const { canManageFlowchart, canViewFlowchart } = require('../../utils/Permissions/permissions');
 const {
   aggregateAndSaveSurveyEmissions,
   finalizeCycleEmissions,
+  crossCycleAverage,
 } = require('../Calculation/emissionCalculationController');
+const { logEvent } = require('../../services/audit/auditLogService');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const SURVEY_VERSION = '1.0';
@@ -1423,6 +1426,291 @@ async function updateSurveyThreshold(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MISSED CYCLE — CALCULATE AVERAGE SURVEY
+// Computes a cross-cycle average from past real (non-auto-filled) DataEntry
+// records and upserts it as the DataEntry for the missed/closed cycle.
+// Sets approvalStatus: 'pending_approval' — consultant must approve before
+// the value counts toward emissions reports.
+// ─────────────────────────────────────────────────────────────────────────────
+async function calculateAverageSurvey(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    const { nodeId, scopeIdentifier, reason } = req.body;
+
+    if (!assertClientAccess(req.user, clientId)) {
+      return res.status(403).json({ message: 'Access denied.' });
+    }
+
+    const ALLOWED_ROLES = new Set(['client_employee_head', 'client_admin', 'consultant', 'super_admin']);
+    if (!ALLOWED_ROLES.has(req.user.userType)) {
+      return res.status(403).json({ message: 'Insufficient role to calculate average survey.' });
+    }
+
+    if (!nodeId || !scopeIdentifier) {
+      return res.status(400).json({ message: 'nodeId and scopeIdentifier are required.' });
+    }
+
+    // Fetch and validate the cycle
+    const cycle = await SurveyCycle.findOne({ clientId, scopeIdentifier, cycleIndex: Number(cycleIndex) });
+    if (!cycle) return res.status(404).json({ message: 'Survey cycle not found.' });
+    if (['approved', 'cancelled'].includes(cycle.status)) {
+      return res.status(400).json({ message: `Cannot apply average to a cycle with status '${cycle.status}'.` });
+    }
+
+    // Compute cross-cycle average
+    const result = await crossCycleAverage({
+      clientId,
+      nodeId,
+      scopeIdentifier,
+      targetCycleIndex: Number(cycleIndex),
+    });
+
+    if (result.error === 'no_historical_data') {
+      return res.status(400).json({
+        message: 'No approved real survey cycles found to compute average. Please enter data manually.',
+      });
+    }
+
+    const { average, usedCycleIndexes, usedCount, lowDataWarning, values } = result;
+
+    // Snapshot existing DataEntry (if any) for rollback in editHistory
+    const externalId = `survey_cycle_${cycleIndex}`;
+    const existingEntry = await DataEntry.findOne({
+      clientId, nodeId, scopeIdentifier, isSummary: true, externalId,
+    });
+    const previousValues = existingEntry
+      ? {
+          dataValues: Object.fromEntries(existingEntry.dataValues || []),
+          totalCO2e: existingEntry.emissionsSummary?.totalCO2e,
+          notes: existingEntry.notes,
+          approvalStatus: existingEntry.approvalStatus,
+        }
+      : null;
+
+    // Derive time period from the cycle
+    // Derive period manually from cycleDate (UTC-safe)
+    const cycleDate = new Date(cycle.cycleDate);
+    const periodMonth = cycleDate.getUTCMonth() + 1;
+    const periodYear = cycleDate.getUTCFullYear();
+    const timestamp = new Date(Date.UTC(periodYear, periodMonth - 1, 1));
+    const dateFmt = `${String(timestamp.getUTCDate()).padStart(2, '0')}:${String(periodMonth).padStart(2, '0')}:${periodYear}`;
+
+    const notesText =
+      `Cross-cycle average applied.\n` +
+      `Source cycles: [${usedCycleIndexes.join(', ')}].\n` +
+      `Values (kgCO2e): [${values.map(v => v.toFixed(4)).join(', ')}].\n` +
+      `Mean: ${average.toFixed(4)} kgCO2e.\n` +
+      `Triggered by: ${req.user.userName} on ${new Date().toISOString()}.\n` +
+      `Reason: ${reason || 'Not provided'}.`;
+
+    // Upsert DataEntry
+    const savedEntry = await DataEntry.findOneAndUpdate(
+      { clientId, nodeId, scopeIdentifier, isSummary: true, externalId },
+      {
+        $set: {
+          scopeType: 'Scope 3',
+          inputType: 'manual',
+          isSummary: true,
+          externalId,
+          timestamp,
+          date: dateFmt,
+          summaryPeriod: { year: periodYear, month: periodMonth },
+          dataValues: new Map([['totalEmployeeCommutingKgCO2e', average]]),
+          'emissionsSummary.totalCO2e': average,
+          'emissionsSummary.unit': 'kgCO2e',
+          processingStatus: 'processed',
+          emissionCalculationStatus: 'completed',
+          approvalStatus: 'pending_approval',
+          isFinalizedWithAverage: true,
+          isAutoFilled: true,
+          autoFillReason: 'cycle_missed_manual',
+          autoFillSourceCycles: usedCycleIndexes,
+          'sourceDetails.dataSource': 'employee_commuting_survey_tier2_average',
+          notes: notesText,
+          lastEditedBy: req.user._id,
+          lastEditedAt: new Date(),
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // Snapshot previous values into editHistory if overwriting an existing entry
+    if (previousValues) {
+      savedEntry.addEditHistory(
+        req.user._id,
+        reason || 'Cross-cycle average applied',
+        previousValues,
+        'DataEntry updated with cross-cycle average'
+      );
+      await savedEntry.save();
+    }
+
+    // Update SurveyCycle with reference to the DataEntry
+    cycle.autoFillDataEntryId = savedEntry._id;
+    await cycle.save();
+
+    // Write AuditLog
+    await logEvent({
+      req,
+      clientId,
+      module: 'data_entry',
+      action: 'calculate',
+      source: 'manual',
+      entityType: 'DataEntry',
+      entityId: savedEntry._id.toString(),
+      severity: lowDataWarning ? 'warning' : 'info',
+      status: 'success',
+      changeSummary: `Average ${average.toFixed(4)} kgCO2e applied to cycle ${cycleIndex} from ${usedCount} cycle(s)`,
+      metadata: {
+        cycleIndex: Number(cycleIndex),
+        average,
+        usedCycleIndexes,
+        usedCount,
+        lowDataWarning: lowDataWarning || false,
+        previousValue: previousValues?.totalCO2e ?? null,
+        reason: reason || null,
+      },
+    });
+
+    return res.status(200).json({
+      message: 'Average calculated and applied. Pending consultant approval.',
+      dataEntryId: savedEntry._id,
+      average,
+      usedCycleIndexes,
+      usedCount,
+      lowDataWarning: lowDataWarning || false,
+      previousValue: previousValues?.totalCO2e ?? null,
+    });
+  } catch (err) {
+    console.error('calculateAverageSurvey error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MISSED CYCLE — CONSULTANT APPROVE AVERAGE
+// Approves a pending auto-filled DataEntry so it counts toward emissions reports.
+// ─────────────────────────────────────────────────────────────────────────────
+async function approveCycleAverage(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    const { nodeId, scopeIdentifier, remarks } = req.body;
+
+    const ALLOWED_ROLES = new Set(['consultant', 'super_admin']);
+    if (!ALLOWED_ROLES.has(req.user.userType)) {
+      return res.status(403).json({ message: 'Only consultants or super admins can approve average fills.' });
+    }
+
+    if (!nodeId || !scopeIdentifier) {
+      return res.status(400).json({ message: 'nodeId and scopeIdentifier are required.' });
+    }
+
+    const externalId = `survey_cycle_${cycleIndex}`;
+    const entry = await DataEntry.findOne({
+      clientId, nodeId, scopeIdentifier, isSummary: true, externalId, isAutoFilled: true,
+    });
+
+    if (!entry) return res.status(404).json({ message: 'No auto-filled DataEntry found for this cycle.' });
+    if (entry.approvalStatus !== 'pending_approval') {
+      return res.status(400).json({ message: `Entry already actioned (status: '${entry.approvalStatus}').` });
+    }
+
+    entry.approvalStatus = 'approved';
+    entry.lastEditedBy = req.user._id;
+    entry.lastEditedAt = new Date();
+    await entry.save();
+
+    await logEvent({
+      req,
+      clientId,
+      module: 'data_entry',
+      action: 'approve',
+      source: 'manual',
+      entityType: 'DataEntry',
+      entityId: entry._id.toString(),
+      severity: 'info',
+      status: 'success',
+      changeSummary: `Consultant approved auto-filled average for cycle ${cycleIndex}: ${entry.emissionsSummary?.totalCO2e?.toFixed(4)} kgCO2e`,
+      metadata: {
+        cycleIndex: Number(cycleIndex),
+        approvedBy: req.user._id,
+        remarks: remarks || null,
+        value: entry.emissionsSummary?.totalCO2e,
+      },
+    });
+
+    return res.status(200).json({
+      message: 'Cycle average approved. Value now counts toward emissions reports.',
+      dataEntryId: entry._id,
+    });
+  } catch (err) {
+    console.error('approveCycleAverage error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MISSED CYCLE — CONSULTANT REJECT AVERAGE
+// Rejects a pending auto-filled DataEntry and flags it for manual entry.
+// ─────────────────────────────────────────────────────────────────────────────
+async function rejectCycleAverage(req, res) {
+  try {
+    const { clientId, cycleIndex } = req.params;
+    const { nodeId, scopeIdentifier, reason } = req.body;
+
+    const ALLOWED_ROLES = new Set(['consultant', 'super_admin']);
+    if (!ALLOWED_ROLES.has(req.user.userType)) {
+      return res.status(403).json({ message: 'Only consultants or super admins can reject average fills.' });
+    }
+
+    if (!nodeId || !scopeIdentifier) {
+      return res.status(400).json({ message: 'nodeId and scopeIdentifier are required.' });
+    }
+
+    const externalId = `survey_cycle_${cycleIndex}`;
+    const entry = await DataEntry.findOne({
+      clientId, nodeId, scopeIdentifier, isSummary: true, externalId, isAutoFilled: true,
+    });
+
+    if (!entry) return res.status(404).json({ message: 'No auto-filled DataEntry found for this cycle.' });
+    if (entry.approvalStatus !== 'pending_approval') {
+      return res.status(400).json({ message: `Entry already actioned (status: '${entry.approvalStatus}').` });
+    }
+
+    entry.approvalStatus = 'rejected';
+    entry.lastEditedBy = req.user._id;
+    entry.lastEditedAt = new Date();
+    await entry.save();
+
+    await logEvent({
+      req,
+      clientId,
+      module: 'data_entry',
+      action: 'other',
+      source: 'manual',
+      entityType: 'DataEntry',
+      entityId: entry._id.toString(),
+      severity: 'warning',
+      status: 'success',
+      changeSummary: `Consultant rejected auto-filled average for cycle ${cycleIndex}`,
+      metadata: {
+        cycleIndex: Number(cycleIndex),
+        rejectedBy: req.user._id,
+        reason: reason || null,
+      },
+    });
+
+    return res.status(200).json({
+      message: 'Average rejected. Please enter data manually or recalculate.',
+      dataEntryId: entry._id,
+    });
+  } catch (err) {
+    console.error('rejectCycleAverage error:', err);
+    return res.status(500).json({ message: 'Internal server error.', error: err.message });
+  }
+}
+
 module.exports = {
   // Authenticated
   generateSurveyLinks,
@@ -1437,6 +1725,9 @@ module.exports = {
   exportSurveyResults,
   approveSurvey,
   updateSurveyThreshold,
+  calculateAverageSurvey,
+  approveCycleAverage,
+  rejectCycleAverage,
   // Public
   resolveUniqueToken,
   saveUniqueAutosave,

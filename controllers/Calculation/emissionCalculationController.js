@@ -4,6 +4,7 @@ const DataEntry = require('../../models/Organization/DataEntry');
 const Flowchart = require('../../models/Organization/Flowchart');
 const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
 const SurveyResponse = require('../../models/Organization/SurveyResponse');
+const SurveyCycle = require('../../models/Organization/SurveyCycle');
 const Client = require('../../models/CMS/Client'); 
 const EmissionSummary = require('../../models/CalculationEmission/EmissionSummary');
 const {
@@ -2542,6 +2543,75 @@ async function finalizeCycleEmissions({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cross-cycle average helper — used for missed cycle auto-fill.
+// Computes a simple mean from all real (non-auto-filled) approved DataEntry
+// records for the same scope, excluding the target cycle itself.
+//
+// Returns:
+//   { average, usedCycleIndexes, usedCount, lowDataWarning, values }
+//   OR { error: 'no_historical_data' } when no valid source cycles exist.
+// ─────────────────────────────────────────────────────────────────────────────
+async function crossCycleAverage({ clientId, nodeId, scopeIdentifier, targetCycleIndex }) {
+  // Step 1 — Fetch all real (not auto-filled) completed DataEntry records
+  const candidates = await DataEntry.find({
+    clientId,
+    nodeId,
+    scopeIdentifier,
+    isSummary: true,
+    emissionCalculationStatus: 'completed',
+    isAutoFilled: { $ne: true },
+    externalId: { $regex: /^survey_cycle_/ },
+  }).lean();
+
+  // Step 2 — Extract values; skip the target cycle itself
+  const pool = [];
+  for (const entry of candidates) {
+    const match = entry.externalId && entry.externalId.match(/^survey_cycle_(\d+)$/);
+    if (!match) continue;
+    const idx = Number(match[1]);
+    if (idx === Number(targetCycleIndex)) continue;
+
+    // Fetch matching SurveyCycle to check completionPct
+    const cycle = await SurveyCycle.findOne({ clientId, scopeIdentifier, cycleIndex: idx }).lean();
+    if (cycle && (cycle.statistics?.completionPct ?? 100) < 20) {
+      console.log(`[crossCycleAverage] Excluding cycle ${idx} — completionPct ${cycle.statistics?.completionPct}% < 20%`);
+      continue;
+    }
+
+    // Extract the commuting emissions value from dataValues Map
+    let val = null;
+    if (entry.dataValues instanceof Map) {
+      val = entry.dataValues.get('totalEmployeeCommutingKgCO2e');
+    } else if (entry.dataValues && typeof entry.dataValues === 'object') {
+      val = entry.dataValues['totalEmployeeCommutingKgCO2e'];
+    }
+    if (val == null) continue;
+
+    pool.push({ cycleIndex: idx, value: Number(val) });
+  }
+
+  // Step 3 — Guard: no usable source data
+  if (pool.length === 0) {
+    return { error: 'no_historical_data' };
+  }
+
+  // Step 4 — Compute simple mean
+  const values = pool.map(p => p.value);
+  const usedCycleIndexes = pool.map(p => p.cycleIndex);
+  const average = values.reduce((s, v) => s + v, 0) / values.length;
+
+  console.log(`[crossCycleAverage] target=${targetCycleIndex} sources=[${usedCycleIndexes}] avg=${average.toFixed(4)} kgCO2e`);
+
+  return {
+    average,
+    usedCycleIndexes,
+    usedCount: values.length,
+    lowDataWarning: values.length === 1,
+    values,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
   calculateEmissions,
@@ -2550,4 +2620,5 @@ module.exports = {
   getEmissionSummary,
   aggregateAndSaveSurveyEmissions,
   finalizeCycleEmissions,
+  crossCycleAverage,
 };
