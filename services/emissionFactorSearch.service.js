@@ -34,6 +34,7 @@ const EPAData    = require('../models/EmissionFactor/EPAData');
 const IPCCData   = require('../models/EmissionFactor/IPCCData');
 const DefraData  = require('../models/EmissionFactor/DefraData');
 const CountryEF  = require('../models/EmissionFactor/countryEmissionFactorModel');
+const EmissionFactorHub = require('../models/EmissionFactor/EmissionFactorHub'); // ← NEW
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const MAX_QUERY_LEN   = 120;
@@ -125,6 +126,15 @@ const PROVIDERS = {
   //   apiKey: process.env.CLIMATIQ_API_KEY,
   //   mapper: (rawResults, q) => rawResults.results.map(r => ({...})),
   // },
+  emissionfactorhub: {
+     type: 'mongo',
+     model: EmissionFactorHub,
+     primaryFields: ['category', 'activity', 'itemName'],
+     allFields: ['scope', 'category', 'activity', 'itemName', 'unit', 'source', 'reference', 'region', 'notes'],
+     textIndex: false,   // No $text index on EFHub — fuzzy uses prefix/trigram fallback
+     projection: { __v: 0 },
+     staticFilters: {},
+   },
 };
 
 const ALLOWED_SOURCES = Object.keys(PROVIDERS);
