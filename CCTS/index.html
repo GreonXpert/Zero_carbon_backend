@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Greon CCTS Intelligence</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ─── Auth Overlay ─────────────────────────────────────────────────────── -->
+<div id="auth-overlay">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <span class="auth-logo-icon">🌿</span>
+      <span class="auth-logo-text">Greon</span>
+    </div>
+    <h2>CCTS Intelligence Platform</h2>
+    <p>Enter your access token to continue</p>
+    <div class="auth-input-wrap">
+      <input type="password" id="token-input" placeholder="Paste your Bearer token here…" />
+    </div>
+    <div id="auth-error" class="auth-error hidden">Invalid token or authentication failed.</div>
+    <button id="auth-btn" class="btn btn-primary btn-lg">Access Platform</button>
+  </div>
+</div>
+
+<!-- ─── App ──────────────────────────────────────────────────────────────── -->
+<div id="app" class="hidden">
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-brand">
+      <div class="brand-logo">
+        <span class="brand-icon">🌿</span>
+        <div>
+          <div class="brand-name">Greon CCTS Intelligence</div>
+          <div class="brand-sub">Official notified entity intelligence under India's CCTS compliance framework</div>
+        </div>
+      </div>
+    </div>
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="dashboard">
+        <span>📊</span> Registry & Analytics
+      </button>
+      <button class="tab-btn" data-tab="admin">
+        <span>⚙️</span> Data Management
+      </button>
+    </nav>
+    <button id="logout-btn" class="btn-logout" title="Logout">Sign Out</button>
+  </header>
+
+  <!-- ═══════════════ DASHBOARD TAB ═══════════════ -->
+  <div id="tab-dashboard" class="tab-panel active">
+
+    <!-- Notification Banner -->
+    <div class="notification-banner">
+      <span class="banner-icon">📋</span>
+      <span><strong>Source:</strong> Greenhouse Gas Emission Intensity Target Rules 2025 &nbsp;•&nbsp; Ministry of Environment, Forest and Climate Change (MoEF&CC) / Bureau of Energy Efficiency (BEE)</span>
+      <div class="banner-actions">
+        <button class="btn-link" onclick="showModal('sources-modal')">View Sources</button>
+        <button class="btn-link" onclick="showModal('timeline-modal')">View Timeline</button>
+      </div>
+    </div>
+
+    <!-- KPI Cards -->
+    <div class="kpi-grid">
+      <div class="kpi-card" style="--accent:#1a8a73">
+        <div class="kpi-label">Obligated Entities</div>
+        <div class="kpi-value" id="kpi-entities">—</div>
+        <div class="kpi-sub" id="kpi-entities-sub">from full registry</div>
+      </div>
+      <div class="kpi-card" style="--accent:#2563eb">
+        <div class="kpi-label">Sectors Covered</div>
+        <div class="kpi-value" id="kpi-sectors">—</div>
+        <div class="kpi-sub">notified sectors</div>
+      </div>
+      <div class="kpi-card" style="--accent:#7c3aed">
+        <div class="kpi-label">States / UTs Covered</div>
+        <div class="kpi-value" id="kpi-states">—</div>
+        <div class="kpi-sub">geographic spread</div>
+      </div>
+      <div class="kpi-card" style="--accent:#d97706">
+        <div class="kpi-label">Notifications Covered</div>
+        <div class="kpi-value">2</div>
+        <div class="kpi-sub" title="GEI Target Rules 2025 + GEI Target Amendment Rules 2025">GEI Rules 2025 + Amendment</div>
+      </div>
+      <div class="kpi-card" style="--accent:#dc2626">
+        <div class="kpi-label">Gazette Date</div>
+        <div class="kpi-value kpi-date">2025-10-08</div>
+        <div class="kpi-sub">latest notification</div>
+      </div>
+    </div>
+
+    <!-- Section Header -->
+    <div class="section-header">
+      <div>
+        <h2 class="section-title">CCTS Notified Entity Registry</h2>
+        <p class="section-sub">Official registry view of notified obligated entities and CCTS reference</p>
+      </div>
+      <div class="section-meta" id="filtered-count-badge">— entities shown</div>
+    </div>
+
+    <!-- Search & Filters -->
+    <div class="filter-bar card">
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" class="search-input" placeholder="Search entity name, registration number, or state…" />
+        <button id="search-clear" class="search-clear hidden">✕</button>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Primary Sector</label>
+        <select id="filter-sector" class="filter-select">
+          <option value="">All Sectors</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Sub-Sector</label>
+        <select id="filter-subsector" class="filter-select">
+          <option value="">All Sub-Sectors</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">State / UT</label>
+        <select id="filter-state" class="filter-select">
+          <option value="">All States</option>
+        </select>
+      </div>
+      <button id="reset-filters" class="btn btn-outline btn-sm">Reset</button>
+    </div>
+
+    <!-- Charts Row 1 -->
+    <div class="charts-row">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Sector-wise Distribution of Obligated Entities</div>
+            <div class="chart-sub">Compares the number of notified obligated entities across covered sectors.</div>
+          </div>
+        </div>
+        <div class="chart-wrap chart-wrap-md">
+          <canvas id="chart-sector"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Notified Target Reduction Distribution (2026–27)</div>
+            <div class="chart-sub">Shows how notified entities are distributed across 2026–27 target reduction bands.</div>
+          </div>
+        </div>
+        <div class="chart-wrap chart-wrap-pie">
+          <canvas id="chart-pie"></canvas>
+        </div>
+        <div class="pie-legend" id="pie-legend"></div>
+      </div>
+    </div>
+
+    <!-- Charts Row 2 -->
+    <div class="charts-row">
+      <div class="chart-card chart-card-wide">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Sector GEI Intensity: Baseline vs Notified Targets</div>
+            <div class="chart-sub">Compares sector-level GEI intensity from the notified baseline year against the 2025–26 and 2026–27 target levels.</div>
+            <div class="chart-note">Note: Official notifications provide baseline 2023–24 and target values for 2025–26 and 2026–27 only; 2024–25 is not part of the public notified dataset.</div>
+          </div>
+        </div>
+        <div class="chart-wrap chart-wrap-lg">
+          <canvas id="chart-gei"></canvas>
+        </div>
+      </div>
+      <div class="chart-card chart-card-side">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Highest Notified Reduction Targets by Entity</div>
+            <div class="chart-sub">Highlights entities with the highest notified reduction requirement by 2026–27.</div>
+          </div>
+        </div>
+        <div id="top-entities-list" class="top-entities-list"></div>
+        <div class="top-entities-footer">
+          <span class="te-label">Indicative Reduction Volume</span>
+          <span class="te-value" id="indicative-volume">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts Row 3 -->
+    <div class="charts-row">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">State and Sub-Sector Distribution</div>
+            <div class="chart-sub">Shows how notified entities are distributed across states and sub-sectors.</div>
+          </div>
+        </div>
+        <div class="charts-inner-row">
+          <div class="chart-wrap chart-wrap-sm">
+            <div class="chart-inner-label">By State / UT</div>
+            <canvas id="chart-state"></canvas>
+          </div>
+          <div class="chart-wrap chart-wrap-sm">
+            <div class="chart-inner-label">By Sub-Sector</div>
+            <canvas id="chart-subsector"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Entity Cards -->
+    <div class="section-header mt-0">
+      <div>
+        <h3 class="section-title">CCTS Registry Records</h3>
+        <div class="section-sub" id="cards-count-label">All 11 fields aligned in page view</div>
+      </div>
+      <div class="sort-row">
+        <label class="filter-label">Sort by</label>
+        <select id="sort-by" class="filter-select filter-select-sm">
+          <option value="entityName">Legal Entity Name</option>
+          <option value="registrationNumber">Registration Number</option>
+          <option value="sector">Sector</option>
+          <option value="state">State</option>
+          <option value="baselineOutput">Baseline Output</option>
+          <option value="baselineGHGEmissionIntensity">Baseline GEI</option>
+          <option value="targetGEI_2025_26">GEI Target 2025-26</option>
+          <option value="targetGEI_2026_27">GEI Target 2026-27</option>
+        </select>
+        <select id="sort-order" class="filter-select filter-select-sm">
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="loading-cards" class="loading-state hidden">
+      <div class="spinner"></div>
+      <span>Loading registry data…</span>
+    </div>
+
+    <div id="entity-cards" class="entity-cards-grid"></div>
+
+    <div id="pagination" class="pagination-wrap"></div>
+
+  </div><!-- /tab-dashboard -->
+
+  <!-- ═══════════════ ADMIN TAB ═══════════════ -->
+  <div id="tab-admin" class="tab-panel hidden">
+
+    <div class="admin-grid">
+
+      <!-- Bulk Upload -->
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h3>📂 Bulk Upload from Excel / CSV</h3>
+          <p>Upload an Excel (.xlsx, .xls) or CSV file to bulk-import or update entities. Existing records (matched by Registration Number) will be updated.</p>
+        </div>
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-zone-inner">
+            <div class="drop-icon">📁</div>
+            <div class="drop-text">Drag & drop your file here</div>
+            <div class="drop-hint">or click to browse — .xlsx, .xls, .csv &nbsp;|&nbsp; max 50 MB</div>
+          </div>
+          <input type="file" id="upload-file" accept=".xlsx,.xls,.csv" class="file-input-hidden" />
+        </div>
+        <div id="upload-filename" class="upload-filename hidden"></div>
+        <button id="upload-btn" class="btn btn-primary btn-block" disabled>Upload & Import</button>
+        <div id="upload-results" class="upload-results hidden"></div>
+      </div>
+
+      <!-- Add Entity -->
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <h3>➕ Add Single Entity</h3>
+          <p>Manually add a single obligated entity to the registry.</p>
+        </div>
+        <form id="add-entity-form" class="entity-form">
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Sector</label>
+              <input type="text" name="sector" placeholder="e.g. Cement" />
+            </div>
+            <div class="form-group">
+              <label>Sub-Sector</label>
+              <input type="text" name="subSector" placeholder="e.g. Portland Pozzolana Cement" />
+            </div>
+            <div class="form-group">
+              <label>Registration Number <span class="required">*</span></label>
+              <input type="text" name="registrationNumber" placeholder="e.g. CMTOE001KA" required />
+            </div>
+            <div class="form-group">
+              <label>Legal Entity Name</label>
+              <input type="text" name="entityName" placeholder="e.g. Shree Cement Limited" />
+            </div>
+            <div class="form-group">
+              <label>State / UT</label>
+              <input type="text" name="state" placeholder="e.g. Karnataka" />
+            </div>
+            <div class="form-group form-group-full">
+              <label>Registered Facility Address</label>
+              <input type="text" name="obligatedEntityAddress" placeholder="Full address" />
+            </div>
+            <div class="form-group">
+              <label>Baseline Output 2023-24 (tonnes)</label>
+              <input type="number" name="baselineOutput" step="any" placeholder="0" />
+            </div>
+            <div class="form-group">
+              <label>Baseline GEI 2023-24 (tCO2e/tonne)</label>
+              <input type="number" name="baselineGHGEmissionIntensity" step="any" placeholder="0.0000" />
+            </div>
+            <div class="form-group">
+              <label>GEI Target 2025-26 (tCO2e/tonne)</label>
+              <input type="number" name="targetGEI_2025_26" step="any" placeholder="0.0000" />
+            </div>
+            <div class="form-group">
+              <label>GEI Target 2026-27 (tCO2e/tonne)</label>
+              <input type="number" name="targetGEI_2026_27" step="any" placeholder="0.0000" />
+            </div>
+            <div class="form-group">
+              <label>Target Reduction 2025-26 (tCO2e/tonne)</label>
+              <input type="number" name="targetReduction_2025_26" step="any" placeholder="0.0000" />
+            </div>
+            <div class="form-group">
+              <label>Target Reduction 2026-27 (tCO2e/tonne)</label>
+              <input type="number" name="targetReduction_2026_27" step="any" placeholder="0.0000" />
+            </div>
+            <div class="form-group">
+              <label>Est. Reduction 2025-26 (tonnes)</label>
+              <input type="number" name="targetEstimatedReduction_2025_26" step="any" placeholder="0" />
+            </div>
+            <div class="form-group">
+              <label>Est. Reduction 2026-27 (tonnes)</label>
+              <input type="number" name="targetEstimatedReduction_2026_27" step="any" placeholder="0" />
+            </div>
+          </div>
+          <div id="add-entity-msg" class="form-msg hidden"></div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Add Entity</button>
+            <button type="reset" class="btn btn-outline">Reset</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Manage Entities -->
+    <div class="admin-card mt-lg">
+      <div class="admin-card-header admin-card-header-row">
+        <div>
+          <h3>🗂️ Manage Registry Entities</h3>
+          <p>Search, edit, and delete entities in the registry.</p>
+        </div>
+        <div class="admin-header-actions">
+          <input type="text" id="admin-search" class="search-input search-input-sm" placeholder="Search entities…" />
+          <button id="bulk-delete-btn" class="btn btn-danger btn-sm" disabled>Delete Selected (<span id="selected-count">0</span>)</button>
+        </div>
+      </div>
+      <div id="admin-loading" class="loading-state hidden">
+        <div class="spinner"></div><span>Loading…</span>
+      </div>
+      <div id="admin-table-wrap" class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="select-all" /></th>
+              <th>#</th>
+              <th>Registration No.</th>
+              <th>Legal Entity Name</th>
+              <th>Sector</th>
+              <th>State</th>
+              <th>Baseline GEI</th>
+              <th>Target 2026-27</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="admin-tbody"></tbody>
+        </table>
+      </div>
+      <div id="admin-pagination" class="pagination-wrap"></div>
+    </div>
+
+  </div><!-- /tab-admin -->
+
+</div><!-- /app -->
+
+<!-- ─── Modals ───────────────────────────────────────────────────────────── -->
+
+<!-- Sources Modal -->
+<div id="sources-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'sources-modal')">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>📄 Official Sources</h3>
+      <button class="modal-close" onclick="hideModal('sources-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="source-item">
+        <div class="source-badge">S.O. 4370(E)</div>
+        <div>
+          <div class="source-name">Greenhouse Gas Emission Intensity Target Rules 2025</div>
+          <div class="source-detail">Published by: Ministry of Environment, Forest and Climate Change (MoEF&CC) &amp; Bureau of Energy Efficiency (BEE)</div>
+          <div class="source-detail">Gazette Date: <strong>8 October 2025</strong></div>
+          <div class="source-detail">Sectors: Aluminium, Cement, Cement Grinding Unit, Chlor-Alkali, Paper and Pulp</div>
+        </div>
+      </div>
+      <div class="source-item">
+        <div class="source-badge">Amendment</div>
+        <div>
+          <div class="source-name">GHG Emission Intensity Target Amendment Rules 2025</div>
+          <div class="source-detail">Published by: MoEF&CC / BEE</div>
+          <div class="source-detail">Supplements the original GEI Target Rules with updated entity-level targets</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Timeline Modal -->
+<div id="timeline-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'timeline-modal')">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>📅 CCTS Policy Timeline</h3>
+      <button class="modal-close" onclick="hideModal('timeline-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-dot tl-dot-green"></div>
+          <div class="tl-content">
+            <div class="tl-date">2023</div>
+            <div class="tl-title">Carbon Credit Trading Scheme (CCTS) Notified</div>
+            <div class="tl-desc">India's first statutory carbon market framework established under the Energy Conservation Act 2022.</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot tl-dot-green"></div>
+          <div class="tl-content">
+            <div class="tl-date">2024</div>
+            <div class="tl-title">Obligated Sector Identification</div>
+            <div class="tl-desc">BEE identifies pilot sectors: Aluminium, Cement, Paper &amp; Pulp, Chlor-Alkali for GEI-based compliance.</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot tl-dot-blue"></div>
+          <div class="tl-content">
+            <div class="tl-date">October 2025</div>
+            <div class="tl-title">GEI Target Rules 2025 Gazetted</div>
+            <div class="tl-desc">Official entity-level Greenhouse Gas Emission Intensity targets notified. Baseline: 2023–24. Target years: 2025–26 and 2026–27.</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot tl-dot-blue"></div>
+          <div class="tl-content">
+            <div class="tl-date">2025–26</div>
+            <div class="tl-title">First Compliance Year</div>
+            <div class="tl-desc">Entities must meet notified GEI targets. Carbon credits issued for over-performance; deficit entities must purchase credits.</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot tl-dot-purple"></div>
+          <div class="tl-content">
+            <div class="tl-date">2026–27</div>
+            <div class="tl-title">Second Compliance Year</div>
+            <div class="tl-desc">Stricter GEI targets apply. Full carbon trading market operational under CCTS framework.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Entity Modal -->
+<div id="edit-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'edit-modal')">
+  <div class="modal-card modal-card-lg">
+    <div class="modal-header">
+      <h3>✏️ Edit Entity</h3>
+      <button class="modal-close" onclick="hideModal('edit-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="edit-entity-form" class="entity-form">
+        <input type="hidden" id="edit-id" />
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Sector</label>
+            <input type="text" name="sector" />
+          </div>
+          <div class="form-group">
+            <label>Sub-Sector</label>
+            <input type="text" name="subSector" />
+          </div>
+          <div class="form-group">
+            <label>Registration Number <span class="required">*</span></label>
+            <input type="text" name="registrationNumber" required />
+          </div>
+          <div class="form-group">
+            <label>Legal Entity Name</label>
+            <input type="text" name="entityName" />
+          </div>
+          <div class="form-group">
+            <label>State / UT</label>
+            <input type="text" name="state" />
+          </div>
+          <div class="form-group form-group-full">
+            <label>Registered Facility Address</label>
+            <input type="text" name="obligatedEntityAddress" />
+          </div>
+          <div class="form-group">
+            <label>Baseline Output 2023-24 (tonnes)</label>
+            <input type="number" name="baselineOutput" step="any" />
+          </div>
+          <div class="form-group">
+            <label>Baseline GEI (tCO2e/tonne)</label>
+            <input type="number" name="baselineGHGEmissionIntensity" step="any" />
+          </div>
+          <div class="form-group">
+            <label>GEI Target 2025-26 (tCO2e/tonne)</label>
+            <input type="number" name="targetGEI_2025_26" step="any" />
+          </div>
+          <div class="form-group">
+            <label>GEI Target 2026-27 (tCO2e/tonne)</label>
+            <input type="number" name="targetGEI_2026_27" step="any" />
+          </div>
+          <div class="form-group">
+            <label>Target Reduction 2025-26 (tCO2e/tonne)</label>
+            <input type="number" name="targetReduction_2025_26" step="any" />
+          </div>
+          <div class="form-group">
+            <label>Target Reduction 2026-27 (tCO2e/tonne)</label>
+            <input type="number" name="targetReduction_2026_27" step="any" />
+          </div>
+          <div class="form-group">
+            <label>Est. Reduction 2025-26 (tonnes)</label>
+            <input type="number" name="targetEstimatedReduction_2025_26" step="any" />
+          </div>
+          <div class="form-group">
+            <label>Est. Reduction 2026-27 (tonnes)</label>
+            <input type="number" name="targetEstimatedReduction_2026_27" step="any" />
+          </div>
+        </div>
+        <div id="edit-msg" class="form-msg hidden"></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+          <button type="button" class="btn btn-outline" onclick="hideModal('edit-modal')">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

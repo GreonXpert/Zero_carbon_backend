@@ -21,22 +21,22 @@ const upload = multer({
 });
 
 // ─── Auth applied to all routes ──────────────────────────────────────────────
-router.use(auth);
+// router.use(auth);
 
-const editRoles = ['super_admin', 'consultant_admin'];
-const viewRoles = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
+// const editRoles = ['super_admin', 'consultant_admin'];
+// const viewRoles = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // Bulk routes BEFORE /:id to avoid param conflicts
-router.post('/bulk-upload', checkRole(...editRoles), upload.single('file'), cctsController.bulkUpload);
-router.post('/bulk-delete', checkRole(...editRoles), cctsController.bulkDeleteCCTSEntities);
+router.post('/bulk-upload',  upload.single('file'), cctsController.bulkUpload);
+router.post('/bulk-delete',  cctsController.bulkDeleteCCTSEntities);
 
 // CRUD
-router.post('/', checkRole(...editRoles), cctsController.createCCTSEntity);
-router.get('/', checkRole(...viewRoles), cctsController.getCCTSEntities);
-router.get('/:id', checkRole(...viewRoles), cctsController.getCCTSEntityById);
-router.patch('/:id', checkRole(...editRoles), cctsController.updateCCTSEntity);
-router.delete('/:id', checkRole(...editRoles), cctsController.deleteCCTSEntity);
+router.post('/',  cctsController.createCCTSEntity);
+router.get('/',  cctsController.getCCTSEntities);
+router.get('/:id',  cctsController.getCCTSEntityById);
+router.patch('/:id',  cctsController.updateCCTSEntity);
+router.delete('/:id',  cctsController.deleteCCTSEntity);
 
 module.exports = router;
