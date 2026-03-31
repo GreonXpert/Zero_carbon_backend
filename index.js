@@ -134,6 +134,7 @@ app.use(cors({
     "http://localhost:3000",
     "http://localhost:3002",
     "http://localhost:5174",
+    "http://127.0.0.1:5501",
     'https://zerocarbon.greonxpert.com',
     'https://www.zerocarbon.greonxpert.com'
   ],
@@ -273,6 +274,7 @@ const io = socketIo(server, {
       "http://localhost:3000", 
       "http://localhost:3002", 
       "http://localhost:5174",
+      "http://127.0.0.1:5501",
       "https://zerocarbon.greonxpert.com",
       "https://www.zerocarbon.greonxpert.com"
     ],

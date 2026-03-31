@@ -9,25 +9,8 @@
 </head>
 <body>
 
-<!-- ─── Auth Overlay ─────────────────────────────────────────────────────── -->
-<div id="auth-overlay">
-  <div class="auth-card">
-    <div class="auth-logo">
-      <span class="auth-logo-icon">🌿</span>
-      <span class="auth-logo-text">Greon</span>
-    </div>
-    <h2>CCTS Intelligence Platform</h2>
-    <p>Enter your access token to continue</p>
-    <div class="auth-input-wrap">
-      <input type="password" id="token-input" placeholder="Paste your Bearer token here…" />
-    </div>
-    <div id="auth-error" class="auth-error hidden">Invalid token or authentication failed.</div>
-    <button id="auth-btn" class="btn btn-primary btn-lg">Access Platform</button>
-  </div>
-</div>
-
 <!-- ─── App ──────────────────────────────────────────────────────────────── -->
-<div id="app" class="hidden">
+<div id="app">
 
   <!-- Header -->
   <header class="site-header">
@@ -48,7 +31,6 @@
         <span>⚙️</span> Data Management
       </button>
     </nav>
-    <button id="logout-btn" class="btn-logout" title="Logout">Sign Out</button>
   </header>
 
   <!-- ═══════════════ DASHBOARD TAB ═══════════════ -->

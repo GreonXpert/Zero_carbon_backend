@@ -58,20 +58,9 @@ function destroyChart(key) {
   if (S.charts[key]) { S.charts[key].destroy(); delete S.charts[key]; }
 }
 
-/* ─── Auth ───────────────────────────────────────────────────────────────── */
-function getToken()     { return localStorage.getItem('ccts_token') || ''; }
-function setToken(t)    { localStorage.setItem('ccts_token', t); }
-function clearToken()   { localStorage.removeItem('ccts_token'); }
-
+/* ─── API Headers (no auth) ──────────────────────────────────────────────── */
 function authHeaders() {
-  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` };
-}
-
-async function verifyToken() {
-  try {
-    const r = await fetch(`${API_BASE}/api/ccts?limit=1`, { headers: authHeaders() });
-    return r.ok;
-  } catch { return false; }
+  return { 'Content-Type': 'application/json' };
 }
 
 /* ─── API ────────────────────────────────────────────────────────────────── */
@@ -692,7 +681,7 @@ $('add-entity-form').addEventListener('submit', async (e) => {
 });
 
 /* ─── Admin: Bulk Upload ─────────────────────────────────────────────────── */
-const dropZone   = $('drop-zone');
+const dropZone = $('drop-zone');
 const fileInput  = $('upload-file');
 const uploadBtn  = $('upload-btn');
 const uploadFN   = $('upload-filename');
@@ -730,7 +719,6 @@ uploadBtn.addEventListener('click', async () => {
   try {
     const r = await fetch(`${API_BASE}/api/ccts/bulk-upload`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${getToken()}` },
       body: fd,
     });
     const json = await r.json();
@@ -838,48 +826,5 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-/* ─── Logout ─────────────────────────────────────────────────────────────── */
-$('logout-btn').addEventListener('click', () => {
-  clearToken();
-  location.reload();
-});
-
-/* ─── Auth Submit ────────────────────────────────────────────────────────── */
-$('auth-btn').addEventListener('click', async () => {
-  const token = $('token-input').value.trim();
-  if (!token) return;
-  $('auth-btn').disabled = true;
-  $('auth-btn').textContent = 'Verifying…';
-  $('auth-error').classList.add('hidden');
-
-  setToken(token);
-  const ok = await verifyToken();
-  if (ok) {
-    $('auth-overlay').classList.add('hidden');
-    $('app').classList.remove('hidden');
-    loadAllData();
-  } else {
-    clearToken();
-    $('auth-error').classList.remove('hidden');
-    $('auth-btn').disabled = false;
-    $('auth-btn').textContent = 'Access Platform';
-  }
-});
-
-$('token-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('auth-btn').click(); });
-
 /* ─── Init ───────────────────────────────────────────────────────────────── */
-(async function init() {
-  const token = getToken();
-  if (token) {
-    const ok = await verifyToken();
-    if (ok) {
-      $('auth-overlay').classList.add('hidden');
-      $('app').classList.remove('hidden');
-      loadAllData();
-      return;
-    }
-    clearToken();
-  }
-  // Show auth overlay (already visible by default)
-})();
+document.addEventListener('DOMContentLoaded', loadAllData);
