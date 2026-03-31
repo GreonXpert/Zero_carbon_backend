@@ -369,6 +369,13 @@ const DataEntrySchema = new mongoose.Schema({
     default: [],
     // cycleIndex values used to compute the cross-cycle average
   },
+  // Survey uncertainty breakdown — populated by finalizeCycleEmissions() for Employee Commuting Tier 2 cycles.
+  // Structure mirrors the calculationBreakdown object built in buildCalculationBreakdown() for non-survey scopes.
+  // null for non-survey DataEntry records and for auto-filled missed-cycle records.
+  calculationBreakdown: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
 },
 {
   timestamps: true,

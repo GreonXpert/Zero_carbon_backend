@@ -292,14 +292,38 @@ const processEmissionSummarySchema = new mongoose.Schema(
           nodeLabel:     { type: String, default: 'Unknown' },
           department:    { type: String, default: 'Unknown' },
           location:      { type: String, default: 'Unknown' },
-          allocationPct: { type: Number, default: 100 },  // the % used for this node
-          CO2e:          { type: Number, default: 0 },    // allocated CO2e (after allocationPct)
+          CO2e:          { type: Number, default: 0 },    // total allocated CO2e (all scopes combined)
           CO2:           { type: Number, default: 0 },
           CH4:           { type: Number, default: 0 },
           N2O:           { type: Number, default: 0 },
           originalCO2e:  { type: Number, default: 0 },    // raw CO2e before allocation
           dataPointCount:{ type: Number, default: 0 },
-          lastUpdatedAt: { type: Date }
+          lastUpdatedAt: { type: Date },
+          // Per-scopeIdentifier breakdown — allocationPct lives here, not at node level
+          scopeDetails: {
+            type: Map,
+            of: new mongoose.Schema(
+              {
+                scopeType:     { type: String },
+                allocationPct: { type: Number, default: 100 }, // % this node received for this scope
+                CO2e:          { type: Number, default: 0 },   // allocated CO2e for this scope
+                // Which other nodes share this scopeIdentifier and their allocation %
+                otherNodes: {
+                  type: Map,
+                  of: new mongoose.Schema(
+                    {
+                      nodeLabel:     { type: String },
+                      allocationPct: { type: Number, default: 0 }
+                    },
+                    { _id: false }
+                  ),
+                  default: {}
+                }
+              },
+              { _id: false }
+            ),
+            default: {}
+          }
         },
         { _id: false }
       ),

@@ -264,17 +264,25 @@ async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingN
           nodeLabel,
           department:    nodeInfo.department,
           location:      nodeInfo.location,
-          allocationPct,
           CO2e:          0,
           originalCO2e:  0,
-          dataPointCount:0
+          dataPointCount:0,
+          scopeDetails:  {}
         };
       }
       pes.byNode[nodeId].CO2e          = (pes.byNode[nodeId].CO2e          || 0) + allocatedCO2e;
       pes.byNode[nodeId].originalCO2e  = (pes.byNode[nodeId].originalCO2e  || 0) + originalCO2e;
       pes.byNode[nodeId].dataPointCount= (pes.byNode[nodeId].dataPointCount || 0) + 1;
-      pes.byNode[nodeId].allocationPct = allocationPct; // always keep current
       pes.byNode[nodeId].lastUpdatedAt = new Date();
+
+      // ── byNode → scopeDetails (allocationPct lives per-scope, not per-node) ─
+      if (!pes.byNode[nodeId].scopeDetails) pes.byNode[nodeId].scopeDetails = {};
+      const existingSd = pes.byNode[nodeId].scopeDetails[scopeIdentifier] || { CO2e: 0 };
+      existingSd.scopeType    = nodeInfo.scopeType;
+      existingSd.allocationPct = allocationPct;
+      existingSd.CO2e          = (existingSd.CO2e || 0) + allocatedCO2e;
+      // otherNodes is not stored in all-time summary — populated live in buildProcessEmissionSummary
+      pes.byNode[nodeId].scopeDetails[scopeIdentifier] = existingSd;
 
       // ── byScopeIdentifier → nodes ─────────────────────────────────────────
       if (!pes.byScopeIdentifier[scopeIdentifier]) {

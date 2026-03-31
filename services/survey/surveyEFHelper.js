@@ -24,6 +24,9 @@ const ProcessFlowchart = require('../../models/Organization/ProcessFlowchart');
  * @returns {Promise<{
  *   employeeCommutingEmissionFactors: Array,
  *   collectionFrequency: string|null,
+ *   UAD: number,
+ *   UEF: number,
+ *   conservativeMode: boolean,
  *   found: boolean
  * }>}
  */
@@ -39,13 +42,13 @@ async function fetchScopeEFData(flowchartId, processFlowchartId, nodeId, scopeId
 
   // ── 2. Guard: document not found or no ID provided ─────────────────────────
   if (!doc) {
-    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, UAD: 0, UEF: 0, conservativeMode: false, found: false };
   }
 
   // ── 3. Locate the node ──────────────────────────────────────────────────────
   const node = (doc.nodes || []).find(n => n.id === nodeId);
   if (!node) {
-    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, UAD: 0, UEF: 0, conservativeMode: false, found: false };
   }
 
   // ── 4. Locate the scope detail ─────────────────────────────────────────────
@@ -53,15 +56,23 @@ async function fetchScopeEFData(flowchartId, processFlowchartId, nodeId, scopeId
     s => s.scopeIdentifier === scopeIdentifier
   );
   if (!scope) {
-    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, found: false };
+    return { employeeCommutingEmissionFactors: [], collectionFrequency: null, UAD: 0, UEF: 0, conservativeMode: false, found: false };
   }
 
   // ── 5. Return what the calculator needs ────────────────────────────────────
+  // Note: Flowchart.js has a field naming bug — conservativeMode is stored as 'npm' there.
+  // Using `scope.conservativeMode === true` correctly falls back to false for Flowchart-backed
+  // surveys (where scope.conservativeMode is undefined). Fix the Flowchart model separately.
   return {
     employeeCommutingEmissionFactors: scope.employeeCommutingEmissionFactors || [],
     collectionFrequency: scope.employeeCommutingConfig?.collectionFrequency || null,
+    UAD: Number(scope.UAD) || 0,
+    UEF: Number(scope.UEF) || 0,
+    conservativeMode: scope.conservativeMode === true,
     found: true,
   };
 }
+
+
 
 module.exports = { fetchScopeEFData };

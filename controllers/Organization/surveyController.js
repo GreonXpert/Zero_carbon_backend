@@ -160,6 +160,54 @@ async function generateSurveyLinks(req, res) {
       return res.status(400).json({ message: 'This scope is configured for anonymous mode, not unique.' });
     }
 
+    // ── Capacity check: employees.length must not exceed numberOfEmployees ────
+    const numberOfEmployees = Number(ecConfig.numberOfEmployees) || 0;
+    if (numberOfEmployees < 1) {
+      return res.status(400).json({ message: 'numberOfEmployees must be set on the scope configuration.' });
+    }
+    if (employees.length > numberOfEmployees) {
+      return res.status(400).json({
+        message: `Requested ${employees.length} employee link(s) exceeds the configured maximum of ${numberOfEmployees} for this scope. Reduce your employees list or update numberOfEmployees in the scope config.`,
+        requestedCount: employees.length,
+        configuredMaximum: numberOfEmployees,
+        excess: employees.length - numberOfEmployees,
+      });
+    }
+
+    // ── Per-cycle capacity check: existing unique employees + new must not exceed cap ──
+    // Uses distinct recipientId count so re-generating for existing employees is not double-counted.
+    const overflowCycles = [];
+    for (let ci = 0; ci < collectionDates.length; ci++) {
+      // Count existing links whose recipientId is NOT in the current employees list
+      // (those are truly new slots being added on top of prior generations)
+      const incomingIds = employees.map(e => e.employeeId).filter(Boolean);
+      const existingNewSlots = await SurveyLink.countDocuments({
+        clientId,
+        scopeIdentifier,
+        cycleIndex: ci,
+        ...(incomingIds.length > 0 ? { recipientId: { $nin: incomingIds } } : {}),
+      });
+      const totalAfter = existingNewSlots + employees.length;
+      if (totalAfter > numberOfEmployees) {
+        const existing = await SurveyLink.countDocuments({ clientId, scopeIdentifier, cycleIndex: ci });
+        overflowCycles.push({
+          cycleIndex: ci,
+          existingLinks: existing,
+          requested: employees.length,
+          projectedTotal: totalAfter,
+          capacity: numberOfEmployees,
+          available: Math.max(0, numberOfEmployees - existing),
+        });
+      }
+    }
+    if (overflowCycles.length > 0) {
+      return res.status(400).json({
+        message: `Adding ${employees.length} link(s) would exceed numberOfEmployees (${numberOfEmployees}) in one or more cycles.`,
+        configuredMaximum: numberOfEmployees,
+        overflowCycles,
+      });
+    }
+
     const reportingYear = new Date(collectionDates[0]).getFullYear();
     // Note: per-employee expiresAt is computed inside the employee loop below.
 
@@ -1298,6 +1346,9 @@ async function approveSurvey(req, res) {
       scopeIdentifier
     );
     const collectionFrequency = efData.collectionFrequency || 'annually';
+    const UAD             = Number(efData.UAD) || 0;
+    const UEF             = Number(efData.UEF) || 0;
+    const conservativeMode = efData.conservativeMode === true;
 
     // ── Average-fill calculation + DataEntry upsert ───────────────────────────
     const result = await finalizeCycleEmissions({
@@ -1310,6 +1361,9 @@ async function approveSurvey(req, res) {
       flowchartId: cycle.flowchartId,
       collectionFrequency,
       totalLinks: cycle.totalLinks || 0,
+      UAD,
+      UEF,
+      conservativeMode,
     });
 
     // ── Mark cycle as approved ────────────────────────────────────────────────
@@ -1354,6 +1408,63 @@ async function approveSurvey(req, res) {
         step4_pendingEmission:  `${r4(result.averageEmission)} × ${result.pendingCount} = ${r4(result.pendingEmission)} kgCO2e`,
         step5_finalTotal:       `${r4(result.finalTotal - result.pendingEmission)} + ${r4(result.pendingEmission)} = ${r4(result.finalTotal)} kgCO2e`,
       },
+      uncertaintySummary: {
+        // ── Uncertainty inputs ──────────────────────────────────────────────
+        UAD,
+        UEF,
+        conservativeMode,
+
+        // ── Submission completion status ────────────────────────────────────
+        submissionCompletion: {
+          totalLinks,
+          submittedCount: result.submittedCount,
+          submissionPct: r4(result.submissionPct),
+          remainingPct:  r4(result.remainingPct),
+          note: result.remainingPct > 0
+            ? `${r4(result.remainingPct)}% of surveys not submitted — average-fill was applied for ${result.pendingCount} employee(s). This gap contributes ${r4(result.deltaCompletionGap)} kgCO2e to total uncertainty.`
+            : 'All surveys submitted — no completion-gap uncertainty.',
+        },
+
+        // ── Calculation uncertainty (UAD + UEF) ─────────────────────────────
+        calculationUncertainty: {
+          formula: 'UE(%) = sqrt(UAD² + UEF²)',
+          uncertaintyPct: r4(result.UE),
+          deltaSurveyKgCO2e: r4(result.deltaSurvey),
+          note: `Calculation uncertainty of ${r4(result.UE)}% on ${r4(result.finalTotal)} kgCO2e = ±${r4(result.deltaSurvey)} kgCO2e`,
+        },
+
+        // ── Completion-gap uncertainty (unsubmitted surveys) ────────────────
+        completionGapUncertainty: {
+          formula: 'deltaCompletionGap = finalTotal × (remainingPct / 100)',
+          remainingPct: r4(result.remainingPct),
+          deltaCompletionGapKgCO2e: r4(result.deltaCompletionGap),
+          note: `${r4(result.remainingPct)}% unsubmitted × ${r4(result.finalTotal)} kgCO2e = ${r4(result.deltaCompletionGap)} kgCO2e gap uncertainty`,
+        },
+
+        // ── Combined total uncertainty ───────────────────────────────────────
+        totalUncertainty: {
+          formula: 'totalUncertainty = deltaSurvey + deltaCompletionGap',
+          calculation: `${r4(result.deltaSurvey)} + ${r4(result.deltaCompletionGap)} = ${r4(result.totalUncertainty)}`,
+          totalUncertaintyKgCO2e: r4(result.totalUncertainty),
+        },
+
+        // ── Final reported emission (conservativeMode applied) ───────────────
+        reportedEmission: {
+          conservativeMode,
+          reportedEmissionKgCO2e: r4(result.totalEmployeeCommutingWithUncertainityExactKgCO2e),
+          note: conservativeMode
+            ? `Conservative mode ON — reported = base + deltaSurvey = ${r4(result.finalTotal)} + ${r4(result.deltaSurvey)} = ${r4(result.totalEmployeeCommutingWithUncertainityExactKgCO2e)} kgCO2e`
+            : `Conservative mode OFF — reported = base = ${r4(result.finalTotal)} kgCO2e`,
+        },
+
+        // ── Uncertainty range (low / high bounds) ───────────────────────────
+        uncertaintyRange: {
+          low:  r4(result.finalTotal - result.deltaSurvey),
+          high: r4(result.finalTotal + result.deltaSurvey),
+          note: `Base ± deltaSurvey: ${r4(result.finalTotal)} ± ${r4(result.deltaSurvey)} kgCO2e`,
+        },
+      },
+      calculationBreakdown: result.calculationBreakdown,
       dataEntryId: result.dataEntryId,
       cycle: { status: cycle.status, approvedAt: cycle.approvedAt, closedAt: cycle.closedAt },
     });

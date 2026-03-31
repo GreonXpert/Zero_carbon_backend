@@ -13,6 +13,8 @@ const {
 } = require('../../utils/Calculation/CalculateUncertainity');
 
 
+
+
 // ─── UNCERTAINTY HELPER ───────────────────────────────────────────────────────
 // Sum all CO2e / emission values from the cumulative emission buckets.
 // This total is passed to formatUncertaintyResult() as the single cumulative
@@ -2481,7 +2483,10 @@ async function aggregateAndSaveSurveyEmissions({
 async function finalizeCycleEmissions({
   clientId, nodeId, scopeIdentifier, cycleIndex,
   cycleDate, reportingYear, flowchartId, collectionFrequency, totalLinks,
+  UAD = 0, UEF = 0, conservativeMode = false,
 }) {
+  const r6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+
   // 1. Fetch all submitted responses
   const responses = await SurveyResponse.find(
     { clientId, scopeIdentifier, cycleIndex },
@@ -2498,10 +2503,103 @@ async function finalizeCycleEmissions({
   const pendingEmission = averageEmission * pendingCount;
   const finalTotal = sumActual + pendingEmission;
 
-  // 3. Derive time period
+  // 3. Uncertainty computation ─────────────────────────────────────────────────
+  const uad = Number(UAD) || 0;
+  const uef = Number(UEF) || 0;
+
+  // Step 2: UE(%) = sqrt(UAD² + UEF²)  [ISO 14064-1 Root-Sum-of-Squares]
+  const UE = r6(Math.sqrt(Math.pow(uad, 2) + Math.pow(uef, 2)));
+
+  // Step 3: survey calculation uncertainty delta
+  const deltaSurvey = r6(finalTotal * (UE / 100));
+
+  // Step 4: completion-gap uncertainty (unsubmitted surveys extrapolated by average)
+  const submissionPct      = total > 0 ? r6((submittedCount / total) * 100) : 0;
+  const remainingPct       = r6(100 - submissionPct);
+  const deltaCompletionGap = r6(finalTotal * (remainingPct / 100));
+
+  // Step 5: total combined uncertainty
+  const totalUncertainty = r6(deltaSurvey + deltaCompletionGap);
+
+  // Step 6: conservative application
+  // conservativeMode=true  → report upper bound (base + deltaSurvey)
+  // conservativeMode=false → report base emission (range shown separately)
+  const totalEmployeeCommutingWithUncertainityExactKgCO2e = conservativeMode
+    ? r6(finalTotal + deltaSurvey)
+    : r6(finalTotal);
+
+  const totalEmployeeCommutingKgTotalUncertaintyCO2e = totalUncertainty;
+
+  // Build calculation breakdown (mirrors buildCalculationBreakdown style)
+  const calculationBreakdown = {
+    employeeCommuting: {
+      category: 'Employee Commuting',
+      tier: 'tier 2',
+      conservativeMode,
+      inputValues: {
+        submittedCount,
+        totalLinks: total,
+        submissionPct,
+        remainingPct,
+        totalEmployeeCommutingKgCO2e: r6(finalTotal),
+        UAD: uad,
+        UEF: uef,
+      },
+      steps: {
+        step1_finalized_employee_commuting_total: {
+          formula: 'finalTotal = submittedTotal + (averagePerEmployee × pendingCount)',
+          result: r6(finalTotal),
+          unit: 'kgCO2e',
+        },
+        step2_uncertainty_percent: {
+          formula: 'UE(%) = sqrt(UAD² + UEF²)',
+          calculation: `sqrt(${uad}² + ${uef}²) = ${UE}`,
+          result: UE,
+          unit: '%',
+        },
+        step3_survey_uncertainty_delta: {
+          formula: 'deltaSurvey = totalEmployeeCommutingKgCO2e × (UE / 100)',
+          calculation: `${r6(finalTotal)} × (${UE} / 100) = ${deltaSurvey}`,
+          result: deltaSurvey,
+          unit: 'kgCO2e',
+        },
+        step4_completion_gap_uncertainty: {
+          formula: 'deltaCompletionGap = totalEmployeeCommutingKgCO2e × (remainingPct / 100)',
+          submissionPct,
+          remainingPct,
+          calculation: `${r6(finalTotal)} × (${remainingPct} / 100) = ${deltaCompletionGap}`,
+          result: deltaCompletionGap,
+          unit: 'kgCO2e',
+        },
+        step5_total_uncertainty: {
+          formula: 'totalUncertainty = deltaSurvey + deltaCompletionGap',
+          calculation: `${deltaSurvey} + ${deltaCompletionGap} = ${totalUncertainty}`,
+          result: totalUncertainty,
+          unit: 'kgCO2e',
+        },
+        step6_conservative_application: {
+          conservativeMode,
+          formula: conservativeMode
+            ? 'reportedEmission = finalTotal + deltaSurvey  (upper bound)'
+            : 'reportedEmission = finalTotal  (base emission with range)',
+          calculation: conservativeMode
+            ? `true → ${r6(finalTotal)} + ${deltaSurvey} = ${totalEmployeeCommutingWithUncertainityExactKgCO2e}`
+            : `false → ${r6(finalTotal)}`,
+          result: totalEmployeeCommutingWithUncertainityExactKgCO2e,
+          unit: 'kgCO2e',
+        },
+      },
+      range: {
+        low:  r6(finalTotal - deltaSurvey),
+        high: r6(finalTotal + deltaSurvey),
+      },
+    },
+  };
+
+  // 4. Derive time period
   const period = deriveSurveyPeriod(collectionFrequency || 'annually', cycleDate, reportingYear);
 
-  // 4. Upsert DataEntry with finalized total
+  // 5. Upsert DataEntry with finalized total + uncertainty fields
   const externalId = `survey_cycle_${cycleIndex}`;
   const filter = { clientId, nodeId, scopeIdentifier, isSummary: true, externalId };
 
@@ -2509,7 +2607,8 @@ async function finalizeCycleEmissions({
     `Finalized: ${submittedCount}/${total} responses. ` +
     `Actual: ${sumActual.toFixed(4)} kgCO2e. ` +
     `Extrapolated ${pendingCount} pending @ avg ${averageEmission.toFixed(4)} kgCO2e = ${pendingEmission.toFixed(4)} kgCO2e. ` +
-    `Final total: ${finalTotal.toFixed(4)} kgCO2e.`;
+    `Final total: ${finalTotal.toFixed(4)} kgCO2e. ` +
+    `UE: ${UE}% | deltaSurvey: ${deltaSurvey} | remainingPct: ${remainingPct}% | totalUncertainty: ${totalUncertainty} kgCO2e.`;
 
   const savedEntry = await DataEntry.findOneAndUpdate(
     filter,
@@ -2522,9 +2621,17 @@ async function finalizeCycleEmissions({
         timestamp: period.timestamp,
         date: formatDateDDMMYYYY(period.timestamp),
         summaryPeriod: { year: period.periodYear, month: period.periodMonth },
-        dataValues: new Map([['totalEmployeeCommutingKgCO2e', finalTotal]]),
+        dataValues: new Map([
+          ['totalEmployeeCommutingKgCO2e', finalTotal],
+          ['totalEmployeeCommutingWithUncertainityExactKgCO2e', totalEmployeeCommutingWithUncertainityExactKgCO2e],
+          ['totalEmployeeCommutingKgTotalUncertaintyCO2e', totalEmployeeCommutingKgTotalUncertaintyCO2e],
+        ]),
         'emissionsSummary.totalCO2e': finalTotal,
+        'emissionsSummary.totalCO2eWithUncertainty': totalEmployeeCommutingWithUncertainityExactKgCO2e,
         'emissionsSummary.unit': 'kgCO2e',
+        'calculatedEmissions.metadata.UAD': uad,
+        'calculatedEmissions.metadata.UEF': uef,
+        calculationBreakdown,
         processingStatus: 'processed',
         emissionCalculationStatus: 'completed',
         emissionCalculatedAt: new Date(),
@@ -2537,9 +2644,23 @@ async function finalizeCycleEmissions({
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  console.log(`[finalizeCycleEmissions] cycle=${cycleIndex} scope=${scopeIdentifier} submitted=${submittedCount} pending=${pendingCount} final=${finalTotal}`);
+  console.log(`[finalizeCycleEmissions] cycle=${cycleIndex} scope=${scopeIdentifier} submitted=${submittedCount} pending=${pendingCount} final=${finalTotal} UE=${UE}% deltaSurvey=${deltaSurvey} remainingPct=${remainingPct}% totalUncertainty=${totalUncertainty}`);
 
-  return { submittedCount, pendingCount, sumActual, averageEmission, pendingEmission, finalTotal, dataEntryId: savedEntry._id };
+  return {
+    submittedCount, pendingCount, sumActual, averageEmission, pendingEmission, finalTotal,
+    dataEntryId: savedEntry._id,
+    // Uncertainty outputs
+    UE,
+    deltaSurvey,
+    submissionPct,
+    remainingPct,
+    deltaCompletionGap,
+    totalUncertainty,
+    totalEmployeeCommutingWithUncertainityExactKgCO2e,
+    totalEmployeeCommutingKgTotalUncertaintyCO2e,
+    conservativeMode,
+    calculationBreakdown,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

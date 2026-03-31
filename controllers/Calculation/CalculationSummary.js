@@ -1592,9 +1592,10 @@ async function buildProcessEmissionSummary(
         const nodeKey = sanitizeMapKey(entry.nodeId || 'unknown');
         if (!byNode.has(nodeKey)) {
           byNode.set(nodeKey, {
-            nodeLabel, department, location, allocationPct,
+            nodeLabel, department, location,
             CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
-            originalCO2e: 0, dataPointCount: 0, lastUpdatedAt: new Date()
+            originalCO2e: 0, dataPointCount: 0, lastUpdatedAt: new Date(),
+            scopeDetails: new Map()
           });
         }
         const nodeEntry = byNode.get(nodeKey);
@@ -1603,8 +1604,17 @@ async function buildProcessEmissionSummary(
         nodeEntry.dataPointCount += 1;
         nodeEntry.lastUpdatedAt   = new Date();
 
-        // ── byScopeIdentifier ─────────────────────────────────────────────
+        // ── byNode → scopeDetails (allocationPct lives per-scope, not per-node) ──
         const sid = sanitizeMapKey(entry.scopeIdentifier || 'Unknown');
+        if (!nodeEntry.scopeDetails.has(sid)) {
+          nodeEntry.scopeDetails.set(sid, {
+            scopeType, allocationPct, CO2e: 0, otherNodes: new Map()
+          });
+        }
+        nodeEntry.scopeDetails.get(sid).CO2e += allocatedVals.CO2e;
+
+        // ── byScopeIdentifier ─────────────────────────────────────────────
+        // (reuses `sid` already computed above for byNode → scopeDetails)
         if (!byScopeIdentifier.has(sid)) {
           byScopeIdentifier.set(sid, {
             scopeType, CO2e: 0, CO2: 0, CH4: 0, N2O: 0,
@@ -1672,6 +1682,23 @@ async function buildProcessEmissionSummary(
       `totalOriginalCO2e=${totalOriginalCO2e.toFixed(4)}, ` +
       `totalAllocatedCO2e=${totalAllocatedCO2e.toFixed(4)}`
     );
+
+    // ── Populate otherNodes inside each byNode scopeDetail ─────────────────
+    // byScopeIdentifier already has every node that shares a scope, so we
+    // cross-reference it to fill in "where did the remaining % go?"
+    for (const [curNodeKey, nodeData] of byNode) {
+      for (const [sdKey, sdEntry] of nodeData.scopeDetails) {
+        const siData = byScopeIdentifier.get(sdKey);
+        if (!siData) continue;
+        for (const [otherNodeKey, otherNodeData] of siData.nodes) {
+          if (otherNodeKey === curNodeKey) continue; // skip self
+          sdEntry.otherNodes.set(otherNodeKey, {
+            nodeLabel:     otherNodeData.nodeLabel,
+            allocationPct: otherNodeData.allocationPct
+          });
+        }
+      }
+    }
 
     // ── nodeCount rollup ───────────────────────────────────────────────────
     const deptNodes = new Map();
