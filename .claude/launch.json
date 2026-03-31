@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ccts-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-s", "CCTS", "-l", "5502"],
+      "port": 5502
+    }
+  ]
+}

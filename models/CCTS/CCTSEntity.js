@@ -20,6 +20,7 @@ const CCTSEntitySchema = new mongoose.Schema(
     targetReduction_2026_27: { type: Number, default: null },       // tCO2e / tonne eq.product
     targetEstimatedReduction_2025_26: { type: Number, default: null }, // Tonne
     targetEstimatedReduction_2026_27: { type: Number, default: null }, // Tonne
+    source: { type: String, trim: true },
 
     createdBy: { type: String },
     updatedBy: { type: String },
@@ -39,6 +40,7 @@ CCTSEntitySchema.index(
     subSector: 'text',
     state: 'text',
     obligatedEntityAddress: 'text',
+    source: 'text',
   },
   {
     weights: {
@@ -48,6 +50,7 @@ CCTSEntitySchema.index(
       subSector: 4,
       state: 3,
       obligatedEntityAddress: 1,
+      source: 1,
     },
     name: 'ccts_text_search',
   }

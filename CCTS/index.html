@@ -25,11 +25,11 @@
     </div>
     <nav class="tab-nav">
       <button class="tab-btn active" data-tab="dashboard">
-        <span>📊</span> Registry & Analytics
+        <span></span> Registry & Analytics
       </button>
-      <button class="tab-btn" data-tab="admin">
-        <span>⚙️</span> Data Management
-      </button>
+      <!-- <button class="tab-btn" data-tab="admin">
+        <span></span> Data Management
+      </button> -->
     </nav>
   </header>
 
@@ -42,33 +42,38 @@
       <span><strong>Source:</strong> Greenhouse Gas Emission Intensity Target Rules 2025 &nbsp;•&nbsp; Ministry of Environment, Forest and Climate Change (MoEF&CC) / Bureau of Energy Efficiency (BEE)</span>
       <div class="banner-actions">
         <button class="btn-link" onclick="showModal('sources-modal')">View Sources</button>
-        <button class="btn-link" onclick="showModal('timeline-modal')">View Timeline</button>
+        <a class="btn-link" href="timeline.html" target="_blank" rel="noopener">View Timeline</a>
       </div>
     </div>
 
     <!-- KPI Cards -->
     <div class="kpi-grid">
-      <div class="kpi-card" style="--accent:#1a8a73">
+      <div class="kpi-card" style="--kpi-color:#1BC49D">
+        <div class="kpi-icon">🏭</div>
         <div class="kpi-label">Obligated Entities</div>
         <div class="kpi-value" id="kpi-entities">—</div>
         <div class="kpi-sub" id="kpi-entities-sub">from full registry</div>
       </div>
-      <div class="kpi-card" style="--accent:#2563eb">
+      <div class="kpi-card" style="--kpi-color:#3182ce">
+        <div class="kpi-icon">🏗️</div>
         <div class="kpi-label">Sectors Covered</div>
         <div class="kpi-value" id="kpi-sectors">—</div>
         <div class="kpi-sub">notified sectors</div>
       </div>
-      <div class="kpi-card" style="--accent:#7c3aed">
+      <div class="kpi-card" style="--kpi-color:#805ad5">
+        <div class="kpi-icon">🗺️</div>
         <div class="kpi-label">States / UTs Covered</div>
         <div class="kpi-value" id="kpi-states">—</div>
         <div class="kpi-sub">geographic spread</div>
       </div>
-      <div class="kpi-card" style="--accent:#d97706">
+      <div class="kpi-card" style="--kpi-color:#d97706">
+        <div class="kpi-icon">📜</div>
         <div class="kpi-label">Notifications Covered</div>
         <div class="kpi-value">2</div>
         <div class="kpi-sub" title="GEI Target Rules 2025 + GEI Target Amendment Rules 2025">GEI Rules 2025 + Amendment</div>
       </div>
-      <div class="kpi-card" style="--accent:#dc2626">
+      <div class="kpi-card" style="--kpi-color:#e53e3e">
+        <div class="kpi-icon">📅</div>
         <div class="kpi-label">Gazette Date</div>
         <div class="kpi-value kpi-date">2025-10-08</div>
         <div class="kpi-sub">latest notification</div>
@@ -113,87 +118,258 @@
     </div>
 
     <!-- Charts Row 1 -->
-    <div class="charts-row">
-      <div class="chart-card">
-        <div class="chart-header">
-          <div>
-            <div class="chart-title">Sector-wise Distribution of Obligated Entities</div>
-            <div class="chart-sub">Compares the number of notified obligated entities across covered sectors.</div>
+    <div class="charts-row charts-row-r1">
+
+      <!-- Card 1: Sector Bar Chart — redesigned -->
+      <div class="chart-card chart-card-sector">
+        <div class="chart-card-glow chart-card-glow-green"></div>
+        <div class="chart-header-r1">
+          <div class="chart-eyebrow">
+            <span class="chart-eyebrow-icon">◈</span>
+            <span>Sector Analysis</span>
           </div>
+          <h3 class="chart-title-r1">Sector-wise Distribution</h3>
+          <p class="chart-sub-r1">Obligated entities across covered sectors</p>
         </div>
-        <div class="chart-wrap chart-wrap-md">
+        <div class="chart-divider"></div>
+        <div class="chart-wrap chart-wrap-bar">
           <canvas id="chart-sector"></canvas>
         </div>
       </div>
-      <div class="chart-card">
-        <div class="chart-header">
-          <div>
-            <div class="chart-title">Notified Target Reduction Distribution (2026–27)</div>
-            <div class="chart-sub">Shows how notified entities are distributed across 2026–27 target reduction bands.</div>
+
+      <!-- Card 2: Donut Chart — light, matches sector card -->
+      <div class="chart-card chart-card-donut">
+        <div class="chart-card-glow chart-card-glow-teal"></div>
+        <div class="donut-card-inner">
+
+          <div class="donut-header">
+            <div class="donut-eyebrow">
+              <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="#1BC49D"/></svg>
+              Reduction Bands
+            </div>
+            <h3 class="donut-title">Target Reduction 2026–27</h3>
+            <p class="donut-sub">Entity distribution across GEI reduction bands</p>
+          </div>
+
+          <div class="donut-divider"></div>
+
+          <div class="donut-ring-wrap">
+            <div class="donut-canvas-shell">
+              <canvas id="chart-pie"></canvas>
+              <div class="donut-centre-stat">
+                <div class="donut-centre-label">Total</div>
+                <div class="donut-centre-value" id="donut-total-val">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="donut-legend-rows" id="pie-legend"></div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Charts Row 2: 3:2 wide split — redesigned -->
+    <div class="charts-row split-wide charts-row-r2">
+
+      <!-- GEI Intensity Card -->
+      <div class="chart-card r2-card r2-gei-card">
+        <div class="r2-card-glow r2-glow-amber"></div>
+        <div class="r2-card-body">
+          <div class="r2-header">
+            <div class="r2-eyebrow r2-eyebrow-amber">
+              <span class="r2-eyebrow-dot r2-dot-amber"></span>
+              GEI Intensity
+            </div>
+            <div class="r2-title-row">
+              <h3 class="r2-title">Sector GEI Intensity</h3>
+              <div class="r2-legend-pills" id="gei-legend-pills">
+                <span class="r2-pill r2-pill-amber"><span class="r2-pill-dot"></span>Baseline 2023–24</span>
+                <span class="r2-pill r2-pill-green"><span class="r2-pill-dot"></span>Target 2025–26</span>
+                <span class="r2-pill r2-pill-dark"><span class="r2-pill-dot"></span>Target 2026–27</span>
+              </div>
+            </div>
+            <p class="r2-sub">Sector-level avg GEI: baseline vs notified targets</p>
+            <div class="r2-note">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="5" stroke="#84aaa4" stroke-width="1"/><path d="M5.5 4.5v3M5.5 3.5v.5" stroke="#84aaa4" stroke-width="1.2" stroke-linecap="round"/></svg>
+              Baseline 2023–24 and targets 2025–26, 2026–27 only — 2024–25 not in public dataset
+            </div>
+          </div>
+          <div class="r2-divider"></div>
+          <div class="chart-wrap chart-wrap-bar-lg">
+            <canvas id="chart-gei"></canvas>
           </div>
         </div>
-        <div class="chart-wrap chart-wrap-pie">
-          <canvas id="chart-pie"></canvas>
+      </div>
+
+      <!-- Top Movers Card — leaderboard style -->
+      <div class="chart-card r2-card r2-movers-card">
+        <div class="r2-card-glow r2-glow-green"></div>
+        <div class="r2-card-body">
+          <div class="r2-header">
+            <div class="r2-eyebrow r2-eyebrow-green">
+              <span class="r2-eyebrow-dot r2-dot-green"></span>
+              Top Movers
+            </div>
+            <h3 class="r2-title">Highest Reduction Targets</h3>
+            <p class="r2-sub">Entities with the largest notified GEI reduction by 2026–27</p>
+          </div>
+          <div class="r2-divider"></div>
+          <div id="top-entities-list" class="te2-list"></div>
+          <div class="te2-footer">
+            <div class="te2-footer-left">
+              <div class="te2-footer-label">Total Indicative Reduction</div>
+              <div class="te2-footer-value" id="indicative-volume">—</div>
+            </div>
+            <div class="te2-footer-badge">2026–27</div>
+          </div>
         </div>
-        <div class="pie-legend" id="pie-legend"></div>
+      </div>
+
+    </div>
+
+    <!-- Charts Row 3: full-width dual sub-charts -->
+    <div class="charts-row r3-row">
+      <div class="chart-card r3-card">
+        <div class="r3-glow r3-glow-left"></div>
+        <div class="r3-glow r3-glow-right"></div>
+        <div class="r3-geo-grid-bg"></div>
+
+        <div class="r3-card-header">
+          <div class="r3-header-left">
+            <div class="r3-eyebrow">
+              <span class="r3-eyebrow-dot"></span>
+              Geography &amp; Sub-Sector Intelligence
+            </div>
+            <h3 class="r3-title">State &amp; Sub-Sector Distribution</h3>
+            <p class="r3-sub">Notified obligated entities mapped across Indian states and industrial sub-sectors</p>
+          </div>
+          <div class="r3-header-stats">
+            <div class="r3-stat">
+              <div class="r3-stat-val" id="r3-states-count">—</div>
+              <div class="r3-stat-label">States / UTs</div>
+            </div>
+            <div class="r3-stat-div"></div>
+            <div class="r3-stat">
+              <div class="r3-stat-val" id="r3-subsectors-count">—</div>
+              <div class="r3-stat-label">Sub-Sectors</div>
+            </div>
+            <div class="r3-stat-div"></div>
+            <div class="r3-stat">
+              <div class="r3-stat-val" id="r3-entities-count">—</div>
+              <div class="r3-stat-label">Entities</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="r3-divider-h"></div>
+
+        <div class="r3-panels">
+          <!-- State / UT Panel -->
+          <div class="r3-panel">
+            <div class="r3-panel-header">
+              <div class="r3-panel-label">
+                <span class="r3-panel-icon r3-icon-blue"></span>
+                By State / UT
+              </div>
+              <span class="r3-panel-hint">entities per state</span>
+            </div>
+            <div class="r3-chart-wrap">
+              <canvas id="chart-state"></canvas>
+            </div>
+          </div>
+
+          <!-- Vertical Separator -->
+          <div class="r3-panel-sep"></div>
+
+          <!-- Sub-Sector Panel -->
+          <div class="r3-panel">
+            <div class="r3-panel-header">
+              <div class="r3-panel-label">
+                <span class="r3-panel-icon r3-icon-purple"></span>
+                By Sub-Sector
+              </div>
+              <span class="r3-panel-hint">entity breakdown</span>
+            </div>
+            <div class="r3-chart-wrap">
+              <canvas id="chart-subsector"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footnote -->
+        <div class="r3-footnote">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5.5" stroke="#6366f1" stroke-opacity=".4"/><path d="M6 5v3M6 3.5v.5" stroke="#6366f1" stroke-width="1.2" stroke-linecap="round"/></svg>
+          Data sourced from GEI Target Rules 2025 &amp; Amendment Rules 2026 — MoEF&amp;CC / Bureau of Energy Efficiency
+        </div>
       </div>
     </div>
 
-    <!-- Charts Row 2 -->
-    <div class="charts-row">
-      <div class="chart-card chart-card-wide">
-        <div class="chart-header">
-          <div>
-            <div class="chart-title">Sector GEI Intensity: Baseline vs Notified Targets</div>
-            <div class="chart-sub">Compares sector-level GEI intensity from the notified baseline year against the 2025–26 and 2026–27 target levels.</div>
-            <div class="chart-note">Note: Official notifications provide baseline 2023–24 and target values for 2025–26 and 2026–27 only; 2024–25 is not part of the public notified dataset.</div>
-          </div>
-        </div>
-        <div class="chart-wrap chart-wrap-lg">
-          <canvas id="chart-gei"></canvas>
-        </div>
-      </div>
-      <div class="chart-card chart-card-side">
-        <div class="chart-header">
-          <div>
-            <div class="chart-title">Highest Notified Reduction Targets by Entity</div>
-            <div class="chart-sub">Highlights entities with the highest notified reduction requirement by 2026–27.</div>
-          </div>
-        </div>
-        <div id="top-entities-list" class="top-entities-list"></div>
-        <div class="top-entities-footer">
-          <span class="te-label">Indicative Reduction Volume</span>
-          <span class="te-value" id="indicative-volume">—</span>
-        </div>
-      </div>
-    </div>
+    <!-- Emission Reduction CTA Card -->
+    <div class="emission-cta-card">
+      <div class="emission-cta-orb emission-cta-orb-1"></div>
+      <div class="emission-cta-orb emission-cta-orb-2"></div>
+      <div class="emission-cta-orb emission-cta-orb-3"></div>
+      <svg class="emission-cta-hexbg" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 60L30 30L60 60L30 90Z" fill="rgba(27,196,157,.07)"/>
+        <path d="M540 20L570 50L540 80L510 50Z" fill="rgba(27,196,157,.06)"/>
+        <path d="M270 10L300 40L270 70L240 40Z" fill="rgba(27,196,157,.05)"/>
+        <circle cx="500" cy="95" r="22" fill="none" stroke="rgba(27,196,157,.12)" stroke-width="1.5"/>
+        <circle cx="500" cy="95" r="12" fill="none" stroke="rgba(27,196,157,.1)" stroke-width="1"/>
+        <circle cx="100" cy="25" r="18" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="1.5"/>
+      </svg>
 
-    <!-- Charts Row 3 -->
-    <div class="charts-row">
-      <div class="chart-card">
-        <div class="chart-header">
-          <div>
-            <div class="chart-title">State and Sub-Sector Distribution</div>
-            <div class="chart-sub">Shows how notified entities are distributed across states and sub-sectors.</div>
+      <div class="emission-cta-left">
+        <div class="emission-cta-badge">
+          <span class="emission-cta-pulse"></span>
+          Powered by Zero Carbon Platform
+        </div>
+        <div class="emission-cta-headline">
+          <h3>Ready to <em>reduce</em> your GEI?</h3>
+          <p>Manage CCTS compliance, track emission intensities, and generate BEE-aligned reports — all from one intelligent platform built for India's carbon market.</p>
+        </div>
+        <div class="emission-cta-stats">
+          <div class="emission-cta-stat">
+            <div class="emission-cta-stat-val">ISO&nbsp;14064</div>
+            <div class="emission-cta-stat-lbl">Compliant</div>
+          </div>
+          <div class="emission-cta-stat-div"></div>
+          <div class="emission-cta-stat">
+            <div class="emission-cta-stat-val">GHG Protocol</div>
+            <div class="emission-cta-stat-lbl">Aligned</div>
+          </div>
+          <div class="emission-cta-stat-div"></div>
+          <div class="emission-cta-stat">
+            <div class="emission-cta-stat-val">BEE / CCTS</div>
+            <div class="emission-cta-stat-lbl">Ready</div>
           </div>
         </div>
-        <div class="charts-inner-row">
-          <div class="chart-wrap chart-wrap-sm">
-            <div class="chart-inner-label">By State / UT</div>
-            <canvas id="chart-state"></canvas>
-          </div>
-          <div class="chart-wrap chart-wrap-sm">
-            <div class="chart-inner-label">By Sub-Sector</div>
-            <canvas id="chart-subsector"></canvas>
-          </div>
+      </div>
+
+      <div class="emission-cta-right">
+        <div class="emission-cta-icon-ring">
+          <span class="emission-cta-leaf">🌿</span>
         </div>
+        <a href="https://zerocarbon.greonxpert.com" target="_blank" rel="noopener noreferrer" class="emission-cta-btn">
+          <span class="emission-cta-btn-inner">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2C5.13 2 2 5.13 2 9s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm.75 10.44v1.31h-1.5v-1.31C6.81 12.2 6 11.23 6 10.12c0-1.38 1.12-2.5 2.5-2.5h1c.69 0 1.25-.56 1.25-1.25S10.19 5.12 9.5 5.12H8.25C7.56 5.12 7 5.68 7 6.37h-1.5c0-1.52 1.23-2.75 2.75-2.75H9.5c1.52 0 2.75 1.23 2.75 2.75s-1.23 2.75-2.75 2.75h-1C7.81 9.12 7.25 9.68 7.25 10.37c0 .69.56 1.25 1.25 1.25h2c.69 0 1.25-.56 1.25-1.25H13.25c0 1.11-.81 2.08-2.25 2.27-0 0 0 0 0 0" fill="rgba(255,255,255,0)"/><path d="M14 7l-5 5-2-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.5"/></svg>
+            Open Greon Workspace
+          </span>
+          <svg class="emission-cta-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        <div class="emission-cta-footnote">Enterprise carbon management &amp; ESG platform</div>
       </div>
     </div>
 
     <!-- Entity Cards -->
-    <div class="section-header mt-0">
-      <div>
-        <h3 class="section-title">CCTS Registry Records</h3>
+    <div class="section-header mt-0 registry-section-header">
+      <div class="registry-title-group">
+        <div class="registry-title-eyebrow">
+          <span class="registry-title-dot"></span>
+          CCTS Compliance Registry
+        </div>
+        <h3 class="section-title">Registry Records</h3>
         <div class="section-sub" id="cards-count-label">All 11 fields aligned in page view</div>
       </div>
       <div class="sort-row">
@@ -227,7 +403,7 @@
   </div><!-- /tab-dashboard -->
 
   <!-- ═══════════════ ADMIN TAB ═══════════════ -->
-  <div id="tab-admin" class="tab-panel hidden">
+  <div id="tab-admin" class="tab-panel" style="display:none">
 
     <div class="admin-grid">
 
@@ -314,6 +490,10 @@
               <label>Est. Reduction 2026-27 (tonnes)</label>
               <input type="number" name="targetEstimatedReduction_2026_27" step="any" placeholder="0" />
             </div>
+            <div class="form-group form-group-full">
+              <label>Source</label>
+              <input type="text" name="source" placeholder="e.g. Gazette Notification / PDF URL / BEE Source" />
+            </div>
           </div>
           <div id="add-entity-msg" class="form-msg hidden"></div>
           <div class="form-actions">
@@ -368,86 +548,150 @@
 
 <!-- Sources Modal -->
 <div id="sources-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'sources-modal')">
-  <div class="modal-card">
-    <div class="modal-header">
-      <h3>📄 Official Sources</h3>
-      <button class="modal-close" onclick="hideModal('sources-modal')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="source-item">
-        <div class="source-badge">S.O. 4370(E)</div>
+  <div class="modal-card modal-card-lg">
+    <div class="modal-header sources-modal-header">
+      <div class="sources-header-content">
+        <div class="sources-header-icon">📄</div>
         <div>
-          <div class="source-name">Greenhouse Gas Emission Intensity Target Rules 2025</div>
-          <div class="source-detail">Published by: Ministry of Environment, Forest and Climate Change (MoEF&CC) &amp; Bureau of Energy Efficiency (BEE)</div>
-          <div class="source-detail">Gazette Date: <strong>8 October 2025</strong></div>
-          <div class="source-detail">Sectors: Aluminium, Cement, Cement Grinding Unit, Chlor-Alkali, Paper and Pulp</div>
+          <h3>Official Sources &amp; Legal References</h3>
+          <p class="sources-header-sub">All documents published by MoEF&amp;CC &amp; Bureau of Energy Efficiency (BEE)</p>
         </div>
       </div>
-      <div class="source-item">
-        <div class="source-badge">Amendment</div>
-        <div>
-          <div class="source-name">GHG Emission Intensity Target Amendment Rules 2025</div>
-          <div class="source-detail">Published by: MoEF&CC / BEE</div>
-          <div class="source-detail">Supplements the original GEI Target Rules with updated entity-level targets</div>
+      <button class="modal-close" onclick="hideModal('sources-modal')">✕</button>
+    </div>
+    <div class="modal-body sources-modal-body">
+
+      <!-- Source 1 -->
+      <div class="source-card">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-purple">Amendment Act</div>
+          <div class="source-seq">01</div>
         </div>
+        <div class="source-card-body">
+          <div class="source-card-title">Energy Conservation (Amendment) Act, 2022</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill">📜 Statutory Basis</span>
+            <span class="source-meta-pill">MoEF&amp;CC / BEE</span>
+          </div>
+          <div class="source-card-desc">Created the statutory basis allowing the Central Government to specify a carbon credit trading scheme under the Energy Conservation Act.</div>
+          <a href="https://www.beeindia.gov.in/sites/default/files/publications/files/BEELine%20Newsletter%20%28Oct%202022%29.pdf" target="_blank" rel="noopener noreferrer" class="source-link-btn">
+            <span>🔗</span> Open Official Document
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Source 2 -->
+      <div class="source-card">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-blue">S.O. 2825(E)</div>
+          <div class="source-seq">02</div>
+        </div>
+        <div class="source-card-body">
+          <div class="source-card-title">Carbon Credit Trading Scheme (CCTS), 2023</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill">📅 28 June 2023</span>
+            <span class="source-meta-pill">Gazette Notification</span>
+          </div>
+          <div class="source-card-desc">Officially notified India's first statutory carbon market framework under the Energy Conservation Act 2022. Established the compliance and trading mechanism for carbon credits.</div>
+          <a href="https://beeindia.gov.in/sites/default/files/CCTS.pdf" target="_blank" rel="noopener noreferrer" class="source-link-btn">
+            <span>🔗</span> Open Official Document
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Source 3 -->
+      <div class="source-card">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-blue">S.O. 5369(E)</div>
+          <div class="source-seq">03</div>
+        </div>
+        <div class="source-card-body">
+          <div class="source-card-title">CCTS Amendment, 2023</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill">📅 19 December 2023</span>
+            <span class="source-meta-pill">Amendment Notification</span>
+          </div>
+          <div class="source-card-desc">BEE's official amendment to the Carbon Credit Trading Scheme, 2023. Supplements the original CCTS with updated provisions and clarifications.</div>
+          <a href="https://beeindia.gov.in/rules-regulations.php" target="_blank" rel="noopener noreferrer" class="source-link-btn">
+            <span>🔗</span> Open Official Document
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Source 4 -->
+      <div class="source-card source-card-highlight">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-green">S.O. 4370(E)</div>
+          <div class="source-seq">04</div>
+        </div>
+        <div class="source-card-body">
+          <div class="source-card-title">Greenhouse Gases Emission Intensity Target Rules, 2025</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill source-meta-pill-green">📅 October 2025</span>
+            <span class="source-meta-pill">MoEF&amp;CC / BEE</span>
+            <span class="source-meta-pill">Primary Regulation</span>
+          </div>
+          <div class="source-card-desc">Sets compliance GEI targets for obligated entities. Baseline year: 2023–24. Target years: 2025–26 &amp; 2026–27. Covers first set of 4 obligated sectors: <strong>Aluminium, Cement, Chlor-Alkali, and Pulp &amp; Paper</strong> (including Cement Grinding Unit).</div>
+          <a href="https://beeindia.gov.in/sites/default/files/Greenhouse_Gases_Emission_Intensity_Target_Rules_2025.pdf" target="_blank" rel="noopener noreferrer" class="source-link-btn source-link-btn-primary">
+            <span>🔗</span> Open Official Document
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Source 5 -->
+      <div class="source-card source-card-highlight">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-orange">Amendment</div>
+          <div class="source-seq">05</div>
+        </div>
+        <div class="source-card-body">
+          <div class="source-card-title">Greenhouse Gases Emission Intensity Target (Amendment) Rules, 2026</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill source-meta-pill-orange">📅 January 2026</span>
+            <span class="source-meta-pill">MoEF&amp;CC / BEE</span>
+            <span class="source-meta-pill">Amendment</span>
+          </div>
+          <div class="source-card-desc">Adds a Second Schedule expanding the notified obligated-entity universe with 4 more sectors: <strong>Secondary Aluminium, Petroleum Refinery, Petrochemical, and Textile</strong>. Total sectors now: <strong>8 sectors</strong>.</div>
+          <a href="https://beeindia.gov.in/sites/default/files/Greenhouse%20Gases%20Emission%20Intensity%20Target%20%28Amendment%29%20Rules%2C%202026.pdf" target="_blank" rel="noopener noreferrer" class="source-link-btn source-link-btn-primary">
+            <span>🔗</span> Open Official Document
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Source 6 -->
+      <div class="source-card">
+        <div class="source-card-left">
+          <div class="source-badge source-badge-teal">ICM Portal</div>
+          <div class="source-seq">06</div>
+        </div>
+        <div class="source-card-body">
+          <div class="source-card-title">BEE Carbon Market — Indian Carbon Market (ICM) Overview</div>
+          <div class="source-card-meta">
+            <span class="source-meta-pill">🌐 Official Web Portal</span>
+            <span class="source-meta-pill">BEE, Government of India</span>
+          </div>
+          <div class="source-card-desc">BEE's official Carbon Market page publicly describing the institutional framework, <strong>compliance mechanism</strong>, and <strong>offset mechanism</strong> under the Indian Carbon Market / CCTS structure. Covers roles of MNRE, BEE, and the carbon credit registry.</div>
+          <a href="https://beeindia.gov.in/carbon-market.php" target="_blank" rel="noopener noreferrer" class="source-link-btn">
+            <span>🔗</span> Open Official Page
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <div class="sources-footer">
+        <span class="sources-footer-icon">ℹ️</span>
+        All documents are published by the Ministry of Environment, Forest and Climate Change (MoEF&amp;CC) and Bureau of Energy Efficiency (BEE), Government of India. Links open official BEE portals.
       </div>
     </div>
   </div>
 </div>
 
-<!-- Timeline Modal -->
-<div id="timeline-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'timeline-modal')">
-  <div class="modal-card">
-    <div class="modal-header">
-      <h3>📅 CCTS Policy Timeline</h3>
-      <button class="modal-close" onclick="hideModal('timeline-modal')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="timeline">
-        <div class="tl-item">
-          <div class="tl-dot tl-dot-green"></div>
-          <div class="tl-content">
-            <div class="tl-date">2023</div>
-            <div class="tl-title">Carbon Credit Trading Scheme (CCTS) Notified</div>
-            <div class="tl-desc">India's first statutory carbon market framework established under the Energy Conservation Act 2022.</div>
-          </div>
-        </div>
-        <div class="tl-item">
-          <div class="tl-dot tl-dot-green"></div>
-          <div class="tl-content">
-            <div class="tl-date">2024</div>
-            <div class="tl-title">Obligated Sector Identification</div>
-            <div class="tl-desc">BEE identifies pilot sectors: Aluminium, Cement, Paper &amp; Pulp, Chlor-Alkali for GEI-based compliance.</div>
-          </div>
-        </div>
-        <div class="tl-item">
-          <div class="tl-dot tl-dot-blue"></div>
-          <div class="tl-content">
-            <div class="tl-date">October 2025</div>
-            <div class="tl-title">GEI Target Rules 2025 Gazetted</div>
-            <div class="tl-desc">Official entity-level Greenhouse Gas Emission Intensity targets notified. Baseline: 2023–24. Target years: 2025–26 and 2026–27.</div>
-          </div>
-        </div>
-        <div class="tl-item">
-          <div class="tl-dot tl-dot-blue"></div>
-          <div class="tl-content">
-            <div class="tl-date">2025–26</div>
-            <div class="tl-title">First Compliance Year</div>
-            <div class="tl-desc">Entities must meet notified GEI targets. Carbon credits issued for over-performance; deficit entities must purchase credits.</div>
-          </div>
-        </div>
-        <div class="tl-item">
-          <div class="tl-dot tl-dot-purple"></div>
-          <div class="tl-content">
-            <div class="tl-date">2026–27</div>
-            <div class="tl-title">Second Compliance Year</div>
-            <div class="tl-desc">Stricter GEI targets apply. Full carbon trading market operational under CCTS framework.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
+
 
 <!-- Edit Entity Modal -->
 <div id="edit-modal" class="modal-overlay hidden" onclick="closeModalOnOverlay(event,'edit-modal')">
@@ -515,6 +759,10 @@
           <div class="form-group">
             <label>Est. Reduction 2026-27 (tonnes)</label>
             <input type="number" name="targetEstimatedReduction_2026_27" step="any" />
+          </div>
+          <div class="form-group form-group-full">
+            <label>Source</label>
+            <input type="text" name="source" />
           </div>
         </div>
         <div id="edit-msg" class="form-msg hidden"></div>

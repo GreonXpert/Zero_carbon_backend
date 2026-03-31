@@ -136,7 +136,8 @@ app.use(cors({
     "http://localhost:5174",
     "http://127.0.0.1:5501",
     'https://zerocarbon.greonxpert.com',
-    'https://www.zerocarbon.greonxpert.com'
+    'https://www.zerocarbon.greonxpert.com',
+    "https://ccts.greonxpert.com",
   ],
   credentials: true,
 }));
@@ -276,7 +277,8 @@ const io = socketIo(server, {
       "http://localhost:5174",
       "http://127.0.0.1:5501",
       "https://zerocarbon.greonxpert.com",
-      "https://www.zerocarbon.greonxpert.com"
+      "https://www.zerocarbon.greonxpert.com",
+      "https://ccts.greonxpert.com",
     ],
     credentials: true
   }

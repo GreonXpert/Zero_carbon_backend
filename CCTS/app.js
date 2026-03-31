@@ -114,7 +114,7 @@ function applyFilters() {
     if (subSector && e.subSector !== subSector) return false;
     if (state     && e.state     !== state)     return false;
     if (q) {
-      const haystack = `${e.entityName} ${e.registrationNumber} ${e.obligatedEntityAddress} ${e.state} ${e.sector}`.toLowerCase();
+      const haystack = `${e.entityName} ${e.registrationNumber} ${e.obligatedEntityAddress} ${e.state} ${e.sector} ${e.subSector} ${e.source || ''}`.toLowerCase();
       if (!haystack.includes(q)) return false;
     }
     return true;
@@ -144,8 +144,7 @@ function applyFilters() {
 function updateFilteredBadge() {
   const n = S.filteredData.length;
   $('filtered-count-badge').textContent = `${n.toLocaleString('en-IN')} ${n === 1 ? 'entity' : 'entities'} shown`;
-  $('cards-count-label').textContent = `${n.toLocaleString('en-IN')} records • All 11 fields aligned in page view`;
-}
+   $('cards-count-label').textContent = `${n.toLocaleString('en-IN')} records • All fields aligned in page view`;}
 
 /* ─── KPI Cards ──────────────────────────────────────────────────────────── */
 function renderKPIs() {
@@ -159,6 +158,14 @@ function renderKPIs() {
 
   $('kpi-sectors').textContent = unique(d.map(e => e.sector)).length;
   $('kpi-states').textContent  = unique(d.map(e => e.state)).length;
+
+  // Populate r3 header stats (Charts Row 3)
+  const r3s = $('r3-states-count');
+  const r3ss = $('r3-subsectors-count');
+  const r3e = $('r3-entities-count');
+  if (r3s)  r3s.textContent  = unique(d.map(e => e.state)).length;
+  if (r3ss) r3ss.textContent = unique(d.map(e => e.subSector)).length;
+  if (r3e)  r3e.textContent  = d.length.toLocaleString('en-IN');
 }
 
 /* ─── Charts ─────────────────────────────────────────────────────────────── */
@@ -185,17 +192,43 @@ function renderSectorChart() {
     type: 'bar',
     data: {
       labels,
-      datasets: [{ data: values,
-                   backgroundColor: labels.map((_,i) => CHART_COLORS[i % CHART_COLORS.length]),
-                   hoverBackgroundColor: labels.map((_,i) => CHART_COLORS[(i+1) % CHART_COLORS.length]),
-                   borderRadius: 5, borderSkipped: false }],
+      datasets: [{
+        data: values,
+        backgroundColor: labels.map((_, i) => {
+          const palette = ['#1BC49D','#13a082','#0f6b52','#57e5c3','#2dd4b0','#f59e0b','#6366f1','#ef4444','#3b82f6','#a855f7'];
+          return palette[i % palette.length];
+        }),
+        hoverBackgroundColor: labels.map((_, i) => {
+          const palette = ['#13a082','#0f6b52','#0b3d31','#2dd4b0','#1BC49D','#d97706','#4f46e5','#dc2626','#2563eb','#9333ea'];
+          return palette[i % palette.length];
+        }),
+        borderRadius: 8,
+        borderSkipped: false,
+        borderWidth: 0,
+      }],
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.parsed.x} entities` } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0a3d31',
+          titleColor: '#7fe8d3',
+          bodyColor: '#d1f5ec',
+          padding: 10,
+          cornerRadius: 8,
+          callbacks: { label: c => `  ${c.parsed.x} entities` }
+        }
+      },
       scales: {
-        x: { grid: { color: '#e2e8e6' }, ticks: { font: { size: 11 } } },
-        y: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#4a6360' } },
+        x: {
+          grid: { color: 'rgba(27,196,157,.1)', drawBorder: false },
+          ticks: { font: { size: 11, family: 'DM Sans, sans-serif' }, color: '#5a8a80' }
+        },
+        y: {
+          grid: { display: false },
+          ticks: { font: { size: 11, family: 'DM Sans, sans-serif' }, color: '#2d5048' }
+        },
       },
     },
   });
@@ -214,28 +247,55 @@ function renderPieChart() {
   const values = labels.map(k => bands[k]);
   const colors = labels.map(k => PIE_COLORS[k]);
 
-  // Legend
+  // Legend — new dark band rows
   const legendEl = $('pie-legend');
-  legendEl.innerHTML = labels.map((l, i) =>
-    `<div class="pie-leg-item"><div class="pie-leg-dot" style="background:${colors[i]}"></div>${l} ${values[i]}%</div>`
-  ).join('');
-  // actual %
   const total = values.reduce((a,b)=>a+b,0);
-  legendEl.innerHTML = labels.map((l, i) =>
-    `<div class="pie-leg-item"><div class="pie-leg-dot" style="background:${colors[i]}"></div>${l} ${total ? Math.round(values[i]/total*100) : 0}%</div>`
-  ).join('');
+
+  // Update centre stat
+  const centreEl = $('donut-total-val');
+  if (centreEl) centreEl.textContent = total > 0 ? total.toLocaleString('en-IN') : '—';
+
+  legendEl.innerHTML = labels.map((l, i) => {
+    const pct = total ? Math.round(values[i]/total*100) : 0;
+    return `<div class="donut-band-row">
+      <div class="donut-band-pip" style="background:${colors[i]};color:${colors[i]}"></div>
+      <span class="donut-band-label">${l} reduction</span>
+      <span class="donut-band-count">${values[i]}</span>
+      <span class="donut-band-pct">${pct}%</span>
+    </div>`;
+  }).join('');
 
   const ctx = $('chart-pie').getContext('2d');
   S.charts.pie = new Chart(ctx, {
-    type: 'pie',
-    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderWidth: 3,
+        borderColor: '#f0faf7',
+        hoverBorderColor: '#ffffff',
+        hoverOffset: 10,
+      }]
+    },
     options: {
       responsive: true, maintainAspectRatio: false,
+      cutout: '68%',
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: {
-          label: c => ` ${c.label}: ${c.parsed} entities (${total ? Math.round(c.parsed/total*100) : 0}%)`,
-        }},
+        tooltip: {
+          backgroundColor: '#0a3d31',
+          titleColor: '#7fe8d3',
+          bodyColor: '#d1f5ec',
+          borderColor: 'rgba(27,196,157,.3)',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 8,
+          callbacks: {
+            label: c => `  ${c.label}: ${c.parsed} entities (${total ? Math.round(c.parsed/total*100) : 0}%)`,
+          }
+        },
       },
     },
   });
@@ -262,20 +322,54 @@ function renderGEIChart() {
     data: {
       labels: sectors,
       datasets: [
-        { label: 'Baseline 2023–24', data: sectors.map(s => avg(sectorMap[s].bGEI)),  backgroundColor: '#f59e0b', borderRadius: 4 },
-        { label: 'Target 2025–26',   data: sectors.map(s => avg(sectorMap[s].t2526)), backgroundColor: '#1BC49D', borderRadius: 4 },
-        { label: 'Target 2026–27',   data: sectors.map(s => avg(sectorMap[s].t2627)), backgroundColor: '#0b3d31', borderRadius: 4 },
+        {
+          label: 'Baseline 2023–24',
+          data: sectors.map(s => avg(sectorMap[s].bGEI)),
+          backgroundColor: 'rgba(245,158,11,.85)',
+          hoverBackgroundColor: '#f59e0b',
+          borderRadius: 6, borderSkipped: false, borderWidth: 0,
+        },
+        {
+          label: 'Target 2025–26',
+          data: sectors.map(s => avg(sectorMap[s].t2526)),
+          backgroundColor: 'rgba(27,196,157,.85)',
+          hoverBackgroundColor: '#1BC49D',
+          borderRadius: 6, borderSkipped: false, borderWidth: 0,
+        },
+        {
+          label: 'Target 2026–27',
+          data: sectors.map(s => avg(sectorMap[s].t2627)),
+          backgroundColor: 'rgba(11,61,49,.82)',
+          hoverBackgroundColor: '#0b3d31',
+          borderRadius: 6, borderSkipped: false, borderWidth: 0,
+        },
       ],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12, padding: 12 } },
-        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y != null ? c.parsed.y.toFixed(4) : '—'} tCO₂e/tonne` } },
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0a3d31',
+          titleColor: '#7fe8d3',
+          bodyColor: '#d1f5ec',
+          borderColor: 'rgba(27,196,157,.3)',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 8,
+          callbacks: { label: c => `  ${c.dataset.label}: ${c.parsed.y != null ? c.parsed.y.toFixed(4) : '—'} tCO₂e/t` },
+        },
       },
       scales: {
-        x: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#4a6360' } },
-        y: { grid: { color: '#e2e8e6' }, ticks: { font: { size: 11 } }, title: { display: true, text: 'tCO₂e / tonne eq. product', font: { size: 10 }, color: '#8aabaa' } },
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 11, family: 'DM Sans, sans-serif' }, color: '#4a6360' },
+        },
+        y: {
+          grid: { color: 'rgba(27,196,157,.1)', drawBorder: false },
+          ticks: { font: { size: 11, family: 'DM Sans, sans-serif' }, color: '#5a8a80' },
+          title: { display: true, text: 'tCO₂e / tonne', font: { size: 10, family: 'DM Sans, sans-serif' }, color: '#84aaa4' },
+        },
       },
     },
   });
@@ -298,21 +392,26 @@ function renderTopEntities() {
     return;
   }
 
-  list.innerHTML = withPct.map(e => {
+  const maxPct = withPct[0]._pct;
+
+  list.innerHTML = withPct.map((e, i) => {
     const tonne = e.targetEstimatedReduction_2026_27;
-    return `<div class="te-item">
-      <div class="te-meta">
-        <div class="te-name">${e.entityName || e.registrationNumber || '—'}</div>
-        <div class="te-sector">${e.subSector || e.sector || ''} · ${e.state || ''}</div>
+    const rankClass = i === 0 ? 'te2-rank-1' : i === 1 ? 'te2-rank-2' : i === 2 ? 'te2-rank-3' : 'te2-rank-n';
+    const barWidth = maxPct > 0 ? Math.round((e._pct / maxPct) * 100) : 0;
+    return `<div class="te2-item">
+      <div class="te2-rank ${rankClass}">${i + 1}</div>
+      <div class="te2-meta">
+        <div class="te2-name">${e.entityName || e.registrationNumber || '—'}</div>
+        <div class="te2-sector">${[e.subSector || e.sector, e.state].filter(Boolean).join(' · ')}</div>
+        <div class="te2-bar-track"><div class="te2-bar-fill" style="width:${barWidth}%"></div></div>
       </div>
-      <div class="te-right">
-        <div class="te-pct">${e._pct.toFixed(2)}%</div>
-        <div class="te-tonne">${tonne != null ? fmtTonne(tonne)+' tCO₂e' : '—'}</div>
+      <div class="te2-right">
+        <div class="te2-pct">${e._pct.toFixed(2)}%</div>
+        <div class="te2-tonne">${tonne != null ? fmtTonne(tonne) + ' t' : '—'}</div>
       </div>
     </div>`;
   }).join('');
 
-  // Indicative volume = sum of targetEstimatedReduction_2026_27
   const totalVol = S.filteredData.reduce((s,e) => s + (e.targetEstimatedReduction_2026_27 || 0), 0);
   vol.textContent = totalVol ? fmtTonne(totalVol) + ' tCO₂e' : '—';
 }
@@ -416,6 +515,7 @@ function renderEntityCards() {
           <div class="entity-field-label">Registered Facility Address</div>
           <div class="entity-field-value">${e.obligatedEntityAddress || '<span class="null-val">—</span>'}</div>
         </div>
+    
         <div class="entity-field">
           <div class="entity-field-label">State / UT</div>
           <div class="entity-field-value">${e.state || '<span class="null-val">—</span>'}</div>
@@ -436,10 +536,13 @@ function renderEntityCards() {
           <div class="entity-field-label">GEI Target (2026–27) (tCO₂e/tonne)</div>
           <div class="entity-field-value">${fmtGEI(e.targetGEI_2026_27)}</div>
         </div>
+        
         ${pct != null ? `<div class="entity-field">
           <div class="entity-field-label">Reduction % (2026–27)</div>
           <div class="entity-field-value" style="color:var(--primary);font-weight:700">${pct.toFixed(2)}%</div>
-        </div>` : '<div class="entity-field"></div>'}
+        </div>` : '<div class="entity-field"></div>'
+      
+      }
       </div>
       <div class="entity-reduction-grid">
         <div class="entity-reduction-field">
@@ -458,6 +561,7 @@ function renderEntityCards() {
           <div class="entity-reduction-label">Indicative Emissions Reduction (2026–27) (tonnes)</div>
           <div class="entity-reduction-value ${e.targetEstimatedReduction_2026_27 == null ? 'null-val' : ''}">${fmtTonne(e.targetEstimatedReduction_2026_27)}</div>
         </div>
+        
       </div>
     </div>`;
   }).join('');
@@ -503,10 +607,15 @@ window.showModal = function(id) { $(id).classList.remove('hidden'); };
 window.hideModal = function(id) { $(id).classList.add('hidden'); };
 window.closeModalOnOverlay = function(e, id) { if (e.target === $(id)) hideModal(id); };
 
+
 /* ─── Tab Switching ──────────────────────────────────────────────────────── */
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== `tab-${tab}`));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const isActive = p.id === `tab-${tab}`;
+    p.classList.toggle('active', isActive);
+    p.style.display = isActive ? '' : 'none';
+  });
   if (tab === 'admin') loadAdminData();
 }
 
@@ -625,9 +734,9 @@ window.openEditModal = function(id) {
   if (!entity) return;
   const form = $('edit-entity-form');
   $('edit-id').value = id;
-  const fields = ['sector','subSector','registrationNumber','entityName','state','obligatedEntityAddress',
-    'baselineOutput','baselineGHGEmissionIntensity','targetGEI_2025_26','targetGEI_2026_27',
-    'targetReduction_2025_26','targetReduction_2026_27','targetEstimatedReduction_2025_26','targetEstimatedReduction_2026_27'];
+  const fields = ['sector','subSector','registrationNumber','entityName','state','obligatedEntityAddress','source',
+  'baselineOutput','baselineGHGEmissionIntensity','targetGEI_2025_26','targetGEI_2026_27',
+  'targetReduction_2025_26','targetReduction_2026_27','targetEstimatedReduction_2025_26','targetEstimatedReduction_2026_27'];
   fields.forEach(f => { if (form.elements[f]) form.elements[f].value = entity[f] ?? ''; });
   showModal('edit-modal');
 };
@@ -639,8 +748,20 @@ $('edit-entity-form').addEventListener('submit', async (e) => {
   const msg = $('edit-msg');
   const form = e.target;
   const body = {};
-  new FormData(form).forEach((v, k) => { if (v !== '') body[k] = isNaN(v) ? v : Number(v); });
-
+new FormData(form).forEach((v, k) => {
+  if (v !== '') {
+    const textFields = [
+      'sector',
+      'subSector',
+      'registrationNumber',
+      'entityName',
+      'state',
+      'obligatedEntityAddress',
+      'source'
+    ];
+    body[k] = textFields.includes(k) ? v : Number(v);
+  }
+});
   try {
     await apiFetch(`/api/ccts/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
     msg.textContent = 'Entity updated successfully.';
@@ -662,8 +783,18 @@ $('add-entity-form').addEventListener('submit', async (e) => {
   const msg = $('add-entity-msg');
   const body = {};
   new FormData(e.target).forEach((v, k) => {
-    if (v !== '') body[k] = (k !== 'sector' && k !== 'subSector' && k !== 'registrationNumber' && k !== 'entityName' && k !== 'state' && k !== 'obligatedEntityAddress') ? Number(v) : v;
-  });
+  if (v !== '') {
+    body[k] = (
+      k !== 'sector' &&
+      k !== 'subSector' &&
+      k !== 'registrationNumber' &&
+      k !== 'entityName' &&
+      k !== 'state' &&
+      k !== 'obligatedEntityAddress' &&
+      k !== 'source'
+    ) ? Number(v) : v;
+  }
+});
   try {
     await apiFetch('/api/ccts', { method: 'POST', body: JSON.stringify(body) });
     msg.textContent = 'Entity added successfully!';
@@ -828,3 +959,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 /* ─── Init ───────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', loadAllData);
+
+
+    // <div class="entity-field">
+        //   <div class="entity-field-label">Source</div>
+        //   <div class="entity-field-value">${e.source || '<span class="null-val">—</span>'}</div>
+        // </div>

@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CCTS Compliance Timeline — Greon Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+/* ══════════════════════════════════════════════════════════════
+   GREON DESIGN TOKENS
+══════════════════════════════════════════════════════════════ */
+:root {
+  --green-900:#062920;--green-800:#0a3d31;--green-700:#0d5240;
+  --green-600:#0f6b52;--green-500:#13a082;--green-400:#1BC49D;
+  --green-300:#4dd6b4;--green-200:#96e8d4;--green-100:#D3EDE8;--green-50:#edf8f5;
+  --gray-950:#0a0f0e;--gray-900:#0d1f1b;--gray-800:#1a3530;
+  --gray-700:#2d5048;--gray-600:#3d6b60;--gray-500:#5a8a80;
+  --gray-400:#84aaa4;--gray-300:#b4ceca;--gray-200:#d4e8e5;
+  --gray-100:#eaf4f2;--gray-50:#f4faf8;--white:#ffffff;
+  --bg:var(--gray-50);--bg-card:var(--white);
+  --border:var(--gray-200);--border-strong:var(--gray-300);
+  --text-primary:var(--gray-900);--text-secondary:var(--gray-600);--text-muted:var(--gray-400);
+  --primary:var(--green-400);--primary-dark:var(--green-500);
+  --radius-sm:6px;--radius:10px;--radius-lg:14px;--radius-xl:20px;
+  --shadow-xs:0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm:0 1px 3px rgba(0,0,0,.07),0 2px 8px rgba(27,196,157,.06);
+  --shadow:0 2px 6px rgba(0,0,0,.06),0 6px 20px rgba(27,196,157,.07);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08),0 12px 32px rgba(27,196,157,.1);
+  --shadow-lg:0 8px 24px rgba(0,0,0,.1),0 24px 64px rgba(27,196,157,.12);
+  --transition:0.18s cubic-bezier(.4,0,.2,1);
+  --text-xs:clamp(0.68rem,0.9vw,0.75rem);
+  --text-sm:clamp(0.78rem,1vw,0.875rem);
+  --text-base:clamp(0.875rem,1.1vw,1rem);
+  --text-lg:clamp(1rem,1.3vw,1.125rem);
+}
+
+/* ── Reset ── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text-primary);line-height:1.6;min-height:100vh;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 15% -10%,rgba(27,196,157,.07) 0%,transparent 60%),
+    radial-gradient(ellipse 60% 40% at 85% 110%,rgba(27,196,157,.05) 0%,transparent 60%),
+    linear-gradient(180deg,#edf8f5 0%,#f4faf8 50%,#edf8f5 100%);
+  background-attachment:fixed;
+}
+button{cursor:pointer;border:none;background:none;font:inherit}
+a{text-decoration:none;color:inherit}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+
+/* ══════════════════════════════════════════════════════════════
+   SITE HEADER — pixel-perfect match to index.html
+══════════════════════════════════════════════════════════════ */
+.site-header{
+  position:sticky;top:0;z-index:200;
+  background:linear-gradient(110deg,var(--green-800) 0%,var(--green-600) 55%,var(--green-400) 100%);
+  box-shadow:0 2px 20px rgba(0,0,0,.25);
+  padding:0 clamp(1rem,3vw,2rem);height:60px;
+  display:flex;align-items:center;gap:clamp(.75rem,2vw,1.5rem);
+}
+.header-brand{flex:1;min-width:0}
+.brand-logo{display:flex;align-items:center;gap:.65rem}
+.brand-icon{font-size:clamp(1.5rem,2.5vw,1.9rem);line-height:1}
+.brand-name{font-size:clamp(.9rem,1.4vw,1.1rem);font-weight:700;color:#fff;white-space:nowrap;letter-spacing:-.01em}
+.brand-sub{font-size:var(--text-xs);color:rgba(255,255,255,.65);line-height:1.3;max-width:440px;display:none}
+@media(min-width:1100px){.brand-sub{display:block}}
+.header-back{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.4rem clamp(.6rem,1.2vw,1rem);
+  border-radius:var(--radius-sm);
+  font-size:var(--text-sm);font-weight:500;
+  color:rgba(255,255,255,.8);
+  background:rgba(0,0,0,.15);border:1px solid rgba(255,255,255,.15);
+  transition:all var(--transition);white-space:nowrap;flex-shrink:0;
+}
+.header-back:hover{background:rgba(255,255,255,.18);color:#fff}
+
+/* ══════════════════════════════════════════════════════════════
+   PAGE WRAP
+══════════════════════════════════════════════════════════════ */
+.page-wrap{
+  max-width:min(1680px,100%);margin:0 auto;width:100%;
+  padding:clamp(1rem,2.5vw,1.75rem) clamp(1rem,3vw,2rem);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   HERO BAND
+══════════════════════════════════════════════════════════════ */
+.hero-band{
+  position:relative;overflow:hidden;
+  background:linear-gradient(120deg,var(--green-800) 0%,var(--green-600) 60%,#1BC49D 100%);
+  border-radius:var(--radius-xl);
+  padding:clamp(1.5rem,3vw,2.5rem) clamp(1.25rem,3vw,2.5rem);
+  margin-bottom:clamp(1.25rem,2vw,1.75rem);
+  display:flex;align-items:center;justify-content:space-between;gap:1.5rem;flex-wrap:wrap;
+  box-shadow:0 8px 32px rgba(11,61,49,.25),0 2px 8px rgba(0,0,0,.1);
+}
+.hero-band::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 60% 80% at 90% 50%,rgba(77,214,180,.18) 0%,transparent 60%),
+    radial-gradient(circle at 10% 80%,rgba(255,255,255,.06) 0%,transparent 40%);
+}
+/* Decorative ring */
+.hero-ring{
+  position:absolute;right:clamp(60px,12vw,180px);top:50%;transform:translateY(-50%);
+  width:180px;height:180px;pointer-events:none;opacity:.08;
+  border:2px solid #fff;border-radius:50%;
+}
+.hero-ring::before{
+  content:'';position:absolute;inset:20px;border:1.5px solid #fff;border-radius:50%;
+}
+.hero-ring::after{
+  content:'';position:absolute;inset:45px;border:1px solid #fff;border-radius:50%;
+}
+.hero-content{position:relative;z-index:1;display:flex;flex-direction:column;gap:.6rem}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:.4rem;
+  background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);
+  color:rgba(255,255,255,.92);
+  font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:.22rem .7rem;border-radius:99px;width:fit-content;
+}
+.hero-pulse{
+  display:inline-block;width:6px;height:6px;border-radius:50%;background:#4dffc3;flex-shrink:0;
+  animation:heroPulse 2s ease-in-out infinite;
+}
+@keyframes heroPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(77,255,195,.5)}
+  50%{box-shadow:0 0 0 5px rgba(77,255,195,0)}
+}
+.hero-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:clamp(1.15rem,2.2vw,1.75rem);font-weight:700;
+  color:#fff;letter-spacing:-.03em;line-height:1.2;
+}
+.hero-sub{
+  font-family:'DM Sans',sans-serif;
+  font-size:clamp(.78rem,1vw,.9rem);color:rgba(255,255,255,.65);line-height:1.5;max-width:520px;
+}
+.hero-stats{
+  position:relative;z-index:1;
+  display:flex;gap:clamp(.6rem,1.5vw,1.1rem);align-items:center;flex-wrap:wrap;
+}
+.hero-stat{
+  display:flex;flex-direction:column;gap:.15rem;
+  padding:.55rem clamp(.65rem,1.2vw,1rem);
+  background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);
+  border-radius:var(--radius-lg);min-width:76px;text-align:center;
+}
+.hero-stat-val{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:clamp(1.1rem,1.8vw,1.5rem);font-weight:700;color:#fff;line-height:1;
+}
+.hero-stat-lbl{font-size:.63rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+
+/* ══════════════════════════════════════════════════════════════
+   CONTROLS BAR
+══════════════════════════════════════════════════════════════ */
+.controls-bar{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:1rem;flex-wrap:wrap;
+  margin-bottom:clamp(.75rem,1.2vw,1.1rem);
+}
+.ctrl-left{display:flex;flex-direction:column;gap:.2rem}
+.section-eyebrow{
+  display:flex;align-items:center;gap:.45rem;
+  font-size:var(--text-xs);font-weight:700;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--green-500);
+}
+.ey-line{width:18px;height:2px;background:var(--green-400);border-radius:2px;flex-shrink:0}
+.section-heading{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:var(--text-lg);font-weight:700;
+  color:var(--text-primary);letter-spacing:-.02em;line-height:1.2;
+}
+.tab-switch{
+  display:flex;gap:.3rem;
+  background:var(--bg-card);border:1.5px solid var(--border);
+  border-radius:var(--radius-lg);padding:.3rem;box-shadow:var(--shadow-sm);
+}
+.tsw-btn{
+  display:flex;align-items:center;gap:.45rem;
+  padding:.42rem clamp(.6rem,1.1vw,1rem);
+  border-radius:10px;
+  font-family:'DM Sans',sans-serif;
+  font-size:.8rem;font-weight:600;
+  color:var(--text-secondary);border:1.5px solid transparent;
+  transition:all var(--transition);white-space:nowrap;
+}
+.tsw-btn:hover{background:var(--green-50);color:var(--green-700)}
+.tsw-btn.active{
+  background:linear-gradient(120deg,var(--green-700) 0%,var(--green-500) 100%);
+  color:#fff;box-shadow:0 2px 8px rgba(27,196,157,.35);border-color:transparent;
+}
+.tsw-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7;flex-shrink:0}
+
+/* ══════════════════════════════════════════════════════════════
+   SYNC BAR
+══════════════════════════════════════════════════════════════ */
+.sync-bar{
+  display:flex;align-items:center;justify-content:center;
+  gap:.6rem;margin-bottom:clamp(.75rem,1.2vw,1rem);
+  font-family:'DM Sans',sans-serif;
+  font-size:.72rem;color:var(--text-muted);font-weight:500;
+}
+.sync-bar.hidden{display:none}
+.sb-line{flex:1;height:1px;background:var(--border);max-width:90px}
+.sb-inner{display:flex;align-items:center;gap:.45rem;white-space:nowrap}
+.sb-chip{
+  display:inline-flex;align-items:center;gap:.3rem;
+  background:var(--green-50);border:1px solid var(--green-100);
+  color:var(--green-600);padding:.18rem .55rem;border-radius:99px;
+  font-size:.68rem;font-weight:700;
+}
+.sb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+
+/* ══════════════════════════════════════════════════════════════
+   DUAL PANELS GRID
+══════════════════════════════════════════════════════════════ */
+.panels-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:clamp(.75rem,1.5vw,1.25rem);align-items:start;
+}
+.panels-grid.single-a .panel-b,
+.panels-grid.single-b .panel-a{display:none}
+.panels-grid.single-a,.panels-grid.single-b{grid-template-columns:1fr}
+@media(max-width:1000px){.panels-grid{grid-template-columns:1fr}}
+
+/* ══════════════════════════════════════════════════════════════
+   PANEL CARD — matches chart-card-sector/donut style
+══════════════════════════════════════════════════════════════ */
+.panel-card{
+  position:relative;overflow:hidden;
+  background:linear-gradient(145deg,#ffffff 0%,#f0faf7 100%);
+  border:1px solid rgba(27,196,157,.18);
+  border-radius:var(--radius-xl);
+  box-shadow:0 4px 24px rgba(11,61,49,.07),0 1px 3px rgba(0,0,0,.04);
+  transition:box-shadow var(--transition),transform var(--transition);
+  animation:panelIn .3s cubic-bezier(.4,0,.2,1);
+}
+.panel-card:hover{
+  box-shadow:0 8px 40px rgba(27,196,157,.14),0 2px 8px rgba(0,0,0,.05);
+  transform:translateY(-2px);
+}
+@keyframes panelIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* Glow blobs */
+.pg{position:absolute;border-radius:50%;pointer-events:none;z-index:0;filter:blur(55px);opacity:.18}
+.pg-green{width:200px;height:200px;background:radial-gradient(circle,#1BC49D,#0b3d31);top:-60px;right:-50px}
+.pg-blue{width:180px;height:180px;background:radial-gradient(circle,#57e5c3,#3182ce);bottom:-40px;left:-40px}
+
+/* Panel header */
+.panel-head{
+  position:relative;z-index:1;
+  padding:clamp(1rem,1.8vw,1.4rem) clamp(1rem,2vw,1.5rem) 0;
+  display:flex;flex-direction:column;gap:.28rem;margin-bottom:.9rem;
+}
+.panel-eyebrow{
+  display:inline-flex;align-items:center;gap:.35rem;
+  font-family:'DM Sans',sans-serif;
+  font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--green-500);background:rgba(27,196,157,.10);
+  border:1px solid rgba(27,196,157,.25);
+  padding:.22rem .65rem;border-radius:99px;width:fit-content;
+}
+.panel-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:clamp(1rem,1.4vw,1.15rem);font-weight:700;
+  color:var(--green-900);letter-spacing:-.025em;line-height:1.25;
+}
+.panel-sub{
+  font-family:'DM Sans',sans-serif;
+  font-size:.78rem;color:var(--gray-500);line-height:1.5;
+}
+.panel-divider{
+  position:relative;z-index:1;height:2px;
+  margin:0 clamp(1rem,2vw,1.5rem) 0;
+  background:linear-gradient(90deg,#1BC49D 0%,rgba(27,196,157,.15) 60%,transparent 100%);
+  border-radius:2px;
+}
+.panel-body{
+  position:relative;z-index:1;
+  padding:clamp(.9rem,1.5vw,1.2rem) clamp(1rem,2vw,1.5rem) clamp(1rem,2vw,1.5rem);
+  max-height:calc(100vh - 290px);
+  overflow-y:auto;
+  scrollbar-width:thin;
+  scrollbar-color:var(--border-strong) transparent;
+}
+.panel-body::-webkit-scrollbar{width:4px}
+.panel-body::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px}
+
+/* ══════════════════════════════════════════════════════════════
+   PANEL A — CCTS REGULATORY JOURNEY
+══════════════════════════════════════════════════════════════ */
+.tl-wrap{
+  position:relative;padding-left:2.6rem;
+  display:flex;flex-direction:column;gap:0;
+}
+.tl-rail{
+  position:absolute;left:.8rem;top:10px;bottom:10px;width:2px;
+  background:linear-gradient(180deg,
+    rgba(100,116,139,.3) 0%,rgba(14,165,233,.5) 17%,rgba(59,130,246,.5) 34%,
+    rgba(13,148,136,.55) 51%,rgba(22,163,74,.55) 68%,rgba(27,196,157,.85) 100%);
+  border-radius:2px;
+}
+.tl-step{
+  position:relative;display:flex;gap:.9rem;
+  padding-bottom:1.35rem;align-items:flex-start;
+}
+.tl-step:last-child{padding-bottom:0}
+.tl-node-col{
+  position:absolute;left:-2.6rem;top:.12rem;
+  display:flex;align-items:center;justify-content:center;
+  width:1.6rem;flex-shrink:0;
+}
+.tl-node{position:relative;width:18px;height:18px;display:flex;align-items:center;justify-content:center}
+.tl-node-ring{position:absolute;inset:-3px;border-radius:50%;border:1.5px solid var(--step-clr);opacity:.35}
+.tl-node-dot{
+  width:10px;height:10px;border-radius:50%;background:var(--step-clr);
+  box-shadow:0 0 0 2px #fff,0 0 0 3px var(--step-clr);position:relative;z-index:1;
+}
+.tl-node-vivid .tl-node-dot{animation:vividPulse 2s ease-in-out infinite}
+@keyframes vividPulse{
+  0%,100%{box-shadow:0 0 0 2px #fff,0 0 0 4px #1BC49D,0 0 10px rgba(27,196,157,.4)}
+  50%{box-shadow:0 0 0 2px #fff,0 0 0 6px #1BC49D,0 0 18px rgba(27,196,157,.65)}
+}
+.tl-content{flex:1;min-width:0}
+.tl-year-tag{
+  display:inline-flex;align-items:center;
+  background:var(--step-bg);border:1px solid var(--step-border);color:var(--step-clr);
+  font-family:'Space Grotesk',sans-serif;
+  font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  padding:.2rem .65rem;border-radius:99px;margin-bottom:.5rem;
+}
+.tl-year-vivid{background:rgba(27,196,157,.12);border-color:rgba(27,196,157,.35);color:var(--green-600)}
+.tl-card{
+  background:var(--bg-card);border:1px solid var(--step-border);
+  border-left:3px solid var(--step-clr);border-radius:10px;padding:.85rem 1rem;
+  transition:box-shadow var(--transition),transform var(--transition);
+}
+.tl-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.07);transform:translateX(2px)}
+.tl-card-top{display:flex;align-items:center;gap:.45rem;margin-bottom:.35rem}
+.tl-phase-icon{font-size:1rem;line-height:1}
+.tl-phase-label{
+  font-family:'DM Sans',sans-serif;
+  font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--step-clr);
+}
+.tl-card-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:.92rem;font-weight:700;color:var(--green-900);letter-spacing:-.01em;
+  margin-bottom:.3rem;line-height:1.3;
+}
+.tl-card-desc{
+  font-family:'DM Sans',sans-serif;
+  font-size:.78rem;color:var(--text-secondary);line-height:1.55;margin-bottom:.45rem;
+}
+.tl-card-ref{
+  display:inline-flex;background:var(--gray-50);border:1px solid var(--border);
+  font-size:.65rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-muted);padding:.18rem .55rem;border-radius:5px;
+}
+.tl-card-pills{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.35rem}
+.tl-pill{
+  background:var(--step-bg);border:1px solid var(--step-border);color:var(--step-clr);
+  font-size:.68rem;font-weight:600;padding:.18rem .55rem;border-radius:99px;
+}
+.tl-action-card{
+  background:linear-gradient(120deg,var(--green-800) 0%,var(--green-700) 50%,#0d5240 100%);
+  border:1px solid rgba(27,196,157,.3);border-radius:12px;padding:1.1rem 1.2rem;overflow:hidden;
+}
+.tl-action-header{margin-bottom:.85rem}
+.tl-action-badge{
+  display:inline-flex;align-items:center;gap:.4rem;
+  background:rgba(27,196,157,.18);border:1px solid rgba(27,196,157,.4);
+  color:#4dffc3;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;
+  padding:.2rem .6rem;border-radius:99px;margin-bottom:.5rem;
+}
+.tl-action-pulse{width:6px;height:6px;border-radius:50%;background:#4dffc3;flex-shrink:0;animation:heroPulse 1.8s ease-in-out infinite}
+.tl-action-title{font-family:'DM Sans',sans-serif;font-size:.82rem;color:rgba(255,255,255,.8);line-height:1.45}
+.tl-action-steps{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .75rem}
+@media(max-width:560px){.tl-action-steps{grid-template-columns:1fr}}
+.tl-action-step{
+  display:flex;align-items:flex-start;gap:.55rem;
+  font-family:'DM Sans',sans-serif;font-size:.76rem;color:rgba(255,255,255,.82);line-height:1.4;
+}
+.tl-an{
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  min-width:22px;height:22px;border-radius:6px;
+  background:rgba(27,196,157,.2);border:1px solid rgba(27,196,157,.35);
+  color:#4dffc3;font-family:'Space Grotesk',sans-serif;font-size:.65rem;font-weight:700;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PANEL B — HOW GREON HELPS
+══════════════════════════════════════════════════════════════ */
+.gh-intro{
+  font-family:'DM Sans',sans-serif;font-size:.8rem;color:var(--text-secondary);line-height:1.55;
+  margin-bottom:1rem;padding:.65rem .85rem;
+  background:var(--green-50);border:1px solid var(--green-100);border-radius:10px;
+}
+.gh-bridge{display:flex;flex-direction:column;gap:.55rem}
+.gh-cols-hdr{
+  display:grid;grid-template-columns:1fr 56px 1fr;align-items:center;gap:.5rem;
+  padding-bottom:.45rem;border-bottom:1.5px solid var(--border);margin-bottom:.25rem;
+}
+.gh-col-hdr{
+  display:flex;align-items:center;gap:.4rem;
+  font-family:'DM Sans',sans-serif;font-size:.68rem;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;
+}
+.gh-col-entity{color:var(--text-secondary)}
+.gh-col-greon{color:var(--green-600)}
+.gh-greon-pip{display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--primary);flex-shrink:0}
+.gh-row{
+  display:grid;grid-template-columns:1fr 56px 1fr;align-items:center;gap:.5rem;
+  padding:.55rem 0;border-bottom:1px dashed var(--border);
+  transition:background .15s;border-radius:6px;
+}
+.gh-row:last-child{border-bottom:none}
+.gh-row:hover{background:var(--green-50)}
+.gh-step{display:flex;align-items:flex-start;gap:.65rem;padding:.1rem .4rem}
+.gh-step-num{
+  display:flex;align-items:center;justify-content:center;
+  min-width:28px;height:28px;border-radius:8px;
+  font-family:'Space Grotesk',sans-serif;font-size:.7rem;font-weight:800;flex-shrink:0;border:1.5px solid;
+}
+.gh-num-slate{background:#f1f5f9;color:#475569;border-color:#cbd5e1}
+.gh-num-blue{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+.gh-num-teal{background:#f0fdfa;color:#0f766e;border-color:#99f6e4}
+.gh-num-green{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+.gh-num-amber{background:#fffbeb;color:#b45309;border-color:#fde68a}
+.gh-num-primary{background:var(--green-100);color:var(--green-700);border-color:var(--green-200)}
+.gh-step-body{flex:1;min-width:0}
+.gh-step-title{font-family:'DM Sans',sans-serif;font-size:.8rem;font-weight:700;color:var(--text-primary);margin-bottom:.12rem;line-height:1.35}
+.gh-step-sub{font-family:'DM Sans',sans-serif;font-size:.7rem;color:var(--text-muted);line-height:1.4}
+.gh-connector{display:flex;align-items:center;justify-content:center;position:relative}
+.gh-connector-line{
+  position:absolute;height:1.5px;left:0;right:16px;
+  background:linear-gradient(90deg,var(--border) 0%,var(--green-300) 100%);
+}
+.gh-arr-svg{color:var(--green-500);flex-shrink:0;position:relative;z-index:1}
+.gh-caps-col{display:flex;flex-wrap:wrap;gap:.35rem;padding:.1rem .4rem}
+.gh-cap-chip{
+  display:inline-flex;align-items:center;gap:.3rem;
+  font-family:'DM Sans',sans-serif;font-size:.7rem;font-weight:600;
+  padding:.25rem .6rem;border-radius:99px;border:1.5px solid;white-space:nowrap;
+}
+.gh-cap-audit{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+.gh-cap-consult{background:var(--green-50);color:var(--green-700);border-color:var(--green-100)}
+.gh-cap-saas{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+.gh-cap-iot{background:#faf5ff;color:#6b21a8;border-color:#d8b4fe}
+.gh-cap-plan{background:#fff7ed;color:#b45309;border-color:#fed7aa}
+.gh-all-caps{
+  margin-top:1.1rem;padding:1rem 1.1rem;
+  background:linear-gradient(135deg,var(--green-50) 0%,#f0fdf4 100%);
+  border:1px solid var(--green-100);border-radius:12px;
+}
+.gh-all-caps-title{
+  font-family:'DM Sans',sans-serif;font-size:.68rem;font-weight:800;
+  text-transform:uppercase;letter-spacing:.09em;color:var(--text-secondary);margin-bottom:.65rem;
+}
+.gh-all-caps-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem;margin-bottom:.85rem}
+@media(max-width:560px){.gh-all-caps-grid{grid-template-columns:1fr 1fr}}
+.gh-all-cap{
+  display:flex;align-items:center;gap:.4rem;
+  font-family:'DM Sans',sans-serif;font-size:.73rem;font-weight:600;
+  padding:.35rem .6rem;border-radius:8px;border:1px solid;
+}
+.gh-all-consult{background:#fff;border-color:var(--green-100);color:var(--green-700)}
+.gh-all-plan{background:#fff7ed;border-color:#fed7aa;color:#b45309}
+.gh-all-saas{background:#f0fdf4;border-color:#bbf7d0;color:#15803d}
+.gh-all-iot{background:#faf5ff;border-color:#d8b4fe;color:#6b21a8}
+.gh-all-audit{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+.gh-cta-row{display:flex;justify-content:center}
+.gh-cta-btn{
+  display:inline-flex;align-items:center;gap:.5rem;
+  background:linear-gradient(100deg,var(--green-700),var(--green-500));
+  color:#fff;font-family:'DM Sans',sans-serif;font-size:.78rem;font-weight:700;
+  padding:.6rem 1.3rem;border-radius:99px;box-shadow:0 2px 10px rgba(27,196,157,.3);
+  transition:all .18s ease;
+}
+.gh-cta-btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(27,196,157,.45);color:#fff}
+
+/* ══════════════════════════════════════════════════════════════
+   SOURCE FOOTER
+══════════════════════════════════════════════════════════════ */
+.source-footer{
+  margin-top:clamp(1.25rem,2vw,1.75rem);
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+  padding:clamp(.75rem,1.2vw,1rem) clamp(1rem,1.8vw,1.5rem);
+  background:var(--bg-card);border:1px solid var(--border);
+  border-radius:var(--radius-lg);box-shadow:var(--shadow-xs);
+}
+.source-footer-text{font-family:'DM Sans',sans-serif;font-size:.72rem;color:var(--text-muted);line-height:1.5}
+.source-footer-text strong{color:var(--text-secondary)}
+.source-footer-cta{
+  display:inline-flex;align-items:center;gap:.4rem;
+  background:linear-gradient(100deg,var(--green-700),var(--green-500));
+  color:#fff;font-family:'DM Sans',sans-serif;font-size:.78rem;font-weight:700;
+  padding:.5rem 1.1rem;border-radius:99px;box-shadow:0 2px 8px rgba(27,196,157,.25);
+  transition:all .18s ease;white-space:nowrap;
+}
+.source-footer-cta:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(27,196,157,.4);color:#fff}
+
+/* ══════════════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════════════ */
+@media(max-width:640px){
+  .hero-band{flex-direction:column}
+  .hero-stats{justify-content:flex-start}
+  .controls-bar{flex-direction:column;align-items:flex-start}
+  .tl-wrap{padding-left:2.2rem}
+  .gh-cols-hdr,.gh-row{grid-template-columns:1fr 40px 1fr}
+  .gh-connector-line{right:12px}
+  .source-footer{flex-direction:column;align-items:flex-start}
+  .panel-body{max-height:none}
+}
+@media(max-width:480px){
+  .site-header{height:auto;padding:.65rem 1rem;flex-wrap:wrap}
+  .tab-switch{flex-wrap:wrap}
+}
+@media(min-width:2000px){.page-wrap{padding:2rem 3rem}}
+:focus-visible{outline:2px solid var(--green-400);outline-offset:2px}
+  </style>
+</head>
+<body>
+
+<!-- HEADER — exact match to index.html -->
+<header class="site-header">
+  <div class="header-brand">
+    <div class="brand-logo">
+      <span class="brand-icon">🌿</span>
+      <div>
+        <div class="brand-name">Greon CCTS Intelligence</div>
+        <div class="brand-sub">Official notified entity intelligence under India's CCTS compliance framework</div>
+      </div>
+    </div>
+  </div>
+  <a href="index.html" class="header-back" aria-label="Back to dashboard">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Dashboard
+  </a>
+</header>
+
+<main class="page-wrap">
+
+  <!-- HERO -->
+  <div class="hero-band">
+    <div class="hero-ring" aria-hidden="true"></div>
+    <div class="hero-content">
+      <div class="hero-badge"><span class="hero-pulse"></span>India CCTS Framework</div>
+      <h1 class="hero-title">Compliance Journey &amp; Greon's Role</h1>
+      <p class="hero-sub">From legal foundation to active compliance — and how Greon supports every step of India's Carbon Credit Trading Scheme.</p>
+    </div>
+    <div class="hero-stats" aria-label="Key stats">
+      <div class="hero-stat"><div class="hero-stat-val">2022</div><div class="hero-stat-lbl">Legal Basis</div></div>
+      <div class="hero-stat"><div class="hero-stat-val">8</div><div class="hero-stat-lbl">Sectors</div></div>
+      <div class="hero-stat"><div class="hero-stat-val">2026</div><div class="hero-stat-lbl">Active Now</div></div>
+    </div>
+  </div>
+
+  <!-- CONTROLS -->
+  <div class="controls-bar">
+    <div class="ctrl-left">
+      <div class="section-eyebrow"><span class="ey-line"></span>Dual-View Timeline</div>
+      <div class="section-heading">CCTS Regulatory Journey &amp; Greon Support</div>
+    </div>
+    <div class="tab-switch" role="tablist" aria-label="Select view">
+      <button class="tsw-btn active" role="tab" aria-selected="true" data-view="both">
+        <span class="tsw-dot"></span>Both Views
+      </button>
+      <button class="tsw-btn" role="tab" aria-selected="false" data-view="journey">
+        <span class="tsw-dot"></span>CCTS Journey
+      </button>
+      <button class="tsw-btn" role="tab" aria-selected="false" data-view="greon">
+        <span class="tsw-dot"></span>How Greon Helps
+      </button>
+    </div>
+  </div>
+
+  <!-- SYNC BAR -->
+  <div class="sync-bar" id="sync-bar" aria-hidden="true">
+    <span class="sb-line"></span>
+    <span class="sb-inner">
+      <span class="sb-chip"><span class="sb-dot" style="background:var(--green-400)"></span>Regulatory timeline</span>
+      aligned with
+      <span class="sb-chip"><span class="sb-dot" style="background:#3182ce"></span>Greon capabilities</span>
+    </span>
+    <span class="sb-line"></span>
+  </div>
+
+  <!-- PANELS -->
+  <div class="panels-grid" id="panels-grid">
+
+    <!-- ═══ PANEL A: CCTS JOURNEY ═══ -->
+    <div class="panel-card panel-a" id="panel-a">
+      <div class="pg pg-green" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div class="panel-eyebrow">📋 CCTS Regulatory Journey</div>
+        <h2 class="panel-title">Compliance Journey &amp; Milestones</h2>
+        <p class="panel-sub">Key regulatory events from legal foundation to active compliance obligations</p>
+      </div>
+      <div class="panel-divider"></div>
+      <div class="panel-body">
+        <div class="tl-wrap">
+          <div class="tl-rail" aria-hidden="true"></div>
+
+          <!-- Step 1 -->
+          <div class="tl-step" style="--step-clr:#64748b;--step-bg:rgba(100,116,139,.08);--step-border:rgba(100,116,139,.2)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag">2022</div>
+              <div class="tl-card">
+                <div class="tl-card-top"><span class="tl-phase-icon">⚖️</span><div class="tl-phase-label">Legal Foundation</div></div>
+                <div class="tl-card-title">Legal Basis Created</div>
+                <div class="tl-card-desc">Carbon trading framework enabled under the Energy Conservation (Amendment) Act, giving the Central Government statutory authority to establish India's carbon credit trading scheme.</div>
+                <div class="tl-card-ref">EC Amendment Act 2022</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="tl-step" style="--step-clr:#0ea5e9;--step-bg:rgba(14,165,233,.08);--step-border:rgba(14,165,233,.22)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag">Jun 2023</div>
+              <div class="tl-card">
+                <div class="tl-card-top"><span class="tl-phase-icon">🌏</span><div class="tl-phase-label">Market Created</div></div>
+                <div class="tl-card-title">CCTS Officially Notified</div>
+                <div class="tl-card-desc">Indian Carbon Market framework formally begins. India's first statutory carbon market established under S.O.&nbsp;2825(E). Compliance architecture starts taking shape.</div>
+                <div class="tl-card-ref">Gazette S.O. 2825(E)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="tl-step" style="--step-clr:#3b82f6;--step-bg:rgba(59,130,246,.08);--step-border:rgba(59,130,246,.22)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag">Dec 2023</div>
+              <div class="tl-card">
+                <div class="tl-card-top"><span class="tl-phase-icon">🔧</span><div class="tl-phase-label">Framework Strengthened</div></div>
+                <div class="tl-card-title">CCTS Amended</div>
+                <div class="tl-card-desc">Institutional and implementation framework strengthened through S.O.&nbsp;5369(E). Updated provisions and clarifications published by BEE for improved operational clarity.</div>
+                <div class="tl-card-ref">Amendment S.O. 5369(E)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="tl-step" style="--step-clr:#0d9488;--step-bg:rgba(13,148,136,.08);--step-border:rgba(13,148,136,.22)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag">Oct 2025</div>
+              <div class="tl-card">
+                <div class="tl-card-top"><span class="tl-phase-icon">🎯</span><div class="tl-phase-label">Targets Notified</div></div>
+                <div class="tl-card-title">First GEI Target Rules Notified</div>
+                <div class="tl-card-desc">Initial obligated sectors receive official GEI targets — S.O.&nbsp;4370(E). Baseline: 2023–24. Target years: 2025–26 &amp; 2026–27.</div>
+                <div class="tl-card-pills">
+                  <span class="tl-pill">Aluminium</span>
+                  <span class="tl-pill">Cement</span>
+                  <span class="tl-pill">Chlor-Alkali</span>
+                  <span class="tl-pill">Pulp &amp; Paper</span>
+                  <span class="tl-pill">CGU</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 5 -->
+          <div class="tl-step" style="--step-clr:#16a34a;--step-bg:rgba(22,163,74,.08);--step-border:rgba(22,163,74,.22)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag">Jan 2026</div>
+              <div class="tl-card">
+                <div class="tl-card-top"><span class="tl-phase-icon">🔄</span><div class="tl-phase-label">Scope Expanded</div></div>
+                <div class="tl-card-title">Amendment Rules Notified</div>
+                <div class="tl-card-desc">Additional sectors brought into the notified compliance universe. More companies now require immediate readiness planning for CCTS obligations.</div>
+                <div class="tl-card-pills">
+                  <span class="tl-pill">Secondary Aluminium</span>
+                  <span class="tl-pill">Petroleum Refinery</span>
+                  <span class="tl-pill">Petrochemical</span>
+                  <span class="tl-pill">Textile</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 6 — Action Required -->
+          <div class="tl-step" style="--step-clr:#1BC49D;--step-bg:rgba(27,196,157,.08);--step-border:rgba(27,196,157,.3)">
+            <div class="tl-node-col" aria-hidden="true"><div class="tl-node tl-node-vivid"><div class="tl-node-ring"></div><div class="tl-node-dot"></div></div></div>
+            <div class="tl-content">
+              <div class="tl-year-tag tl-year-vivid">2026 — Now</div>
+              <div class="tl-action-card">
+                <div class="tl-action-header">
+                  <div class="tl-action-badge"><span class="tl-action-pulse"></span>Action Required</div>
+                  <div class="tl-action-title">What every obligated entity must execute this compliance year</div>
+                </div>
+                <div class="tl-action-steps">
+                  <div class="tl-action-step"><span class="tl-an">01</span><span>Confirm whether the entity is officially listed in the GEI Target notification</span></div>
+                  <div class="tl-action-step"><span class="tl-an">02</span><span>Identify the applicable target rule and reporting boundary</span></div>
+                  <div class="tl-action-step"><span class="tl-an">03</span><span>Conduct a gap assessment against the notified GEI target</span></div>
+                  <div class="tl-action-step"><span class="tl-an">04</span><span>Prepare plant and facility data for compliance execution</span></div>
+                  <div class="tl-action-step"><span class="tl-an">05</span><span>Complete a detailed FY 2025–26 carbon assessment</span></div>
+                  <div class="tl-action-step"><span class="tl-an">06</span><span>Appoint ACV, complete verification, and submit through the compliance process</span></div>
+                  <div class="tl-action-step"><span class="tl-an">07</span><span>Develop a decarbonization and investment plan for the next target cycle</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /tl-wrap -->
+      </div><!-- /panel-body -->
+    </div><!-- /panel-a -->
+
+    <!-- ═══ PANEL B: HOW GREON HELPS ═══ -->
+    <div class="panel-card panel-b" id="panel-b">
+      <div class="pg pg-blue" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div class="panel-eyebrow" style="color:#1d4ed8;background:rgba(49,130,206,.08);border-color:rgba(49,130,206,.2)">🌿 How Greon Helps</div>
+        <h2 class="panel-title">End-to-End CCTS Support</h2>
+        <p class="panel-sub">Greon capabilities mapped to every phase of your compliance journey</p>
+      </div>
+      <div class="panel-divider" style="background:linear-gradient(90deg,#3182ce 0%,rgba(49,130,206,.12) 60%,transparent 100%)"></div>
+      <div class="panel-body">
+
+        <div class="gh-intro">End-to-end CCTS compliance support — from initial gap assessment through real-time emission tracking, reduction project accounting, and audit readiness.</div>
+
+        <div class="gh-bridge">
+          <div class="gh-cols-hdr">
+            <div class="gh-col-hdr gh-col-entity">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/></svg>
+              Entity Action Phase
+            </div>
+            <div></div>
+            <div class="gh-col-hdr gh-col-greon"><span class="gh-greon-pip"></span>Greon Can Support With</div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-slate">B1</div><div class="gh-step-body"><div class="gh-step-title">Identify Target Rule &amp; Reporting Boundary</div><div class="gh-step-sub">Determine which GEI notification applies and define facility compliance scope</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-audit">🔍 Registry Intelligence</span></div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-blue">B2</div><div class="gh-step-body"><div class="gh-step-title">Conduct Gap Assessment</div><div class="gh-step-sub">Evaluate current GEI vs. the notified target to quantify the compliance gap</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-consult">📊 Gap Assessment</span></div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-teal">B3</div><div class="gh-step-body"><div class="gh-step-title">Prepare Plant &amp; Facility Data</div><div class="gh-step-sub">Gather production output, energy use, and emission source data from all facilities</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-consult">📁 Data Collection</span><span class="gh-cap-chip gh-cap-saas">💻 Monitoring SaaS</span><span class="gh-cap-chip gh-cap-iot">📡 IoT Hardware</span></div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-green">B4</div><div class="gh-step-body"><div class="gh-step-title">Complete FY 2025–26 Carbon Assessment</div><div class="gh-step-sub">Full GHG inventory, intensity calculation, and scope 1 / 2 / 3 breakdown</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-consult">⚖️ Carbon Accounting</span><span class="gh-cap-chip gh-cap-consult">🌱 Reduction Accounting</span></div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-amber">B5</div><div class="gh-step-body"><div class="gh-step-title">ACV Verification &amp; Compliance Submission</div><div class="gh-step-sub">Appoint accredited verifier, complete third-party audit, and submit to BEE</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-audit">✅ Audit Support</span></div>
+          </div>
+
+          <div class="gh-row">
+            <div class="gh-step"><div class="gh-step-num gh-num-primary">B6</div><div class="gh-step-body"><div class="gh-step-title">Plan for Next Target Cycle</div><div class="gh-step-sub">Develop investment and abatement roadmap for the 2026–27 compliance year</div></div></div>
+            <div class="gh-connector"><div class="gh-connector-line"></div><svg class="gh-arr-svg" width="16" height="10" viewBox="0 0 16 10" fill="none" aria-hidden="true"><path d="M1 5h12M9.5 1.5l4 3.5-4 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="gh-caps-col"><span class="gh-cap-chip gh-cap-plan">🗺️ Decarbonization Planning</span><span class="gh-cap-chip gh-cap-saas">📈 Reduction Tracking</span></div>
+          </div>
+        </div><!-- /gh-bridge -->
+
+        <div class="gh-all-caps">
+          <div class="gh-all-caps-title">All Greon CCTS Capabilities</div>
+          <div class="gh-all-caps-grid">
+            <div class="gh-all-cap gh-all-consult"><span>📊</span>Gap Assessment</div>
+            <div class="gh-all-cap gh-all-consult"><span>📁</span>Data Collection &amp; Prep</div>
+            <div class="gh-all-cap gh-all-consult"><span>⚖️</span>Carbon Accounting</div>
+            <div class="gh-all-cap gh-all-consult"><span>🌱</span>Reduction Project Accounting</div>
+            <div class="gh-all-cap gh-all-plan"><span>🗺️</span>Decarbonization Planning</div>
+            <div class="gh-all-cap gh-all-saas"><span>💻</span>Monitoring SaaS</div>
+            <div class="gh-all-cap gh-all-iot"><span>📡</span>IoT Hardware &amp; Real-Time</div>
+            <div class="gh-all-cap gh-all-saas"><span>📈</span>Reduction Progress Tracking</div>
+            <div class="gh-all-cap gh-all-audit"><span>✅</span>Audit Support</div>
+          </div>
+          <div class="gh-cta-row">
+            <a href="https://zerocarbon.greonxpert.com" target="_blank" rel="noopener" class="gh-cta-btn">
+              Explore Zero Carbon Platform
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8M6.5 2.5l3.5 3.5-3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
+          </div>
+        </div>
+
+      </div><!-- /panel-body -->
+    </div><!-- /panel-b -->
+
+  </div><!-- /panels-grid -->
+
+  <!-- FOOTER -->
+  <footer class="source-footer">
+    <div class="source-footer-text">
+      <strong>Source:</strong> Greenhouse Gas Emission Intensity Target Rules 2025 &nbsp;•&nbsp;
+      Ministry of Environment, Forest and Climate Change (MoEF&amp;CC) / Bureau of Energy Efficiency (BEE), Government of India
+    </div>
+    <a href="https://zerocarbon.greonxpert.com" target="_blank" rel="noopener" class="source-footer-cta">
+      Zero Carbon Platform
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 9.5L9.5 2.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </footer>
+
+</main>
+
+<script>
+'use strict';
+const grid    = document.getElementById('panels-grid');
+const syncBar = document.getElementById('sync-bar');
+const tabs    = document.querySelectorAll('.tsw-btn');
+
+function applyView(view) {
+  grid.classList.remove('single-a','single-b');
+  if (view === 'journey') grid.classList.add('single-a');
+  if (view === 'greon')   grid.classList.add('single-b');
+  syncBar.classList.toggle('hidden', view !== 'both');
+  tabs.forEach(btn => {
+    const active = btn.dataset.view === view;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+}
+
+tabs.forEach(btn => {
+  btn.addEventListener('click', () => applyView(btn.dataset.view));
+  btn.addEventListener('keydown', e => {
+    const all = [...tabs];
+    const idx = all.indexOf(document.activeElement);
+    if (e.key === 'ArrowRight') { e.preventDefault(); all[(idx+1)%all.length].focus(); }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); all[(idx-1+all.length)%all.length].focus(); }
+    if (e.key === 'Enter'||e.key===' ') { e.preventDefault(); applyView(btn.dataset.view); }
+  });
+});
+
+applyView('both');
+</script>
+</body>
+</html>
