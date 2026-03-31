@@ -74,8 +74,12 @@ const ticketController = require('./controllers/Ticket/ticketController');
 const auditLogRoutes     = require('./router/AuditLog/auditLogRoutes');
 const auditLogController = require('./controllers/AuditLog/auditLogController');
 
-// Quota log routes 
+// Quota log routes
 const quotaRoutes = require('./router/CMS/quotaRoutes');
+
+// CCTS routes & controller
+const cctsRoutes = require('./router/CCTS/cctsRoutes');
+const cctsController = require('./controllers/CCTS/CCTSController');
 
 
 const { logLogin }       = require('./services/audit/auditLogService');
@@ -183,6 +187,7 @@ app.use('/api/audit-logs', auditLogRoutes);
 
 // Quota routes
 app.use('/api/quota', quotaRoutes);
+app.use('/api/ccts', cctsRoutes);
 
 // // In your main app.js or routes/index.js
 // const debugRoutes = require('./router/debug');
@@ -283,6 +288,7 @@ sbtiController.setSocketIO(io);
 dataCompletionController.setSocketIO(io);
 ticketController.setSocketIO(io);
 auditLogController.setSocketIO(io);
+cctsController.setSocketIO(io);
 
 setTicketChatSocketIO(io);
 
