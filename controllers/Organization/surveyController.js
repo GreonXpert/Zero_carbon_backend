@@ -1155,7 +1155,7 @@ async function resolveAnonymousCode(req, res) {
     if (!anonymousCode) return res.status(400).json({ message: 'anonymousCode is required.' });
 
     // Find candidate by anonymousCodeId label (not hash — label is stored)
-    const codeDoc = await AnonymousCode.findOne({ anonymousCodeId: anonymousCode });
+    const codeDoc = await AnonymousCode.findOne({ anonymousCodeId: anonymousCode }).sort({ createdAt: -1 });
     if (!codeDoc) return res.status(404).json({ message: 'Invalid anonymous code.' });
 
     if (codeDoc.isRedeemed) {
