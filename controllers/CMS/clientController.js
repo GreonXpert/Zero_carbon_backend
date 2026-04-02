@@ -19,7 +19,8 @@ const {
   createLeadActionNotification,
   createDataSubmissionNotification,
   createProposalActionNotification,
-  createConsultantAssignmentNotification
+  createConsultantAssignmentNotification,
+  createSubscriptionPendingNotification,
 } = require("../../utils/notifications/notificationHelper");
 
 const {
@@ -3672,6 +3673,17 @@ const manageSubscription = async (req, res) => {
 
     // 3) Consultant FLOW – can only create requests
     if (actorType === "consultant") {
+      // Verify this consultant is actually assigned to the client
+      const isAssigned =
+        client.leadInfo?.assignedConsultantId?.toString() === actor._id.toString() ||
+        client.workflowTracking?.assignedConsultantId?.toString() === actor._id.toString();
+
+      if (!isAssigned) {
+        return res.status(403).json({
+          message: "You are not assigned to this client.",
+        });
+      }
+
       if (!["suspend", "reactivate"].includes(action)) {
         return res.status(403).json({
           message:
@@ -3721,6 +3733,9 @@ const manageSubscription = async (req, res) => {
       });
 
       await client.save();
+
+      // Notify the specific consultant_admin assigned to this client
+      await createSubscriptionPendingNotification(client, actor);
 
       return res.status(202).json({
         message: `Subscription ${action} request has been sent to Consultant Admin.`,
@@ -3919,6 +3934,16 @@ const reviewSubscription = async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: "Client not found." });
 
+    // Consultant admin can only review clients assigned to them
+    if (actorType === "consultant_admin") {
+      const clientAdminId = client.leadInfo?.consultantAdminId?.toString();
+      if (clientAdminId !== actor._id.toString()) {
+        return res.status(403).json({
+          message: "You are not authorized to review this client's subscription.",
+        });
+      }
+    }
+
     const pending = client.accountDetails.pendingSubscriptionRequest;
 
     if (!pending || pending.status !== "pending") {
@@ -4017,10 +4042,17 @@ const getPendingSubscriptionApprovals = async (req, res) => {
       });
     }
 
-    const clients = await Client.find({
+    const filter = {
       stage: "active",
       "accountDetails.pendingSubscriptionRequest.status": "pending",
-    })
+    };
+
+    // Consultant admin can only see pending requests for their own clients
+    if (req.user.userType === "consultant_admin") {
+      filter["leadInfo.consultantAdminId"] = req.user._id;
+    }
+
+    const clients = await Client.find(filter)
       .populate(
         "accountDetails.pendingSubscriptionRequest.requestedBy",
         "userName email userType"

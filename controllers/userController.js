@@ -3130,6 +3130,7 @@ const getAllSupportManagers = async (req, res) => {
       const orConditions = [
         { supportManagerType: "general_support" },
         { supportManagerType: "consultant_support", assignedConsultants: currentUserId },
+        { supportManagerType: "client_support" },
       ];
 
       // Optional fallback if you sync consultant -> supportManagerId (your createSupportManager does this)
@@ -3139,8 +3140,8 @@ const getAllSupportManagers = async (req, res) => {
 
       andConditions.push({ $or: orConditions });
 
-      // Hard-stop them from seeing client_support managers
-      andConditions.push({ supportManagerType: { $in: ["general_support", "consultant_support"] } });
+      // Restrict to visible support manager types for consultant-side users
+      andConditions.push({ supportManagerType: { $in: ["general_support", "consultant_support", "client_support"] } });
     }
 
     // Optional filter

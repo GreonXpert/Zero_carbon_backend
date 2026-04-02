@@ -183,7 +183,7 @@ async function createProcessEmissionDataEntry(dataEntry) {
     await Promise.allSettled(upsertPromises);
 
     // ── 4. Update ProcessEmissionSummary inside EmissionSummary ─────────────
-    await updateProcessEmissionSummary(clientId, scopeIdentifier, matchingNodes, calculatedEmissions);
+    await updateProcessEmissionSummary(clientId, scopeIdentifier, matchingNodes, calculatedEmissions, dataEntry.dataValues);
 
   } catch (err) {
     // Never throw – this is a background enrichment step and should never
@@ -204,8 +204,9 @@ async function createProcessEmissionDataEntry(dataEntry) {
  * @param {string}   scopeIdentifier
  * @param {Array}    matchingNodes  – nodes with { nodeId, allocationPct, … }
  * @param {object}   calculatedEmissions – from the DataEntry
+ * @param {Map|object|null} dataValues – DataEntry.dataValues (carries survey-specific named fields)
  */
-async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingNodes, calculatedEmissions) {
+async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingNodes, calculatedEmissions, dataValues = null) {
   try {
     // Fetch (or create) the all-time EmissionSummary for this client
     let summary = await EmissionSummary.findOne({
@@ -233,6 +234,24 @@ async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingN
     }
 
     const pes = summary.processEmissionSummary;
+
+    // ── Extract Employee Commuting survey named fields from dataValues ────────
+    // These are stored verbatim (no allocation) so API consumers can read the
+    // exact values that came from the survey cycle finalization.
+    const dvGet = (key) => {
+      if (!dataValues) return undefined;
+      return dataValues instanceof Map ? dataValues.get(key) : dataValues[key];
+    };
+    const surveyDataValues = {
+      totalEmployeeCommutingKgCO2e:
+        dvGet('totalEmployeeCommutingKgCO2e'),
+      totalEmployeeCommutingWithUncertainityExactKgCO2e:
+        dvGet('totalEmployeeCommutingWithUncertainityExactKgCO2e'),
+      totalEmployeeCommutingKgTotalUncertaintyCO2e:
+        dvGet('totalEmployeeCommutingKgTotalUncertaintyCO2e'),
+    };
+    const hasSurveyFields =
+      surveyDataValues.totalEmployeeCommutingKgTotalUncertaintyCO2e !== undefined;
 
     // ── Update byScopeIdentifier ─────────────────────────────────────────────
     if (!pes.byScopeIdentifier) pes.byScopeIdentifier = {};
@@ -274,6 +293,10 @@ async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingN
       pes.byNode[nodeId].originalCO2e  = (pes.byNode[nodeId].originalCO2e  || 0) + originalCO2e;
       pes.byNode[nodeId].dataPointCount= (pes.byNode[nodeId].dataPointCount || 0) + 1;
       pes.byNode[nodeId].lastUpdatedAt = new Date();
+      // Store Employee Commuting survey named fields when present
+      if (hasSurveyFields) {
+        pes.byNode[nodeId].surveyDataValues = surveyDataValues;
+      }
 
       // ── byNode → scopeDetails (allocationPct lives per-scope, not per-node) ─
       if (!pes.byNode[nodeId].scopeDetails) pes.byNode[nodeId].scopeDetails = {};
@@ -308,6 +331,10 @@ async function updateProcessEmissionSummary(clientId, scopeIdentifier, matchingN
         (pes.byScopeIdentifier[scopeIdentifier].CO2e || 0) + totalAllocatedCO2e;
       pes.byScopeIdentifier[scopeIdentifier].dataPointCount =
         (pes.byScopeIdentifier[scopeIdentifier].dataPointCount || 0) + 1;
+      // Store Employee Commuting survey named fields when present
+      if (hasSurveyFields) {
+        pes.byScopeIdentifier[scopeIdentifier].surveyDataValues = surveyDataValues;
+      }
     }
 
     // ── Update metadata ──────────────────────────────────────────────────────

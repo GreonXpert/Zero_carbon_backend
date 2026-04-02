@@ -2629,6 +2629,21 @@ async function finalizeCycleEmissions({
         'emissionsSummary.totalCO2e': finalTotal,
         'emissionsSummary.totalCO2eWithUncertainty': totalEmployeeCommutingWithUncertainityExactKgCO2e,
         'emissionsSummary.unit': 'kgCO2e',
+        // Populate calculatedEmissions.incoming so extractEmissionValues() can read CO2e.
+        // CO2e uses totalEmployeeCommutingKgTotalUncertaintyCO2e per summary display requirement.
+        'calculatedEmissions.incoming': {
+          employee_commuting: {
+            CO2e:                    totalEmployeeCommutingKgTotalUncertaintyCO2e,
+            emission:                finalTotal,
+            CO2eWithUncertainty:     totalEmployeeCommutingKgTotalUncertaintyCO2e,
+            emissionWithUncertainty: totalEmployeeCommutingKgTotalUncertaintyCO2e,
+          },
+        },
+        // ISO 14064-1 absolute uncertainty for extractEmissionValues()
+        'calculatedEmissions.uncertainty': {
+          deltaE:    deltaSurvey,
+          deltaEPct: UE,
+        },
         'calculatedEmissions.metadata.UAD': uad,
         'calculatedEmissions.metadata.UEF': uef,
         calculationBreakdown,

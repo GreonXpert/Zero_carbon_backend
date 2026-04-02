@@ -1374,6 +1374,29 @@ async function approveSurvey(req, res) {
     cycle.totalEmissionsKgCO2e = result.finalTotal;
     await cycle.save();
 
+    // Propagate to ProcessEmissionDataEntry and re-trigger summaries.
+    // Mirrors the pattern in dataCollectionController.js saveOneEntry().
+    // Uses setImmediate so the HTTP response is not delayed.
+    setImmediate(async () => {
+      try {
+        const { createProcessEmissionDataEntry } = require('../../utils/ProcessEmission/createProcessEmissionDataEntry');
+        const { updateSummariesOnDataChange }    = require('../Calculation/CalculationSummary');
+        const freshEntry = await DataEntry.findOne({
+          clientId,
+          nodeId,
+          scopeIdentifier,
+          isSummary: true,
+          externalId: `survey_cycle_${Number(cycleIndex)}`,
+        }).lean();
+        if (freshEntry && freshEntry.calculatedEmissions?.incoming) {
+          await createProcessEmissionDataEntry(freshEntry);
+          await updateSummariesOnDataChange(freshEntry);
+        }
+      } catch (err) {
+        console.error('[approveSurvey] ProcessEmission propagation failed:', err.message);
+      }
+    });
+
     const r4 = (n) => parseFloat((Number(n) || 0).toFixed(4));
     const totalLinks = cycle.totalLinks || 0;
     const submissionPct = totalLinks > 0 ? Math.round((result.submittedCount / totalLinks) * 100) : 0;
@@ -1627,9 +1650,23 @@ async function calculateAverageSurvey(req, res) {
           timestamp,
           date: dateFmt,
           summaryPeriod: { year: periodYear, month: periodMonth },
-          dataValues: new Map([['totalEmployeeCommutingKgCO2e', average]]),
+          dataValues: new Map([
+            ['totalEmployeeCommutingKgCO2e', average],
+            ['totalEmployeeCommutingWithUncertainityExactKgCO2e', average],
+            ['totalEmployeeCommutingKgTotalUncertaintyCO2e', average],
+          ]),
           'emissionsSummary.totalCO2e': average,
           'emissionsSummary.unit': 'kgCO2e',
+          // Populate incoming bucket so extractEmissionValues() can read CO2e
+          'calculatedEmissions.incoming': {
+            employee_commuting: {
+              CO2e:                    average,
+              emission:                average,
+              CO2eWithUncertainty:     average,
+              emissionWithUncertainty: average,
+            },
+          },
+          'calculatedEmissions.uncertainty': { deltaE: 0, deltaEPct: 0 },
           processingStatus: 'processed',
           emissionCalculationStatus: 'completed',
           approvalStatus: 'pending_approval',
@@ -1660,6 +1697,21 @@ async function calculateAverageSurvey(req, res) {
     // Update SurveyCycle with reference to the DataEntry
     cycle.autoFillDataEntryId = savedEntry._id;
     await cycle.save();
+
+    // Propagate to ProcessEmissionDataEntry and re-trigger summaries
+    setImmediate(async () => {
+      try {
+        const { createProcessEmissionDataEntry } = require('../../utils/ProcessEmission/createProcessEmissionDataEntry');
+        const { updateSummariesOnDataChange }    = require('../Calculation/CalculationSummary');
+        const freshEntry = await DataEntry.findById(savedEntry._id).lean();
+        if (freshEntry && freshEntry.calculatedEmissions?.incoming) {
+          await createProcessEmissionDataEntry(freshEntry);
+          await updateSummariesOnDataChange(freshEntry);
+        }
+      } catch (err) {
+        console.error('[calculateAverageSurvey] ProcessEmission propagation failed:', err.message);
+      }
+    });
 
     // Write AuditLog
     await logEvent({
@@ -1731,6 +1783,21 @@ async function approveCycleAverage(req, res) {
     entry.lastEditedBy = req.user._id;
     entry.lastEditedAt = new Date();
     await entry.save();
+
+    // Propagate to ProcessEmissionDataEntry and re-trigger summaries now that entry is approved
+    setImmediate(async () => {
+      try {
+        const { createProcessEmissionDataEntry } = require('../../utils/ProcessEmission/createProcessEmissionDataEntry');
+        const { updateSummariesOnDataChange }    = require('../Calculation/CalculationSummary');
+        const freshEntry = await DataEntry.findById(entry._id).lean();
+        if (freshEntry && freshEntry.calculatedEmissions?.incoming) {
+          await createProcessEmissionDataEntry(freshEntry);
+          await updateSummariesOnDataChange(freshEntry);
+        }
+      } catch (err) {
+        console.error('[approveCycleAverage] ProcessEmission propagation failed:', err.message);
+      }
+    });
 
     await logEvent({
       req,

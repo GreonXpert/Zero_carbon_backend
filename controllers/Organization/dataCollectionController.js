@@ -4959,11 +4959,28 @@ const streamDataValuesAndCumulative = async (req, res) => {
         scopeIdentifier: 1,
         timestamp: 1,
         dataValues: 1,
-        dataEntryCumulative: 1
+        dataEntryCumulative: 1,
+        calculatedEmissions: 1
       })
       .sort({ timestamp: -1 })
       .limit(10)
       .lean();
+
+    const serializeCalculatedEmissions = (calculatedEmissions) => {
+      if (!calculatedEmissions) return null;
+      const serializeMap = (m) => {
+        if (!m) return null;
+        if (m instanceof Map) {
+          return Object.fromEntries(
+            [...m.entries()].map(([k, v]) => [k, v instanceof Map ? Object.fromEntries(v) : v])
+          );
+        }
+        return m;
+      };
+      return {
+        incoming: serializeMap(calculatedEmissions.incoming) || null
+      };
+    };
 
     // Serialize and send initial data
     const serialized = initialEntries.map(entry => ({
@@ -4972,7 +4989,7 @@ const streamDataValuesAndCumulative = async (req, res) => {
       nodeId: entry.nodeId,
       scopeIdentifier: entry.scopeIdentifier,
       timestamp: entry.timestamp,
-      dataValues: entry.dataValues instanceof Map 
+      dataValues: entry.dataValues instanceof Map
         ? Object.fromEntries(entry.dataValues)
         : entry.dataValues,
       dataEntryCumulative: entry.dataEntryCumulative ? {
@@ -4980,7 +4997,8 @@ const streamDataValuesAndCumulative = async (req, res) => {
         cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
         entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
         lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
-      } : null
+      } : null,
+      calculatedEmissions: serializeCalculatedEmissions(entry.calculatedEmissions)
     }));
 
     res.write(`data: ${JSON.stringify({ type: 'initial', data: serialized })}\n\n`);
@@ -5017,7 +5035,7 @@ const streamDataValuesAndCumulative = async (req, res) => {
         nodeId: entry.nodeId,
         scopeIdentifier: entry.scopeIdentifier,
         timestamp: entry.timestamp,
-        dataValues: entry.dataValues instanceof Map 
+        dataValues: entry.dataValues instanceof Map
           ? Object.fromEntries(entry.dataValues)
           : entry.dataValues,
         dataEntryCumulative: entry.dataEntryCumulative ? {
@@ -5025,7 +5043,8 @@ const streamDataValuesAndCumulative = async (req, res) => {
           cumulativeTotalValue: Number(entry.dataEntryCumulative.cumulativeTotalValue || 0),
           entryCount: Number(entry.dataEntryCumulative.entryCount || 0),
           lastUpdatedAt: entry.dataEntryCumulative.lastUpdatedAt || null
-        } : null
+        } : null,
+        calculatedEmissions: serializeCalculatedEmissions(entry.calculatedEmissions)
       };
 
       res.write(`data: ${JSON.stringify({ type: 'update', data })}\n\n`);

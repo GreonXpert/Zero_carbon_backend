@@ -299,6 +299,12 @@ const processEmissionSummarySchema = new mongoose.Schema(
           originalCO2e:  { type: Number, default: 0 },    // raw CO2e before allocation
           dataPointCount:{ type: Number, default: 0 },
           lastUpdatedAt: { type: Date },
+          // Employee Commuting Tier-2 survey named fields (stored verbatim from DataEntry.dataValues)
+          surveyDataValues: {
+            totalEmployeeCommutingKgCO2e:                      { type: Number, default: null },
+            totalEmployeeCommutingWithUncertainityExactKgCO2e: { type: Number, default: null },
+            totalEmployeeCommutingKgTotalUncertaintyCO2e:      { type: Number, default: null },
+          },
           // Per-scopeIdentifier breakdown — allocationPct lives here, not at node level
           scopeDetails: {
             type: Map,
@@ -355,6 +361,12 @@ const processEmissionSummarySchema = new mongoose.Schema(
               { _id: false }
             ),
             default: {}
+          },
+          // Employee Commuting Tier-2 survey named fields (stored verbatim from DataEntry.dataValues)
+          surveyDataValues: {
+            totalEmployeeCommutingKgCO2e:                      { type: Number, default: null },
+            totalEmployeeCommutingWithUncertainityExactKgCO2e: { type: Number, default: null },
+            totalEmployeeCommutingKgTotalUncertaintyCO2e:      { type: Number, default: null },
           }
         },
         { _id: false }

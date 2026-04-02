@@ -417,10 +417,47 @@ All client users have been deactivated.
   }
 };
 
+/**
+ * Create a notification to the specific consultant_admin when a consultant
+ * raises a pending subscription request.
+ * @param {Object} client - The client object (must already have pendingSubscriptionRequest set)
+ * @param {Object} requestedBy - The consultant user who raised the request
+ */
+const createSubscriptionPendingNotification = async (client, requestedBy) => {
+  try {
+    const consultantAdminId = client.leadInfo?.consultantAdminId;
+    if (!consultantAdminId) return;
+
+    const pendingReq = client.accountDetails.pendingSubscriptionRequest;
+    const notification = new Notification({
+      title: `Subscription Request Pending: ${client.clientId}`,
+      message: `Consultant ${requestedBy.userName} has requested a subscription ${pendingReq.action} for ${client.leadInfo.companyName} (${client.clientId}). Please review and approve or reject.`,
+      priority: "high",
+      createdBy: requestedBy._id,
+      creatorType: "consultant",
+      targetUsers: [consultantAdminId],
+      status: "published",
+      publishedAt: new Date(),
+      isSystemNotification: true,
+      systemAction: "subscription_pending_approval",
+      relatedEntity: { type: "client", id: client._id },
+    });
+
+    await notification.save();
+
+    if (global.broadcastNotification) {
+      await global.broadcastNotification(notification);
+    }
+  } catch (error) {
+    console.error("Failed to create subscription pending notification:", error);
+  }
+};
+
 module.exports = {
   createLeadActionNotification,
   createDataSubmissionNotification,
   createProposalActionNotification,
   createConsultantAssignmentNotification,
-  createSubscriptionNotification
+  createSubscriptionNotification,
+  createSubscriptionPendingNotification,
 };
