@@ -2002,17 +2002,21 @@ const assignScopeToProcessNode = async (req, res) => {
       return res.status(403).json({ message: 'You can only assign within your organization' });
     }
 
-    // 4) Load the specific node from PROCESS flowchart
-    const flow = await ProcessFlowchart.findOne(
-      { clientId, 'nodes.id': nodeId, isDeleted: false },
-      { 'nodes.$': 1 }
-    );
+    // 4) Load the full process flowchart (nodes are encrypted, so we fetch the
+    //    whole document and locate the node in JavaScript instead of using
+    //    MongoDB positional operators on the encrypted nodes array)
+    const flow = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
 
-    if (!flow || !flow.nodes || flow.nodes.length === 0) {
-      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    if (!flow) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    const node = flow.nodes[0];
+    const nodeIndex = (flow.nodes || []).findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found in process flowchart' });
+    }
+
+    const node = flow.nodes[nodeIndex];
 
     // 5) Verify this head is assigned to this PROCESS node
     const assignedHeadId = node?.details?.employeeHeadId ? String(node.details.employeeHeadId) : null;
@@ -2025,10 +2029,11 @@ const assignScopeToProcessNode = async (req, res) => {
     }
 
     // 6) Locate the specific scope
-    const scope = (node.details?.scopeDetails || []).find(s => s.scopeIdentifier === scopeIdentifier);
-    if (!scope) {
+    const scopeIndex = (node.details?.scopeDetails || []).findIndex(s => s.scopeIdentifier === scopeIdentifier);
+    if (scopeIndex === -1) {
       return res.status(404).json({ message: `Scope detail '${scopeIdentifier}' not found in this node` });
     }
+    const scope = flow.nodes[nodeIndex].details.scopeDetails[scopeIndex];
 
     // 7) Validate employee IDs (must be active employees of this client)
     const employees = await User.find({
@@ -2042,39 +2047,19 @@ const assignScopeToProcessNode = async (req, res) => {
       return res.status(400).json({ message: 'One or more employees not found or not in your organization' });
     }
 
-    // 8) Remove any existing occurrences for these employees in this scope
-    await ProcessFlowchart.updateOne(
-      { clientId, 'nodes.id': nodeId },
-      {
-        $pull: {
-          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { $in: employeeIds }
-        }
-      },
-      {
-        arrayFilters: [{ 'n.id': nodeId }, { 's.scopeIdentifier': scopeIdentifier }]
-      }
-    );
+    // 8) Remove existing occurrences + add back (unique), set metadata — in JS
+    const existingEmployees = (scope.assignedEmployees || []).map(e => String(e));
+    const newEmployeeSet = [...new Set([
+      ...existingEmployees.filter(e => !employeeIds.map(String).includes(e)),
+      ...employeeIds.map(String)
+    ])];
+    flow.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedEmployees = newEmployeeSet;
+    flow.nodes[nodeIndex].details.scopeDetails[scopeIndex].lastAssignedAt = new Date();
+    flow.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedBy = req.user._id;
 
-    // 9) Add them back (unique) + set metadata
-    const upd = await ProcessFlowchart.updateOne(
-      { clientId, 'nodes.id': nodeId },
-      {
-        $addToSet: {
-          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': { $each: employeeIds }
-        },
-        $set: {
-          'nodes.$[n].details.scopeDetails.$[s].lastAssignedAt': new Date(),
-          'nodes.$[n].details.scopeDetails.$[s].assignedBy': req.user._id
-        }
-      },
-      {
-        arrayFilters: [{ 'n.id': nodeId }, { 's.scopeIdentifier': scopeIdentifier }]
-      }
-    );
-
-    if (upd.modifiedCount === 0) {
-      return res.status(500).json({ message: 'Failed to update process flowchart scope assignments' });
-    }
+    // 9) Save — pre('save') encryption plugin encrypts nodes before write
+    flow.markModified('nodes');
+    await flow.save();
 
     // Audit log — employees assigned to a scope in a process node
     await logProcessFlowScopeAssign(
@@ -2170,17 +2155,20 @@ const removeAssignmentProcess = async (req, res) => {
       });
     }
 
-    // 4) Load the specific node from PROCESS flowchart
-    const flow = await ProcessFlowchart.findOne(
-      { clientId, 'nodes.id': nodeId, isDeleted: false },
-      { 'nodes.$': 1 }
-    );
+    // 4) Load the full process flowchart — nodes are encrypted so we locate
+    //    the node in JavaScript rather than using MongoDB positional operators
+    const flow = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
 
-    if (!flow || !flow.nodes || flow.nodes.length === 0) {
-      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    if (!flow) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    const node = flow.nodes[0];
+    const nodeIndex = (flow.nodes || []).findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found in process flowchart' });
+    }
+
+    const node = flow.nodes[nodeIndex];
 
     // 5) Verify this Employee Head is assigned to this PROCESS node
     const assignedHeadId = node?.details?.employeeHeadId
@@ -2198,32 +2186,24 @@ const removeAssignmentProcess = async (req, res) => {
     }
 
     // 6) Locate the specific scope
-    const scope = (node.details?.scopeDetails || []).find(
+    const scopeIndex = (node.details?.scopeDetails || []).findIndex(
       s => s.scopeIdentifier === scopeIdentifier
     );
-    if (!scope) {
+    if (scopeIndex === -1) {
       return res.status(404).json({
         message: `Scope detail '${scopeIdentifier}' not found in this node`
       });
     }
+    const scope = flow.nodes[nodeIndex].details.scopeDetails[scopeIndex];
 
-    // 7) Remove employees from this scope's assignedEmployees
-    await ProcessFlowchart.updateOne(
-      { clientId, 'nodes.id': nodeId },
-      {
-        $pull: {
-          'nodes.$[n].details.scopeDetails.$[s].assignedEmployees': {
-            $in: employeeIds
-          }
-        }
-      },
-      {
-        arrayFilters: [
-          { 'n.id': nodeId },
-          { 's.scopeIdentifier': scopeIdentifier }
-        ]
-      }
-    );
+    // 7) Remove employees from this scope's assignedEmployees — in JavaScript
+    const employeeIdStrings = employeeIds.map(String);
+    flow.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedEmployees =
+      (scope.assignedEmployees || []).filter(e => !employeeIdStrings.includes(String(e)));
+
+    // Save — encryption plugin encrypts nodes before write
+    flow.markModified('nodes');
+    await flow.save();
 
     // Audit log — employees removed from a scope in a process node
     await logProcessFlowScopeUnassign(
@@ -2401,17 +2381,20 @@ const hardDeleteProcessScopeDetailsBulk = async (req, res) => {
       return res.status(403).json({ message: 'Permission denied' });
     }
 
-    // Load the node (for response + optional assignment cleanup)
-    const pf = await ProcessFlowchart.findOne(
-      { clientId, isDeleted: false, 'nodes.id': nodeId },
-      { 'nodes.$': 1 }
-    ).lean();
+    // Load the full process flowchart — nodes are encrypted so we locate the
+    // node and modify scopeDetails in JavaScript instead of using positional operators
+    const pf = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
 
-    if (!pf || !pf.nodes || pf.nodes.length === 0) {
-      return res.status(404).json({ message: 'Process flowchart or node not found' });
+    if (!pf) {
+      return res.status(404).json({ message: 'Process flowchart not found' });
     }
 
-    const node = pf.nodes[0];
+    const nodeIndex = (pf.nodes || []).findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found in process flowchart' });
+    }
+
+    const node = pf.nodes[nodeIndex];
     const scopes = node?.details?.scopeDetails || [];
 
     // Determine which scopes match
@@ -2431,35 +2414,23 @@ const hardDeleteProcessScopeDetailsBulk = async (req, res) => {
       });
     }
 
-    // Build $pull condition
-    const pullOr = [];
-    if (scopeIdentifiers.length > 0) {
-      pullOr.push({ scopeIdentifier: { $in: scopeIdentifiers } });
-    }
-    if (scopeObjectIds.length > 0) {
-      pullOr.push({ _id: { $in: scopeObjectIds } });
-    }
-
     const userId = req.user._id || req.user.id;
 
-    // IMPORTANT: updateOne bypasses your schema pre('save') edge validation
-    const upd = await ProcessFlowchart.updateOne(
-      { clientId, isDeleted: false, 'nodes.id': nodeId },
-      {
-        $pull: {
-          'nodes.$[n].details.scopeDetails': { $or: pullOr }
-        },
-        $set: { lastModifiedBy: userId },
-        $inc: { version: 1 }
-      },
-      {
-        arrayFilters: [{ 'n.id': nodeId }]
-      }
-    );
+    // Remove matching scopeDetails in JavaScript, then save
+    pf.nodes[nodeIndex].details.scopeDetails = scopes.filter(s => {
+      const sid = s?.scopeIdentifier;
+      const oid = s?._id ? String(s._id) : null;
+      return !((sid && identifierSet.has(sid)) || (oid && idSet.has(oid)));
+    });
+    pf.lastModifiedBy = userId;
+    pf.version = (pf.version || 0) + 1;
 
-    if (!upd || upd.modifiedCount === 0) {
+    pf.markModified('nodes');
+    const savedPf = await pf.save();
+
+    if (!savedPf) {
       return res.status(500).json({
-        message: 'Failed to delete scopeDetails (no document modified)',
+        message: 'Failed to delete scopeDetails',
         requested: { scopeIdentifiers, scopeIds: rawScopeIds }
       });
     }

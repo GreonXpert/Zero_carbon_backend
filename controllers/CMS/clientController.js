@@ -61,6 +61,42 @@ const {
 
 
 
+// ─── ensureSupportSection ────────────────────────────────────────────────────
+// Guards against legacy encrypted-string values in client.supportSection.
+//
+// Root cause: The encryption plugin stores supportSection as a "v1:..." string.
+// If the post('init') decryption has not yet run (or a legacy doc was created
+// before the plugin), supportSection comes back as a truthy string — not an
+// object. The plain `if (!client.supportSection)` guard fails because a string
+// is truthy, and subsequent `.supportManagerHistory.push(...)` then throws.
+//
+// This helper checks typeof explicitly and resets to a proper object when needed.
+function ensureSupportSection(client) {
+  if (
+    !client.supportSection ||
+    typeof client.supportSection !== 'object' ||
+    Array.isArray(client.supportSection)
+  ) {
+    client.supportSection = {
+      supportManagerHistory: [],
+      activeSupportTeamMembers: [],
+      supportMetrics: {
+        totalTicketsRaised: 0,
+        totalTicketsResolved: 0,
+        avgResolutionTime: 0,
+        lastTicketRaisedAt: null,
+        lastTicketResolvedAt: null,
+      },
+    };
+  }
+  if (!Array.isArray(client.supportSection.supportManagerHistory)) {
+    client.supportSection.supportManagerHistory = [];
+  }
+  if (!Array.isArray(client.supportSection.activeSupportTeamMembers)) {
+    client.supportSection.activeSupportTeamMembers = [];
+  }
+}
+
 /**
  * Helper: when a client moves from sandbox/proposal → active,
  * update clientId for:
@@ -1314,10 +1350,18 @@ const createLead = async (req, res) => {
       });
     }
 
-    // Check if lead already exists by email
-    const existingLead = await Client.findOne({ "leadInfo.email": normalizedEmail })
-      .select("clientId leadInfo.email")
-      .lean();
+    // Check if lead already exists by email — use the HMAC index field so the
+    // check works correctly even when leadInfo sub-fields are encrypted.
+    const crypto = require('crypto');
+    const encKey = process.env.FIELD_ENCRYPTION_KEY;
+    const emailIndex = encKey
+      ? crypto.createHmac('sha256', Buffer.from(encKey, 'hex'))
+          .update(normalizedEmail.toLowerCase().trim())
+          .digest('hex')
+      : null;
+    const existingLead = emailIndex
+      ? await Client.findOne({ leadEmailIndex: emailIndex }).select('clientId').lean()
+      : await Client.findOne({ "leadInfo.email": normalizedEmail }).select('clientId leadInfo.email').lean();
 
     if (existingLead) {
       return res.status(409).json({
@@ -5482,20 +5526,8 @@ const assignSupportManager = async (req, res) => {
     const { client, status, message } = await getClientOr403(req, clientId);
     if (!client) return res.status(status).json({ success: false, message });
 
-    // Ensure supportSection exists (your controller already does similar) 
-    if (!client.supportSection) {
-      client.supportSection = {
-        supportManagerHistory: [],
-        activeSupportTeamMembers: [],
-        supportMetrics: {
-          totalTicketsRaised: 0,
-          totalTicketsResolved: 0,
-          avgResolutionTime: 0,
-          customerSatisfactionAvg: 0,
-          totalSatisfactionRatings: 0,
-        },
-      };
-    }
+    // Ensure supportSection is a proper object (guards against encrypted-string edge cases)
+    ensureSupportSection(client);
 
     // ✅ IMPORTANT: assign endpoint should NOT overwrite
     if (client.supportSection.assignedSupportManagerId) {
@@ -5644,9 +5676,7 @@ const changeSupportManager = async (req, res) => {
     }
 
     // Mark any active history entries inactive
-    if (!Array.isArray(client.supportSection.supportManagerHistory)) {
-      client.supportSection.supportManagerHistory = [];
-    }
+    ensureSupportSection(client);
     client.supportSection.supportManagerHistory.forEach((h) => {
       if (h?.isActive) {
         h.isActive = false;

@@ -1042,4 +1042,31 @@ DataEntrySchema.statics.getLatestCumulative = async function(clientId, nodeId, s
   };
 };
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Registered LAST so the existing pre('save') calculateCumulativeValues() hook
+// runs first on plain Map/Number values, then this plugin encrypts.
+// The post('save') decryption fires before the existing post('save') that calls
+// updateSummariesOnDataChange(doc), so that function receives plain values.
+// post('find') handles the DataEntry.find(query).lean() call inside
+// calculateEmissionSummary() — lean queries don't trigger post('init').
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+DataEntrySchema.plugin(encryptionPlugin, {
+  fields: [
+    'dataValues',
+    'cumulativeValues',
+    'highData',
+    'lowData',
+    'lastEnteredData',
+    'calculatedEmissions',
+    'emissionsSummary',
+    'calculatedReductions',
+    'appliedEmissionFactors',
+    'dataEntryCumulative',
+    'sourceDetails',
+    'notes',
+    'tags',
+    'calculationBreakdown',
+  ],
+});
+
 module.exports = mongoose.model('DataEntry', DataEntrySchema);

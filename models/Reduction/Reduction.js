@@ -759,4 +759,24 @@ reductionSchema.virtual('projectPeriodFormatted').get(function() {
   return `${String(remDays).padStart(2,'0')}/${String(months).padStart(2,'0')}/${String(years).padStart(4,'0')}`;
 });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+reductionSchema.plugin(encryptionPlugin, {
+  fields: [
+    'projectName',
+    'description',
+    'baselineJustification',
+    'category',
+    'scope',
+    'location',
+    'm1',
+    'm2',
+    'm3',
+    'processFlow',
+    'assignedTeam',
+    'coverImage',
+    'images',
+  ],
+});
+
 module.exports = mongoose.model('Reduction', reductionSchema);

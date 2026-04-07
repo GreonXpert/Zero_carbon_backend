@@ -760,4 +760,14 @@ ProcessFlowchartSchema.pre('save', function(next) {
 
 ProcessFlowchartSchema.index({ clientId: 1, isDeleted: 1 });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Both 'nodes' and 'edges' are now encrypted.
+// All processflowController queries that previously used { 'nodes.id': nodeId }
+// positional operators have been refactored to fetch-then-modify-in-JavaScript
+// so they work correctly with the encrypted nodes array.
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+ProcessFlowchartSchema.plugin(encryptionPlugin, {
+  fields: ['nodes', 'edges'],
+});
+
 module.exports = mongoose.model('ProcessFlowchart', ProcessFlowchartSchema);

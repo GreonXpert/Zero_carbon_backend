@@ -1105,4 +1105,58 @@ clientSchema.statics.purgeClientCompletely = async function (clientId, actorUser
 };
 
 
+// ─── leadEmailIndex — HMAC-SHA256 of leadInfo.email ──────────────────────────
+// Used for the duplicate-email lookup in clientController.js instead of querying
+// on the plain leadInfo.email field (which works even after leadInfo is encrypted
+// because leadInfo.email is kept unencrypted — only non-searchable sub-fields
+// within leadInfo are encrypted, see plugin config below).
+//
+// This index supports the exact-match duplicate check:
+//   Client.findOne({ leadEmailIndex: computeLeadEmailIndex(email) })
+//
+// leadInfo.email, companyName, contactPersonName, mobileNumber are intentionally
+// kept unencrypted so that regex-search queries continue to work.
+
+clientSchema.add({
+  leadEmailIndex: { type: String, index: true, select: false },
+});
+
+clientSchema.pre('save', function (next) {
+  if (this.isModified('leadInfo.email') || (this.isNew && this.leadInfo && this.leadInfo.email)) {
+    const crypto = require('crypto');
+    const key = process.env.FIELD_ENCRYPTION_KEY;
+    if (key) {
+      this.leadEmailIndex = crypto
+        .createHmac('sha256', Buffer.from(key, 'hex'))
+        .update((this.leadInfo.email || '').toLowerCase().trim())
+        .digest('hex');
+    }
+  }
+  next();
+});
+
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// leadInfo.email, companyName, contactPersonName, mobileNumber are kept plain
+// (unencrypted) so that search queries (regex) continue to work.
+// Only truly non-searchable / sensitive sub-fields within leadInfo are encrypted.
+// The large data blobs (submissionData, proposalData, accountDetails,
+// supportSection, workflowTracking) are encrypted in full.
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+clientSchema.plugin(encryptionPlugin, {
+  fields: [
+    // leadInfo — encrypt only non-searchable sub-fields
+    'leadInfo.notes',
+    'leadInfo.salesPersonName',
+    'leadInfo.salesPersonEmployeeId',
+    'leadInfo.referenceName',
+    'leadInfo.referenceContactNumber',
+    // Large sensitive blobs — encrypted in full
+    'submissionData',
+    'proposalData',
+    'accountDetails',
+    'supportSection',
+    'workflowTracking',
+  ],
+});
+
 module.exports = mongoose.model("Client", clientSchema);

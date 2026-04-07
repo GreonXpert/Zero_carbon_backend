@@ -188,4 +188,27 @@ SbtiTargetSchema.pre('save', function(next) {
   next();
 });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Registered LAST. The existing pre('validate') hook that computes
+// baseEmission_tCO2e runs before encryption (validate fires before save).
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+SbtiTargetSchema.plugin(encryptionPlugin, {
+  fields: [
+    'baseScope1_tCO2e',
+    'baseScope2_tCO2e',
+    'baseScope3_tCO2e',
+    'baseEmission_tCO2e',
+    'perScopeBase_tCO2e',
+    'inventoryCoverage',
+    'absolute',
+    'sda',
+    'renewableElectricity',
+    'supplierEngagement',
+    'emissionProgress',
+    'trajectory',
+    'flag',
+    'coverage',
+  ],
+});
+
 module.exports = mongoose.model('SbtiTarget', SbtiTargetSchema);

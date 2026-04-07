@@ -1064,4 +1064,19 @@ emissionSummarySchema.statics.getDateRangeForPeriod = function (
   return { from, to };
 };
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Handles the findOneAndUpdate upsert in CalculationSummary.js:
+//   pre('findOneAndUpdate') encrypts the built summaryData before MongoDB write.
+//   post('findOneAndUpdate') decrypts the returned doc ({ new: true }).
+//   post('findOne') decrypts when saveEmissionSummary fetches existing doc to
+//   preserve reductionSummary (lines 1987-2002 of CalculationSummary.js).
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+emissionSummarySchema.plugin(encryptionPlugin, {
+  fields: [
+    'emissionSummary',
+    'reductionSummary',
+    'processEmissionSummary',
+  ],
+});
+
 module.exports = mongoose.model('EmissionSummary', emissionSummarySchema);

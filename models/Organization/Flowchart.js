@@ -747,6 +747,15 @@ FlowchartSchema.index({ creatorType: 1 });
 // This prevents the E11000 duplicate key error when edges array is empty
 FlowchartSchema.index({ 'edges.id': 1 }, { sparse: true });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Both 'nodes' and 'edges' are now encrypted.
+// The flowchartController search by 'nodes.label' has been changed to a
+// clientId-only DB filter (application-level node filtering where needed).
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+FlowchartSchema.plugin(encryptionPlugin, {
+  fields: ['nodes', 'edges'],
+});
+
 const Flowchart = mongoose.model('Flowchart', FlowchartSchema);
 
 module.exports = Flowchart;

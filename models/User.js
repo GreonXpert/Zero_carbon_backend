@@ -484,4 +484,33 @@ userSchema.index({ assignedSupportClients: 1 });
 userSchema.index({ assignedConsultants: 1 });
 userSchema.index({ supportSpecialization: 1 });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Registered LAST so all existing pre('save') hooks run first on plain data.
+// email and userName are kept unencrypted because they are used as query
+// filters in login (User.findOne({ email })) and duplicate-user checks.
+const encryptionPlugin = require('../utils/mongooseEncryptionPlugin');
+userSchema.plugin(encryptionPlugin, {
+  fields: [
+    'contactNumber',
+    'address',
+    'companyName',
+    'teamName',
+    'employeeId',
+    'jobRole',
+    'branch',
+    'department',
+    'location',
+    'assignedClients',
+    'supportTeamName',
+    'assignedSupportClients',
+    'supportEmployeeId',
+    'supportJobRole',
+    'supportBranch',
+    'profileImage',
+    'auditPeriod',
+    'auditScope',
+    'viewerPurpose',
+  ],
+});
+
 module.exports = mongoose.model("User", userSchema);

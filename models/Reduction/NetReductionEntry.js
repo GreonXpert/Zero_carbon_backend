@@ -330,4 +330,25 @@ NetReductionEntrySchema.post('save', async function(doc) {
   }
 });
 
+// ─── Field-level encryption ──────────────────────────────────────────────────
+// Registered LAST so the existing pre('save') cumulative math hooks run first
+// on plain numeric values before encryption. The post('save') decryption hook
+// fires before the existing post('save') that calls recomputeClientNetReductionSummary,
+// ensuring that function receives plain (decrypted) values.
+const encryptionPlugin = require('../../utils/mongooseEncryptionPlugin');
+NetReductionEntrySchema.plugin(encryptionPlugin, {
+  fields: [
+    'inputValue',
+    'emissionReductionRate',
+    'netReduction',
+    'cumulativeNetReduction',
+    'highNetReduction',
+    'lowNetReduction',
+    'variables',
+    'netReductionInFormula',
+    'm3',
+    'sourceDetails',
+  ],
+});
+
 module.exports = mongoose.model('NetReductionEntry', NetReductionEntrySchema);

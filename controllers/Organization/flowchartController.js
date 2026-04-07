@@ -1092,11 +1092,12 @@ const getAllFlowcharts = async (req, res) => {
     }
 
     // Add search functionality
+    // Note: 'nodes' field is encrypted — searching by nodes.label is done
+    // at the application level after fetching. Here we only filter by clientId.
     if (search) {
       const searchRegex = { $regex: search, $options: 'i' };
       query.$or = [
         { clientId: searchRegex },
-        { 'nodes.label': searchRegex }
       ];
     }
 
