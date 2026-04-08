@@ -110,7 +110,7 @@ app.use(helmet({
 }));
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Global request logger
 app.use((req, res, next) => {
