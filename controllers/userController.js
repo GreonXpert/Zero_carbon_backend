@@ -180,12 +180,12 @@ const login = async (req, res) => {
     // 3. CHECK CLIENT ACTIVE STATUS (ONLY FOR NON-SANDBOX USERS)
     // ==========================================================
     if (user.clientId && !user.sandbox) {
-      const client = await Client.findOne({
-        clientId: user.clientId,
-        "accountDetails.isActive": true
-      });
+      // NOTE: accountDetails is encrypted in MongoDB — we CANNOT query on
+      // "accountDetails.isActive" directly (it's stored as an encrypted blob).
+      // Fetch by clientId only, then check isActive AFTER Mongoose decrypts it.
+      const client = await Client.findOne({ clientId: user.clientId });
 
-      if (!client) {
+      if (!client || !client.accountDetails?.isActive) {
         console.log(`[LOGIN STEP 1] Inactive client: ${user.clientId}`);
         logLoginFailed(req, req.body.email || req.body.identifier).catch(() => {});
         return res.status(403).json({
