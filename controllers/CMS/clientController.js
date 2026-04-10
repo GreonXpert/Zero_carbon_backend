@@ -3220,15 +3220,15 @@ const getClients = async (req, res) => {
         sandbox: client.sandbox,
 
         leadInfo: {
-          ...client.leadInfo,
-          consultantAdmin: normalizeUser(client.leadInfo.consultantAdminId),
-          assignedConsultant: normalizeUser(client.leadInfo.assignedConsultantId)
+          ...(client.leadInfo || {}),
+          consultantAdmin: normalizeUser(client.leadInfo?.consultantAdminId),
+          assignedConsultant: normalizeUser(client.leadInfo?.assignedConsultantId)
         },
 
         workflowTracking: {
-          ...client.workflowTracking,
+          ...(client.workflowTracking || {}),
           assignedConsultant: normalizeUser(
-            client.workflowTracking.assignedConsultantId
+            client.workflowTracking?.assignedConsultantId
           )
         },
 
@@ -3513,6 +3513,14 @@ const assignConsultant = async (req, res) => {
     // Update client with new consultant
     client.leadInfo.assignedConsultantId = consultantId;
     client.leadInfo.hasAssignedConsultant = true;
+
+
+
+// Keep workflowTracking in sync so quota checks pass
+if (!client.workflowTracking) {
+  client.workflowTracking = {};
+}
+client.workflowTracking.assignedConsultantId = consultantId;
     
     // Add new consultant to history
     client.leadInfo.consultantHistory.push({
