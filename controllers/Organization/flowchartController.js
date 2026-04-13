@@ -533,16 +533,19 @@ const saveFlowchart = async (req, res) => {
 
     // 10) Auto‐start flowchart status
     if (['consultant','consultant_admin'].includes(req.user.userType) && isNew) {
-      await Client.findOneAndUpdate(
-        { clientId },
-        {
-          $set: {
-            'workflowTracking.flowchartStatus': 'on_going',
-            'workflowTracking.flowchartStartedAt': new Date()
-          }
-        }
-      );
+  await Client.findOneAndUpdate(
+    {
+      clientId,
+      'workflowTracking': { $type: 'object' }   // ← only update if it's already an object
+    },
+    {
+      $set: {
+        'workflowTracking.flowchartStatus': 'on_going',
+        'workflowTracking.flowchartStartedAt': new Date()
+      }
     }
+  );
+}
 
     // 11) Send notifications to all client_admins of this client
     await createChartNotifications(User, Notification, {
@@ -682,10 +685,10 @@ const addNodeToFlowchart = async (req, res) => {
       rawEdges = [req.body.edge];
     }
 
-    if (rawNodes.length === 0) {
+    if (rawNodes.length === 0 && rawEdges.length === 0) {
       return res.status(400).json({
         message:
-          'Request body must include a "node" object or a "nodes" array with at least one entry'
+          'Request body must include at least one node or one edge'
       });
     }
 
@@ -1412,7 +1415,8 @@ const getSingleClientSummary = async (req, res, clientId) => {
     dataCollectionMethods: {
       manual: 0,
       IOT: 0,
-      API: 0
+      API: 0,
+      OCR: 0
     },
     emissionFactors: {
       IPCC: 0,
@@ -1566,7 +1570,8 @@ const getConsolidatedSummary = async (req, res) => {
       dataCollectionMethods: {
         manual: 0,
         IOT: 0,
-        API: 0
+        API: 0,
+        OCR: 0
       },
       emissionFactors: {
         IPCC: 0,
@@ -1752,10 +1757,28 @@ const updateFlowchartNode = async (req, res) => {
     };
 
     const mergeEmissionFactorValues = (prevVals = {}, incVals = {}, normalizedCEF = null) => {
+      // Normalize ghgUnits/ghgUnitsEPA items to always use lowercase-c field name
+      // (DefraData/EPAData models store ghgConversionFactor with uppercase C, but
+      //  Flowchart schema and all calculation code expect ghgconversionFactor lowercase c)
+      const normalizeGhgUnits = (units = []) =>
+        units.map(gu => ({
+          ...gu,
+          ghgconversionFactor: gu.ghgconversionFactor ?? gu.ghgConversionFactor ?? gu.ghgConversionFactorEPA,
+        }));
+
+      const mergedDefra = { ...(prevVals.defraData || {}), ...(incVals.defraData || {}) };
+      if (Array.isArray(mergedDefra.ghgUnits)) mergedDefra.ghgUnits = normalizeGhgUnits(mergedDefra.ghgUnits);
+
+      const mergedIpcc = { ...(prevVals.ipccData || {}), ...(incVals.ipccData || {}) };
+      if (Array.isArray(mergedIpcc.ghgUnits)) mergedIpcc.ghgUnits = normalizeGhgUnits(mergedIpcc.ghgUnits);
+
+      const mergedEpa = { ...(prevVals.epaData || {}), ...(incVals.epaData || {}) };
+      if (Array.isArray(mergedEpa.ghgUnitsEPA)) mergedEpa.ghgUnitsEPA = normalizeGhgUnits(mergedEpa.ghgUnitsEPA);
+
       const out = {
-        defraData: { ...(prevVals.defraData || {}), ...(incVals.defraData || {}) },
-        ipccData: { ...(prevVals.ipccData || {}), ...(incVals.ipccData || {}) },
-        epaData: { ...(prevVals.epaData || {}), ...(incVals.epaData || {}) },
+        defraData: mergedDefra,
+        ipccData: mergedIpcc,
+        epaData: mergedEpa,
         countryData: { ...(prevVals.countryData || {}), ...(incVals.countryData || {}) },
         emissionFactorHubData: { ...(prevVals.emissionFactorHubData || {}), ...(incVals.emissionFactorHubData || {}) },
         customEmissionFactor: {
