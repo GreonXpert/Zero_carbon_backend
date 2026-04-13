@@ -25,7 +25,7 @@ const DataCollectionConfigSchema = new Schema({
   // Current input configuration
   inputType: {
     type: String,
-    enum: ['manual', 'API', 'IOT'],
+    enum: ['manual', 'API', 'IOT', 'OCR'],
     required: true
   },
   
@@ -199,8 +199,8 @@ DataCollectionConfigSchema.methods.updateCollectionStatus = function(dataEntryId
   this.collectionStatus.consecutiveFailures = 0;
   this.collectionStatus.isOverdue = false;
   
-  // Calculate next due date for manual inputs
-  if (this.inputType === 'manual') {
+  // Calculate next due date for manual and OCR inputs
+  if (this.inputType === 'manual' || this.inputType === 'OCR') {
     this.collectionStatus.nextDueDate = this.calculateNextDueDate(timestamp);
   }
   
@@ -212,7 +212,7 @@ DataCollectionConfigSchema.methods.updateCollectionStatus = function(dataEntryId
 
 // Check if collection is overdue
 DataCollectionConfigSchema.methods.checkOverdueStatus = function() {
-  if (!this.collectionStatus.nextDueDate || this.inputType !== 'manual') {
+  if (!this.collectionStatus.nextDueDate || (this.inputType !== 'manual' && this.inputType !== 'OCR')) {
     return false;
   }
   

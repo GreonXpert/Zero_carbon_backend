@@ -387,7 +387,7 @@ if (scope.emissionFactor === 'Custom') {
       ghgUnits: Array.isArray(defraSource.ghgUnits)
         ? defraSource.ghgUnits.map(gu => ({
             unit:                     gu.unit,
-            ghgconversionFactor:      gu.ghgconversionFactor,
+            ghgconversionFactor:      gu.ghgconversionFactor ?? gu.ghgConversionFactor,
             ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
             conversionFactor:         gu.conversionFactor         ?? null,
             conversionFactor_comment: gu.conversionFactor_comment || '',
@@ -414,7 +414,7 @@ if (scope.emissionFactor === 'Custom') {
       ghgUnits: Array.isArray(ipccSource.ghgUnits)
         ? ipccSource.ghgUnits.map(gu => ({
             unit:                        gu.unit,
-            ghgconversionFactor:         gu.ghgconversionFactor,
+            ghgconversionFactor:         gu.ghgconversionFactor ?? gu.ghgConversionFactor,
             ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
             conversionFactor:            gu.conversionFactor         ?? null,
             conversionFactor_comment:    gu.conversionFactor_comment || '',
@@ -439,7 +439,7 @@ if (scope.emissionFactor === 'Custom') {
       ghgUnitsEPA: Array.isArray(epaSource.ghgUnitsEPA)
         ? epaSource.ghgUnitsEPA.map(gu => ({
             unit:                        gu.unit,
-            ghgconversionFactor:         gu.ghgconversionFactor,
+            ghgconversionFactor:         gu.ghgconversionFactor ?? gu.ghgConversionFactor ?? gu.ghgConversionFactorEPA,
             ghgconversionFactor_comment: gu.ghgconversionFactor_comment || '',
             conversionFactor:            gu.conversionFactor         ?? null,
             conversionFactor_comment:    gu.conversionFactor_comment || '',

@@ -288,12 +288,12 @@ const Methodology3Schema = new mongoose.Schema({
 
 const ReductionEntrySchema = new mongoose.Schema({
   // normalized type stored in the document
-  inputType: { type: String, enum: ['manual', 'API', 'IOT'], default: 'manual' },
+  inputType: { type: String, enum: ['manual', 'API', 'IOT', 'OCR'], default: 'manual' },
 
   // what the user originally sent; CSV is allowed here but we normalize to manual
   originalInputType: {
     type: String,
-    enum: ['manual', 'API', 'IOT', 'CSV'],
+    enum: ['manual', 'API', 'IOT', 'CSV', 'OCR'],
     default: 'manual'
   },
 

@@ -46,10 +46,16 @@ const toObjectId = (consultantId) => {
 // USER TYPE → QUOTA KEY mapping (exported for controllers)
 // ─────────────────────────────────────────────────────────────
 const USER_TYPE_TO_QUOTA_KEY = ConsultantClientQuota.USER_TYPE_TO_QUOTA_KEY || {
+  // ZeroCarbon
   'client_employee_head': 'employeeHead',
   'employee':             'employee',
+  // Multi-module
   'viewer':               'viewer',
   'auditor':              'auditor',
+  // 🆕 ESGLink
+  'contributor':          'contributor',
+  'reviewer':             'reviewer',
+  'approver':             'approver',
 };
 
 const QUOTA_KEY_TO_USER_TYPE = Object.fromEntries(
@@ -63,10 +69,12 @@ const CONTROLLED_USER_TYPES = Object.keys(USER_TYPE_TO_QUOTA_KEY);
 // ─────────────────────────────────────────────────────────────
 const getAssignedConsultantId = async (clientId) => {
   const client = await Client.findOne({ clientId })
-    .select('stage workflowTracking.assignedConsultantId')
+    .select('stage workflowTracking.assignedConsultantId leadInfo.assignedConsultantId')
     .lean();
   if (!client) return null;
-  return client.workflowTracking?.assignedConsultantId ?? null;
+  return client.workflowTracking?.assignedConsultantId
+    ?? client.leadInfo?.assignedConsultantId
+    ?? null;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -305,7 +313,8 @@ const getUserTypeQuotaStatusFromDoc = (quotaDoc) => {
     ? quotaDoc.userTypeQuotas.toObject()
     : Object.assign({}, quotaDoc.userTypeQuotas || {});
 
-  const STATUS_KEYS = ['employeeHead', 'employee', 'viewer', 'auditor'];
+  // All quota keys — includes ESGLink types; unused ones remain at 0
+  const STATUS_KEYS = ['employeeHead', 'employee', 'viewer', 'auditor', 'contributor', 'reviewer', 'approver'];
   const status = {};
 
   for (const key of STATUS_KEYS) {

@@ -194,7 +194,9 @@ function buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, ef
 
     // ─── SCOPE 2 ──────────────────────────────────────────────────────────
     else if (scopeType === 'Scope 2') {
-      const factor = efValues.CO2;
+      // Use CO2e factor first (DEFRA electricity factors are in kgCO2e/kWh),
+      // fall back to CO2 for sources that only provide pure CO2 factor.
+      const factor = efValues.CO2e || efValues.CO2;
       const fieldMap = {
         'Purchased Electricity': 'consumed_electricity',
         'Purchased Steam':       'consumed_steam',
@@ -724,11 +726,13 @@ async function getClientGridEF(clientId) {
         }
         if (src === 'DEFRA' && Array.isArray(v.defraData?.ghgUnits)) {
           const u = v.defraData.ghgUnits.find(g => /CO2E/i.test(g.unit)) || v.defraData.ghgUnits[0];
-          if (u?.ghgconversionFactor != null) return Number(u.ghgconversionFactor) || 0;
+          const val = u?.ghgconversionFactor ?? u?.ghgConversionFactor;
+          if (val != null) return Number(val) || 0;
         }
         if (src === 'EPA' && Array.isArray(v.epaData?.ghgUnitsEPA)) {
           const u = v.epaData.ghgUnitsEPA.find(g => /CO2E/i.test(g.unit)) || v.epaData.ghgUnitsEPA[0];
-          if (u?.ghgconversionFactor != null) return Number(u.ghgconversionFactor) || 0;
+          const val = u?.ghgconversionFactor ?? u?.ghgConversionFactor ?? u?.ghgConversionFactorEPA;
+          if (val != null) return Number(val) || 0;
         }
         if (src === 'IPCC' && v.ipccData?.value != null) {
           return Number(v.ipccData.value) || 0;
@@ -830,11 +834,22 @@ function extractEmissionFactorValues(scopeConfig) {
   switch (emissionFactor) {
     case 'DEFRA':
       if (emissionFactorValues?.defraData?.ghgUnits?.length > 0)  {
-        emissionFactorValues.defraData.ghgUnits.forEach(({ unit, ghgconversionFactor }) => {
-         const u = unit.trim().toUpperCase();
-          if (u.endsWith('CO2'))    efValues.CO2  = ghgconversionFactor || 0;
-          if (u.endsWith('CH4'))    efValues.CH4  = ghgconversionFactor || 0;
-          if (u.endsWith('N2O'))    efValues.N2O  = ghgconversionFactor || 0;
+        emissionFactorValues.defraData.ghgUnits.forEach((gu) => {
+          const u = (gu.unit || '').trim().toUpperCase();
+          // Defensive: handle both lowercase-c (schema/stored) and uppercase-C (DefraData model) casings
+          const factor = gu.ghgconversionFactor ?? gu.ghgConversionFactor ?? 0;
+          // Use includes() instead of endsWith() to correctly match units like
+          // "kg CO2e per kWh" (which ends with "kWh", not "CO2e").
+          // Check CO2E before CO2 to avoid CO2e being matched as plain CO2.
+          if (u.includes('CO2E')) {
+            efValues.CO2e = factor || 0;
+            // Also populate CO2 so existing Scope 1 paths that read efValues.CO2 still work
+            if (!efValues.CO2) efValues.CO2 = factor || 0;
+          } else if (u.includes('CO2')) {
+            efValues.CO2  = factor || 0;
+          }
+          if (u.includes('CH4'))    efValues.CH4  = factor || 0;
+          if (u.includes('N2O'))    efValues.N2O  = factor || 0;
         });
       }
       break;
@@ -848,11 +863,20 @@ function extractEmissionFactorValues(scopeConfig) {
 
     case 'EPA':
       if (emissionFactorValues?.epaData?.ghgUnitsEPA?.length > 0) {
-        emissionFactorValues.epaData.ghgUnitsEPA.forEach(({ unit, ghgconversionFactor }) => {
-           const u = unit.trim().toUpperCase();
-          if (u.endsWith('CO2'))    efValues.CO2  = ghgconversionFactor || 0;
-          if (u.endsWith('CH4')) efValues.CH4 = ghgconversionFactor || 0;
-          if (u.endsWith('N2O')) efValues.N2O = ghgconversionFactor|| 0;
+        emissionFactorValues.epaData.ghgUnitsEPA.forEach((gu) => {
+          const u = (gu.unit || '').trim().toUpperCase();
+          // Defensive: handle both lowercase-c (schema/stored) and uppercase-C (EPAData model) casings
+          const factor = gu.ghgconversionFactor ?? gu.ghgConversionFactor ?? gu.ghgConversionFactorEPA ?? 0;
+          // Use includes() instead of endsWith() to correctly match units like
+          // "kg CO2e per kWh" or "MT CO2e per MMBtu" (which don't end with the GHG gas name).
+          if (u.includes('CO2E')) {
+            efValues.CO2e = factor || 0;
+            if (!efValues.CO2) efValues.CO2 = factor || 0;
+          } else if (u.includes('CO2')) {
+            efValues.CO2  = factor || 0;
+          }
+          if (u.includes('CH4')) efValues.CH4 = factor || 0;
+          if (u.includes('N2O')) efValues.N2O = factor || 0;
         });
       }
       break;
@@ -1259,8 +1283,9 @@ async function calculateScope2Emissions(
     ? Object.fromEntries(dataEntry.cumulativeValues)
     : dataEntry.cumulativeValues;
  
-  // pick the single CO2 factor (same for Tier 1 & Tier 2)
-  const factor = efValues.CO2;
+  // Use CO2e factor first (DEFRA electricity factors are labelled kgCO2e/kWh),
+  // fall back to CO2 for sources that only provide a pure CO2 factor.
+  const factor = efValues.CO2e || efValues.CO2;
   if (factor == null) {
     return { success: false, message: 'Emission factor not found for Scope 2' };
   }
@@ -1353,13 +1378,13 @@ async function calculateScope3Emissions(
         if (!units.length) return 0;
         // try to find a CO2e unit, otherwise fall back to whatever is there
         const u = units.find(g => /CO2E/i.test(g.unit)) || units[0];
-        return u.ghgconversionFactor || 0;
+        return u.ghgconversionFactor ?? u.ghgConversionFactor ?? 0;
       }
       case 'EPA': {
         const units = scopeConfig.emissionFactorValues.epaData.ghgUnitsEPA || [];
         if (!units.length) return 0;
         const u = units.find(g => /CO2E/i.test(g.unit)) || units[0];
-        return u.ghgconversionFactor || 0;
+        return u.ghgconversionFactor ?? u.ghgConversionFactor ?? u.ghgConversionFactorEPA ?? 0;
       }
       case 'IPCC':
         return scopeConfig.emissionFactorValues.ipccData.value || 0;

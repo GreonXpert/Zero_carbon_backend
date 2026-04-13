@@ -57,6 +57,9 @@ const {
   validateSubmissionForLevels
 } = require('../../utils/assessmentLevel');
 
+const { logEvent } = require('../../services/audit/auditLogService');
+const { isModuleSubscriptionActive } = require('../../utils/Permissions/modulePermission');
+
 
 
 
@@ -4659,79 +4662,13 @@ const getDashboardMetrics = async (req, res) => {
 
 
 
-// Check and update expired subscriptions (to be called by cron job)
+// Check and update expired subscriptions
+// ⚠️  DEPRECATED — logic has been moved to dedicated cron job files:
+//     • utils/jobs/zeroCarbonExpiryChecker.js  (ZeroCarbon lifecycle)
+//     • utils/jobs/esgLinkExpiryChecker.js     (ESGLink lifecycle)
+// Stub kept so existing import references do not break.
 const checkExpiredSubscriptions = async () => {
-  try {
-    const expiredClients = await Client.find({
-      stage: "active",
-      "accountDetails.subscriptionEndDate": { $lte: new Date() },
-      "accountDetails.subscriptionStatus": "active"
-    });
-      const updatedClientIds =[];
-      
-    for (const client of expiredClients) {
-      // Check if in grace period (30 days)
-      const daysSinceExpiry = moment().diff(
-        moment(client.accountDetails.subscriptionEndDate), 
-        'days'
-      );
-      
-      if (daysSinceExpiry <= 30) {
-        // Grace period
-        client.accountDetails.subscriptionStatus = "grace_period";
-        
-        // Send grace period notification
-        const clientAdmin = await User.findById(client.accountDetails.clientAdminId);
-        if (clientAdmin) {
-          const emailSubject = "ZeroCarbon - Subscription Expired (Grace Period)";
-          const emailMessage = `
-            Your ZeroCarbon subscription has expired.
-            
-            You are currently in a 30-day grace period. Please renew your subscription to continue using our services.
-            
-            Grace period ends on: ${moment(client.accountDetails.subscriptionEndDate).add(30, 'days').format('DD/MM/YYYY')}
-            
-            Contact your consultant for renewal.
-          `;
-          
-          await sendMail(clientAdmin.email, emailSubject, emailMessage);
-        }
-      } else {
-        // Fully expired
-        client.accountDetails.subscriptionStatus = "expired";
-        client.accountDetails.isActive = false;
-        
-        // Deactivate all users
-        await User.updateMany(
-          { clientId: client.clientId },
-          { isActive: false }
-        );
-      }
-      
-      client.timeline.push({
-        stage: "active",
-        status: client.accountDetails.subscriptionStatus,
-        action: `Subscription ${client.accountDetails.subscriptionStatus}`,
-        performedBy: null,
-        notes: "Automatic system update"
-      });
-
-    
-      
-      await client.save();
-      updatedClientIds.push(client._id);
-      
-       // ADD THIS: Batch emit updates
-    if (updatedClientIds.length > 0) {
-        await emitBatchClientUpdate(updatedClientIds, 'updated', null);
-    }
-    }
-    
-    console.log(`Processed ${expiredClients.length} expired subscriptions`);
-    
-  } catch (error) {
-    console.error("Check expired subscriptions error:", error);
-  }
+  console.log('[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).');
 };
 
 
@@ -5213,6 +5150,14 @@ const updateAssessmentLevelOnly = async (req, res) => {
   try {
     const { clientId } = req.params;
     const rawLevels = req.body?.assessmentLevel;
+    const actor = req.user;
+
+    // Role guard: only super_admin or managing consultant_admin
+    if (!['super_admin', 'consultant_admin'].includes(actor.userType)) {
+      return res.status(403).json({
+        message: "Only Super Admin or Consultant Admin can update assessment levels."
+      });
+    }
 
     if (!rawLevels) {
       return res.status(400).json({ message: "assessmentLevel is required in body" });
@@ -5220,6 +5165,16 @@ const updateAssessmentLevelOnly = async (req, res) => {
 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: "Client not found" });
+
+    // For consultant_admin: must be the managing consultant_admin for this client
+    if (actor.userType === 'consultant_admin') {
+      const managingId = client.leadInfo?.consultantAdminId?.toString();
+      if (managingId !== actor._id.toString()) {
+        return res.status(403).json({
+          message: "You are not authorized to update this client's assessment level."
+        });
+      }
+    }
 
     // Only after onboarding
     if (client.stage !== 'active') {
@@ -5258,12 +5213,25 @@ const updateAssessmentLevelOnly = async (req, res) => {
       stage: client.stage,
       status: client.status,
       action: "Assessment level updated (post-onboarding)",
-      performedBy: req.user.id,
+      performedBy: actor._id,
       notes: `Changed from [${previous}] to [${nextLevels}].`
     });
 
     // Save without running unrelated validators on submission subdocs
     await client.save({ validateBeforeSave: false });
+
+    // Audit log
+    await logEvent({
+      actorId: actor._id,
+      actorModel: 'User',
+      module: 'user_management',
+      action: 'update',
+      entityType: 'Client',
+      entityId: client._id,
+      changeSummary: 'Assessment level updated',
+      metadata: { previousLevels: previous, newLevels: nextLevels, clientId },
+      req,
+    });
 
     return res.status(200).json({
       message: "assessmentLevel updated successfully",
@@ -5279,6 +5247,485 @@ const updateAssessmentLevelOnly = async (req, res) => {
   }
 };
 
+// ─── updateClientModuleAccess ─────────────────────────────────────────────────
+// PATCH /api/clients/:clientId/module-access
+// Body: { accessibleModules: ['zero_carbon', 'esg_link'] }
+// Access: super_admin (all clients) | managing consultant_admin (own clients)
+const updateClientModuleAccess = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { accessibleModules } = req.body;
+    const actor = req.user;
+
+    // Role check
+    if (!['super_admin', 'consultant_admin'].includes(actor.userType)) {
+      return res.status(403).json({
+        message: "Only Super Admin or Consultant Admin can update client module access."
+      });
+    }
+
+    // Validate input
+    const ALLOWED_MODULES = ['zero_carbon', 'esg_link'];
+    if (!Array.isArray(accessibleModules) || accessibleModules.length === 0) {
+      return res.status(400).json({ message: "accessibleModules must be a non-empty array." });
+    }
+    const invalid = accessibleModules.filter(m => !ALLOWED_MODULES.includes(m));
+    if (invalid.length > 0) {
+      return res.status(400).json({
+        message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${ALLOWED_MODULES.join(', ')}.`
+      });
+    }
+
+    const client = await Client.findOne({ clientId, isDeleted: { $ne: true } });
+    if (!client) return res.status(404).json({ message: "Client not found." });
+
+    // Managing consultant_admin check
+    if (actor.userType === 'consultant_admin') {
+      const managingId = client.leadInfo?.consultantAdminId?.toString();
+      if (managingId !== actor._id.toString()) {
+        return res.status(403).json({
+          message: "You are not authorized to update this client's module access."
+        });
+      }
+    }
+
+    const previousModules = client.accessibleModules ? [...client.accessibleModules] : ['zero_carbon'];
+    const addedModules = accessibleModules.filter(m => !previousModules.includes(m));
+
+    client.accessibleModules = accessibleModules;
+
+    // If esg_link is newly added, initialize esgLinkSubscription if absent
+    if (addedModules.includes('esg_link') && !client.accountDetails?.esgLinkSubscription?.subscriptionStatus) {
+      client.accountDetails.esgLinkSubscription = {
+        subscriptionStatus: 'active',
+        isActive: true,
+      };
+    }
+
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: "Module access updated",
+      performedBy: actor._id,
+      notes: `accessibleModules changed from [${previousModules}] to [${accessibleModules}].`
+    });
+
+    await client.save();
+
+    await logEvent({
+      actorId: actor._id,
+      actorModel: 'User',
+      module: 'user_management',
+      action: 'update',
+      entityType: 'Client',
+      entityId: client._id,
+      changeSummary: 'Client module access updated',
+      metadata: { previousModules, newModules: accessibleModules, addedModules, clientId },
+      req,
+    });
+
+    return res.status(200).json({
+      message: "Client module access updated successfully.",
+      accessibleModules: client.accessibleModules,
+      addedModules,
+    });
+  } catch (err) {
+    console.error("updateClientModuleAccess error:", err);
+    return res.status(500).json({ message: "Failed to update client module access.", error: err.message });
+  }
+};
+
+// ─── manageEsgLinkSubscription ────────────────────────────────────────────────
+// PATCH /api/clients/:clientId/subscription/esglink
+// Mirrors manageSubscription — targets esgLinkSubscription sub-doc
+const manageEsgLinkSubscription = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { action, reason, extensionDays } = req.body;
+    const actor = req.user;
+    const actorType = actor.userType;
+
+    // 1) Validate action
+    const allowedActions = ["suspend", "reactivate", "renew", "extend"];
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({
+        message: "Invalid action. Use: suspend, reactivate, renew, or extend",
+      });
+    }
+
+    // 2) Load client
+    const client = await Client.findOne({ clientId, isDeleted: { $ne: true } });
+    if (!client) return res.status(404).json({ message: "Client not found." });
+
+    // 3) Client must have esg_link module
+    if (!client.accessibleModules?.includes('esg_link')) {
+      return res.status(400).json({ message: "This client does not have the ESGLink module." });
+    }
+
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const now = new Date();
+
+    // Ensure esgLinkSubscription exists
+    if (!client.accountDetails.esgLinkSubscription) {
+      client.accountDetails.esgLinkSubscription = { subscriptionStatus: 'active', isActive: true };
+    }
+
+    const esl = client.accountDetails.esgLinkSubscription;
+    const pending = esl.pendingSubscriptionRequest || null;
+
+    const approveMatchingPendingRequest = () => {
+      if (!pending || pending.status !== "pending") return;
+      const isMatch = pending.action === action || (action === "renew" && pending.action === "reactivate");
+      if (!isMatch) return;
+      pending.status = "approved";
+      pending.reviewedBy = actor._id;
+      pending.reviewedAt = now;
+      pending.reviewComment = reason || "";
+    };
+
+    // 4) Consultant FLOW — can only create requests
+    if (actorType === "consultant") {
+      const isAssigned =
+        client.leadInfo?.assignedConsultantId?.toString() === actor._id.toString() ||
+        client.workflowTracking?.assignedConsultantId?.toString() === actor._id.toString();
+
+      if (!isAssigned) {
+        return res.status(403).json({ message: "You are not assigned to this client." });
+      }
+
+      if (!["suspend", "reactivate"].includes(action)) {
+        return res.status(403).json({
+          message: "Consultants can only request suspension or reactivation."
+        });
+      }
+
+      if (pending && pending.status === "pending") {
+        return res.status(400).json({
+          message: "There is already a pending ESGLink subscription request for this client.",
+          pendingRequest: pending,
+        });
+      }
+
+      esl.pendingSubscriptionRequest = {
+        action,
+        status: "pending",
+        reason: reason || (action === "suspend"
+          ? "Consultant requested ESGLink subscription suspension"
+          : "Consultant requested ESGLink subscription reactivation"),
+        requestedBy: actor._id,
+        requestedAt: now,
+      };
+
+      if (action === "suspend") {
+        esl.subscriptionStatus = "pending_suspension";
+      }
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: action === "suspend"
+          ? "ESGLink subscription suspension requested"
+          : "ESGLink subscription reactivation requested",
+        performedBy: actor._id,
+        notes: reason || "",
+      });
+
+      await client.save();
+
+      await logEvent({
+        actorId: actor._id,
+        actorModel: 'User',
+        module: 'user_management',
+        action: 'update',
+        entityType: 'Client',
+        entityId: client._id,
+        changeSummary: `ESGLink subscription ${action} requested`,
+        metadata: { module: 'esg_link', action, reason, clientId },
+        req,
+      });
+
+      return res.status(202).json({
+        message: `ESGLink subscription ${action} request sent to Consultant Admin.`,
+        pendingRequest: esl.pendingSubscriptionRequest,
+      });
+    }
+
+    // 5) Admin FLOW — consultant_admin / super_admin apply directly
+    if (!["consultant_admin", "super_admin"].includes(actorType)) {
+      return res.status(403).json({
+        message: "Only Consultant Admin and Super Admin can directly manage ESGLink subscriptions."
+      });
+    }
+
+    const previousStatus = esl.subscriptionStatus;
+
+    switch (action) {
+      case "suspend": {
+        if (esl.subscriptionStatus === "suspended") {
+          return res.status(400).json({ message: "ESGLink subscription is already suspended." });
+        }
+        esl.subscriptionStatus = "suspended";
+        esl.isActive = false;
+        esl.suspensionReason = reason || "Suspended by admin";
+        esl.suspendedBy = actor._id;
+        esl.suspendedAt = now;
+        approveMatchingPendingRequest();
+        client.timeline.push({ stage: client.stage, status: client.status, action: "ESGLink subscription suspended", performedBy: actor._id, notes: reason || "" });
+        break;
+      }
+      case "reactivate": {
+        if (esl.subscriptionStatus === "active" && esl.isActive) {
+          return res.status(400).json({ message: "ESGLink subscription is already active." });
+        }
+        esl.subscriptionStatus = "active";
+        esl.isActive = true;
+        esl.suspensionReason = undefined;
+        esl.suspendedBy = undefined;
+        esl.suspendedAt = undefined;
+        approveMatchingPendingRequest();
+        client.timeline.push({ stage: client.stage, status: client.status, action: "ESGLink subscription reactivated", performedBy: actor._id, notes: reason || "" });
+        break;
+      }
+      case "renew": {
+        const days = Number.isFinite(Number(extensionDays)) && Number(extensionDays) > 0 ? Number(extensionDays) : 365;
+        const newEnd = new Date(now.getTime() + days * msPerDay);
+        esl.subscriptionStartDate = now;
+        esl.subscriptionEndDate = newEnd;
+        esl.subscriptionStatus = "active";
+        esl.isActive = true;
+        approveMatchingPendingRequest();
+        client.timeline.push({ stage: client.stage, status: client.status, action: "ESGLink subscription renewed", performedBy: actor._id, notes: reason || `Renewed for ${days} days` });
+        break;
+      }
+      case "extend": {
+        if (!esl.subscriptionEndDate) {
+          return res.status(400).json({ message: "Cannot extend: ESGLink subscriptionEndDate is not set." });
+        }
+        const days = Number(extensionDays);
+        if (!Number.isFinite(days) || days <= 0) {
+          return res.status(400).json({ message: "extensionDays must be a positive number." });
+        }
+        esl.subscriptionEndDate = new Date(esl.subscriptionEndDate.getTime() + days * msPerDay);
+        if (esl.subscriptionStatus === "expired") {
+          esl.subscriptionStatus = "active";
+          esl.isActive = true;
+        }
+        approveMatchingPendingRequest();
+        client.timeline.push({ stage: client.stage, status: client.status, action: "ESGLink subscription extended", performedBy: actor._id, notes: reason || `Extended by ${days} days` });
+        break;
+      }
+      default:
+        return res.status(400).json({ message: "Unsupported action" });
+    }
+
+    await client.save();
+
+    await logEvent({
+      actorId: actor._id,
+      actorModel: 'User',
+      module: 'user_management',
+      action: 'update',
+      entityType: 'Client',
+      entityId: client._id,
+      changeSummary: `ESGLink subscription ${action} applied`,
+      metadata: { module: 'esg_link', action, previousStatus, newStatus: esl.subscriptionStatus, clientId },
+      req,
+    });
+
+    return res.status(200).json({
+      message: `ESGLink subscription ${action} action completed successfully.`,
+      esgLinkSubscription: client.accountDetails.esgLinkSubscription,
+    });
+  } catch (err) {
+    console.error("manageEsgLinkSubscription error:", err);
+    return res.status(500).json({ message: "Failed to manage ESGLink subscription.", error: err.message });
+  }
+};
+
+// ─── reviewEsgLinkSubscription ────────────────────────────────────────────────
+// PATCH /api/clients/:clientId/subscription/esglink/review
+// Mirrors reviewSubscription — targets esgLinkSubscription pending request
+const reviewEsgLinkSubscription = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { decision, reviewComment } = req.body;
+    const actor = req.user;
+    const actorType = actor.userType;
+
+    // 1) Auth
+    if (!["consultant_admin", "super_admin"].includes(actorType)) {
+      return res.status(403).json({
+        message: "Only Consultant Admin and Super Admin can review ESGLink subscription requests."
+      });
+    }
+
+    // 2) Validate decision
+    if (!["approve", "reject"].includes(decision)) {
+      return res.status(400).json({ message: "decision must be 'approve' or 'reject'." });
+    }
+
+    // 3) Load client
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ message: "Client not found." });
+
+    // Managing consultant_admin check
+    if (actorType === "consultant_admin") {
+      const managingId = client.leadInfo?.consultantAdminId?.toString();
+      if (managingId !== actor._id.toString()) {
+        return res.status(403).json({
+          message: "You are not authorized to review this client's ESGLink subscription."
+        });
+      }
+    }
+
+    const esl = client.accountDetails?.esgLinkSubscription;
+    if (!esl) return res.status(400).json({ message: "This client has no ESGLink subscription." });
+
+    const pending = esl.pendingSubscriptionRequest;
+    if (!pending || pending.status !== "pending") {
+      return res.status(400).json({ message: "No pending ESGLink subscription request found." });
+    }
+
+    const now = new Date();
+
+    if (decision === "approve") {
+      const { action } = pending;
+      if (action === "suspend") {
+        esl.subscriptionStatus = "suspended";
+        esl.isActive = false;
+        esl.suspensionReason = pending.reason || "Suspended via approved request";
+        esl.suspendedBy = actor._id;
+        esl.suspendedAt = now;
+      } else if (action === "reactivate") {
+        esl.subscriptionStatus = "active";
+        esl.isActive = true;
+        esl.suspensionReason = undefined;
+        esl.suspendedBy = undefined;
+        esl.suspendedAt = undefined;
+      }
+
+      esl.pendingSubscriptionRequest.status = "approved";
+      esl.pendingSubscriptionRequest.reviewedBy = actor._id;
+      esl.pendingSubscriptionRequest.reviewedAt = now;
+      esl.pendingSubscriptionRequest.reviewComment = reviewComment || "";
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: action === "suspend"
+          ? "ESGLink subscription suspension approved"
+          : "ESGLink subscription reactivation approved",
+        performedBy: actor._id,
+        notes: reviewComment || "",
+      });
+    } else {
+      // REJECT
+      esl.subscriptionStatus = "active";
+      esl.pendingSubscriptionRequest = {
+        action: pending.action,
+        status: "rejected",
+        reason: pending.reason,
+        requestedBy: pending.requestedBy,
+        requestedAt: pending.requestedAt,
+        reviewedBy: actor._id,
+        reviewedAt: now,
+        reviewComment: reviewComment || "",
+      };
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "ESGLink subscription request rejected",
+        performedBy: actor._id,
+        notes: reviewComment || "",
+      });
+    }
+
+    await client.save();
+
+    await logEvent({
+      actorId: actor._id,
+      actorModel: 'User',
+      module: 'user_management',
+      action: decision === 'approve' ? 'approve' : 'reject',
+      entityType: 'Client',
+      entityId: client._id,
+      changeSummary: `ESGLink subscription request ${decision}d`,
+      metadata: { module: 'esg_link', decision, reviewComment, clientId },
+      req,
+    });
+
+    return res.status(200).json({
+      message: `ESGLink subscription request ${decision}d successfully.`,
+      esgLinkSubscription: {
+        subscriptionStatus: esl.subscriptionStatus,
+        pendingSubscriptionRequest: esl.pendingSubscriptionRequest,
+      },
+    });
+  } catch (err) {
+    console.error("reviewEsgLinkSubscription error:", err);
+    return res.status(500).json({ message: "Server error.", error: err.message });
+  }
+};
+
+// ─── getEsgLinkPendingApprovals ───────────────────────────────────────────────
+// GET /api/clients/subscription/esglink/pending-approvals
+// Mirrors getPendingSubscriptionApprovals for ESGLink module
+const getEsgLinkPendingApprovals = async (req, res) => {
+  try {
+    if (!["consultant_admin", "super_admin"].includes(req.user.userType)) {
+      return res.status(403).json({
+        message: "Only Consultant Admin and Super Admin can view ESGLink pending approvals."
+      });
+    }
+
+    const filter = {
+      "accessibleModules": "esg_link",
+      "accountDetails.esgLinkSubscription.pendingSubscriptionRequest.status": "pending",
+    };
+
+    if (req.user.userType === "consultant_admin") {
+      filter["leadInfo.consultantAdminId"] = req.user._id;
+    }
+
+    const clients = await Client.find(filter)
+      .populate(
+        "accountDetails.esgLinkSubscription.pendingSubscriptionRequest.requestedBy",
+        "userName email userType"
+      )
+      .select(
+        "clientId stage status leadInfo.companyName accountDetails.esgLinkSubscription accessibleModules"
+      );
+
+    const requests = clients.map((c) => {
+      const esl = c.accountDetails?.esgLinkSubscription || {};
+      const reqObj = esl.pendingSubscriptionRequest || {};
+      return {
+        clientId: c.clientId,
+        companyName: c.leadInfo?.companyName,
+        stage: c.stage,
+        status: c.status,
+        esgLinkSubscriptionStatus: esl.subscriptionStatus,
+        esgLinkSubscriptionEndDate: esl.subscriptionEndDate,
+        pendingRequest: {
+          action: reqObj.action,
+          status: reqObj.status,
+          reason: reqObj.reason,
+          requestedAt: reqObj.requestedAt,
+          requestedBy: reqObj.requestedBy,
+        },
+      };
+    });
+
+    return res.status(200).json({ count: requests.length, requests });
+  } catch (err) {
+    console.error("getEsgLinkPendingApprovals error:", err);
+    return res.status(500).json({
+      message: "Failed to fetch ESGLink pending approvals.",
+      error: err.message,
+    });
+  }
+};
 
 
 /**
@@ -6207,6 +6654,10 @@ module.exports = {
   changeConsultant,
   removeConsultant,
   updateAssessmentLevelOnly,
+  updateClientModuleAccess,
+  manageEsgLinkSubscription,
+  reviewEsgLinkSubscription,
+  getEsgLinkPendingApprovals,
   hardResetClientSystem,
   purgeClientCompletely,
   assignSupportManager,

@@ -28,6 +28,12 @@ const {
 const fs = require('fs');
 const { uploadReductionCSVCreate } = require('../../utils/uploads/Reduction/csv/create');
 
+// ── Threshold Verification ────────────────────────────────────────────────────
+const { checkNetReduction } = require('../../services/verification/thresholdVerificationService');
+const PendingApproval = require('../../models/PendingApproval/PendingApproval');
+const { notifyConsultantAdminOfAnomaly } = require('../../utils/notifications/thresholdNotifications');
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 // --- Socket wiring (copy the pattern from dataCollectionController) ---
 let io;
@@ -837,12 +843,12 @@ exports.saveM3NetReduction = async (req, res) => {
       });
     }
 
-    // 2. Must be manual channel
+    // 2. Must be manual or OCR channel (OCR entries are user-submitted like manual)
     const inputType = (reductionDoc.reductionDataEntry?.inputType || "manual").toLowerCase();
-    if (inputType !== "manual") {
+    if (inputType !== "manual" && inputType !== "ocr") {
       return res.status(400).json({
         success: false,
-        message: "This endpoint only supports MANUAL input"
+        message: "This endpoint only supports MANUAL or OCR input"
       });
     }
 
@@ -919,6 +925,73 @@ exports.saveM3NetReduction = async (req, res) => {
 
       breakdown: breakdownWithCum
     };
+
+    // ── THRESHOLD CHECK (M3) ─────────────────────────────────────────────────
+    try {
+      const checkResult = await checkNetReduction({
+        clientId,
+        projectId,
+        calculationMethodology: "methodology3",
+        netReductionValue: NwU_now,
+        inputType: "manual"
+      });
+
+      if (checkResult.shouldRequireApproval) {
+        const pending = await PendingApproval.create({
+          flowType: "netReduction",
+          clientId,
+          projectId,
+          calculationMethodology: "methodology3",
+          status: "Pending_Approval",
+          inputType: "manual",
+          originalPayload: {
+            clientId, projectId,
+            calculationMethodology: "methodology3",
+            inputType: "manual",
+            date: when.date,
+            time: when.time,
+            timestamp: when.timestamp,
+            m3: m3Final,
+            netReduction: NwU_now,
+            sourceDetails: { uploadedBy: req.user._id || req.user.id, dataSource: "manual" }
+          },
+          verificationMeta: checkResult.meta,
+          submittedBy: req.user._id || req.user.id,
+          submittedByType: req.user.userType
+        });
+
+        const notification = await notifyConsultantAdminOfAnomaly({
+          clientId,
+          scopeIdentifier: projectId,
+          pendingApprovalId: pending._id,
+          normalizedValue: checkResult.meta.normalizedIncomingValue,
+          historicalAverage: checkResult.meta.historicalAverageDailyValue,
+          deviationPct: checkResult.meta.deviationPercentage,
+          thresholdPct: checkResult.meta.thresholdPercentage,
+          frequency: checkResult.meta.frequency,
+          inputType: "manual",
+          flowType: "netReduction",
+          submittedBy: req.user._id || req.user.id,
+          submittedByType: req.user.userType
+        });
+
+        if (notification) {
+          pending.notificationId = notification._id;
+          await pending.save();
+        }
+
+        return res.status(202).json({
+          success: false,
+          intercepted: true,
+          message: "Anomaly detected in M3 net reduction. Entry held for consultant_admin approval.",
+          pendingApprovalId: pending._id,
+          verificationMeta: checkResult.meta
+        });
+      }
+    } catch (thresholdErr) {
+      console.error('[saveM3NetReduction] Threshold check error (continuing):', thresholdErr.message);
+    }
+    // ── END THRESHOLD CHECK ───────────────────────────────────────────────────
 
     // 9. Save entry
     const entry = await NetReductionEntry.create({
@@ -1095,9 +1168,10 @@ exports.saveManualNetReduction = async (req, res) => {
 
     const docsToInsert = [];
     const errors = [];
+    const pendingApprovals = [];
 
     // -----------------------------------------------------
-    // 🚀 M1 IMPLEMENTATION (Unchanged)
+    // 🚀 M1 IMPLEMENTATION
     // -----------------------------------------------------
     if (ctx.mode === "m1") {
       for (let i = 0; i < rows.length; i++) {
@@ -1111,6 +1185,75 @@ exports.saveManualNetReduction = async (req, res) => {
 
         const when = parseDateTimeOrNowIST(r.date, r.time);
         const net = round6(v * ctx.rate);
+
+        // ── THRESHOLD CHECK (M1) ────────────────────────────────────────────
+        try {
+          const checkResult = await checkNetReduction({
+            clientId,
+            projectId,
+            calculationMethodology,
+            netReductionValue: net,
+            inputType: "manual"
+          });
+
+          if (checkResult.shouldRequireApproval) {
+            const pending = await PendingApproval.create({
+              flowType: "netReduction",
+              clientId,
+              projectId,
+              calculationMethodology,
+              status: "Pending_Approval",
+              inputType: "manual",
+              originalPayload: {
+                clientId, projectId, calculationMethodology,
+                inputType: "manual",
+                date: when.date,
+                time: when.time,
+                timestamp: when.timestamp,
+                inputValue: v,
+                emissionReductionRate: ctx.rate,
+                netReduction: net,
+                formulaId: null,
+                variables: {},
+                netReductionInFormula: 0,
+                sourceDetails: { uploadedBy: req.user._id || req.user.id, dataSource: "manual" }
+              },
+              verificationMeta: checkResult.meta,
+              submittedBy: req.user._id || req.user.id,
+              submittedByType: req.user.userType
+            });
+
+            const notification = await notifyConsultantAdminOfAnomaly({
+              clientId,
+              scopeIdentifier: projectId,
+              pendingApprovalId: pending._id,
+              normalizedValue: checkResult.meta.normalizedIncomingValue,
+              historicalAverage: checkResult.meta.historicalAverageDailyValue,
+              deviationPct: checkResult.meta.deviationPercentage,
+              thresholdPct: checkResult.meta.thresholdPercentage,
+              frequency: checkResult.meta.frequency,
+              inputType: "manual",
+              flowType: "netReduction",
+              submittedBy: req.user._id || req.user.id,
+              submittedByType: req.user.userType
+            });
+
+            if (notification) {
+              pending.notificationId = notification._id;
+              await pending.save();
+            }
+
+            pendingApprovals.push({
+              row: i + 1,
+              pendingApprovalId: pending._id,
+              reason: checkResult.meta.anomalyReason
+            });
+            continue;
+          }
+        } catch (thresholdErr) {
+          console.error('[saveManualNetReduction M1] Threshold check error (continuing):', thresholdErr.message);
+        }
+        // ── END THRESHOLD CHECK ─────────────────────────────────────────────
 
         docsToInsert.push({
           clientId,
@@ -1135,12 +1278,25 @@ exports.saveManualNetReduction = async (req, res) => {
         });
       }
 
-      if (!docsToInsert.length)
+      if (!docsToInsert.length && !pendingApprovals.length)
         return res.status(400).json({
           success: false,
           message: "No valid rows",
           errors,
         });
+
+      // If all rows were intercepted, return early
+      if (!docsToInsert.length) {
+        return res.status(202).json({
+          success: false,
+          intercepted: true,
+          message: "All entries flagged as anomalous and sent for consultant_admin approval.",
+          saved: 0,
+          pendingApprovalCount: pendingApprovals.length,
+          pendingApprovals,
+          errors
+        });
+      }
 
       const inserted = await NetReductionEntry.insertMany(docsToInsert, {
         ordered: false,
@@ -1149,7 +1305,7 @@ exports.saveManualNetReduction = async (req, res) => {
       await recomputeSeries(clientId, projectId, calculationMethodology);
       try {
         await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: inserted.map(e => e.timestamp).filter(Boolean),
 });
       } catch {}
 
@@ -1162,20 +1318,22 @@ exports.saveManualNetReduction = async (req, res) => {
       // Audit log — M1 manual batch created (non-blocking)
       Promise.all(fresh.map(e => logNetReductionCreate(req, e))).catch(() => {});
 
-      return res.status(201).json({
+      return res.status(pendingApprovals.length > 0 ? 207 : 201).json({
         success: true,
         message:
           fresh.length > 1
             ? "Net reductions saved (manual, m1 batch)"
             : "Net reduction saved (manual, m1)",
         saved: fresh.length,
+        pendingApprovalCount: pendingApprovals.length,
+        pendingApprovals,
         errors,
         data: fresh,
       });
     }
 
     // -----------------------------------------------------
-    // 🚀 M2 IMPLEMENTATION (Unchanged)
+    // 🚀 M2 IMPLEMENTATION
     // -----------------------------------------------------
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i] || {};
@@ -1190,6 +1348,78 @@ exports.saveManualNetReduction = async (req, res) => {
           incoming,
           when.timestamp
         );
+
+        // ── THRESHOLD CHECK (M2) ──────────────────────────────────────────
+        let interceptedM2 = false;
+        try {
+          const checkResult = await checkNetReduction({
+            clientId,
+            projectId,
+            calculationMethodology,
+            netReductionValue: finalNet,
+            inputType: "manual"
+          });
+
+          if (checkResult.shouldRequireApproval) {
+            const pending = await PendingApproval.create({
+              flowType: "netReduction",
+              clientId,
+              projectId,
+              calculationMethodology,
+              status: "Pending_Approval",
+              inputType: "manual",
+              originalPayload: {
+                clientId, projectId, calculationMethodology,
+                inputType: "manual",
+                date: when.date,
+                time: when.time,
+                timestamp: when.timestamp,
+                formulaId: ctx.formula._id,
+                variables: incoming,
+                netReductionInFormula: netInFormula,
+                netReduction: finalNet,
+                inputValue: 0,
+                emissionReductionRate: 0,
+                sourceDetails: { uploadedBy: req.user._id || req.user.id, dataSource: "manual" }
+              },
+              verificationMeta: checkResult.meta,
+              submittedBy: req.user._id || req.user.id,
+              submittedByType: req.user.userType
+            });
+
+            const notification = await notifyConsultantAdminOfAnomaly({
+              clientId,
+              scopeIdentifier: projectId,
+              pendingApprovalId: pending._id,
+              normalizedValue: checkResult.meta.normalizedIncomingValue,
+              historicalAverage: checkResult.meta.historicalAverageDailyValue,
+              deviationPct: checkResult.meta.deviationPercentage,
+              thresholdPct: checkResult.meta.thresholdPercentage,
+              frequency: checkResult.meta.frequency,
+              inputType: "manual",
+              flowType: "netReduction",
+              submittedBy: req.user._id || req.user.id,
+              submittedByType: req.user.userType
+            });
+
+            if (notification) {
+              pending.notificationId = notification._id;
+              await pending.save();
+            }
+
+            pendingApprovals.push({
+              row: i + 1,
+              pendingApprovalId: pending._id,
+              reason: checkResult.meta.anomalyReason
+            });
+            interceptedM2 = true;
+          }
+        } catch (thresholdErr) {
+          console.error('[saveManualNetReduction M2] Threshold check error (continuing):', thresholdErr.message);
+        }
+        // ── END THRESHOLD CHECK ───────────────────────────────────────────
+
+        if (interceptedM2) continue;
 
         docsToInsert.push({
           clientId,
@@ -1220,12 +1450,25 @@ exports.saveManualNetReduction = async (req, res) => {
       }
     }
 
-    if (!docsToInsert.length)
+    if (!docsToInsert.length && !pendingApprovals.length)
       return res.status(400).json({
         success: false,
         message: "No valid rows",
         errors,
       });
+
+    // If all rows were intercepted, return early
+    if (!docsToInsert.length) {
+      return res.status(202).json({
+        success: false,
+        intercepted: true,
+        message: "All entries flagged as anomalous and sent for consultant_admin approval.",
+        saved: 0,
+        pendingApprovalCount: pendingApprovals.length,
+        pendingApprovals,
+        errors
+      });
+    }
 
     const toSave = docsToInsert.map((d) => {
       const { _tmpLE, ...rest } = d;
@@ -1239,7 +1482,7 @@ exports.saveManualNetReduction = async (req, res) => {
     await recomputeSeries(clientId, projectId, calculationMethodology);
     try {
      await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: inserted.map(e => e.timestamp).filter(Boolean),
 });
     } catch {}
 
@@ -1252,13 +1495,15 @@ exports.saveManualNetReduction = async (req, res) => {
     // Audit log — M2 manual batch created (non-blocking)
     Promise.all(fresh.map(e => logNetReductionCreate(req, e))).catch(() => {});
 
-    return res.status(201).json({
+    return res.status(pendingApprovals.length > 0 ? 207 : 201).json({
       success: true,
       message:
         fresh.length > 1
           ? "Net reductions saved (manual, m2 batch)"
           : "Net reduction saved (manual, m2)",
       saved: fresh.length,
+      pendingApprovalCount: pendingApprovals.length,
+      pendingApprovals,
       errors,
       data: fresh,
     });
@@ -2692,10 +2937,11 @@ exports.updateManualNetReductionEntry = async (req, res) => {
     if (!entry)
       return res.status(404).json({ success: false, message: "Entry not found" });
 
-    if ((entry.inputType || "").toLowerCase() !== "manual")
+    const entryInputTypeLower = (entry.inputType || "").toLowerCase();
+    if (entryInputTypeLower !== "manual" && entryInputTypeLower !== "ocr")
       return res
         .status(400)
-        .json({ success: false, message: "Only manual entries can be updated" });
+        .json({ success: false, message: "Only manual or OCR entries can be updated" });
 
     // Load reduction
     const reductionDoc = await Reduction.findOne({
@@ -2885,11 +3131,12 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
 
     const isManual = inputType === "manual" || dataSource === "manual";
     const isCsv = inputType === "csv" || dataSource === "csv";
+    const isOcr = inputType === "ocr" || dataSource === "ocr";
 
-    if (!isManual && !isCsv) {
+    if (!isManual && !isCsv && !isOcr) {
       return res.status(400).json({
         success: false,
-        message: "Only MANUAL/CSV entries can be deleted with this endpoint"
+        message: "Only MANUAL/CSV/OCR entries can be deleted with this endpoint"
       });
     }
 

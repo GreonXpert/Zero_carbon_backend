@@ -1,78 +1,100 @@
-// ============================================================================
-// 6. BACKGROUND JOB FOR SUMMARY MAINTENANCE
-// ============================================================================
-// jobs/summaryMaintenanceJob.js
-const cron = require('node-cron');
-const ReductionSummary = require('../models/Reduction/ReductionSummary');
+// utils/jobs/summaryMaintenanceJob.js
+// Two scheduled maintenance jobs for ReductionSummary:
+//   1. Hourly (0 * * * *) — processes up to 50 summaries with pendingRecalculation=true
+//   2. Daily  (0 2 * * *) — removes non-lifetime summaries older than 90 days
+//
+// Both jobs are inactive until startSummaryMaintenanceJob() is called (from index.js).
 
-// Import directly from controller instead of trigger file
-const { calculateFullSummary } = require('../controllers/Reduction/reductionSummaryController');
+'use strict';
 
-// Run every hour to process pending recalculations
-cron.schedule('0 * * * *', async () => {
-  console.log('Starting summary maintenance job...');
-  
+const cron             = require('node-cron');
+const ReductionSummary = require('../../models/Reduction/SummaryNetReduction');
+const { calculateFullSummary } = require('../../controllers/Reduction/netReductionSummaryController');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Job 1: Process pending recalculations (runs every hour)
+// ─────────────────────────────────────────────────────────────────────────────
+async function processPendingRecalculations() {
+  console.log('[Summary Maintenance] Starting pending recalculations...');
+
   try {
-    // Find summaries that need recalculation
     const pendingSummaries = await ReductionSummary.find({
-      pendingRecalculation: true
-    }).select('clientId').limit(50); // Process 50 at a time
-    
-    console.log(`Found ${pendingSummaries.length} summaries needing recalculation`);
-    
+      pendingRecalculation: true,
+    }).select('clientId').limit(50); // process 50 at a time
+
+    console.log(`[Summary Maintenance] Found ${pendingSummaries.length} summaries needing recalculation`);
+
     for (const summary of pendingSummaries) {
       try {
         const updated = await calculateFullSummary(summary.clientId);
-        
+
         await ReductionSummary.findOneAndUpdate(
-          { 
-            clientId: summary.clientId, 
-            period: 'lifetime',
-            periodStart: null
-          },
+          { clientId: summary.clientId, period: 'lifetime', periodStart: null },
           updated,
-          { 
-            upsert: true, 
-            new: true, 
-            setDefaultsOnInsert: true 
-          }
+          { upsert: true, new: true, setDefaultsOnInsert: true }
         );
-        
-        console.log(`Recalculated summary for client ${summary.clientId}`);
+
+        console.log(`[Summary Maintenance] Recalculated summary for client ${summary.clientId}`);
       } catch (error) {
-        console.error(`Error recalculating summary for client ${summary.clientId}:`, error);
+        console.error(`[Summary Maintenance] Error recalculating summary for client ${summary.clientId}:`, error);
       }
     }
-    
-    console.log('Summary maintenance job completed');
-  } catch (error) {
-    console.error('Error in summary maintenance job:', error);
-  }
-});
 
-// Run daily at 2 AM to clean up old summary data
-cron.schedule('0 2 * * *', async () => {
-  console.log('Starting summary cleanup job...');
-  
+    console.log('[Summary Maintenance] Pending recalculations complete');
+  } catch (error) {
+    console.error('[Summary Maintenance] Error in pending recalculations job:', error);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Job 2: Clean up old summary data (runs daily at 02:00 UTC)
+// ─────────────────────────────────────────────────────────────────────────────
+async function cleanupOldSummaries() {
+  console.log('[Summary Maintenance] Starting cleanup of old summaries...');
+
   try {
-    // Remove summaries older than 90 days for non-lifetime periods
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-    
+
     const result = await ReductionSummary.deleteMany({
-      period: { $ne: 'lifetime' },
-      periodStart: { $lt: ninetyDaysAgo }
+      period:      { $ne: 'lifetime' },
+      periodStart: { $lt: ninetyDaysAgo },
     });
-    
-    console.log(`Cleaned up ${result.deletedCount} old summary records`);
+
+    console.log(`[Summary Maintenance] Cleaned up ${result.deletedCount} old summary records`);
   } catch (error) {
-    console.error('Error in summary cleanup job:', error);
+    console.error('[Summary Maintenance] Error in cleanup job:', error);
   }
-});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cron initialiser — call this from index.js after DB connects
+// ─────────────────────────────────────────────────────────────────────────────
+function startSummaryMaintenanceJob() {
+  // Hourly recalculation
+  cron.schedule('0 * * * *', processPendingRecalculations, {
+    scheduled: true,
+    timezone: 'UTC',
+  });
+
+  // Daily cleanup at 02:00 UTC
+  cron.schedule('0 2 * * *', cleanupOldSummaries, {
+    scheduled: true,
+    timezone: 'UTC',
+  });
+
+  console.log('[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manual trigger (for admin endpoints / testing)
+// ─────────────────────────────────────────────────────────────────────────────
+async function runMaintenanceJob() {
+  await processPendingRecalculations();
+  await cleanupOldSummaries();
+}
 
 module.exports = {
-  // Export for manual triggering if needed
-  runMaintenanceJob: async () => {
-    // Manual trigger logic here
-  }
+  startSummaryMaintenanceJob,
+  runMaintenanceJob,
 };

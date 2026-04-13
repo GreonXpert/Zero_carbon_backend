@@ -281,14 +281,18 @@ exports.saveTransportFlowchart = async (req, res) => {
     // QUOTA CHECK — transport flowchart creation
     // ─────────────────────────────────────────────────────────
     if (isQuotaSubject(req.user.userType)) {
-      const assignedConsultantId = await getAssignedConsultantId(clientId);
+      const clientDoc = await Client.findOne({ clientId })
+  .select('workflowTracking.assignedConsultantId leadInfo.assignedConsultantId')
+  .lean();
+      const assignedConsultantId = clientDoc?.workflowTracking?.assignedConsultantId ??
+  clientDoc?.leadInfo?.assignedConsultantId ?? null;
 
       if (!assignedConsultantId) {
         return res.status(403).json({
           success: false,
-          message: 'This client does not have an assigned consultant. Assign a consultant first.',
-          code: 'NO_ASSIGNED_CONSULTANT',
-        });
+    message: 'This client does not have an assigned consultant. Assign a consultant first.',
+    code: 'NO_ASSIGNED_CONSULTANT',
+  });
       }
 
       // Check if this specific transportType already exists (upsert case — no new creation)

@@ -35,6 +35,9 @@ const DecarbonizationRoutes = require('./router/Decarbonization/sbtiRoutes');
 const notificationRoutes = require('./router/Notification/notificationRoutes');
 const { dataCollectionRouter, iotRouter } = require('./router/Organization/dataCollectionRoutes');
 
+// Threshold Verification & Approval routes
+const verificationRoutes = require('./router/verification/verificationRoutes');
+
 // Import IoT routes
 const iotRoutes = require('./router/iotRoutes');
 
@@ -55,6 +58,7 @@ const sandboxRoutes = require('./router/CMS/sandboxRoutes');
 const apiKeyRoutes = require('./router/apiKeyRoutes');
 const { surveyAuthRouter, surveyPublicRouter } = require('./router/Organization/surveyRoutes');
 const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
+const { requireActiveModuleSubscription } = require('./utils/Permissions/modulePermission');
 
 // Import models for real-time features
 const User = require('./models/User');
@@ -88,6 +92,11 @@ const { logLogin }       = require('./services/audit/auditLogService');
 const { startSLAChecker } = require('./utils/jobs/ticketSlaChecker');
 // Missed survey cycle detector
 const { startMissedCycleDetector } = require('./utils/jobs/missedCycleDetector');
+// Subscription expiry checkers (ZeroCarbon + ESGLink)
+const { startZeroCarbonExpiryChecker } = require('./utils/jobs/zeroCarbonExpiryChecker');
+const { startEsgLinkExpiryChecker }    = require('./utils/jobs/esgLinkExpiryChecker');
+// Summary maintenance job
+const { startSummaryMaintenanceJob }   = require('./utils/jobs/summaryMaintenanceJob');
 const { setTicketChatSocketIO } = require('./utils/sockets/ticketChatSocket');
 
 const helmet = require('helmet');
@@ -149,32 +158,43 @@ app.use(
   express.static('uploads')
 );
 
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 // Routes
 app.use("/api/users", userR);
-app.use("/api/clients", clientR);
+app.use("/api/clients", clientR);                 // includes subscription management — NO gate
 app.use('/api/sandbox', sandboxRoutes);
-app.use("/api/flowchart", flowchartR);
+
+// ── ZeroCarbon feature routes (blocked when ZeroCarbon subscription is expired) ──
+app.use("/api/flowchart",           zcGate, flowchartR);
+app.use("/api/processflow",         zcGate, processFlowR);
+app.use('/api/transport-flowchart', zcGate, transportFlowRouter);
+app.use('/api/summaries',           zcGate, summaryRoutes);
+app.use('/api/reductions',          zcGate, reductionRoutes);
+app.use('/api/net-reduction',       zcGate, netReductionRoutes);
+app.use('/api/formulas',            zcGate, FormulaR);
+app.use('/api/sbti',                zcGate, DecarbonizationRoutes);
+app.use('/api/data-collection',     zcGate, dataCollectionRouter);
+app.use('/api/verification',        zcGate, verificationRoutes);
+
+// ── Emission factor reference data — no module gate (read-only reference, no client data) ──
 app.use("/api/defra", defraDataR);
 app.use("/api/gwp", gwpRoutes);
 app.use("/api/fuelCombustion", fuelCombustionRoutes);
 app.use("/api/country-emission-factors", CountryemissionFactorRouter);
-app.use("/api/processflow", processFlowR);
-app.use('/api/transport-flowchart', transportFlowRouter);
 app.use('/api/emission-factor-hub', EmissionFactorHub);
-app.use('/api/iot', iotRoutes);
 app.use('/api/ipcc', ipccDataRoutes);
 app.use('/api/epa', EPADataRoutes);
 app.use('/api/emission-factors', emissionFactorRoutes);
 app.use('/api/emission-factor', ipccConverstionCalculation);
-app.use('/api/summaries', summaryRoutes);
-app.use('/api/reductions', reductionRoutes);
-app.use('/api/net-reduction', netReductionRoutes);
-app.use('/api/formulas', FormulaR);
-app.use('/api/sbti', DecarbonizationRoutes);
+
+// ── Cross-module / shared routes — no module gate ────────────────────────
+app.use('/api/iot', iotRoutes);
 
 // Notification and data collection routes
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/data-collection', dataCollectionRouter);
 app.use('/api/iot', iotRouter);
 
 app.use('/api/api-keys-mgmt', apiKeyRoutes);
@@ -2317,11 +2337,15 @@ connectDB().then(() => {
     // Start Missed Survey Cycle Detector (daily at 03:00 UTC)
     startMissedCycleDetector();
 
-    // Schedule cron jobs
-    cron.schedule('0 2 * * *', async () => {
-      console.log('🔄 Running daily subscription check...');
-      await checkExpiredSubscriptions();
-    });
+    // Start SLA checker (every 15 minutes)
+    startSLAChecker();
+
+    // Start subscription expiry checkers
+    startEsgLinkExpiryChecker();      // daily at 02:00 UTC
+    startZeroCarbonExpiryChecker();   // daily at 02:05 UTC
+
+    // Start summary maintenance job (hourly recalculation + daily cleanup)
+    startSummaryMaintenanceJob();
 }).catch((error) => {
     console.error('❌ Database connection failed:', error);
     process.exit(1);

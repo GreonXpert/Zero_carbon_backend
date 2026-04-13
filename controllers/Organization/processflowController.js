@@ -460,17 +460,19 @@ const saveProcessFlowchart = async (req, res) => {
 
     // 9) Auto-start flowchart status
     if (['consultant', 'consultant_admin'].includes(req.user.userType) && isNew) {
-      await Client.findOneAndUpdate(
-        { clientId },
-        { 
-          $set: {
-            'workflowTracking.processFlowchartStatus': 'on_going',
-            'workflowTracking.processFlowchartStartedAt': new Date()
-          }
-        }
-      );
+  await Client.findOneAndUpdate(
+    {
+      clientId,
+      'workflowTracking': { $type: 'object' }   // ← guard
+    },
+    { 
+      $set: {
+        'workflowTracking.processFlowchartStatus': 'on_going',
+        'workflowTracking.processFlowchartStartedAt': new Date()
+      }
     }
-
+  );
+}
     // 10) Send notifications to all client_admins of this client
     await createChartNotifications(User, Notification, {
       clientId,

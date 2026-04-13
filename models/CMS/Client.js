@@ -59,6 +59,23 @@ const IoTInputPointSchema = new mongoose.Schema({
   lastUpdatedAt: { type: Date }
 });
 
+// Sub-schema for OCR input points
+const OCRInputPointSchema = new mongoose.Schema({
+  pointId: { type: String, required: true },
+  documentName: { type: String, required: true },
+  nodeId: { type: String },
+  scopeIdentifier: { type: String },
+  status: {
+    type: String,
+    enum: ["not_started", "on_going", "pending", "completed"],
+    default: "not_started"
+  },
+  s3Key: { type: String },
+  ocrConfidence: { type: Number },
+  lastUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  lastUpdatedAt: { type: Date }
+});
+
 // ✅ Add this near your other sub-schemas
 const ProjectProfileSchema = new mongoose.Schema({
   projectName:   { type: String, required: true, trim: true },
@@ -205,7 +222,17 @@ const clientSchema = new mongoose.Schema(
           onGoingCount: { type: Number, default: 0 },
           notStartedCount: { type: Number, default: 0 }
         },
-        
+
+        // OCR input points
+        ocr: {
+          inputs: [OCRInputPointSchema],
+          totalCount: { type: Number, default: 0 },
+          completedCount: { type: Number, default: 0 },
+          pendingCount: { type: Number, default: 0 },
+          onGoingCount: { type: Number, default: 0 },
+          notStartedCount: { type: Number, default: 0 }
+        },
+
         // Overall summary
         totalDataPoints: { type: Number, default: 0 },
         lastSyncedWithFlowchart: { type: Date }
@@ -536,6 +563,12 @@ accountDetails: {
   },
   subscriptionType: { type: String },
 
+  // Tracks which pre-expiry warning emails have been sent to prevent duplicates
+  expiryWarningsSent: [{
+    daysBeforeExpiry: { type: Number },
+    sentAt:           { type: Date },
+  }],
+
   // 🔹 Subscription workflow (consultant → consultant admin / super admin)
   pendingSubscriptionRequest: {
     action: {
@@ -570,8 +603,57 @@ accountDetails: {
   activeUsers: { type: Number, default: 0 },
   lastLoginDate: { type: Date },
   dataSubmissions: { type: Number, default: 0 },
+
+  // 🆕 ESGLink Module Subscription (separate from ZeroCarbon subscription above)
+  // Mirrors the ZeroCarbon subscription structure exactly.
+  // Only populated when client has 'esg_link' in accessibleModules.
+  esgLinkSubscription: {
+    subscriptionStartDate: { type: Date },
+    subscriptionEndDate: { type: Date },
+    subscriptionStatus: {
+      type: String,
+      enum: ["active", "suspended", "expired", "grace_period", "pending_suspension"],
+      default: "active",
+    },
+    subscriptionType: { type: String },
+    pendingSubscriptionRequest: {
+      action: {
+        type: String,
+        enum: ["suspend", "reactivate", "renew", "extend"],
+      },
+      status: {
+        type: String,
+        enum: ["pending", "approved", "rejected"],
+        default: null,
+      },
+      reason: { type: String },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      requestedAt: { type: Date },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      reviewedAt: { type: Date },
+      reviewComment: { type: String },
+    },
+    // Tracks which pre-expiry warning emails have been sent to prevent duplicates
+    expiryWarningsSent: [{
+      daysBeforeExpiry: { type: Number },
+      sentAt:           { type: Date },
+    }],
+    isActive: { type: Boolean, default: true },
+    suspensionReason: { type: String },
+    suspendedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    suspendedAt: { type: Date },
+  },
 },
-    
+
+
+    // 🆕 MODULE ACCESS — which product modules this client subscribes to.
+    // Default: ['zero_carbon'] — all existing clients keep ZeroCarbon access.
+    // Updated by consultant_admin (own clients) or super_admin only.
+    accessibleModules: {
+      type: [String],
+      enum: ['zero_carbon', 'esg_link'],
+      default: ['zero_carbon'],
+    },
 
     // Timeline tracking
     timeline: [{
@@ -936,7 +1018,8 @@ clientSchema.methods.updateInputPointCounts = function(type) {
   this.workflowTracking.dataInputPoints.totalDataPoints =
     this.workflowTracking.dataInputPoints.manual.totalCount +
     this.workflowTracking.dataInputPoints.api.totalCount +
-    this.workflowTracking.dataInputPoints.iot.totalCount;
+    this.workflowTracking.dataInputPoints.iot.totalCount +
+    (this.workflowTracking.dataInputPoints.ocr ? this.workflowTracking.dataInputPoints.ocr.totalCount : 0);
 };
 clientSchema.methods.getWorkflowDashboard = function() {
   const w = this.workflowTracking;
@@ -947,6 +1030,7 @@ clientSchema.methods.getWorkflowDashboard = function() {
       manual:   { total: w.dataInputPoints.manual.totalCount,   completed: w.dataInputPoints.manual.completedCount,   pending: w.dataInputPoints.manual.pendingCount },
       api:      { total: w.dataInputPoints.api.totalCount,      completed: w.dataInputPoints.api.completedCount,      pending: w.dataInputPoints.api.pendingCount },
       iot:      { total: w.dataInputPoints.iot.totalCount,      completed: w.dataInputPoints.iot.completedCount,      pending: w.dataInputPoints.iot.pendingCount },
+      ocr:      { total: w.dataInputPoints.ocr ? w.dataInputPoints.ocr.totalCount : 0, completed: w.dataInputPoints.ocr ? w.dataInputPoints.ocr.completedCount : 0, pending: w.dataInputPoints.ocr ? w.dataInputPoints.ocr.pendingCount : 0 },
       overall:  w.dataInputPoints.totalDataPoints
     }
   };

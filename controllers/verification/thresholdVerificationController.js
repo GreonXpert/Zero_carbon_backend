@@ -1,0 +1,534 @@
+// controllers/verification/thresholdVerificationController.js
+const mongoose = require("mongoose");
+const ThresholdConfig = require("../../models/ThresholdConfig/ThresholdConfig");
+const PendingApproval = require("../../models/PendingApproval/PendingApproval");
+const DataEntry = require("../../models/Organization/DataEntry");
+const NetReductionEntry = require("../../models/Reduction/NetReductionEntry");
+const { notifySubmitterOfOutcome } = require("../../utils/notifications/thresholdNotifications");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THRESHOLD CONFIG — CRUD
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/verification/threshold-config
+ * Create or upsert a threshold config.
+ * Role: consultant_admin
+ */
+const createOrUpdateThresholdConfig = async (req, res) => {
+  try {
+    const {
+      clientId,
+      scopeIdentifier,
+      nodeId = null,
+      flowType,
+      thresholdPercentage,
+      isActive = true,
+      baselineSampleSize = 10,
+      appliesToInputTypes = []
+    } = req.body;
+
+    if (!clientId || !scopeIdentifier || !flowType || thresholdPercentage == null) {
+      return res.status(400).json({
+        success: false,
+        message: "clientId, scopeIdentifier, flowType, and thresholdPercentage are required"
+      });
+    }
+
+    if (!["dataEntry", "netReduction"].includes(flowType)) {
+      return res.status(400).json({
+        success: false,
+        message: "flowType must be 'dataEntry' or 'netReduction'"
+      });
+    }
+
+    if (thresholdPercentage < 0.1 || thresholdPercentage > 10000) {
+      return res.status(400).json({
+        success: false,
+        message: "thresholdPercentage must be between 0.1 and 10000"
+      });
+    }
+
+    if (baselineSampleSize < 3 || baselineSampleSize > 50) {
+      return res.status(400).json({
+        success: false,
+        message: "baselineSampleSize must be between 3 and 50"
+      });
+    }
+
+    // Upsert: one config per client+scope+flowType+node
+    const config = await ThresholdConfig.findOneAndUpdate(
+      { clientId, scopeIdentifier, flowType, nodeId: nodeId || null },
+      {
+        $set: {
+          thresholdPercentage,
+          isActive,
+          baselineSampleSize,
+          appliesToInputTypes,
+          updatedBy: req.user._id
+        },
+        $setOnInsert: {
+          createdBy: req.user._id,
+          createdByType: req.user.userType
+        }
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Threshold config saved",
+      data: config
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "A threshold config already exists for this client+scope+flowType+node combination"
+      });
+    }
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /api/verification/threshold-config/:clientId
+ * List all threshold configs for a client.
+ * Role: consultant_admin, super_admin
+ */
+const getThresholdConfigs = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { flowType, isActive } = req.query;
+
+    const filter = { clientId };
+    if (flowType) filter.flowType = flowType;
+    if (isActive !== undefined) filter.isActive = isActive === "true";
+
+    const configs = await ThresholdConfig.find(filter)
+      .sort({ scopeIdentifier: 1, flowType: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: configs.length,
+      data: configs
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /api/verification/threshold-config/:id
+ * Update threshold percentage, isActive, baselineSampleSize, or appliesToInputTypes.
+ * Role: consultant_admin
+ */
+const updateThresholdConfig = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid config ID" });
+    }
+
+    const allowed = ["thresholdPercentage", "isActive", "baselineSampleSize", "appliesToInputTypes"];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    if (updates.thresholdPercentage != null) {
+      if (updates.thresholdPercentage < 0.1 || updates.thresholdPercentage > 10000) {
+        return res.status(400).json({
+          success: false,
+          message: "thresholdPercentage must be between 0.1 and 10000"
+        });
+      }
+    }
+
+    updates.updatedBy = req.user._id;
+
+    const config = await ThresholdConfig.findByIdAndUpdate(
+      id,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!config) {
+      return res.status(404).json({ success: false, message: "Threshold config not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Threshold config updated", data: config });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * DELETE /api/verification/threshold-config/:id
+ * Soft-delete: sets isActive=false.
+ * Role: consultant_admin
+ */
+const deleteThresholdConfig = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid config ID" });
+    }
+
+    const config = await ThresholdConfig.findByIdAndUpdate(
+      id,
+      { $set: { isActive: false, updatedBy: req.user._id } },
+      { new: true }
+    ).lean();
+
+    if (!config) {
+      return res.status(404).json({ success: false, message: "Threshold config not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Threshold config deactivated",
+      data: config
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PENDING APPROVALS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/verification/pending-approvals
+ * List pending approvals (filterable by clientId, flowType, status).
+ * Role: consultant_admin, super_admin
+ */
+const listPendingApprovals = async (req, res) => {
+  try {
+    const {
+      clientId,
+      flowType,
+      status = "Pending_Approval",
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    const filter = {};
+    if (clientId) filter.clientId = clientId;
+    if (flowType) filter.flowType = flowType;
+    if (status) filter.status = status;
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [records, total] = await Promise.all([
+      PendingApproval.find(filter)
+        .sort({ submittedAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .populate("submittedBy", "userName email userType")
+        .populate("reviewedBy", "userName email userType")
+        .lean(),
+      PendingApproval.countDocuments(filter)
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / Number(limit)),
+      data: records
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /api/verification/pending-approvals/:id
+ * Get full detail of one pending approval record.
+ * Role: consultant_admin, super_admin
+ */
+const getPendingApprovalDetail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid ID" });
+    }
+
+    const record = await PendingApproval.findById(id)
+      .populate("submittedBy", "userName email userType")
+      .populate("reviewedBy", "userName email userType")
+      .lean();
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Pending approval not found" });
+    }
+
+    return res.status(200).json({ success: true, data: record });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPROVE — Finalize save
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/verification/pending-approvals/:id/approve
+ * Approve a pending anomaly entry and finalize its save into the target collection.
+ * Role: consultant_admin
+ */
+const approvePendingEntry = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid ID" });
+    }
+
+    const record = await PendingApproval.findById(id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Pending approval not found" });
+    }
+
+    if (record.status !== "Pending_Approval") {
+      return res.status(409).json({
+        success: false,
+        message: `Entry is already ${record.status} and cannot be approved again`
+      });
+    }
+
+    const payload = record.originalPayload;
+    let finalizedEntryId = null;
+    let finalizedCollection = null;
+
+    // ── DataEntry finalization ────────────────────────────────────────────────
+    if (record.flowType === "dataEntry") {
+      const {
+        clientId, nodeId, scopeIdentifier, scopeType,
+        inputType, date, time, timestamp,
+        dataValues, emissionFactor, sourceDetails
+      } = payload;
+
+      // Reconstruct the dataValues Map
+      const dataMap = new Map();
+      if (dataValues && typeof dataValues === "object") {
+        for (const [k, v] of Object.entries(dataValues)) {
+          const n = Number(v);
+          dataMap.set(k, isFinite(n) ? n : 0);
+        }
+      }
+
+      const entry = new DataEntry({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        scopeType,
+        inputType: inputType || "manual",
+        date,
+        time,
+        timestamp: timestamp ? new Date(timestamp) : new Date(),
+        dataValues: dataMap,
+        emissionFactor: emissionFactor || "",
+        sourceDetails: sourceDetails || {},
+        approvalStatus: "approved",
+        processingStatus: "pending",
+        emissionCalculationStatus: "pending"
+      });
+
+      await entry.save();
+
+      // Trigger emission calculation asynchronously (non-blocking)
+      setImmediate(async () => {
+        try {
+          const { triggerEmissionCalculation } = require("../Calculation/emissionIntegration");
+          const calcResult = await triggerEmissionCalculation(entry);
+
+          const { createProcessEmissionDataEntry } = require("../../utils/ProcessEmission/createProcessEmissionDataEntry");
+          const { updateSummariesOnDataChange } = require("../Calculation/CalculationSummary");
+          const freshEntry = await DataEntry.findById(entry._id).lean();
+          if (freshEntry?.calculatedEmissions) {
+            await createProcessEmissionDataEntry(freshEntry);
+            await updateSummariesOnDataChange(freshEntry);
+          }
+        } catch (e) {
+          console.error("[approvePendingEntry] Emission calc failed:", e.message);
+        }
+      });
+
+      finalizedEntryId = entry._id;
+      finalizedCollection = "DataEntry";
+    }
+
+    // ── NetReductionEntry finalization ─────────────────────────────────────────
+    else if (record.flowType === "netReduction") {
+      const {
+        clientId, projectId, calculationMethodology,
+        inputType, date, time, timestamp,
+        inputValue, emissionReductionRate, netReduction,
+        formulaId, variables, netReductionInFormula,
+        m3, sourceDetails
+      } = payload;
+
+      const methodology = calculationMethodology;
+
+      const nrDoc = {
+        clientId,
+        projectId,
+        calculationMethodology: methodology,
+        inputType: inputType || "manual",
+        date,
+        time,
+        timestamp: timestamp ? new Date(timestamp) : new Date(),
+        netReduction: netReduction || 0,
+        sourceDetails: sourceDetails || {}
+      };
+
+      if (methodology === "methodology1") {
+        nrDoc.inputValue = inputValue || 0;
+        nrDoc.emissionReductionRate = emissionReductionRate || 0;
+        nrDoc.formulaId = null;
+        nrDoc.variables = {};
+        nrDoc.netReductionInFormula = 0;
+      } else if (methodology === "methodology2") {
+        nrDoc.formulaId = formulaId || null;
+        nrDoc.variables = variables || {};
+        nrDoc.netReductionInFormula = netReductionInFormula || 0;
+        nrDoc.inputValue = 0;
+        nrDoc.emissionReductionRate = 0;
+      } else if (methodology === "methodology3") {
+        nrDoc.m3 = m3 || {};
+        nrDoc.inputValue = 0;
+        nrDoc.emissionReductionRate = 0;
+      }
+
+      const entry = await NetReductionEntry.create(nrDoc);
+
+      // Trigger NR summary recomputation asynchronously
+      setImmediate(async () => {
+        try {
+          const { recomputeClientNetReductionSummary } = require("../Reduction/netReductionSummaryController");
+          await recomputeClientNetReductionSummary(clientId, projectId);
+        } catch (e) {
+          console.error("[approvePendingEntry] NR summary recompute failed:", e.message);
+        }
+      });
+
+      finalizedEntryId = entry._id;
+      finalizedCollection = "NetReductionEntry";
+    } else {
+      return res.status(400).json({ success: false, message: "Unknown flowType in pending record" });
+    }
+
+    // ── Update PendingApproval status ─────────────────────────────────────────
+    record.status = "Approved";
+    record.reviewedBy = req.user._id;
+    record.reviewedAt = new Date();
+    record.finalizedEntryId = finalizedEntryId;
+    record.finalizedCollection = finalizedCollection;
+    await record.save();
+
+    // ── Notify submitter ───────────────────────────────────────────────────────
+    await notifySubmitterOfOutcome({
+      clientId: record.clientId,
+      scopeIdentifier: record.scopeIdentifier || record.projectId,
+      submittedBy: record.submittedBy,
+      submittedByType: record.submittedByType,
+      reviewedBy: req.user._id,
+      reviewedByType: req.user.userType,
+      outcome: "Approved",
+      flowType: record.flowType,
+      pendingApprovalId: record._id
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Entry approved and saved successfully",
+      data: {
+        pendingApprovalId: record._id,
+        finalizedEntryId,
+        finalizedCollection,
+        status: "Approved"
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REJECT — Block final save
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/verification/pending-approvals/:id/reject
+ * Reject a pending anomaly entry. Nothing is saved to DataEntry/NetReductionEntry.
+ * Role: consultant_admin
+ */
+const rejectPendingEntry = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid ID" });
+    }
+
+    const { reason } = req.body;
+
+    const record = await PendingApproval.findById(id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Pending approval not found" });
+    }
+
+    if (record.status !== "Pending_Approval") {
+      return res.status(409).json({
+        success: false,
+        message: `Entry is already ${record.status} and cannot be rejected again`
+      });
+    }
+
+    record.status = "Rejected";
+    record.reviewedBy = req.user._id;
+    record.reviewedAt = new Date();
+    if (reason) record.rejectionReason = reason;
+    await record.save();
+
+    // Notify submitter of rejection
+    await notifySubmitterOfOutcome({
+      clientId: record.clientId,
+      scopeIdentifier: record.scopeIdentifier || record.projectId,
+      submittedBy: record.submittedBy,
+      submittedByType: record.submittedByType,
+      reviewedBy: req.user._id,
+      reviewedByType: req.user.userType,
+      outcome: "Rejected",
+      rejectionReason: reason || null,
+      flowType: record.flowType,
+      pendingApprovalId: record._id
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Entry rejected. No data was saved to the main collection.",
+      data: {
+        pendingApprovalId: record._id,
+        status: "Rejected",
+        rejectionReason: record.rejectionReason || null
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = {
+  createOrUpdateThresholdConfig,
+  getThresholdConfigs,
+  updateThresholdConfig,
+  deleteThresholdConfig,
+  listPendingApprovals,
+  getPendingApprovalDetail,
+  approvePendingEntry,
+  rejectPendingEntry
+};

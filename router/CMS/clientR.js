@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { auth } = require("../../middleware/auth");
+const { auth, checkRole } = require("../../middleware/auth");
 const {
   createLead,
   updateLead,
@@ -32,6 +32,10 @@ const {
   changeConsultant,
   removeConsultant,
   updateAssessmentLevelOnly,
+  updateClientModuleAccess,
+  manageEsgLinkSubscription,
+  reviewEsgLinkSubscription,
+  getEsgLinkPendingApprovals,
   hardResetClientSystem,
   purgeClientCompletely,
   // 🆕 SUPPORT MANAGEMENT FUNCTIONS
@@ -221,6 +225,40 @@ router.get("/subscription/pending-approvals", getPendingSubscriptionApprovals);
 router.get("/subscription/expiring-soon", getClientsExpiringSoon);
 
 // ===================================================================
+// ESGLINK MODULE — SUBSCRIPTION & MODULE ACCESS
+// ===================================================================
+
+/**
+ * Get pending ESGLink subscription approval requests
+ * GET /api/clients/subscription/esglink/pending-approvals
+ * Access: super_admin (all) | managing consultant_admin (own clients)
+ * NOTE: Must be BEFORE /:clientId patterns to avoid route shadowing
+ */
+router.get("/subscription/esglink/pending-approvals", getEsgLinkPendingApprovals);
+
+/**
+ * Review (approve/reject) a pending ESGLink subscription request
+ * PATCH /api/clients/:clientId/subscription/esglink/review
+ * Access: super_admin | managing consultant_admin
+ */
+router.patch("/:clientId/subscription/esglink/review", reviewEsgLinkSubscription);
+
+/**
+ * Manage ESGLink subscription (suspend/reactivate/renew/extend)
+ * PATCH /api/clients/:clientId/subscription/esglink
+ * Access: consultant (request only) | consultant_admin / super_admin (direct)
+ */
+router.patch("/:clientId/subscription/esglink", manageEsgLinkSubscription);
+
+/**
+ * Update client accessible modules
+ * PATCH /api/clients/:clientId/module-access
+ * Body: { accessibleModules: ['zero_carbon', 'esg_link'] }
+ * Access: super_admin (all clients) | managing consultant_admin (own clients)
+ */
+router.patch("/:clientId/module-access", checkRole('super_admin', 'consultant_admin'), updateClientModuleAccess);
+
+// ===================================================================
 // GENERAL CLIENT ROUTES
 // ===================================================================
 
@@ -248,7 +286,7 @@ router.get("/dashboard/metrics", getDashboardMetrics);
 // SYSTEM ADMINISTRATION
 // ===================================================================
 
-router.patch("/:clientId/assessment-level", updateAssessmentLevelOnly);
+router.patch("/:clientId/assessment-level", checkRole('super_admin', 'consultant_admin'), updateAssessmentLevelOnly);
 router.post("/system/purge-client/:clientId", purgeClientCompletely);
 router.post('/system/hard-reset', hardResetClientSystem);
 

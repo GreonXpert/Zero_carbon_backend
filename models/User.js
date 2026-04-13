@@ -9,18 +9,22 @@ const userSchema = new mongoose.Schema(
     userType: {
       type: String,
       required: true,
-      // 🆕 ADDED: supportManager and support
+      // 🆕 ADDED: supportManager, support, and ESGLink user types
       enum: [
-        "super_admin", 
-        "consultant_admin", 
+        "super_admin",
+        "consultant_admin",
         "consultant",
-        "supportManager",     // NEW: Support team manager
-        "support",            // NEW: Support team member
-        "client_admin", 
-        "client_employee_head", 
-        "employee", 
-        "viewer", 
-        "auditor"
+        "supportManager",          // Support team manager
+        "support",                 // Support team member
+        "client_admin",
+        "client_employee_head",
+        "employee",
+        "viewer",                  // Multi-module: accessibleModules controls which module(s)
+        "auditor",                 // Multi-module: accessibleModules controls which module(s)
+        // 🆕 ESGLink-specific user types
+        "contributor",             // ESGLink data contributor
+        "reviewer",                // ESGLink reviewer
+        "approver",                // ESGLink approver
       ],
     },
     address: { type: String, required: true },
@@ -29,9 +33,20 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: false },
 
     // ===== SANDBOX FLAG =====
-    sandbox: { 
-      type: Boolean, 
-      default: false 
+    sandbox: {
+      type: Boolean,
+      default: false
+    },
+
+    // ===== MODULE ACCESS =====
+    // Which product modules this user can access.
+    // Default: ['zero_carbon'] — all existing users get ZeroCarbon access automatically.
+    // ESGLink-only users: ['esg_link'] | Both: ['zero_carbon','esg_link']
+    // NOT encrypted — must stay queryable.
+    accessibleModules: {
+      type: [String],
+      enum: ['zero_carbon', 'esg_link'],
+      default: ['zero_carbon'],
     },
   
     /**

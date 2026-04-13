@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Client = require('../models/CMS/Client');
-const UserSession = require('../models/UserSession'); // ← NEW
+const UserSession = require('../models/UserSession');
+const { isModuleSubscriptionActive } = require('../utils/Permissions/modulePermission');
 
 /**
  * Primary auth middleware used by all protected routes (router.use(auth)).
@@ -90,17 +91,29 @@ const auth = async (req, res, next) => {
           String(client.clientId || '').startsWith('Sandbox_');
 
         if (!isSandboxClient) {
-          if (!client.accountDetails || client.accountDetails.isActive !== true) {
+          const userModules = user.accessibleModules && user.accessibleModules.length > 0
+            ? user.accessibleModules
+            : ['zero_carbon']; // backward compat for users without accessibleModules set
+
+          // Module-aware subscription check:
+          // Only block entirely when ALL of the user's modules are expired/inactive.
+          // If at least one module is active, let the request through — route-level
+          // middleware (requireActiveModuleSubscription) handles per-module gating.
+          const activeModules = userModules.filter(m => isModuleSubscriptionActive(client, m));
+
+          if (activeModules.length === 0) {
+            const firstModule = userModules[0];
             return res.status(403).json({
-              message: "Your organization's subscription is not active"
+              message: `Your organization's ${firstModule === 'esg_link' ? 'ESGLink' : 'ZeroCarbon'} subscription has expired or is not active`,
+              module: firstModule,
+              subscriptionExpired: true,
             });
           }
 
-          if (!["active", "grace_period"].includes(client.accountDetails.subscriptionStatus)) {
-            return res.status(403).json({
-              message: "Your organization's subscription has expired"
-            });
-          }
+          // Attach expired module info and client doc for downstream route middleware
+          // to enforce per-module access gates without an extra DB query.
+          req.expiredModules = userModules.filter(m => !activeModules.includes(m));
+          req.client = client;
         }
       }
 
@@ -126,6 +139,10 @@ const auth = async (req, res, next) => {
         department: user.department,
         location: user.location,
         accessControls: user.accessControls,
+        // 🆕 Module access — which product modules this user can access
+        accessibleModules: user.accessibleModules && user.accessibleModules.length > 0
+          ? user.accessibleModules
+          : ['zero_carbon'],
       };
 
       req.sessionId = decoded.sessionId; // ← available to logout controller

@@ -42,6 +42,12 @@ const {
   logDataEntryInputTypeSwitch,
 } = require('../../services/audit/dataEntryAuditLog');
 
+// ── Threshold Verification ────────────────────────────────────────────────────
+const { checkDataEntry } = require('../../services/verification/thresholdVerificationService');
+const PendingApproval = require('../../models/PendingApproval/PendingApproval');
+const { notifyConsultantAdminOfAnomaly } = require('../../utils/notifications/thresholdNotifications');
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 /**
  * Normalizes a data payload from any source (API, IOT, Manual, CSV)
@@ -140,12 +146,16 @@ function normalizeDataPayload(sourceData, scopeConfig, inputType) {
       'Purchased Cooling': 'consumed_cooling'
     };
     const fieldKey = categoryFieldMap[scopeConfig.categoryName] || 'consumed_electricity';
-    
+    const activityWord = fieldKey.split('_')[1]; // e.g. 'electricity', 'steam'
+
     pd[fieldKey] = getValue([
-        fieldKey, // e.g., 'consumed_electricity'
-        fieldKey.split('_')[1], // e.g., 'electricity'
-        `power_${fieldKey.split('_')[1]}`, // e.g., 'power_consumption'
-        `${fieldKey.split('_')[1]}_consumed` // e.g., 'electricity_consumed'
+      fieldKey,                          // e.g. consumed_electricity
+      activityWord,                      // e.g. electricity
+      `${activityWord}_consumed`,        // e.g. electricity_consumed
+      `power_consumption`,               // common alias
+      // OCR legacy aliases — fieldExtractor previously extracted these names
+      'units_kwh', 'kwh',
+      'quantity_scm', 'quantity_mmbtu', 'quantity_kl', 'quantity_liters',
     ]);
   }
 
@@ -353,7 +363,7 @@ function removeFromAllTypes(client, nodeId, scopeIdentifier) {
   if (!client?.workflowTracking?.dataInputPoints) return;
 
   const dip = client.workflowTracking.dataInputPoints;
-  for (const key of ['manual', 'api', 'iot']) {
+  for (const key of ['manual', 'api', 'iot', 'ocr']) {
     const arr = dip[key]?.inputs || [];
     const next = arr.filter(p => !(p.nodeId === nodeId && p.scopeIdentifier === scopeIdentifier));
     dip[key].inputs = next;
@@ -426,6 +436,22 @@ function upsertIntoType(client, type, payload) {
     } else list.push(base);
   }
 
+  if (type === 'ocr') {
+    const base = {
+      pointId: makePointId(payload.nodeId, payload.scopeIdentifier),
+      documentName: payload.documentName || payload.scopeIdentifier || 'OCR Document',
+      nodeId: payload.nodeId,
+      scopeIdentifier: payload.scopeIdentifier,
+      status: 'on_going',
+      s3Key: payload.s3Key || '',
+      ocrConfidence: payload.ocrConfidence || null,
+      lastUpdatedBy: payload.userId,
+      lastUpdatedAt: new Date()
+    };
+    if (existingIdx >= 0) list[existingIdx] = { ...list[existingIdx], ...base };
+    else list.push(base);
+  }
+
   dip[type].inputs = list;
   client.updateInputPointCounts(type);
 }
@@ -465,6 +491,15 @@ async function reflectSwitchInputTypeInClient({
       deviceId: connectionDetails?.deviceId || '',
       deviceName: connectionDetails?.deviceName || 'IoT Device',
       connected: !!connectionDetails?.isActive || !!connectionDetails?.iotStatus
+    });
+  } else if (newType === 'OCR') {
+    upsertIntoType(client, 'ocr', {
+      nodeId,
+      scopeIdentifier,
+      userId,
+      documentName: connectionDetails?.documentName || scopeIdentifier,
+      s3Key: connectionDetails?.s3Key || '',
+      ocrConfidence: connectionDetails?.ocrConfidence || null
     });
   }
 
@@ -947,6 +982,82 @@ const saveAPIData = async (req, res) => {
       });
     }
 
+    // ── THRESHOLD VERIFICATION (API) ─────────────────────────────────────────
+    try {
+      const checkResult = await checkDataEntry({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        numericMap: dataMap,
+        inputType: 'API'
+      });
+
+      if (checkResult.shouldRequireApproval) {
+        const serializedDataValues = {};
+        for (const [k, v] of dataMap) {
+          serializedDataValues[k] = v;
+        }
+
+        const pending = await PendingApproval.create({
+          flowType: 'dataEntry',
+          clientId,
+          nodeId,
+          scopeIdentifier,
+          status: 'Pending_Approval',
+          inputType: 'API',
+          originalPayload: {
+            clientId, nodeId, scopeIdentifier,
+            scopeType: scopeConfig.scopeType,
+            inputType: 'API',
+            date: formattedDate,
+            time: formattedTime,
+            timestamp,
+            dataValues: serializedDataValues,
+            emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
+            sourceDetails: {
+              apiEndpoint: scopeConfig.apiEndpoint,
+              uploadedBy: req.user?._id,
+              dataSource: 'API'
+            }
+          },
+          verificationMeta: checkResult.meta,
+          submittedBy: req.user?._id,
+          submittedByType: req.user?.userType
+        });
+
+        const notification = await notifyConsultantAdminOfAnomaly({
+          clientId,
+          scopeIdentifier,
+          pendingApprovalId: pending._id,
+          normalizedValue: checkResult.meta.normalizedIncomingValue,
+          historicalAverage: checkResult.meta.historicalAverageDailyValue,
+          deviationPct: checkResult.meta.deviationPercentage,
+          thresholdPct: checkResult.meta.thresholdPercentage,
+          frequency: checkResult.meta.frequency,
+          inputType: 'API',
+          flowType: 'dataEntry',
+          submittedBy: req.user?._id,
+          submittedByType: req.user?.userType
+        });
+
+        if (notification) {
+          pending.notificationId = notification._id;
+          await pending.save();
+        }
+
+        return res.status(202).json({
+          success: false,
+          intercepted: true,
+          message: 'Anomaly detected in API data. Entry held for consultant_admin approval.',
+          pendingApprovalId: pending._id,
+          verificationMeta: checkResult.meta
+        });
+      }
+    } catch (thresholdErr) {
+      console.error('[saveAPIData] Threshold check error (continuing):', thresholdErr.message);
+    }
+    // ── END THRESHOLD VERIFICATION ────────────────────────────────────────────
+
     // Create entry (cumulative values will be calculated in pre-save hook)
     const entry = new DataEntry({
       clientId,
@@ -1154,6 +1265,82 @@ const saveIoTData = async (req, res) => {
         error: err.message
       });
     }
+
+    // ── THRESHOLD VERIFICATION (IoT) ─────────────────────────────────────────
+    try {
+      const checkResult = await checkDataEntry({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        numericMap: dataMap,
+        inputType: 'IOT'
+      });
+
+      if (checkResult.shouldRequireApproval) {
+        const serializedDataValues = {};
+        for (const [k, v] of dataMap) {
+          serializedDataValues[k] = v;
+        }
+
+        const pending = await PendingApproval.create({
+          flowType: 'dataEntry',
+          clientId,
+          nodeId,
+          scopeIdentifier,
+          status: 'Pending_Approval',
+          inputType: 'IOT',
+          originalPayload: {
+            clientId, nodeId, scopeIdentifier,
+            scopeType: scopeConfig.scopeType,
+            inputType: 'IOT',
+            date: formattedDate,
+            time: formattedTime,
+            timestamp,
+            dataValues: serializedDataValues,
+            emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
+            sourceDetails: {
+              iotDeviceId: scopeConfig.iotDeviceId,
+              uploadedBy: req.user?._id,
+              dataSource: 'IOT'
+            }
+          },
+          verificationMeta: checkResult.meta,
+          submittedBy: req.user?._id,
+          submittedByType: req.user?.userType
+        });
+
+        const notification = await notifyConsultantAdminOfAnomaly({
+          clientId,
+          scopeIdentifier,
+          pendingApprovalId: pending._id,
+          normalizedValue: checkResult.meta.normalizedIncomingValue,
+          historicalAverage: checkResult.meta.historicalAverageDailyValue,
+          deviationPct: checkResult.meta.deviationPercentage,
+          thresholdPct: checkResult.meta.thresholdPercentage,
+          frequency: checkResult.meta.frequency,
+          inputType: 'IOT',
+          flowType: 'dataEntry',
+          submittedBy: req.user?._id,
+          submittedByType: req.user?.userType
+        });
+
+        if (notification) {
+          pending.notificationId = notification._id;
+          await pending.save();
+        }
+
+        return res.status(202).json({
+          success: false,
+          intercepted: true,
+          message: 'Anomaly detected in IoT data. Entry held for consultant_admin approval.',
+          pendingApprovalId: pending._id,
+          verificationMeta: checkResult.meta
+        });
+      }
+    } catch (thresholdErr) {
+      console.error('[saveIoTData] Threshold check error (continuing):', thresholdErr.message);
+    }
+    // ── END THRESHOLD VERIFICATION ────────────────────────────────────────────
 
     // 7) Persist the entry
     const entry = new DataEntry({
@@ -1593,7 +1780,10 @@ function parseRowDateTimeOrNowIST(row = {}) {
  */
 async function saveOneEntry({
   req, clientId, nodeId, scopeIdentifier, scope, node, inputSource, row,
-  csvMeta = null
+  csvMeta = null,
+  overrideInputType = null,
+  ocrMeta = null,
+  _bypassThreshold = false
 }) {
   // ✅ IMPORTANT: unwrap first so date/time can be read even if inside { dataValues: {...} }
   const rawRow = unwrapDataRow(row || {});
@@ -1607,12 +1797,100 @@ async function saveOneEntry({
   delete pd.time;
   delete pd.timestamp;
 
+  // ── THRESHOLD VERIFICATION ────────────────────────────────────────────────
+  // If a ThresholdConfig is set for this client+scope, check for anomaly.
+  // When anomaly detected: create PendingApproval, notify consultant_admin,
+  // return { intercepted: true } — caller skips the DataEntry save.
+  if (!_bypassThreshold) {
+    try {
+      const numericMap = toNumericMap(pd);
+      const check = await checkDataEntry({
+        clientId,
+        nodeId,
+        scopeIdentifier,
+        numericMap,
+        inputType: overrideInputType || 'manual'
+      });
+
+      if (check.shouldRequireApproval) {
+        // Serialize Map → plain object for storage in MongoDB Mixed field
+        const serializedDataValues = {};
+        for (const [k, v] of numericMap) {
+          serializedDataValues[k] = v;
+        }
+
+        const pending = await PendingApproval.create({
+          flowType: 'dataEntry',
+          clientId,
+          nodeId,
+          scopeIdentifier,
+          status: 'Pending_Approval',
+          inputType: overrideInputType || 'manual',
+          originalPayload: {
+            clientId,
+            nodeId,
+            scopeIdentifier,
+            scopeType: scope.scopeType,
+            inputType: overrideInputType || 'manual',
+            date: when.date,
+            time: when.time,
+            timestamp: when.timestamp,
+            dataValues: serializedDataValues,
+            emissionFactor: resolveEmissionFactor(rawRow?.emissionFactor, scope?.emissionFactor),
+            sourceDetails: {
+              uploadedBy: req.user._id || req.user.id,
+              ...(inputSource === 'CSV'
+                ? { fileName: csvMeta?.fileName || '', dataSource: 'csv' }
+                : inputSource === 'OCR'
+                  ? {
+                      fileName: ocrMeta?.fileName || '',
+                      dataSource: 'ocr',
+                      ocrDocumentKey: ocrMeta?.s3Key || null,
+                      ocrConfidence: ocrMeta?.ocrConfidence || null
+                    }
+                  : { dataSource: 'manual' })
+            }
+          },
+          verificationMeta: check.meta,
+          submittedBy: req.user._id || req.user.id,
+          submittedByType: req.user.userType
+        });
+
+        const notification = await notifyConsultantAdminOfAnomaly({
+          clientId,
+          scopeIdentifier,
+          pendingApprovalId: pending._id,
+          normalizedValue: check.meta.normalizedIncomingValue,
+          historicalAverage: check.meta.historicalAverageDailyValue,
+          deviationPct: check.meta.deviationPercentage,
+          thresholdPct: check.meta.thresholdPercentage,
+          frequency: check.meta.frequency,
+          inputType: overrideInputType || 'manual',
+          flowType: 'dataEntry',
+          submittedBy: req.user._id || req.user.id,
+          submittedByType: req.user.userType
+        });
+
+        if (notification) {
+          pending.notificationId = notification._id;
+          await pending.save();
+        }
+
+        return { intercepted: true, pendingApproval: pending };
+      }
+    } catch (thresholdErr) {
+      // Non-fatal: if threshold check fails, log and continue with normal save
+      console.error('[saveOneEntry] Threshold check error (continuing with normal save):', thresholdErr.message);
+    }
+  }
+  // ── END THRESHOLD VERIFICATION ────────────────────────────────────────────
+
   const entry = new DataEntry({
     clientId,
     nodeId,
     scopeIdentifier,
     scopeType: scope.scopeType,
-    inputType: 'manual', // CSV also stored as manual
+    inputType: overrideInputType || 'manual', // CSV also stored as manual; OCR passes 'OCR'
     date: when.date,
     time: when.time,
     timestamp: when.timestamp,
@@ -1621,6 +1899,13 @@ async function saveOneEntry({
       uploadedBy: req.user._id || req.user.id,
       ...(inputSource === 'CSV'
         ? { fileName: csvMeta?.fileName || '', dataSource: 'csv' }
+        : inputSource === 'OCR'
+        ? {
+            fileName: ocrMeta?.fileName || '',
+            dataSource: 'ocr',
+            ocrDocumentKey: ocrMeta?.s3Key || null,
+            ocrConfidence: ocrMeta?.ocrConfidence || null
+          }
         : { dataSource: 'manual' })
     },
     processingStatus: 'pending',
@@ -1662,7 +1947,7 @@ async function saveOneEntry({
     });
     // ────────────────────────────────────────────────────────────────────────
 
-    return { entry, calcResult };
+    return { intercepted: false, entry, calcResult };
   }
 
 
@@ -1735,10 +2020,11 @@ const saveManualData = async (req, res) => {
 
     const saved = [];
     const errors = [];
+    const pendingApprovals = [];
 
     for (let i = 0; i < rows.length; i++) {
       try {
-        const { entry, calcResult } = await saveOneEntry({
+        const result = await saveOneEntry({
           req,
           clientId,
           nodeId,
@@ -1748,6 +2034,20 @@ const saveManualData = async (req, res) => {
           inputSource: 'MANUAL',
           row: rows[i]
         });
+
+        // Anomaly detected — entry held in PendingApproval, not saved to DataEntry
+        if (result.intercepted) {
+          pendingApprovals.push({
+            index: i,
+            pendingApprovalId: result.pendingApproval._id,
+            reason: result.pendingApproval.verificationMeta?.anomalyReason || 'Anomaly detected',
+            deviationPercentage: result.pendingApproval.verificationMeta?.deviationPercentage,
+            thresholdPercentage: result.pendingApproval.verificationMeta?.thresholdPercentage
+          });
+          continue;
+        }
+
+        const { entry, calcResult } = result;
 
         saved.push({
           dataEntryId: entry._id,
@@ -1759,7 +2059,7 @@ const saveManualData = async (req, res) => {
           // ✅ NEW: include dataEntryCumulative for each saved entry
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
-        
+
 
       } catch (err) {
         errors.push({ index: i, error: err.message });
@@ -1771,21 +2071,33 @@ const saveManualData = async (req, res) => {
       global.broadcastDataCompletionUpdate(clientId);
     }
 
-    const ok = errors.length === 0;
+    const ok = errors.length === 0 && pendingApprovals.length === 0;
 
     // ✅ NEW: also return latest cumulative snapshot (from last saved entry)
     const latestDataEntryCumulative =
       saved.length > 0 ? saved[saved.length - 1].dataEntryCumulative : null;
 
-    return res.status(ok ? 201 : (saved.length ? 207 : 400)).json({
-      success: ok,
-      message: ok
-        ? 'Manual data saved'
-        : (saved.length ? 'Manual data partially saved' : 'Manual data failed'),
+    let statusCode = 201;
+    if (!ok) statusCode = saved.length > 0 || pendingApprovals.length > 0 ? 207 : 400;
+
+    let message = 'Manual data saved';
+    if (pendingApprovals.length > 0 && saved.length > 0) {
+      message = `Manual data partially saved. ${pendingApprovals.length} entries require consultant_admin approval due to anomaly detection.`;
+    } else if (pendingApprovals.length > 0 && saved.length === 0) {
+      message = `All entries flagged as anomalous and sent for consultant_admin approval.`;
+    } else if (!ok) {
+      message = saved.length ? 'Manual data partially saved' : 'Manual data failed';
+    }
+
+    return res.status(statusCode).json({
+      success: saved.length > 0,
+      message,
       savedCount: saved.length,
       failedCount: errors.length,
+      pendingApprovalCount: pendingApprovals.length,
       results: saved,
       errors,
+      pendingApprovals,
 
       // ✅ NEW: top-level latest snapshot (easy for frontend)
       dataEntryCumulative: latestDataEntryCumulative
@@ -1947,10 +2259,11 @@ const uploadCSVData = async (req, res) => {
     /* -------------------------------------------------- */
     const saved = [];
     const errors = [];
+    const pendingApprovals = [];
 
     for (let i = 0; i < rows.length; i++) {
       try {
-        const { entry, calcResult } = await saveOneEntry({
+        const result = await saveOneEntry({
           req,
           clientId,
           nodeId,
@@ -1965,6 +2278,20 @@ const uploadCSVData = async (req, res) => {
           }
         });
 
+        // Anomaly detected — row held in PendingApproval
+        if (result.intercepted) {
+          pendingApprovals.push({
+            rowNumber: i + 1,
+            pendingApprovalId: result.pendingApproval._id,
+            reason: result.pendingApproval.verificationMeta?.anomalyReason || 'Anomaly detected',
+            deviationPercentage: result.pendingApproval.verificationMeta?.deviationPercentage,
+            thresholdPercentage: result.pendingApproval.verificationMeta?.thresholdPercentage
+          });
+          continue;
+        }
+
+        const { entry, calcResult } = result;
+
         saved.push({
           rowNumber: i + 1,
           dataEntryId: entry._id,
@@ -1976,7 +2303,6 @@ const uploadCSVData = async (req, res) => {
           dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
         });
 
-       
 
       } catch (err) {
         errors.push({
@@ -2004,17 +2330,23 @@ const uploadCSVData = async (req, res) => {
       global.broadcastDataCompletionUpdate(clientId);
     }
 
-    const ok = errors.length === 0;
+    const ok = errors.length === 0 && pendingApprovals.length === 0;
 
     // ✅ NEW: latest cumulative snapshot (last saved entry)
     const latestDataEntryCumulative =
       saved.length > 0 ? saved[saved.length - 1].dataEntryCumulative : null;
 
-    return res.status(ok ? 201 : saved.length ? 207 : 400).json({
-      success: ok,
-      message: ok
-        ? `CSV processed: ${saved.length} rows saved`
-        : `CSV partially processed: ${saved.length} saved, ${errors.length} errors`,
+    let csvMsg = `CSV processed: ${saved.length} rows saved`;
+    if (pendingApprovals.length > 0) {
+      csvMsg += `, ${pendingApprovals.length} rows held for approval (anomaly detected)`;
+    }
+    if (errors.length > 0) {
+      csvMsg += `, ${errors.length} errors`;
+    }
+
+    return res.status(ok ? 201 : saved.length > 0 || pendingApprovals.length > 0 ? 207 : 400).json({
+      success: saved.length > 0,
+      message: csvMsg,
       fileName,
 
       /* ✅ S3 info returned */
@@ -2026,8 +2358,10 @@ const uploadCSVData = async (req, res) => {
 
       savedCount: saved.length,
       failedCount: errors.length,
+      pendingApprovalCount: pendingApprovals.length,
       results: saved,
       errors,
+      pendingApprovals,
 
       // ✅ NEW: top-level snapshot for frontend
       dataEntryCumulative: latestDataEntryCumulative
@@ -2849,7 +3183,7 @@ const editManualData = async (req, res) => {
       return res.status(404).json({ message: 'Data entry not found' });
     }
 
-    if (!entry.isEditable || entry.inputType !== 'manual') {
+    if (!entry.isEditable || (entry.inputType !== 'manual' && entry.inputType !== 'OCR')) {
       return res.status(403).json({ message: 'This data entry cannot be edited' });
     }
 
@@ -3002,8 +3336,8 @@ const deleteManualData = async (req, res) => {
       return res.status(404).json({ message: 'Data entry not found' });
     }
 
-    if (entry.inputType !== 'manual') {
-      return res.status(403).json({ message: 'Only manual data entries can be deleted.' });
+    if (entry.inputType !== 'manual' && entry.inputType !== 'OCR') {
+      return res.status(403).json({ message: 'Only manual or OCR data entries can be deleted.' });
     }
 
     // 1) Try existing permission helper (reuse 'edit_manual' right)
@@ -3114,7 +3448,7 @@ const switchInputType = async (req, res) => {
       return res.status(403).json({ message: "Only Client Admin allowed" });
     }
 
-    if (!["manual", "API", "IOT"].includes(inputType)) {
+    if (!["manual", "API", "IOT", "OCR"].includes(inputType)) {
       return res.status(400).json({ message: "Invalid inputType" });
     }
 
@@ -3156,6 +3490,36 @@ const switchInputType = async (req, res) => {
       );
 
       return res.json({ success: true, inputType: "manual" });
+    }
+
+    /* ---------------- OCR ---------------- */
+    if (inputType === "OCR") {
+      scope.inputType = "OCR";
+      scope.apiEndpoint = "";
+      scope.apiStatus = false;
+      scope.iotStatus = false;
+
+      flowchart.markModified("nodes");
+      await flowchart.save();
+
+      await reflectSwitchInputTypeInClient({
+        clientId,
+        previousType,
+        newType: "OCR",
+        nodeId,
+        scopeIdentifier,
+        connectionDetails: {},
+        userId: actorId,
+      });
+
+      await logDataEntryInputTypeSwitch(
+        req,
+        { clientId, nodeId, scopeIdentifier },
+        previousType ?? 'unknown',
+        'OCR'
+      );
+
+      return res.json({ success: true, inputType: "OCR" });
     }
 
     /* ---------------- API / IOT ---------------- */
@@ -5087,5 +5451,10 @@ module.exports = {
   getInputTypeStatistics,
   getDataValuesAndCumulative,
   // getSingleDataValueAndCumulative,
-  streamDataValuesAndCumulative
+  streamDataValuesAndCumulative,
+  // Shared helpers for OCR controller
+  findNodeAndScope,
+  canWriteManualOrCSV,
+  saveOneEntry,
+  reflectSwitchInputTypeInClient
 };

@@ -49,6 +49,13 @@ const SourceDetailsSchema = new mongoose.Schema({
   },
   batchId: {
     type: String
+  },
+  // For OCR entries
+  ocrDocumentKey: {
+    type: String
+  },
+  ocrConfidence: {
+    type: Number
   }
 });
 
@@ -79,7 +86,7 @@ const DataEntrySchema = new mongoose.Schema({
   inputType: {
     type: String,
     required: true,
-    enum: ['manual', 'API', 'IOT'],
+    enum: ['manual', 'API', 'IOT', 'OCR'],
     index: true
   },
   // Timestamp information
@@ -497,7 +504,7 @@ DataEntrySchema.pre("save", async function (next) {
     }
 
     // existing logic...
-    if (this.inputType !== "manual") this.isEditable = false;
+    if (this.inputType !== "manual" && this.inputType !== "OCR") this.isEditable = false;
 
     if (this.inputType === "manual" && this.approvalStatus === "auto_approved") {
       this.approvedAt = new Date();
@@ -683,7 +690,7 @@ DataEntrySchema.statics.createMonthlySummary = async function(clientId, nodeId, 
     clientId,
     nodeId,
     scopeIdentifier,
-    inputType: { $in: ['manual'] },
+    inputType: { $in: ['manual', 'OCR'] },
     timestamp: { $gte: startDate, $lte: endDate },
     isSummary: false
   }).sort({ timestamp: 1 });
@@ -764,9 +771,9 @@ DataEntrySchema.methods.canBeEditedBy = async function(userId, userType = null) 
   // Entry must be editable
   if (!this.isEditable) return { allowed: false, reason: 'Entry is not editable' };
   
-  // Entry must be manual type
-  if (this.inputType !== 'manual') {
-    return { allowed: false, reason: 'Only manual entries can be edited' };
+  // Entry must be manual or OCR type
+  if (this.inputType !== 'manual' && this.inputType !== 'OCR') {
+    return { allowed: false, reason: 'Only manual or OCR entries can be edited' };
   }
   
   const User = mongoose.model('User');

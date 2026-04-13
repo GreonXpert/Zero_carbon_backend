@@ -13,7 +13,7 @@ calculationMethodology: {
   required: true 
 },
   // Input provenance
-  inputType:       { type: String, enum: ['manual','API','IOT','CSV'], required: true, index: true },
+  inputType:       { type: String, enum: ['manual','API','IOT','CSV','OCR'], required: true, index: true },
   sourceDetails: {
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     apiEndpoint: String,

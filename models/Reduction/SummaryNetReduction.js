@@ -9,7 +9,7 @@ const ByProjectSchema = new mongoose.Schema({
   scope: { type: String, default: '' },
   category: { type: String, default: '' },
   locationPlace: { type: String, default: '' },
-  inputType: { type: String, enum: ['manual','API','IOT'], default: 'manual' },
+  inputType: { type: String, enum: ['manual','API','IOT','OCR'], default: 'manual' },
 
   stats: {
     entries: { type: Number, default: 0 },

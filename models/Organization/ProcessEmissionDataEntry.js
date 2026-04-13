@@ -76,7 +76,7 @@ const ProcessEmissionDataEntrySchema = new mongoose.Schema(
     inputType: {
       type: String,
       required: true,
-      enum: ['manual', 'API', 'IOT']
+      enum: ['manual', 'API', 'IOT', 'OCR']
     },
 
     // ── Timestamp mirrors the original DataEntry ─────────────────────────────

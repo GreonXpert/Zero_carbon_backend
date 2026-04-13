@@ -36,6 +36,15 @@ const {
 } = require('../../utils/Permissions/dataEntryPermission');
 
 const uploadCsv = require('../../utils/uploads/organisation/csv/uploadCsvMulter');
+const { uploadOcr } = require('../../utils/uploads/organisation/ocr/upload');
+const {
+  saveOCRData,
+  extractOCRPreview,
+  confirmOCRSave,
+  verifyOCRData
+} = require('../../controllers/Organization/ocrDataCollectionController');
+
+const { getOCRFieldMappings } = require('../../controllers/Organization/ocrFeedbackController');
 
 
 // ============== PROTECTED API/IoT ENDPOINTS ==============
@@ -125,6 +134,91 @@ router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv',
   uploadCsv.single('csvFile'),   // ✅ MEMORY STORAGE
   uploadCSVData
+);
+
+/**
+ * OCR DOCUMENT UPLOAD — LEGACY one-shot flow
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-data
+ * Multipart field name: ocrFile (single)
+ * Accepted types: image/jpeg, image/png, image/tiff, application/pdf (max 20MB)
+ * Extracts fields and saves DataEntry immediately (no preview step).
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-data',
+  (req, res, next) => { req.setTimeout(120000); next(); },
+  uploadOcr.single('ocrFile'),
+  saveOCRData
+);
+
+/**
+ * OCR EXTRACT & PREVIEW — STEP 1 of two-step flow
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-extract
+ * Multipart field name: ocrFiles (array, up to 20 images OR 1 PDF)
+ * Accepted types: image/jpeg, image/png, image/tiff, application/pdf (max 20MB per file)
+ *
+ * Returns all extracted fields with model-match suggestions.
+ * Does NOT save any DataEntry. Returns an extractionId for Step 2.
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-extract',
+  (req, res, next) => { req.setTimeout(180000); next(); }, // 3 min for multi-file
+  uploadOcr.array('ocrFiles', 20),
+  extractOCRPreview
+);
+
+/**
+ * OCR CONFIRM & SAVE — STEP 2 of two-step flow
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-confirm
+ * Body: JSON { extractionId?, records: [{ recordIndex, date, time, s3Key,
+ *              ocrConfidence, sourceFile, confirmedDataValues, corrections }] }
+ *
+ * Saves user-confirmed values as DataEntry records and triggers emission calculation.
+ * Also stores field-mapping feedback to improve future OCR suggestions.
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-confirm',
+  confirmOCRSave
+);
+
+/**
+ * OCR VERIFY — Read-only value inspection before saving
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/verify-ocr
+ * Multipart field name: ocrFile (single image — JPEG, PNG, or TIFF)
+ *
+ * Runs OCR (Tesseract + AWS Textract fallback), extracts ALL numeric key-value
+ * pairs from the image and groups them by type:
+ *   • consumptionValues  — kWh / m³ / liters etc.
+ *   • monetaryValues     — ₹ bill amounts, charges, payable
+ *   • meterReadings      — current / previous meter register numbers
+ *   • demandValues       — kW / kVA demand
+ *   • otherValues        — everything else numeric
+ *
+ * Also returns:
+ *   • scopeInfo           — which field THIS scope needs and why
+ *   • detectedPrimaryValue — best-match value for the primary field (e.g. 815 kWh for Scope 2)
+ *   • suggestedDataValues  — ready to pass directly to /ocr-confirm
+ *
+ * Does NOT write any DataEntry to the database.
+ *
+ * Example:
+ * POST /api/data-collection/clients/Greon001/nodes/node-scope2-electricity-01/scopes/scope2-purchased-electricity-ocr-defra-2/verify-ocr
+ * Body: form-data { ocrFile: <image> }
+ */
+router.post(
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/verify-ocr',
+  (req, res, next) => { req.setTimeout(120000); next(); },
+  uploadOcr.single('ocrFile'),
+  verifyOCRData
+);
+
+/**
+ * OCR LEARNED MAPPINGS (admin/debug)
+ * GET /api/data-collection/clients/:clientId/ocr-field-mappings?scopeIdentifier=xxx
+ * Returns the accumulated field-mapping feedback for a client.
+ */
+router.get(
+  '/clients/:clientId/ocr-field-mappings',
+  getOCRFieldMappings
 );
 
 

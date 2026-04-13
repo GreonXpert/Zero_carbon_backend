@@ -44,6 +44,11 @@ const {
   deleteSupportManager,
   deleteSupportUser,
   setConcurrentLoginLimit,
+  // 🆕 ESGLink user creation
+  createContributor,
+  createReviewer,
+  createApprover,
+  updateUserModuleAccess,
 } = require("../controllers/userController");
 
  const { PRESET_TEMPLATES } = require('../utils/Permissions/accessControlPermission');
@@ -693,6 +698,41 @@ router.get(
   }
 );
 
+
+// ===================================================================
+// ESGLINK MODULE — USER CREATION & MODULE ACCESS
+// ===================================================================
+
+/**
+ * Create ESGLink contributor
+ * POST /api/users/contributor
+ * Access: client_admin (client must have esg_link module + active subscription)
+ */
+router.post("/contributor", createContributor);
+
+/**
+ * Create ESGLink reviewer
+ * POST /api/users/reviewer
+ * Access: client_admin (client must have esg_link module + active subscription)
+ */
+router.post("/reviewer", createReviewer);
+
+/**
+ * Create ESGLink approver
+ * POST /api/users/approver
+ * Access: client_admin (client must have esg_link module + active subscription)
+ */
+router.post("/approver", createApprover);
+
+/**
+ * Update a user's accessible modules
+ * PATCH /api/users/:userId/module-access
+ * Body: { accessibleModules: ['zero_carbon', 'esg_link'] }
+ * Access: super_admin (all users) | managing consultant_admin (own clients' users)
+ *
+ * NOTE: Must be placed BEFORE /:userId to avoid route shadowing
+ */
+router.patch("/:userId/module-access", updateUserModuleAccess);
 
 router.get('/access-control-presets', auth, checkRole('client_admin'), (req, res) => {
      return res.status(200).json({

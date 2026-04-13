@@ -41,7 +41,9 @@ const {
        } = require('../utils/Permissions/accessControlPermission');
 
 const { logLogin, logLoginFailed, logUserCreated } = require('../services/audit/auditLogService');
+const { logEvent } = require('../services/audit/auditLogService');
 const UserSession = require('../models/UserSession');
+const { isModuleSubscriptionActive } = require('../utils/Permissions/modulePermission');
 
 'use strict';
 
@@ -2051,13 +2053,42 @@ const createAuditor = async (req, res) => {
       address,
       auditPeriod,
       auditScope,
-      accessControls, // 🆕 NEW: optional checklist from client_admin
+      accessControls,   // optional checklist from client_admin
+      accessibleModules, // 🆕 which module(s) this auditor accesses
     } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
     if (existingUser) {
       return res.status(409).json({ message: 'Email or Username already exists' });
+    }
+
+    // ── Resolve and validate accessibleModules ───────────────────────────────
+    const VALID_MODULES = ['zero_carbon', 'esg_link'];
+    let resolvedModules;
+    if (accessibleModules && accessibleModules.length > 0) {
+      const modulesArray = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
+      const invalid = modulesArray.filter(m => !VALID_MODULES.includes(m));
+      if (invalid.length > 0) {
+        return res.status(400).json({ message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${VALID_MODULES.join(', ')}` });
+      }
+      // Check client has those modules
+      const clientDoc = await Client.findOne({ clientId: req.user.clientId });
+      if (clientDoc) {
+        for (const mod of modulesArray) {
+          if (!clientDoc.accessibleModules?.includes(mod)) {
+            return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
+          }
+          if (!isModuleSubscriptionActive(clientDoc, mod)) {
+            return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
+          }
+        }
+      }
+      resolvedModules = modulesArray;
+    } else {
+      // Default to client's accessible modules
+      const clientDoc = await Client.findOne({ clientId: req.user.clientId });
+      resolvedModules = clientDoc?.accessibleModules || ['zero_carbon'];
     }
 
     // ── Parse + validate accessControls ─────────────────────────────────────
@@ -2095,7 +2126,8 @@ const createAuditor = async (req, res) => {
       auditPeriod,
       auditScope,
       createdBy: req.user.id,
-      isActive:true,
+      isActive: true,
+      accessibleModules: resolvedModules, // 🆕 store which module(s) this auditor accesses
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -2105,7 +2137,7 @@ const createAuditor = async (req, res) => {
         canSubmitData: false,
         canAudit: true,
       },
-      accessControls: resolvedAccessControls, // 🆕
+      accessControls: resolvedAccessControls,
     });
 
     // ── Quota enforcement ────────────────────────────────────────────────────
@@ -2177,13 +2209,40 @@ const createViewer = async (req, res) => {
       address,
       viewerPurpose,
       viewerExpiryDate,
-      accessControls, // 🆕 NEW: optional checklist from client_admin
+      accessControls,    // optional checklist from client_admin
+      accessibleModules, // 🆕 which module(s) this viewer accesses
     } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
     if (existingUser) {
       return res.status(409).json({ message: 'Email or Username already exists' });
+    }
+
+    // ── Resolve and validate accessibleModules ───────────────────────────────
+    const VALID_MODULES_V = ['zero_carbon', 'esg_link'];
+    let resolvedModulesV;
+    if (accessibleModules && accessibleModules.length > 0) {
+      const modulesArrayV = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
+      const invalidV = modulesArrayV.filter(m => !VALID_MODULES_V.includes(m));
+      if (invalidV.length > 0) {
+        return res.status(400).json({ message: `Invalid module(s): ${invalidV.join(', ')}. Allowed: ${VALID_MODULES_V.join(', ')}` });
+      }
+      const clientDocV = await Client.findOne({ clientId: req.user.clientId });
+      if (clientDocV) {
+        for (const mod of modulesArrayV) {
+          if (!clientDocV.accessibleModules?.includes(mod)) {
+            return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
+          }
+          if (!isModuleSubscriptionActive(clientDocV, mod)) {
+            return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
+          }
+        }
+      }
+      resolvedModulesV = modulesArrayV;
+    } else {
+      const clientDocV = await Client.findOne({ clientId: req.user.clientId });
+      resolvedModulesV = clientDocV?.accessibleModules || ['zero_carbon'];
     }
 
     // ── Parse + validate accessControls ─────────────────────────────────────
@@ -2221,7 +2280,8 @@ const createViewer = async (req, res) => {
       viewerPurpose,
       viewerExpiryDate,
       createdBy: req.user.id,
-      isActive:true,
+      isActive: true,
+      accessibleModules: resolvedModulesV, // 🆕 store which module(s) this viewer accesses
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -2231,7 +2291,7 @@ const createViewer = async (req, res) => {
         canSubmitData: false,
         canAudit: false,
       },
-      accessControls: resolvedAccessControls, // 🆕
+      accessControls: resolvedAccessControls,
     });
 
     // ── Quota enforcement ────────────────────────────────────────────────────
@@ -6512,6 +6572,271 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ESGLink USER CREATION FUNCTIONS
+// Only callable when client has 'esg_link' in accessibleModules and
+// the ESGLink subscription is active. Quota is enforced per user type.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Helper: validate ESGLink module access for client_admin creation routes.
+ * Returns { ok: true } or { ok: false, res: response }
+ */
+async function _validateEsgLinkAccess(req, res) {
+  if (!req.user || req.user.userType !== 'client_admin') {
+    res.status(403).json({ message: 'Only Client Admin can create ESGLink users' });
+    return { ok: false };
+  }
+  const clientDoc = await Client.findOne({ clientId: req.user.clientId });
+  if (!clientDoc) {
+    res.status(404).json({ message: 'Client not found' });
+    return { ok: false };
+  }
+  if (!clientDoc.accessibleModules?.includes('esg_link')) {
+    res.status(403).json({ message: 'Your organisation does not have access to the ESGLink module' });
+    return { ok: false };
+  }
+  if (!isModuleSubscriptionActive(clientDoc, 'esg_link')) {
+    res.status(403).json({ message: 'Your organisation\'s ESGLink subscription is not active' });
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
+// ─── createContributor ────────────────────────────────────────────────────────
+const createContributor = async (req, res) => {
+  try {
+    const check = await _validateEsgLinkAccess(req, res);
+    if (!check.ok) return;
+
+    const { email, password, contactNumber, userName, address } = req.body;
+
+    if (!email || !password || !contactNumber || !userName || !address) {
+      return res.status(400).json({ message: 'email, password, contactNumber, userName and address are required' });
+    }
+
+    const existing = await User.findOne({ $or: [{ email }, { userName }] });
+    if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
+
+    const slot = await reserveUserTypeSlot(req.user.clientId, 'contributor');
+    if (!slot.allowed) {
+      return res.status(429).json({
+        message: slot.message || 'Contributor quota exceeded for this client.',
+        quota: { limit: slot.limit ?? null, used: slot.used ?? null, remaining: slot.remaining ?? 0 },
+      });
+    }
+
+    const user = new User({
+      email,
+      password: bcrypt.hashSync(password, 10),
+      contactNumber,
+      userName,
+      address,
+      userType: 'contributor',
+      companyName: req.user.companyName,
+      clientId: req.user.clientId,
+      createdBy: req.user.id,
+      isActive: true,
+      accessibleModules: ['esg_link'],
+      permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: false, canEditBoundaries: false, canSubmitData: true, canAudit: false },
+    });
+
+    try {
+      await user.save();
+    } catch (saveErr) {
+      if (slot.reserved && slot.consultantId) {
+        await releaseUserTypeSlot(req.user.clientId, 'contributor', slot.consultantId).catch(() => {});
+      }
+      throw saveErr;
+    }
+
+    logUserCreated(req, user).catch(() => {});
+    return res.status(201).json({ message: 'Contributor created successfully', contributor: { id: user._id, email: user.email, userName: user.userName } });
+  } catch (error) {
+    console.error('Create contributor error:', error);
+    return res.status(500).json({ message: 'Failed to create Contributor', error: error.message });
+  }
+};
+
+// ─── createReviewer ───────────────────────────────────────────────────────────
+const createReviewer = async (req, res) => {
+  try {
+    const check = await _validateEsgLinkAccess(req, res);
+    if (!check.ok) return;
+
+    const { email, password, contactNumber, userName, address } = req.body;
+
+    if (!email || !password || !contactNumber || !userName || !address) {
+      return res.status(400).json({ message: 'email, password, contactNumber, userName and address are required' });
+    }
+
+    const existing = await User.findOne({ $or: [{ email }, { userName }] });
+    if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
+
+    const slot = await reserveUserTypeSlot(req.user.clientId, 'reviewer');
+    if (!slot.allowed) {
+      return res.status(429).json({
+        message: slot.message || 'Reviewer quota exceeded for this client.',
+        quota: { limit: slot.limit ?? null, used: slot.used ?? null, remaining: slot.remaining ?? 0 },
+      });
+    }
+
+    const user = new User({
+      email,
+      password: bcrypt.hashSync(password, 10),
+      contactNumber,
+      userName,
+      address,
+      userType: 'reviewer',
+      companyName: req.user.companyName,
+      clientId: req.user.clientId,
+      createdBy: req.user.id,
+      isActive: true,
+      accessibleModules: ['esg_link'],
+      permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
+    });
+
+    try {
+      await user.save();
+    } catch (saveErr) {
+      if (slot.reserved && slot.consultantId) {
+        await releaseUserTypeSlot(req.user.clientId, 'reviewer', slot.consultantId).catch(() => {});
+      }
+      throw saveErr;
+    }
+
+    logUserCreated(req, user).catch(() => {});
+    return res.status(201).json({ message: 'Reviewer created successfully', reviewer: { id: user._id, email: user.email, userName: user.userName } });
+  } catch (error) {
+    console.error('Create reviewer error:', error);
+    return res.status(500).json({ message: 'Failed to create Reviewer', error: error.message });
+  }
+};
+
+// ─── createApprover ───────────────────────────────────────────────────────────
+const createApprover = async (req, res) => {
+  try {
+    const check = await _validateEsgLinkAccess(req, res);
+    if (!check.ok) return;
+
+    const { email, password, contactNumber, userName, address } = req.body;
+
+    if (!email || !password || !contactNumber || !userName || !address) {
+      return res.status(400).json({ message: 'email, password, contactNumber, userName and address are required' });
+    }
+
+    const existing = await User.findOne({ $or: [{ email }, { userName }] });
+    if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
+
+    const slot = await reserveUserTypeSlot(req.user.clientId, 'approver');
+    if (!slot.allowed) {
+      return res.status(429).json({
+        message: slot.message || 'Approver quota exceeded for this client.',
+        quota: { limit: slot.limit ?? null, used: slot.used ?? null, remaining: slot.remaining ?? 0 },
+      });
+    }
+
+    const user = new User({
+      email,
+      password: bcrypt.hashSync(password, 10),
+      contactNumber,
+      userName,
+      address,
+      userType: 'approver',
+      companyName: req.user.companyName,
+      clientId: req.user.clientId,
+      createdBy: req.user.id,
+      isActive: true,
+      accessibleModules: ['esg_link'],
+      permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
+    });
+
+    try {
+      await user.save();
+    } catch (saveErr) {
+      if (slot.reserved && slot.consultantId) {
+        await releaseUserTypeSlot(req.user.clientId, 'approver', slot.consultantId).catch(() => {});
+      }
+      throw saveErr;
+    }
+
+    logUserCreated(req, user).catch(() => {});
+    return res.status(201).json({ message: 'Approver created successfully', approver: { id: user._id, email: user.email, userName: user.userName } });
+  } catch (error) {
+    console.error('Create approver error:', error);
+    return res.status(500).json({ message: 'Failed to create Approver', error: error.message });
+  }
+};
+
+// ─── updateUserModuleAccess ───────────────────────────────────────────────────
+// Only super_admin or the consultant_admin who manages the user's client.
+const updateUserModuleAccess = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { accessibleModules } = req.body;
+    const actor = req.user;
+
+    if (!['super_admin', 'consultant_admin'].includes(actor.userType)) {
+      return res.status(403).json({ message: 'Only Super Admin or Consultant Admin can update module access' });
+    }
+
+    if (!accessibleModules || !Array.isArray(accessibleModules) || accessibleModules.length === 0) {
+      return res.status(400).json({ message: 'accessibleModules array is required' });
+    }
+
+    const VALID_MODULES = ['zero_carbon', 'esg_link'];
+    const invalid = accessibleModules.filter(m => !VALID_MODULES.includes(m));
+    if (invalid.length > 0) {
+      return res.status(400).json({ message: `Invalid module(s): ${invalid.join(', ')}` });
+    }
+
+    const targetUser = await User.findById(userId);
+    if (!targetUser) return res.status(404).json({ message: 'User not found' });
+
+    // consultant_admin: can only update users in their own managed clients
+    if (actor.userType === 'consultant_admin' && targetUser.clientId) {
+      const clientDoc = await Client.findOne({ clientId: targetUser.clientId });
+      if (!clientDoc || clientDoc.leadInfo?.consultantAdminId?.toString() !== actor.id) {
+        return res.status(403).json({ message: 'You can only update module access for users in clients you manage' });
+      }
+      // Validate client has those modules
+      for (const mod of accessibleModules) {
+        if (!clientDoc.accessibleModules?.includes(mod)) {
+          return res.status(403).json({ message: `Client ${targetUser.clientId} does not have access to module: ${mod}` });
+        }
+      }
+    }
+
+    const previousModules = targetUser.accessibleModules || ['zero_carbon'];
+    targetUser.accessibleModules = accessibleModules;
+    await targetUser.save();
+
+    // Audit log
+    logEvent({
+      req,
+      module: 'user_management',
+      action: 'update',
+      entityType: 'User',
+      entityId: targetUser._id.toString(),
+      clientId: targetUser.clientId,
+      changeSummary: `Module access updated for user ${targetUser.userName}`,
+      metadata: { previousModules, newModules: accessibleModules, targetUserId: userId },
+      targetUserId: targetUser._id,
+      targetUserName: targetUser.userName,
+      targetUserType: targetUser.userType,
+    }).catch(() => {});
+
+    return res.status(200).json({
+      message: 'User module access updated successfully',
+      userId,
+      accessibleModules,
+    });
+  } catch (error) {
+    console.error('updateUserModuleAccess error:', error);
+    return res.status(500).json({ message: 'Failed to update module access', error: error.message });
+  }
+};
+
 module.exports = {
   initializeSuperAdmin,
   login,
@@ -6525,6 +6850,11 @@ module.exports = {
   createEmployee,
   createAuditor,
   createViewer,
+  // 🆕 ESGLink user types
+  createContributor,
+  createReviewer,
+  createApprover,
+  updateUserModuleAccess,
   getMyProfile,
   getUserById,
   getUsers,

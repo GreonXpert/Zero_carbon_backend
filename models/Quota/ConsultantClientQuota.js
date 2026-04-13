@@ -11,10 +11,13 @@
 //   N > 0 = can create up to N items total
 //
 // USER TYPE QUOTA KEYS:
-//   employeeHead  → maps to userType: 'client_employee_head'
-//   employee      → maps to userType: 'employee'
-//   viewer        → maps to userType: 'viewer'
-//   auditor       → maps to userType: 'auditor'
+//   employeeHead  → maps to userType: 'client_employee_head'  (ZeroCarbon)
+//   employee      → maps to userType: 'employee'              (ZeroCarbon)
+//   viewer        → maps to userType: 'viewer'                (multi-module)
+//   auditor       → maps to userType: 'auditor'               (multi-module)
+//   contributor   → maps to userType: 'contributor'           (ESGLink)
+//   reviewer      → maps to userType: 'reviewer'              (ESGLink)
+//   approver      → maps to userType: 'approver'              (ESGLink)
 // ============================================================
 
 'use strict';
@@ -57,10 +60,16 @@ const UserTypeQuotaEntrySchema = new mongoose.Schema(
 
 const UserTypeQuotasSchema = new mongoose.Schema(
   {
+    // ZeroCarbon user types
     employeeHead: { type: UserTypeQuotaEntrySchema, default: () => ({}) },
     employee:     { type: UserTypeQuotaEntrySchema, default: () => ({}) },
+    // Multi-module (shared across ZeroCarbon and ESGLink)
     viewer:       { type: UserTypeQuotaEntrySchema, default: () => ({}) },
     auditor:      { type: UserTypeQuotaEntrySchema, default: () => ({}) },
+    // 🆕 ESGLink user types
+    contributor:  { type: UserTypeQuotaEntrySchema, default: () => ({}) },
+    reviewer:     { type: UserTypeQuotaEntrySchema, default: () => ({}) },
+    approver:     { type: UserTypeQuotaEntrySchema, default: () => ({}) },
   },
   { _id: false }
 );
@@ -106,10 +115,16 @@ ConsultantClientQuotaSchema.virtual('hasAnyLimit').get(function () {
 // INTERNAL: userType string → quota key map
 // ─────────────────────────────────────────────────────────────
 const USER_TYPE_TO_QUOTA_KEY = {
+  // ZeroCarbon
   'client_employee_head': 'employeeHead',
   'employee':             'employee',
+  // Multi-module
   'viewer':               'viewer',
   'auditor':              'auditor',
+  // 🆕 ESGLink
+  'contributor':          'contributor',
+  'reviewer':             'reviewer',
+  'approver':             'approver',
 };
 
 ConsultantClientQuotaSchema.statics.USER_TYPE_TO_QUOTA_KEY = USER_TYPE_TO_QUOTA_KEY;

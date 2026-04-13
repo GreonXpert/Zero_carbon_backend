@@ -21,7 +21,7 @@ const ScopeDetailSchema = new mongoose.Schema({
   inputType: {
     type: String,
     required: true,
-    enum: ['manual', 'IOT', 'API'],
+    enum: ['manual', 'IOT', 'API', 'OCR'],
     default: 'manual',
     description: 'Data input method for this specific scope'
   },
