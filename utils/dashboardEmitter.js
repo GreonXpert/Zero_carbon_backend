@@ -13,7 +13,7 @@ const emitFlowchartStatusUpdate = async (client, userId) => {
     const affectedUsers = [];
     
     // Add assigned consultant
-    if (client.workflowTracking.assignedConsultantId) {
+    if (client.workflowTracking?.assignedConsultantId) {
       affectedUsers.push(client.workflowTracking.assignedConsultantId.toString());
     }
     
@@ -34,8 +34,8 @@ const emitFlowchartStatusUpdate = async (client, userId) => {
     const updateData = {
       clientId: client.clientId,
       workflowStatus: {
-        flowchart: client.workflowTracking.flowchartStatus,
-        processFlowchart: client.workflowTracking.processFlowchartStatus
+        flowchart: client.workflowTracking?.flowchartStatus,
+        processFlowchart: client.workflowTracking?.processFlowchartStatus
       },
       updatedBy: userId,
       timestamp: new Date().toISOString()
@@ -66,25 +66,25 @@ const emitDataInputPointUpdate = async (client, inputType, pointId, userId) => {
       pointId: pointId,
       dataInputPoints: {
         manual: {
-          total: client.workflowTracking.dataInputPoints.manual.totalCount,
-          completed: client.workflowTracking.dataInputPoints.manual.completedCount,
-          pending: client.workflowTracking.dataInputPoints.manual.pendingCount,
-          onGoing: client.workflowTracking.dataInputPoints.manual.onGoingCount,
-          notStarted: client.workflowTracking.dataInputPoints.manual.notStartedCount
+          total: client.workflowTracking?.dataInputPoints?.manual?.totalCount,
+          completed: client.workflowTracking?.dataInputPoints?.manual?.completedCount,
+          pending: client.workflowTracking?.dataInputPoints?.manual?.pendingCount,
+          onGoing: client.workflowTracking?.dataInputPoints?.manual?.onGoingCount,
+          notStarted: client.workflowTracking?.dataInputPoints?.manual?.notStartedCount
         },
         api: {
-          total: client.workflowTracking.dataInputPoints.api.totalCount,
-          completed: client.workflowTracking.dataInputPoints.api.completedCount,
-          pending: client.workflowTracking.dataInputPoints.api.pendingCount,
-          onGoing: client.workflowTracking.dataInputPoints.api.onGoingCount,
-          notStarted: client.workflowTracking.dataInputPoints.api.notStartedCount
+          total: client.workflowTracking?.dataInputPoints?.api?.totalCount,
+          completed: client.workflowTracking?.dataInputPoints?.api?.completedCount,
+          pending: client.workflowTracking?.dataInputPoints?.api?.pendingCount,
+          onGoing: client.workflowTracking?.dataInputPoints?.api?.onGoingCount,
+          notStarted: client.workflowTracking?.dataInputPoints?.api?.notStartedCount
         },
         iot: {
-          total: client.workflowTracking.dataInputPoints.iot.totalCount,
-          completed: client.workflowTracking.dataInputPoints.iot.completedCount,
-          pending: client.workflowTracking.dataInputPoints.iot.pendingCount,
-          onGoing: client.workflowTracking.dataInputPoints.iot.onGoingCount,
-          notStarted: client.workflowTracking.dataInputPoints.iot.notStartedCount
+          total: client.workflowTracking?.dataInputPoints?.iot?.totalCount,
+          completed: client.workflowTracking?.dataInputPoints?.iot?.completedCount,
+          pending: client.workflowTracking?.dataInputPoints?.iot?.pendingCount,
+          onGoing: client.workflowTracking?.dataInputPoints?.iot?.onGoingCount,
+          notStarted: client.workflowTracking?.dataInputPoints?.iot?.notStartedCount
         }
       },
       updatedBy: userId,
@@ -92,7 +92,7 @@ const emitDataInputPointUpdate = async (client, inputType, pointId, userId) => {
     };
     
     // Emit to assigned consultant
-    if (client.workflowTracking.assignedConsultantId) {
+    if (client.workflowTracking?.assignedConsultantId) {
       global.io.to(`user_${client.workflowTracking.assignedConsultantId}`).emit('dashboard_update', {
         type: 'data_input_point_update',
         data: updateData
@@ -177,7 +177,7 @@ const emitClientStageChange = async (client, previousStage, userId) => {
     }
     
     // Add workflow assigned consultant
-    if (client.workflowTracking.assignedConsultantId) {
+    if (client.workflowTracking?.assignedConsultantId) {
       affectedUsers.add(client.workflowTracking.assignedConsultantId.toString());
     }
     
