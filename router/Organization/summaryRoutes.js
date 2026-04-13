@@ -19,6 +19,11 @@ const {
 } = require('../../controllers/Calculation/CalculationSummary');
 const { auth } = require('../../middleware/auth');
 const { checkSummaryPermission } = require('../../utils/Permissions/summaryPermission'); // IMPORT THE CORRECT MIDDLEWARE
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
 
 
 
@@ -36,13 +41,13 @@ router.use(auth);
  * @route   GET /api/summaries/:clientId
  * @desc    Get emission summary for a specific period
  */
-router.get('/:clientId', checkSummaryPermission, getEmissionSummary);
+router.get('/:clientId', zcGate, checkSummaryPermission, getEmissionSummary);
 
 /**
  * @route   GET /api/summaries/:clientId/multiple
  * @desc    Get multiple summaries for comparison and trends
  */
-router.get('/:clientId/multiple', checkSummaryPermission, getMultipleSummaries);
+router.get('/:clientId/multiple', zcGate,  checkSummaryPermission, getMultipleSummaries);
 
 
 /**
@@ -56,7 +61,7 @@ router.get('/:clientId/multiple', checkSummaryPermission, getMultipleSummaries);
  * @query   year=<YYYY> (optional)
  * @query   month=<1-12> (optional)
  */
-router.get('/:clientId/filtered', checkSummaryPermission, getFilteredSummary);
+router.get('/:clientId/filtered', zcGate, checkSummaryPermission, getFilteredSummary);
 
 
 /**
@@ -74,6 +79,7 @@ router.get('/:clientId/filtered', checkSummaryPermission, getFilteredSummary);
  */
 router.get(
   '/:clientId/top-low',
+    zcGate,
   checkSummaryPermission,
   getTopLowEmissionStats
 );
@@ -96,6 +102,7 @@ router.get(
  */
 router.get(
   '/:clientId/scope-identifiers/extremes',
+    zcGate,
   checkSummaryPermission,
   getScopeIdentifierEmissionExtremes
 );
@@ -114,12 +121,14 @@ router.get(
  */
 router.get(
   "/:clientId/scope-identifiers/hierarchy",
+    zcGate,
   checkSummaryPermission,
   getScopeIdentifierHierarchy
 );
 
 router.get(
   '/:clientId/reduction/hierarchy',
+    zcGate,
   checkSummaryPermission,
   getReductionSummaryHierarchy
 );
@@ -130,6 +139,7 @@ router.get(
  */
 router.get(
   "/:clientId/sbti-progress",
+    zcGate,
   checkSummaryPermission,
   getSbtiProgress
 );
@@ -138,10 +148,11 @@ router.get(
 // routes/summaries.js (or wherever you define summary routes)
 router.get(
   "/:clientId/reduction/projects",
+    zcGate,
   getReductionSummariesByProjects
 );
 
 
-router.post('/:clientId/compare', compareSummarySelections)
+router.post('/:clientId/compare', zcGate, compareSummarySelections)
 
 module.exports = router;

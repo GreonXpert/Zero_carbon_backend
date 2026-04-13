@@ -38,6 +38,12 @@ const {
   requireProcessFlowchartAssign,
 } = require('../../utils/Permissions/accessPermissionFlowchartandProcessflowchart');
 
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 const router = express.Router();
 
 // All routes require authentication
@@ -51,27 +57,27 @@ const employeeRoles = ['employee_head', 'client_employee_head'];
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Create / Update process flowchart
-router.post('/save', requireProcessFlowchartWrite(), saveProcessFlowchart);
+router.post('/save', zcGate ,requireProcessFlowchartWrite(), saveProcessFlowchart);
 
 // Add new node to existing flowchart
-router.patch('/:flowchartId/add-node', requireProcessFlowchartWrite(), addNodeToProcessFlowchart);
+router.patch('/:flowchartId/add-node', zcGate , requireProcessFlowchartWrite(), addNodeToProcessFlowchart);
 
 // Update specific node
-router.patch('/:clientId/node/:nodeId', requireProcessFlowchartWrite(), updateProcessFlowchartNode);
+router.patch('/:clientId/node/:nodeId', zcGate ,requireProcessFlowchartWrite(), updateProcessFlowchartNode);
 
 // Delete process flowchart (soft delete)
-router.delete('/:clientId', requireProcessFlowchartWrite(), deleteProcessFlowchart);
+router.delete('/:clientId', zcGate ,requireProcessFlowchartWrite(), deleteProcessFlowchart);
 
 // Delete specific node
-router.delete('/:clientId/node/:nodeId', requireProcessFlowchartWrite(), deleteProcessNode);
+router.delete('/:clientId/node/:nodeId', zcGate ,requireProcessFlowchartWrite(), deleteProcessNode);
 
 // Restore deleted flowchart
-router.patch('/:clientId/restore', requireProcessFlowchartWrite(), restoreProcessFlowchart);
+router.patch('/:clientId/restore', zcGate ,requireProcessFlowchartWrite(), restoreProcessFlowchart);
 
 // Hard delete a scopeDetail (permanent)
 router.delete(
   '/:clientId/node/:nodeId/scope/:scopeIdentifier',
-  requireProcessFlowchartWrite(),
+  zcGate ,
   hardDeleteProcessScopeDetail
 );
 
@@ -80,13 +86,13 @@ router.delete(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Get all process flowcharts (hierarchy-based)
-router.get('/all', requireProcessFlowchartRead('view'), getAllProcessFlowcharts);
+router.get('/all', zcGate ,requireProcessFlowchartRead('view'), getAllProcessFlowcharts);
 
 // Get single process flowchart
-router.get('/:clientId', requireProcessFlowchartRead('view'), getProcessFlowchart);
+router.get('/:clientId', zcGate ,requireProcessFlowchartRead('view'), getProcessFlowchart);
 
 // Get process flowchart summary
-router.get('/:clientId/summary', requireProcessFlowchartRead('view'), getProcessFlowchartSummary);
+router.get('/:clientId/summary', zcGate ,requireProcessFlowchartRead('view'), getProcessFlowchartSummary);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Process Flowchart — Assign Head
@@ -95,6 +101,7 @@ router.get('/:clientId/summary', requireProcessFlowchartRead('view'), getProcess
 // Assign / unassign employee head to a node (admin level)
 router.post(
   '/:clientId/nodes/:nodeId/assign-head',
+  zcGate ,      
   requireProcessFlowchartAssign(),
   assignOrUnassignEmployeeHeadToNode
 );
@@ -105,7 +112,9 @@ router.post(
 
 // Assign scope to a process node
 router.post(
+  
   '/:clientId/nodes/:nodeId/assign-scope',
+  zcGate ,
   checkRole(...employeeRoles),
   assignScopeToProcessNode
 );
@@ -113,6 +122,7 @@ router.post(
 // Remove scope assignment from a process node
 router.delete(
   '/:clientId/nodes/:nodeId/remove-scope-assignment',
+  zcGate ,
   checkRole(...employeeRoles),
   removeAssignmentProcess
 );
@@ -124,6 +134,7 @@ router.delete(
 // Get allocation summary for a client's process flowchart
 router.get(
   '/:clientId/allocations',
+    zcGate ,
   requireProcessFlowchartRead('entries'),
   getAllocations
 );
@@ -131,6 +142,7 @@ router.get(
 // Update allocations for specific scopeIdentifiers
 router.patch(
   '/:clientId/allocations',
+  zcGate ,
   requireProcessFlowchartWrite(),
   updateAllocations
 );
@@ -154,6 +166,7 @@ router.patch(
  */
 router.get(
   '/:clientId/process-emission-entries',
+    zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntries
 );
@@ -170,6 +183,7 @@ router.get(
  */
 router.get(
   '/:clientId/process-emission-entries/stats',
+    zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionStats
 );
@@ -186,6 +200,7 @@ router.get(
  */
 router.get(
   '/:clientId/process-emission-entries/minimal',
+    zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesMinimal
 );
@@ -205,6 +220,7 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/process-emission-entries',
+    zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesByNode
 );
@@ -219,6 +235,7 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/process-emission-entries/summary',
+    zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionNodeSummary
 );
@@ -236,6 +253,8 @@ router.get(
  */
 router.get(
   '/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/process-emission-entries',
+  zcGate ,
+
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntriesByScope
 );
@@ -252,6 +271,7 @@ router.get(
  */
 router.get(
   '/process-emission-entries/:entryId',
+  zcGate ,
   requireProcessFlowchartRead('processEmissionEntries'),
   getProcessEmissionEntryById
 );

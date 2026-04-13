@@ -20,6 +20,12 @@ const {
   requireOrgFlowchartAssign,
 } = require('../../utils/Permissions/accessPermissionFlowchartandProcessflowchart');
 
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 const { auth } = require('../../middleware/auth');
 
 const router = express.Router();
@@ -32,47 +38,47 @@ router.use(auth);
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Get consolidated summary across all clients
-router.get('/summary', requireOrgFlowchartRead('view'), getConsolidatedSummary);
+router.get('/summary', zcGate ,requireOrgFlowchartRead('view'), getConsolidatedSummary);
 
 // Get summary for a specific client
-router.get('/:clientId/summary', requireOrgFlowchartRead('view'), getFlowchartSummary);
+router.get('/:clientId/summary', zcGate ,requireOrgFlowchartRead('view'), getFlowchartSummary);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Flowchart — READ operations
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Get all flowcharts (hierarchy-based)
-router.get('/all', requireOrgFlowchartRead('view'), getAllFlowcharts);
+router.get('/all', zcGate ,requireOrgFlowchartRead('view'), getAllFlowcharts);
 
 // Get single flowchart for a client
-router.get('/:clientId', requireOrgFlowchartRead('view'), getFlowchart);
+router.get('/:clientId', zcGate ,requireOrgFlowchartRead('view'), getFlowchart);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Flowchart — WRITE operations
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Create / Update flowchart
-router.post('/save', requireOrgFlowchartWrite(), saveFlowchart);
+router.post('/save', zcGate ,requireOrgFlowchartWrite(), saveFlowchart);
 
 // Add new node to an existing flowchart
-router.patch('/:flowchartId/add-node', requireOrgFlowchartWrite(), addNodeToFlowchart);
+router.patch('/:flowchartId/add-node', zcGate , requireOrgFlowchartWrite(), addNodeToFlowchart);
 
 // Update a specific node
-router.patch('/:clientId/node/:nodeId', requireOrgFlowchartWrite(), updateFlowchartNode);
+router.patch('/:clientId/node/:nodeId', zcGate ,requireOrgFlowchartWrite(), updateFlowchartNode);
 
 // Soft delete entire flowchart
-router.delete('/:clientId', requireOrgFlowchartWrite(), deleteFlowchart);
+router.delete('/:clientId', zcGate ,requireOrgFlowchartWrite(), deleteFlowchart);
 
 // Soft delete a specific node
-router.delete('/:clientId/node/:nodeId', requireOrgFlowchartWrite(), deleteFlowchartNode);
+router.delete('/:clientId/node/:nodeId', zcGate ,requireOrgFlowchartWrite(), deleteFlowchartNode);
 
 // Restore a soft-deleted flowchart
-router.patch('/:clientId/restore', requireOrgFlowchartWrite(), restoreFlowchart);
+router.patch('/:clientId/restore', zcGate ,requireOrgFlowchartWrite(), restoreFlowchart);
 
 // Hard delete a scopeDetail (permanent) — FIX: was missing requireOrgFlowchartWrite()
 router.delete(
   '/:clientId/node/:nodeId/scope/:scopeIdentifier',
-  requireOrgFlowchartWrite(),
+  zcGate ,
   hardDeleteScopeDetail
 );
 
@@ -84,6 +90,7 @@ router.delete(
 // FIX: removed redundant checkRole(...editRoles) — requireOrgFlowchartAssign() handles all role logic internally
 router.post(
   '/:clientId/nodes/:nodeId/assign-head',
+  zcGate ,
   requireOrgFlowchartAssign(),
   assignOrUnassignEmployeeHeadToNode
 );

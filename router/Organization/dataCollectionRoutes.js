@@ -46,6 +46,12 @@ const {
 
 const { getOCRFieldMappings } = require('../../controllers/Organization/ocrFeedbackController');
 
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 
 // ============== PROTECTED API/IoT ENDPOINTS ==============
 // These endpoints REQUIRE API key authentication and come BEFORE router.use(auth)
@@ -124,7 +130,7 @@ const upload = multer({
  * MANUAL DATA ENTRY
  * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data
  */
-router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data', saveManualData);
+router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-data', zcGate, saveManualData);
 
 /**
  * CSV UPLOAD FOR MANUAL DATA
@@ -132,6 +138,7 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-dat
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv',
+    zcGate,
   uploadCsv.single('csvFile'),   // ✅ MEMORY STORAGE
   uploadCSVData
 );
@@ -145,6 +152,7 @@ router.post(
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-data',
+    zcGate,
   (req, res, next) => { req.setTimeout(120000); next(); },
   uploadOcr.single('ocrFile'),
   saveOCRData
@@ -161,6 +169,7 @@ router.post(
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-extract',
+  zcGate,
   (req, res, next) => { req.setTimeout(180000); next(); }, // 3 min for multi-file
   uploadOcr.array('ocrFiles', 20),
   extractOCRPreview
@@ -177,6 +186,7 @@ router.post(
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/ocr-confirm',
+  zcGate,
   confirmOCRSave
 );
 
@@ -206,6 +216,7 @@ router.post(
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/verify-ocr',
+    zcGate,
   (req, res, next) => { req.setTimeout(120000); next(); },
   uploadOcr.single('ocrFile'),
   verifyOCRData
@@ -218,6 +229,7 @@ router.post(
  */
 router.get(
   '/clients/:clientId/ocr-field-mappings',
+    zcGate,
   getOCRFieldMappings
 );
 
@@ -228,13 +240,13 @@ router.get(
  * EDIT MANUAL DATA ENTRY
  * PUT /api/data-collection/data-entries/:dataId
  */
-router.put('/data-entries/:dataId', editManualData);
+router.put('/data-entries/:dataId', zcGate, editManualData);
 
 /**
  * DELETE MANUAL DATA ENTRY
  * DELETE /api/data-collection/data-entries/:dataId
  */
-router.delete('/data-entries/:dataId', deleteManualData);
+router.delete('/data-entries/:dataId', zcGate, deleteManualData);
 
 /**
  * GET DATA ENTRIES (with filtering and pagination)
@@ -246,9 +258,9 @@ router.delete('/data-entries/:dataId', deleteManualData);
  * and attaches it to req so that buildDataEntryFilters can apply it without
  * any additional DB queries inside the controller.
  */
-router.get('/clients/:clientId/data-entries', attachDataEntryAccessContext, getDataEntries);
-router.get('/clients/:clientId/nodes/:nodeId/data-entries', attachDataEntryAccessContext, getDataEntries);
-router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries', attachDataEntryAccessContext, getDataEntries);
+router.get('/clients/:clientId/data-entries', zcGate, attachDataEntryAccessContext, getDataEntries);
+router.get('/clients/:clientId/nodes/:nodeId/data-entries', zcGate, attachDataEntryAccessContext, getDataEntries);
+router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entries', zcGate, attachDataEntryAccessContext, getDataEntries);
 
 // ============== Configuration Routes ==============
 
@@ -256,13 +268,13 @@ router.get('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/data-entrie
  * SWITCH INPUT TYPE FOR A SCOPE
  * PATCH /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type
  */
-router.patch('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type', switchInputType);
+router.patch('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/input-type', zcGate, switchInputType);
 
 /**
  * DISCONNECT API/IoT SOURCE
  * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect
  */
-router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect', disconnectSource);
+router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect', zcGate, disconnectSource);
 
 /**
  * RECONNECT API/IoT SOURCE
@@ -270,6 +282,7 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/disconnect
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/reconnect',
+  zcGate,
   reconnectSource
 );
 
@@ -279,7 +292,7 @@ router.post(
  * GET COLLECTION STATUS
  * GET /api/data-collection/clients/:clientId/collection-status
  */
-router.get('/clients/:clientId/collection-status', getCollectionStatus);
+router.get('/clients/:clientId/collection-status', zcGate, getCollectionStatus);
 
 /**
  * DATA COMPLETION STATISTICS
@@ -287,7 +300,7 @@ router.get('/clients/:clientId/collection-status', getCollectionStatus);
  */
 router.get(
   '/clients/:clientId/data-completion',
-  auth,
+  zcGate,
   attachDataEntryAccessContext,
   getDataCompletionStats
 );
@@ -300,6 +313,7 @@ router.get(
  */
 router.post(
   '/summary/:clientId/:nodeId/:scopeIdentifier',
+  zcGate,
   checkRole('super_admin', 'client_admin'),
   createMonthlySummaryManual
 );
@@ -310,6 +324,7 @@ router.post(
  */
 router.get(
   '/summaries/:clientId/:nodeId/:scopeIdentifier',
+    zcGate,
   checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
   getMonthlySummaries
 );
@@ -320,6 +335,7 @@ router.get(
  */
 router.get(
   '/cumulative/:clientId/:nodeId/:scopeIdentifier',
+    zcGate,
   checkRole('super_admin', 'consultant_admin', 'consultant', 'client_admin', 'client_employee_head', 'employee', 'auditor'),
   getCurrentCumulative
 );

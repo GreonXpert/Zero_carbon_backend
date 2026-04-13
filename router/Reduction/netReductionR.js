@@ -25,6 +25,12 @@ const {
   getNetReductionCompletionStats
 } = require('../../controllers/DataCollection/dataCompletionController');
 
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 // ============== PROTECTED API/IoT ENDPOINTS ==============
 // ⚠️ UPDATED: API key is now in URL params instead of headers
 // These endpoints REQUIRE API key authentication
@@ -75,70 +81,70 @@ router.use(auth);
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/manual
  * Requires: Standard auth (consultant, client users)
  */
-router.post('/:clientId/:projectId/:calculationMethodology/manual', saveManualNetReduction);
+router.post('/:clientId/:projectId/:calculationMethodology/manual', zcGate, saveManualNetReduction);
 
 /**
  * CSV UPLOAD FOR NET REDUCTION
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/csv
  */
-router.post('/:clientId/:projectId/:calculationMethodology/csv', upload.single('file'), uploadCsvNetReduction);
+router.post('/:clientId/:projectId/:calculationMethodology/csv', zcGate, upload.single('file'), uploadCsvNetReduction);
 
 
 
-router.get('/', getNetReduction);
+router.get('/', zcGate, getNetReduction);
 
 /**
  * NET REDUCTION DATA COMPLETION STATS (client-level, used by dashboard)
  * GET /api/net-reduction/:clientId/data-completion
  */
-router.get('/:clientId/data-completion', getNetReductionCompletionStats);
+router.get('/:clientId/data-completion', zcGate, getNetReductionCompletionStats);
 
 /**
  * GET NET REDUCTION STATISTICS
  * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/stats
  */
-router.get('/:clientId/:projectId/:calculationMethodology/stats', getNetReductionStats);
+router.get('/:clientId/:projectId/:calculationMethodology/stats', zcGate, getNetReductionStats);
 
 /**
  * NET REDUCTION DATA COMPLETION STATS
  * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/completion-stats
  */
-router.get('/:clientId/:projectId/:calculationMethodology/completion-stats', getNetReductionCompletionStats);
+router.get('/:clientId/:projectId/:calculationMethodology/completion-stats', zcGate, getNetReductionCompletionStats);
 
 /**
  * LIST NET REDUCTION ENTRIES
  * GET /api/net-reduction/:clientId/:projectId/:calculationMethodology/list
  */
-router.get('/:clientId/:projectId/:calculationMethodology/list', listNetReductions);
+router.get('/:clientId/:projectId/:calculationMethodology/list', zcGate, listNetReductions);
 
 /**
  * DELETE MANUAL NET REDUCTION ENTRY
  * DELETE /api/net-reduction/:clientId/:projectId/:calculationMethodology/:entryId
  */
-router.delete('/:clientId/:projectId/:calculationMethodology/:entryId', deleteManualNetReductionEntry);
+router.delete('/:clientId/:projectId/:calculationMethodology/:entryId', zcGate, deleteManualNetReductionEntry);
 
 /**
  * UPDATE MANUAL NET REDUCTION ENTRY
  * PUT /api/net-reduction/:clientId/:projectId/:calculationMethodology/:entryId
  */
-router.put('/:clientId/:projectId/:calculationMethodology/:entryId', updateManualNetReductionEntry);
+router.put('/:clientId/:projectId/:calculationMethodology/:entryId', zcGate, updateManualNetReductionEntry);
 
 /**
  * DISCONNECT NET REDUCTION SOURCE
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/disconnect
  */
-router.post('/:clientId/:projectId/:calculationMethodology/disconnect', disconnectNetReductionSource);
+router.post('/:clientId/:projectId/:calculationMethodology/disconnect', zcGate, disconnectNetReductionSource);
 
 /**
  * RECONNECT NET REDUCTION SOURCE
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/reconnect
  */
-router.post('/:clientId/:projectId/:calculationMethodology/reconnect', reconnectNetReductionSource);
+router.post('/:clientId/:projectId/:calculationMethodology/reconnect', zcGate, reconnectNetReductionSource);
 
 /**
  * SWITCH NET REDUCTION INPUT TYPE
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/switch
  */
-router.post('/:clientId/:projectId/:calculationMethodology/switch', switchNetReductionInputType);
+router.post('/:clientId/:projectId/:calculationMethodology/switch', zcGate, switchNetReductionInputType);
 
 module.exports = router;

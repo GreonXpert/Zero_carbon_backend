@@ -25,6 +25,11 @@ const {
 } = require('../../controllers/Reduction/reductionController');
 const { uploadReductionMedia } =
   require('../../utils/uploads/reductionUploadS3');
+const { requireActiveModuleSubscription } = require('../../utils/Permissions/modulePermission');
+
+// ── Module subscription gate ──────────────────────────────────────────────
+// Shorthand for ZeroCarbon-specific route protection.
+const zcGate = requireActiveModuleSubscription('zero_carbon');
 
 
 router.use(auth);
@@ -36,20 +41,20 @@ router.use(auth);
 
 // Get all reductions
 
-router.get('/getall', getAllReductions);
+router.get('/getall', zcGate, getAllReductions);
 
 // 🆕 CLIENT-LEVEL WORKFLOW STATUS ROUTES (before parametric routes)
 // Update overall workflow status for a client (different from individual project status)
-router.patch('/workflow-status/:clientId', updateClientReductionWorkflowStatus);
+router.patch('/workflow-status/:clientId', zcGate, updateClientReductionWorkflowStatus);
 
 // Get overall workflow status for a client
-router.get('/workflow-status/:clientId', getClientReductionWorkflowStatus);
+router.get('/workflow-status/:clientId', zcGate, getClientReductionWorkflowStatus);
 
 // Sync projects for a client (also auto-updates workflow status)
-router.post('/sync/:clientId', syncReductionProjects);
+router.post('/sync/:clientId', zcGate, syncReductionProjects);
 
 // Get projects summary for a client
-router.get('/summary/:clientId', getReductionProjectsSummary);
+router.get('/summary/:clientId', zcGate, getReductionProjectsSummary);
 
 // ==========================================
 // 🔹 PARAMETRIC ROUTES (with params like :clientId, :projectId)
@@ -59,39 +64,41 @@ router.get('/summary/:clientId', getReductionProjectsSummary);
 // Create reduction for a client
 router.post(
   '/:clientId',
+  zcGate,
   uploadReductionMedia,
   createReduction
 );
 
 // Get single reduction
-router.get('/:clientId/:projectId', getReduction);
+router.get('/:clientId/:projectId', zcGate, getReduction);
 
 // Update reduction
 router.patch(
   '/:clientId/:projectId',
+  zcGate,
   uploadReductionMedia,
   updateReduction
 );
 
 // 🔹 PROJECT-LEVEL STATUS UPDATE (individual project)
 // Keep this AFTER the main patch route
-router.patch('/:clientId/:projectId/status', updateReductionStatus);
+router.patch('/:clientId/:projectId/status', zcGate, updateReductionStatus);
 
 // Force recalculate
-router.post('/:clientId/:projectId/recalculate', recalculateReduction);
+router.post('/:clientId/:projectId/recalculate', zcGate, recalculateReduction);
 
 // Restore soft-deleted reduction
-router.patch('/:clientId/:projectId/restore', restoreSoftDeletedReduction);
+router.patch('/:clientId/:projectId/restore', zcGate, restoreSoftDeletedReduction);
 
 // Team assignment for a Reduction project
-router.patch('/:clientId/:projectId/assign-employee-head', assignEmployeeHeadToProject);
-router.patch('/:clientId/:projectId/assign-employees', assignEmployeesToProject);
+router.patch('/:clientId/:projectId/assign-employee-head', zcGate, assignEmployeeHeadToProject);
+router.patch('/:clientId/:projectId/assign-employees', zcGate, assignEmployeesToProject);
 
 // Delete (soft)
-router.delete('/:clientId/:projectId', deleteReduction);
+router.delete('/:clientId/:projectId', zcGate, deleteReduction);
 
 // Hard delete from DB (super admin only)
-router.delete('/:clientId/:projectId/hard', deleteFromDB);
+router.delete('/:clientId/:projectId/hard', zcGate, deleteFromDB);
 
 module.exports = router;
 
