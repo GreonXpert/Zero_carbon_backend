@@ -584,16 +584,20 @@ DataEntrySchema.post('save', async function(doc) {
 
 // Method to validate data format
 DataEntrySchema.methods.validateDataFormat = function() {
-  if (!this.dataValues || !(this.dataValues instanceof Map)) {
+  if (!this.dataValues || typeof this.dataValues !== 'object') {
     throw new Error('Invalid format: Please update dataValues to be key-value structured for cumulative tracking.');
   }
-  
-  for (const [key, value] of this.dataValues) {
+
+  const entries = this.dataValues instanceof Map
+    ? [...this.dataValues.entries()]
+    : Object.entries(this.dataValues);
+
+  for (const [key, value] of entries) {
     if (typeof value !== 'number' && isNaN(Number(value))) {
       throw new Error(`Invalid format: Value for key "${key}" must be numeric for cumulative tracking.`);
     }
   }
-  
+
   return true;
 };
 
@@ -616,50 +620,52 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
     isSummary: false // Don't consider summary entries for cumulative calculation
   }).sort({ timestamp: -1 });
   
-  // Initialize tracking maps
-  const cumulativeValues = new Map();
-  const highData = new Map();
-  const lowData = new Map();
-  const lastEnteredData = new Map();
+  // Initialize tracking objects
+  const cumulativeValues = {};
+  const highData = {};
+  const lowData = {};
+  const lastEnteredData = {};
 
   // Track totals for this entry
   let incomingTotalValue = 0;
-  
+
+  // Support both Map and plain object for dataValues
+  const dataEntries = this.dataValues instanceof Map
+    ? [...this.dataValues.entries()]
+    : Object.entries(this.dataValues);
+
   // Process each incoming value
-  for (const [key, value] of this.dataValues) {
+  for (const [key, value] of dataEntries) {
     const numValue = Number(value);
 
     // Add to entry total
     incomingTotalValue += numValue;
-    
+
     // Store last entered
-    lastEnteredData.set(key, numValue);
-    
+    lastEnteredData[key] = numValue;
+
     // Calculate cumulative
     let cumulativeValue = numValue;
     if (previousEntry && previousEntry.cumulativeValues) {
-      const prevCumulMap = previousEntry.cumulativeValues instanceof Map
-        ? previousEntry.cumulativeValues
-        : new Map(Object.entries(previousEntry.cumulativeValues));
-      const prevCumulative = prevCumulMap.get(key) || 0;
-      cumulativeValue = prevCumulative + numValue;
+      const prevCum = previousEntry.cumulativeValues instanceof Map
+        ? (previousEntry.cumulativeValues.get(key) || 0)
+        : (previousEntry.cumulativeValues[key] || 0);
+      cumulativeValue = prevCum + numValue;
     }
-    cumulativeValues.set(key, cumulativeValue);
+    cumulativeValues[key] = cumulativeValue;
 
     // Update high/low
     let highValue = numValue;
     let lowValue = numValue;
 
     if (previousEntry && previousEntry.highData && previousEntry.lowData) {
-      const prevHighMap = previousEntry.highData instanceof Map
-        ? previousEntry.highData
-        : new Map(Object.entries(previousEntry.highData));
-      const prevLowMap = previousEntry.lowData instanceof Map
-        ? previousEntry.lowData
-        : new Map(Object.entries(previousEntry.lowData));
-      const prevHigh = prevHighMap.get(key);
-      const prevLow = prevLowMap.get(key);
-      
+      const prevHigh = previousEntry.highData instanceof Map
+        ? previousEntry.highData.get(key)
+        : previousEntry.highData[key];
+      const prevLow = previousEntry.lowData instanceof Map
+        ? previousEntry.lowData.get(key)
+        : previousEntry.lowData[key];
+
       if (prevHigh !== undefined) {
         highValue = Math.max(prevHigh, numValue);
       }
@@ -667,9 +673,9 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
         lowValue = Math.min(prevLow, numValue);
       }
     }
-    
-    highData.set(key, highValue);
-    lowData.set(key, lowValue);
+
+    highData[key] = highValue;
+    lowData[key] = lowValue;
   }
   
   // Build dataEntryCumulative (total sum + total count)

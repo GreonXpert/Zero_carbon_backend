@@ -1615,12 +1615,12 @@ async function canWriteManualOrCSV(user, clientId, node, scope) {
  * Converts a plain object to a Map of numbers (DataEntry requires numeric values)
  */
 const toNumericMap = (obj = {}) => {
-  const m = new Map();
+  const result = {};
   Object.entries(obj).forEach(([k, v]) => {
     const n = Number(v);
-    m.set(k, Number.isFinite(n) ? n : 0);
+    result[k] = Number.isFinite(n) ? n : 0;
   });
-  return m;
+  return result;
 };
 function getKeyCI(obj, wanted) {
   if (!obj) return undefined;

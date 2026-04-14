@@ -129,8 +129,7 @@ function decrypt(encryptedValue) {
       case 's': return payload;
       case 'n': return Number(payload);
       case 'm': {
-        const obj = JSON.parse(payload);
-        return new Map(Object.entries(obj));
+        return JSON.parse(payload);
       }
       case 'j': return JSON.parse(payload);
       default:  return payload; // fallback

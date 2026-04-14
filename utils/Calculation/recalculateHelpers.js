@@ -172,42 +172,44 @@ async function recalculateDataEntriesAfter(insertedEntry) {
       }).sort({ timestamp: -1 });
       
       // Recalculate cumulative tracking
-      const cumulativeValues = new Map();
-      const highData = new Map();
-      const lowData = new Map();
-      const lastEnteredData = new Map();
-      
-      for (const [key, value] of entry.dataValues) {
+      const cumulativeValues = {};
+      const highData = {};
+      const lowData = {};
+      const lastEnteredData = {};
+
+      // Support both Map and plain object for dataValues
+      const dataEntries = entry.dataValues instanceof Map
+        ? [...entry.dataValues.entries()]
+        : Object.entries(entry.dataValues || {});
+
+      for (const [key, value] of dataEntries) {
         const numValue = Number(value);
-        
+
         // Store last entered
-        lastEnteredData.set(key, numValue);
-        
+        lastEnteredData[key] = numValue;
+
         // Calculate cumulative
         let cumulativeValue = numValue;
         if (previousEntry && previousEntry.cumulativeValues) {
-          const prevCumulMap = previousEntry.cumulativeValues instanceof Map
-            ? previousEntry.cumulativeValues
-            : new Map(Object.entries(previousEntry.cumulativeValues));
-          const prevCumulative = prevCumulMap.get(key) || 0;
-          cumulativeValue = prevCumulative + numValue;
+          const prevCum = previousEntry.cumulativeValues instanceof Map
+            ? (previousEntry.cumulativeValues.get(key) || 0)
+            : (previousEntry.cumulativeValues[key] || 0);
+          cumulativeValue = prevCum + numValue;
         }
-        cumulativeValues.set(key, cumulativeValue);
+        cumulativeValues[key] = cumulativeValue;
 
         // Update high/low
         let highValue = numValue;
         let lowValue = numValue;
 
         if (previousEntry && previousEntry.highData && previousEntry.lowData) {
-          const prevHighMap = previousEntry.highData instanceof Map
-            ? previousEntry.highData
-            : new Map(Object.entries(previousEntry.highData));
-          const prevLowMap = previousEntry.lowData instanceof Map
-            ? previousEntry.lowData
-            : new Map(Object.entries(previousEntry.lowData));
-          const prevHigh = prevHighMap.get(key);
-          const prevLow = prevLowMap.get(key);
-          
+          const prevHigh = previousEntry.highData instanceof Map
+            ? previousEntry.highData.get(key)
+            : previousEntry.highData[key];
+          const prevLow = previousEntry.lowData instanceof Map
+            ? previousEntry.lowData.get(key)
+            : previousEntry.lowData[key];
+
           if (prevHigh !== undefined) {
             highValue = Math.max(prevHigh, numValue);
           }
@@ -215,9 +217,9 @@ async function recalculateDataEntriesAfter(insertedEntry) {
             lowValue = Math.min(prevLow, numValue);
           }
         }
-        
-        highData.set(key, highValue);
-        lowData.set(key, lowValue);
+
+        highData[key] = highValue;
+        lowData[key] = lowValue;
       }
       
       // Update the entry
