@@ -638,18 +638,27 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
     // Calculate cumulative
     let cumulativeValue = numValue;
     if (previousEntry && previousEntry.cumulativeValues) {
-      const prevCumulative = previousEntry.cumulativeValues.get(key) || 0;
+      const prevCumulMap = previousEntry.cumulativeValues instanceof Map
+        ? previousEntry.cumulativeValues
+        : new Map(Object.entries(previousEntry.cumulativeValues));
+      const prevCumulative = prevCumulMap.get(key) || 0;
       cumulativeValue = prevCumulative + numValue;
     }
     cumulativeValues.set(key, cumulativeValue);
-    
+
     // Update high/low
     let highValue = numValue;
     let lowValue = numValue;
-    
+
     if (previousEntry && previousEntry.highData && previousEntry.lowData) {
-      const prevHigh = previousEntry.highData.get(key);
-      const prevLow = previousEntry.lowData.get(key);
+      const prevHighMap = previousEntry.highData instanceof Map
+        ? previousEntry.highData
+        : new Map(Object.entries(previousEntry.highData));
+      const prevLowMap = previousEntry.lowData instanceof Map
+        ? previousEntry.lowData
+        : new Map(Object.entries(previousEntry.lowData));
+      const prevHigh = prevHighMap.get(key);
+      const prevLow = prevLowMap.get(key);
       
       if (prevHigh !== undefined) {
         highValue = Math.max(prevHigh, numValue);
