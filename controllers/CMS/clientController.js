@@ -138,6 +138,7 @@ async function updateClientIdReferencesOnActivation(oldClientId, newClientId, ac
   } catch (err) {
     console.error('[updateClientIdReferencesOnActivation] User update error:', err.message);
     results.users = { error: err.message };
+    results.criticalFailure = true; // signals caller to write a warning timeline entry
   }
 
   // 2) Flowcharts
@@ -5294,12 +5295,24 @@ const updateClientModuleAccess = async (req, res) => {
 
     client.accessibleModules = accessibleModules;
 
-    // If esg_link is newly added, initialize esgLinkSubscription if absent
-    if (addedModules.includes('esg_link') && !client.accountDetails?.esgLinkSubscription?.subscriptionStatus) {
-      client.accountDetails.esgLinkSubscription = {
+    // If esg_link is newly added, initialize esgLinkSubscription with real dates.
+    // IMPORTANT: check !subscriptionEndDate (not !esgLinkSubscription or !subscriptionStatus).
+    // Mongoose virtualizes the absent subdoc with schema defaults, making
+    // !esgLinkSubscription and !subscriptionStatus both false, silently skipping this block.
+    // Checking !subscriptionEndDate works for all cases:
+    //   1. subdoc absent in DB → undefined?.subscriptionEndDate = undefined → init runs
+    //   2. subdoc exists but dates not set → null → init runs (re-sets dates)
+    //   3. subdoc exists with valid end date → truthy → init correctly skipped
+    if (addedModules.includes('esg_link') && !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate) {
+      if (!client.accountDetails) client.accountDetails = {};
+      const zcEnd = client.accountDetails?.subscriptionEndDate;
+      client.set('accountDetails.esgLinkSubscription', {
         subscriptionStatus: 'active',
         isActive: true,
-      };
+        subscriptionStartDate: new Date(),
+        subscriptionEndDate: zcEnd || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      });
+      client.markModified('accountDetails.esgLinkSubscription');
     }
 
     client.timeline.push({
@@ -6563,12 +6576,25 @@ const moveToActive = async (req, res) => {
 
     // 7) Update all collection references (clientId rename: Sandbox_Greon → Greon)
     try {
-      await updateClientIdReferencesOnActivation(
+      const refResult = await updateClientIdReferencesOnActivation(
         oldClientId,
         newClientId,
         req.user.id,
         "quota_to_active"
       );
+      if (refResult?.criticalFailure) {
+        // User clientId rename failed — users may still carry old sandbox clientId.
+        // Auth.js fallback (sandboxClientId lookup) will handle logins in the meantime.
+        client.timeline.push({
+          stage: 'active',
+          status: 'active',
+          action: 'WARNING: user clientId update failed on activation',
+          performedBy: req.user.id,
+          notes: 'Users may still carry old sandbox clientId. Re-run user migration.',
+          timestamp: new Date(),
+        });
+        await client.save();
+      }
     } catch (err) {
       console.error("updateClientIdReferencesOnActivation error:", err.message);
       // Not fatal — log and continue

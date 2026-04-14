@@ -79,8 +79,12 @@ const auth = async (req, res, next) => {
 
       // ── 3. Client subscription check ──────────────────────────────────────
       if (user.clientId) {
-        const client = await Client.findOne({ clientId: user.clientId });
-
+        let client = await Client.findOne({ clientId: user.clientId });
+        if (!client) {
+          // Fallback: user.clientId may still be the old Sandbox_GreonXXX id if the
+          // clientId-rename step failed silently during activation. Look up by sandboxClientId.
+          client = await Client.findOne({ sandboxClientId: user.clientId });
+        }
         if (!client) {
           return res.status(403).json({ message: "Your organization is not found" });
         }

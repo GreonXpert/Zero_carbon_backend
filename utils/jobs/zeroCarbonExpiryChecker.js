@@ -80,7 +80,7 @@ async function checkZcActiveToGracePeriod() {
   const clients = await Client.find({
     stage: 'active',
     'accountDetails.subscriptionStatus': 'active',
-    'accountDetails.subscriptionEndDate': { $lte: new Date() },
+    'accountDetails.subscriptionEndDate': { $exists: true, $ne: null, $lte: new Date() },
   });
 
   console.log(`[ZeroCarbon Expiry] Grace-period check: ${clients.length} client(s) to move to grace_period`);
@@ -133,7 +133,7 @@ async function checkZcGracePeriodToExpired() {
 
   const clients = await Client.find({
     'accountDetails.subscriptionStatus': 'grace_period',
-    'accountDetails.subscriptionEndDate': { $lte: graceCutoff },
+    'accountDetails.subscriptionEndDate': { $exists: true, $ne: null, $lte: graceCutoff },
   });
 
   console.log(`[ZeroCarbon Expiry] Full-expiry check: ${clients.length} client(s) to fully expire`);

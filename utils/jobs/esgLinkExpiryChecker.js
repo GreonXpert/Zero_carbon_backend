@@ -80,7 +80,7 @@ async function checkEsgActiveToGracePeriod() {
   const clients = await Client.find({
     accessibleModules: 'esg_link',
     'accountDetails.esgLinkSubscription.subscriptionStatus': 'active',
-    'accountDetails.esgLinkSubscription.subscriptionEndDate': { $lte: new Date() },
+    'accountDetails.esgLinkSubscription.subscriptionEndDate': { $exists: true, $ne: null, $lte: new Date() },
   });
 
   console.log(`[ESGLink Expiry] Grace-period check: ${clients.length} client(s) to move to grace_period`);
@@ -134,7 +134,7 @@ async function checkEsgGracePeriodToExpired() {
   const clients = await Client.find({
     accessibleModules: 'esg_link',
     'accountDetails.esgLinkSubscription.subscriptionStatus': 'grace_period',
-    'accountDetails.esgLinkSubscription.subscriptionEndDate': { $lte: graceCutoff },
+    'accountDetails.esgLinkSubscription.subscriptionEndDate': { $exists: true, $ne: null, $lte: graceCutoff },
   });
 
   console.log(`[ESGLink Expiry] Full-expiry check: ${clients.length} client(s) to fully expire`);

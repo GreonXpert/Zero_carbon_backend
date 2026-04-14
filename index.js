@@ -58,7 +58,6 @@ const sandboxRoutes = require('./router/CMS/sandboxRoutes');
 const apiKeyRoutes = require('./router/apiKeyRoutes');
 const { surveyAuthRouter, surveyPublicRouter } = require('./router/Organization/surveyRoutes');
 const { startApiKeyExpiryChecker } = require('./utils/jobs/apiKeyExpiryChecker');
-const { requireActiveModuleSubscription } = require('./utils/Permissions/modulePermission');
 
 // Import models for real-time features
 const User = require('./models/User');
@@ -158,9 +157,7 @@ app.use(
   express.static('uploads')
 );
 
-// ── Module subscription gate ──────────────────────────────────────────────
-// Shorthand for ZeroCarbon-specific route protection.
-const zcGate = requireActiveModuleSubscription('zero_carbon');
+
 
 // Routes
 app.use("/api/users", userR);
@@ -168,16 +165,16 @@ app.use("/api/clients", clientR);                 // includes subscription manag
 app.use('/api/sandbox', sandboxRoutes);
 
 // ── ZeroCarbon feature routes (blocked when ZeroCarbon subscription is expired) ──
-app.use("/api/flowchart",           zcGate, flowchartR);
-app.use("/api/processflow",         zcGate, processFlowR);
-app.use('/api/transport-flowchart', zcGate, transportFlowRouter);
-app.use('/api/summaries',           zcGate, summaryRoutes);
-app.use('/api/reductions',          zcGate, reductionRoutes);
-app.use('/api/net-reduction',       zcGate, netReductionRoutes);
-app.use('/api/formulas',            zcGate, FormulaR);
-app.use('/api/sbti',                zcGate, DecarbonizationRoutes);
-app.use('/api/data-collection',     zcGate, dataCollectionRouter);
-app.use('/api/verification',        zcGate, verificationRoutes);
+app.use("/api/flowchart",            flowchartR);
+app.use("/api/processflow",          processFlowR);
+app.use('/api/transport-flowchart', transportFlowRouter);
+app.use('/api/summaries',            summaryRoutes);
+app.use('/api/reductions',           reductionRoutes);
+app.use('/api/net-reduction',        netReductionRoutes);
+app.use('/api/formulas',             FormulaR);
+app.use('/api/sbti',                 DecarbonizationRoutes);
+app.use('/api/data-collection',      dataCollectionRouter);
+app.use('/api/verification',         verificationRoutes);
 
 // ── Emission factor reference data — no module gate (read-only reference, no client data) ──
 app.use("/api/defra", defraDataR);
