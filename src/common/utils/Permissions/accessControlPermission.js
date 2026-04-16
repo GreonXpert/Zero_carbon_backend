@@ -27,7 +27,9 @@
 'use strict';
 
 // ─── Roles subject to checklist enforcement ───────────────────────────────────
-const CHECKLIST_ROLES = new Set(['viewer', 'auditor']);
+// Extended to include ESGLink roles (contributor, reviewer, approver).
+// ZeroCarbon enforcement is unaffected — those roles have no zero_carbon accessControls.
+const CHECKLIST_ROLES = new Set(['viewer', 'auditor', 'contributor', 'reviewer', 'approver']);
 
 // ─── Module keys (must match the keys in User.accessControls.modules) ─────────
 const VALID_MODULES = new Set([
@@ -100,6 +102,51 @@ const VALID_SECTIONS = {
 };
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ESGLink MODULE / SECTION DEFINITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 🆕 ESGLink module keys
+const ESG_VALID_MODULES = new Set([
+  'dataCollectionEsgLink',
+  'esgLinkBoundary',
+  'metrics',
+  'formula',
+  'framework',
+]);
+
+// 🆕 ESGLink section keys per module (framework sections are dynamic per-client)
+const ESG_VALID_SECTIONS = {
+  dataCollectionEsgLink: [
+    'list',         // view data collection entries list
+    'detail',       // view individual data entry
+    'submit',       // submit data entry
+    'editHistory',  // view edit history of data entries
+  ],
+  esgLinkBoundary: [
+    'view',         // view boundary structure
+    'edit',         // create/update boundary nodes
+    'assign',       // assign entities to boundary
+  ],
+  metrics: [
+    'list',         // view metrics list
+    'detail',       // view individual metric
+    'create',       // create new metric
+    'edit',         // edit existing metric
+  ],
+  formula: [
+    'list',         // view formula list
+    'detail',       // view formula detail
+    'create',       // create formula
+    'edit',         // edit formula
+  ],
+  // framework sections are framework name keys (BRSR, GRI, etc.) — see ALLOWED_FRAMEWORK_SECTIONS
+  framework: {},
+};
+
+// 🆕 All allowed framework names (must match esgLinkAssessmentLevel.js ALLOWED_FRAMEWORKS)
+const ALLOWED_FRAMEWORK_SECTIONS = ['BRSR', 'GRI', 'TCFD', 'CDP', 'SASB', 'UNGC', 'ISO_26000', 'SDG'];
+
 // ─── Secure defaults per role ─────────────────────────────────────────────────
 // These are used when a viewer/auditor is created WITHOUT an explicit checklist.
 // Both default to FULLY CLOSED. client_admin MUST explicitly grant access.
@@ -140,6 +187,177 @@ function buildOpenChecklist() {
   return { modules };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ESGLink CHECKLIST BUILDERS & VALIDATORS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * buildClosedEsgChecklist
+ * Returns a fully closed (all false) ESGLink accessControls object.
+ * Used as the fail-closed default for new contributor/reviewer/approver accounts.
+ * Framework sections include all 8 ALLOWED_FRAMEWORK_SECTIONS, all set to false.
+ */
+function buildClosedEsgChecklist() {
+  const modules = {};
+
+  for (const mod of ESG_VALID_MODULES) {
+    if (mod === 'framework') continue;
+    const sections = {};
+    for (const sec of (ESG_VALID_SECTIONS[mod] || [])) {
+      sections[sec] = false;
+    }
+    modules[mod] = { enabled: false, sections };
+  }
+
+  // Framework module — sections are the framework names
+  const frameworkSections = {};
+  for (const fw of ALLOWED_FRAMEWORK_SECTIONS) {
+    frameworkSections[fw] = false;
+  }
+  modules['framework'] = { enabled: false, sections: frameworkSections };
+
+  return { modules };
+}
+
+/**
+ * validateAndSanitizeEsgChecklist
+ *
+ * Validates an incoming ESGLink esgAccessControls payload.
+ * Strips unknown module keys silently.
+ * For the 'framework' module: rejects any section set to true that is not in clientFrameworks.
+ * Fills missing modules/sections with closed defaults.
+ *
+ * @param {object}   rawChecklist      - raw esgAccessControls from req.body
+ * @param {string[]} clientFrameworks  - frameworks enabled for the client
+ *                                       (from Client.submissionData.esgLinkAssessmentLevel.frameworks)
+ * @returns {{ valid: boolean, sanitized?: object, error?: string }}
+ */
+const validateAndSanitizeEsgChecklist = (rawChecklist, clientFrameworks = []) => {
+  if (!rawChecklist || typeof rawChecklist !== 'object') {
+    return { valid: false, error: 'esgAccessControls must be an object.' };
+  }
+  if (!rawChecklist.modules || typeof rawChecklist.modules !== 'object') {
+    return { valid: false, error: 'esgAccessControls.modules must be an object.' };
+  }
+
+  const sanitizedModules = {};
+
+  for (const [modKey, modVal] of Object.entries(rawChecklist.modules)) {
+    // Skip unknown module keys silently
+    if (!ESG_VALID_MODULES.has(modKey)) continue;
+    if (typeof modVal !== 'object' || modVal === null) {
+      return { valid: false, error: `esgAccessControls.modules.${modKey} must be an object.` };
+    }
+
+    const enabled = modVal.enabled === true;
+
+    if (modKey === 'framework') {
+      // ── FRAMEWORK VALIDATION ────────────────────────────────────────────────
+      const sanitizedFrameworkSections = {};
+
+      if (modVal.sections && typeof modVal.sections === 'object') {
+        for (const [fw, val] of Object.entries(modVal.sections)) {
+          if (!ALLOWED_FRAMEWORK_SECTIONS.includes(fw)) {
+            return {
+              valid: false,
+              error: `Unknown framework "${fw}". Allowed frameworks: ${ALLOWED_FRAMEWORK_SECTIONS.join(', ')}`,
+            };
+          }
+          if (val === true && !clientFrameworks.includes(fw)) {
+            return {
+              valid: false,
+              error: `Framework "${fw}" is not enabled for this client. ` +
+                     `Client's enabled frameworks: ${clientFrameworks.length ? clientFrameworks.join(', ') : 'none'}. ` +
+                     `Please enable the framework for this client before granting user access to it.`,
+            };
+          }
+          sanitizedFrameworkSections[fw] = val === true;
+        }
+      }
+
+      // Fill missing framework sections with false
+      for (const fw of ALLOWED_FRAMEWORK_SECTIONS) {
+        if (!(fw in sanitizedFrameworkSections)) {
+          sanitizedFrameworkSections[fw] = false;
+        }
+      }
+
+      sanitizedModules['framework'] = { enabled, sections: sanitizedFrameworkSections };
+    } else {
+      // ── STANDARD MODULE VALIDATION ──────────────────────────────────────────
+      const validSecs = ESG_VALID_SECTIONS[modKey] || [];
+      const sanitizedSections = {};
+      for (const sec of validSecs) {
+        sanitizedSections[sec] = (modVal.sections && typeof modVal.sections === 'object')
+          ? modVal.sections[sec] === true
+          : false;
+      }
+      sanitizedModules[modKey] = { enabled, sections: sanitizedSections };
+    }
+  }
+
+  // Fill missing ESGLink modules with closed defaults
+  for (const mod of ESG_VALID_MODULES) {
+    if (!sanitizedModules[mod]) {
+      if (mod === 'framework') {
+        const sections = {};
+        for (const fw of ALLOWED_FRAMEWORK_SECTIONS) { sections[fw] = false; }
+        sanitizedModules[mod] = { enabled: false, sections };
+      } else {
+        const sections = {};
+        for (const sec of (ESG_VALID_SECTIONS[mod] || [])) { sections[sec] = false; }
+        sanitizedModules[mod] = { enabled: false, sections };
+      }
+    }
+  }
+
+  return { valid: true, sanitized: { modules: sanitizedModules } };
+};
+
+/**
+ * hasEsgModuleAccess
+ *
+ * Check if a user has top-level access to a specific ESGLink module.
+ * Non-checklist roles always return true (pass-through).
+ * For checklist roles: user.esgAccessControls.modules[moduleKey].enabled must be true.
+ *
+ * @param {object} user      - req.user or full User document
+ * @param {string} moduleKey - one of ESG_VALID_MODULES
+ * @returns {boolean}
+ */
+const hasEsgModuleAccess = (user, moduleKey) => {
+  if (!user) return false;
+  if (!isChecklistRole(user.userType)) return true;
+  const ac = user.esgAccessControls;
+  if (!ac || !ac.modules) return false;
+  const mod = ac.modules[moduleKey];
+  if (!mod) return false;
+  return mod.enabled === true;
+};
+
+/**
+ * hasEsgSectionAccess
+ *
+ * Check if a user has access to a specific section within an ESGLink module.
+ * Module must also be enabled (hasEsgModuleAccess is checked first).
+ * Non-checklist roles always return true.
+ *
+ * @param {object} user        - req.user or full User document
+ * @param {string} moduleKey   - one of ESG_VALID_MODULES
+ * @param {string} sectionKey  - section key (or framework name for 'framework' module)
+ * @returns {boolean}
+ */
+const hasEsgSectionAccess = (user, moduleKey, sectionKey) => {
+  if (!user) return false;
+  if (!isChecklistRole(user.userType)) return true;
+  if (!hasEsgModuleAccess(user, moduleKey)) return false;
+  const ac = user.esgAccessControls;
+  if (!ac || !ac.modules) return false;
+  const mod = ac.modules[moduleKey];
+  if (!mod || !mod.sections) return false;
+  return mod.sections[sectionKey] === true;
+};
 
 // ─── Core helpers ─────────────────────────────────────────────────────────────
 
@@ -654,4 +872,13 @@ module.exports = {
   VALID_SECTIONS,
   PRESET_TEMPLATES,
   ACCESS_CONTROLS_SCHEMA_DEFINITION,
+
+  // 🆕 ESGLink
+  ESG_VALID_MODULES,
+  ESG_VALID_SECTIONS,
+  ALLOWED_FRAMEWORK_SECTIONS,
+  buildClosedEsgChecklist,
+  validateAndSanitizeEsgChecklist,
+  hasEsgModuleAccess,
+  hasEsgSectionAccess,
 };

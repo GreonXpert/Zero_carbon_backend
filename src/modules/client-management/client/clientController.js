@@ -57,6 +57,9 @@ const {
   validateSubmissionForLevels
 } = require('../../zero-carbon/workflow/assessmentLevel');
 
+const { validateEsgLinkAssessmentLevel } = require('../../esg-link/utils/esgLinkAssessmentLevel');
+const { renderEsgLinkClientDataHTML } = require('../../esg-link/workflow/pdfTemplates');
+
 const { logEvent } = require('../../../common/services/audit/auditLogService');
 const { isModuleSubscriptionActive } = require('../../../common/utils/Permissions/modulePermission');
 
@@ -1296,7 +1299,23 @@ const createLead = async (req, res) => {
       referenceContactNumber,
       eventName,
       eventPlace,
+      accessibleModules: rawAccessibleModules,
     } = req.body;
+
+    // Validate and default accessibleModules
+    const ALLOWED_MODULES_FOR_LEAD = ['zero_carbon', 'esg_link'];
+    const accessibleModules = Array.isArray(rawAccessibleModules) && rawAccessibleModules.length > 0
+      ? rawAccessibleModules
+      : ['zero_carbon'];
+
+    const invalidModules = accessibleModules.filter(m => !ALLOWED_MODULES_FOR_LEAD.includes(m));
+    if (invalidModules.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid accessibleModules: ${invalidModules.join(', ')}. Allowed values: ${ALLOWED_MODULES_FOR_LEAD.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Normalize inputs
     const normalizedEmail = (email || "").toString().trim().toLowerCase();
@@ -1394,6 +1413,7 @@ const createLead = async (req, res) => {
           clientSequenceNumber: seq,
           stage: "lead",
           status: "contacted",
+          accessibleModules,
           leadInfo: {
             companyName: normalizedCompanyName,
             contactPersonName: normalizedContactPersonName,
@@ -1419,7 +1439,7 @@ const createLead = async (req, res) => {
               status: "contacted",
               action: "Lead created",
               performedBy: req.user.id,
-              notes: `Lead created by ${req.user.userName}`,
+              notes: `Lead created by ${req.user.userName} with modules: [${accessibleModules.join(', ')}]`,
             },
           ],
         });
@@ -2093,33 +2113,47 @@ const submitClientData = async (req, res) => {
       }
     }
 
-    // 5) NORMALIZE + VALIDATE assessmentLevel
-    const normalizedLevels = normalizeAssessmentLevels(
-      inbound.assessmentLevel
-    );
+    // 5) DETERMINE MODULES + VALIDATE per module
+    const modules      = client.accessibleModules || ['zero_carbon'];
+    const hasZeroCarbon = modules.includes('zero_carbon');
+    const hasEsgLink    = modules.includes('esg_link');
 
-    if (!normalizedLevels || normalizedLevels.length === 0) {
-      return res.status(400).json({
-        message:
-          "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)",
-      });
+    // 5a) ZeroCarbon assessment level validation (unchanged — only runs for ZC clients)
+    let normalizedLevels = [];
+    if (hasZeroCarbon) {
+      normalizedLevels = normalizeAssessmentLevels(inbound.assessmentLevel);
+
+      if (!normalizedLevels || normalizedLevels.length === 0) {
+        return res.status(400).json({
+          message:
+            "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)",
+        });
+      }
+
+      const submissionPreview = {
+        ...inbound,
+        assessmentLevel: normalizedLevels,
+      };
+
+      const { errors } = validateSubmissionForLevels(submissionPreview, normalizedLevels);
+
+      if (errors && errors.length) {
+        return res.status(400).json({
+          message: "Validation error",
+          errors,
+        });
+      }
     }
 
-    const submissionPreview = {
-      ...inbound,
-      assessmentLevel: normalizedLevels,
-    };
-
-    const { errors } = validateSubmissionForLevels(
-      submissionPreview,
-      normalizedLevels
-    );
-
-    if (errors && errors.length) {
-      return res.status(400).json({
-        message: "Validation error",
-        errors,
-      });
+    // 5b) ESGLink assessment level validation (only runs for ESGLink clients)
+    if (hasEsgLink) {
+      const esgErrors = validateEsgLinkAssessmentLevel(inbound.esgLinkAssessmentLevel);
+      if (esgErrors.length > 0) {
+        return res.status(400).json({
+          message: "ESGLink validation error",
+          errors: esgErrors,
+        });
+      }
     }
 
     // 6) MARK CLIENT AS SANDBOX HERE
@@ -2141,7 +2175,8 @@ const submitClientData = async (req, res) => {
       // keep any existing internal fields if present (e.g. validationStatus, reviewNotes)
       ...(client.submissionData?.toObject?.() || client.submissionData || {}),
       ...inbound,
-      assessmentLevel: normalizedLevels,
+      ...(hasZeroCarbon ? { assessmentLevel: normalizedLevels } : {}),
+      ...(hasEsgLink    ? { esgLinkAssessmentLevel: inbound.esgLinkAssessmentLevel } : {}),
       submittedAt: new Date(),
       submittedBy: req.user.id,
     };
@@ -2208,17 +2243,29 @@ client.submissionData.dataCompleteness = dataCompleteness;
       // Do not block the main flow if user creation fails
     }
 
-    // 9) Generate PDF + send email (non-blocking for main logic)
-    try {
-      const html = renderClientDataHTML(client);
-      const pdf = await htmlToPdfBuffer(
-        html,
-        `ZeroCarbon_ClientData_${client.clientId}.pdf`
-      );
-      await sendClientDataSubmittedEmail(client, [pdf]);
-      console.log("✉️ Client data submitted email sent with PDF.");
-    } catch (e) {
-      console.error("Email/PDF (submitClientData) error:", e.message);
+    // 9) Generate PDF + send email per module (non-blocking for main logic)
+    // ZeroCarbon PDF email (existing, unchanged)
+    if (hasZeroCarbon) {
+      try {
+        const html = renderClientDataHTML(client);
+        const pdf = await htmlToPdfBuffer(html, `ZeroCarbon_ClientData_${client.clientId}.pdf`);
+        await sendClientDataSubmittedEmail(client, [pdf]);
+        console.log("✉️ ZeroCarbon client data submitted email sent with PDF.");
+      } catch (e) {
+        console.error("Email/PDF (submitClientData ZC) error:", e.message);
+      }
+    }
+
+    // ESGLink PDF email (new)
+    if (hasEsgLink) {
+      try {
+        const html = renderEsgLinkClientDataHTML(client);
+        const pdf = await htmlToPdfBuffer(html, `ESGLink_ClientData_${client.clientId}.pdf`);
+        await sendClientDataSubmittedEmail(client, [pdf]);
+        console.log("✉️ ESGLink client data submitted email sent with PDF.");
+      } catch (e) {
+        console.error("Email/PDF (submitClientData ESGLink) error:", e.message);
+      }
     }
 
     // 10) Response
@@ -2792,27 +2839,39 @@ const moveToProposal = async (req, res) => {
 
     await client.save();
 
-    // === Generate PDF of FULL submissionData and email it ===
+    // === Generate PDF / send email per module (non-blocking) ===
     try {
-      if (!client.submissionData) {
-        console.warn(`Client ${client.clientId} moved to proposal without submissionData.`);
+      const proposalModules = client.accessibleModules || ['zero_carbon'];
+
+      // ZeroCarbon: generate PDF of full submissionData and email it (existing, unchanged)
+      if (proposalModules.includes('zero_carbon')) {
+        if (!client.submissionData) {
+          console.warn(`Client ${client.clientId} moved to proposal without submissionData.`);
+        }
+        const html = renderClientDataHTML(client);
+        const filename = `ZeroCarbon_Submission_${client.clientId}.pdf`;
+        const pdf = await htmlToPdfBuffer(html, filename);
+        await sendProposalCreatedEmail(client, [pdf]);
+        console.log(`✉️ ZeroCarbon proposal email with PDF sent to ${client.leadInfo.email}`);
       }
-      const html = renderClientDataHTML(client); // uses full submissionData
-      const filename = `ZeroCarbon_Submission_${client.clientId}.pdf`;
-      const pdf = await htmlToPdfBuffer(html, filename);
 
-      // Preferred helper: sends to appropriate recipient(s) with branding
-      await sendProposalCreatedEmail(client, [pdf]);
-
-      // If you ever need a fallback:
-      // await sendMail(
-      //   client.leadInfo.email,
-      //   'ZeroCarbon – Proposal Submitted (Submission Summary Attached)',
-      //   `Dear ${client.leadInfo.contactPersonName || 'Client'},\n\nWe have submitted your proposal. Please find attached the PDF containing your full submission details.\n\nRegards,\nZeroCarbon Team`,
-      //   [{ filename, content: pdf }]
-      // );
-
-      console.log(`✉️ Proposal submission email with PDF sent to ${client.leadInfo.email}`);
+      // ESGLink: send plain email (no PDF) to confirm proposal submission
+      if (proposalModules.includes('esg_link')) {
+        const companyName = client.submissionData?.companyInfo?.companyName || client.clientId;
+        const recipientEmail = client.leadInfo?.email;
+        if (recipientEmail) {
+          await sendMail(
+            recipientEmail,
+            `ESGLink – Proposal Submitted for ${companyName}`,
+            `Dear ${client.leadInfo?.contactPersonName || 'Client'},\n\nYour ESGLink proposal has been submitted successfully. Our team will review your submission and get back to you shortly.\n\nClient ID: ${client.clientId}\n\nRegards,\nGreonXpert ESGLink Team`,
+            `<p>Dear <strong>${client.leadInfo?.contactPersonName || 'Client'}</strong>,</p>
+             <p>Your ESGLink proposal has been submitted successfully. Our team will review your submission and get back to you shortly.</p>
+             <p><strong>Client ID:</strong> ${client.clientId}</p>
+             <p>Regards,<br/>GreonXpert ESGLink Team</p>`
+          );
+          console.log(`✉️ ESGLink proposal plain email sent to ${recipientEmail}`);
+        }
+      }
     } catch (e) {
       console.error('Email/PDF (moveToProposal) error:', e.message);
     }
@@ -6557,6 +6616,23 @@ const moveToActive = async (req, res) => {
     }
     if (typeof client.accountDetails.dataSubmissions !== "number") {
       client.accountDetails.dataSubmissions = 0;
+    }
+
+    // 4b) Initialize esgLinkSubscription if client has esg_link and not yet initialized
+    // Uses same pattern as updateClientModuleAccess — checks subscriptionEndDate to avoid
+    // Mongoose virtualization pitfalls with absent subdocs.
+    if (
+      client.accessibleModules?.includes('esg_link') &&
+      !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate
+    ) {
+      const zcEnd = client.accountDetails?.subscriptionEndDate;
+      client.set('accountDetails.esgLinkSubscription', {
+        subscriptionStatus: 'active',
+        isActive: true,
+        subscriptionStartDate: new Date(),
+        subscriptionEndDate: zcEnd || new Date(Date.now() + subscriptionDays * 24 * 60 * 60 * 1000),
+      });
+      client.markModified('accountDetails.esgLinkSubscription');
     }
 
     // 5) Timeline entry

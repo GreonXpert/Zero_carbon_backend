@@ -35,10 +35,12 @@ const {
 } = require("../../utils/notifications/supportNotifications");
 
 const {
-     validateAndSanitizeChecklist,
-     VIEWER_DEFAULT_CHECKLIST,
-     AUDITOR_DEFAULT_CHECKLIST,
-       } = require('../../utils/Permissions/accessControlPermission');
+  validateAndSanitizeChecklist,
+  VIEWER_DEFAULT_CHECKLIST,
+  AUDITOR_DEFAULT_CHECKLIST,
+  validateAndSanitizeEsgChecklist,  // 🆕 ESGLink
+  buildClosedEsgChecklist,          // 🆕 ESGLink
+} = require('../../utils/Permissions/accessControlPermission');
 
 const { logLogin, logLoginFailed, logUserCreated } = require('../../services/audit/auditLogService');
 const { logEvent } = require('../../services/audit/auditLogService');
@@ -4803,6 +4805,33 @@ const updateUser = async (req, res) => {
       }
     }
 
+    // 🆕 Handle esgAccessControls update for ESGLink users
+    if (updateData.esgAccessControls !== undefined) {
+      // Only client_admin / super_admin can set esgAccessControls
+      if (req.user.userType !== 'client_admin' && req.user.userType !== 'super_admin') {
+        delete updateData.esgAccessControls; // silently strip
+      } else if (!userToUpdate.accessibleModules?.includes('esg_link')) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot set esgAccessControls for a user without esg_link module access.',
+        });
+      } else {
+        const clientDoc = await Client.findOne({ clientId: userToUpdate.clientId })
+          .select('submissionData.esgLinkAssessmentLevel')
+          .lean();
+        const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
+
+        const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(
+          updateData.esgAccessControls,
+          clientFrameworks
+        );
+        if (!valid) {
+          return res.status(400).json({ success: false, message: error });
+        }
+        updateData.esgAccessControls = sanitized;
+      }
+    }
+
     // -------------------------------------
     // APPLY FIELD UPDATES
     // -------------------------------------
@@ -6637,6 +6666,21 @@ const createContributor = async (req, res) => {
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: false, canEditBoundaries: false, canSubmitData: true, canAudit: false },
     });
 
+    // 🆕 ESGLink access control checklist
+    if (req.body.esgAccessControls) {
+      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
+        .select('submissionData.esgLinkAssessmentLevel')
+        .lean();
+      const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
+      const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
+      if (!valid) {
+        return res.status(400).json({ success: false, message: error });
+      }
+      user.esgAccessControls = sanitized;
+    } else {
+      user.esgAccessControls = buildClosedEsgChecklist();
+    }
+
     try {
       await user.save();
     } catch (saveErr) {
@@ -6692,6 +6736,21 @@ const createReviewer = async (req, res) => {
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
 
+    // 🆕 ESGLink access control checklist
+    if (req.body.esgAccessControls) {
+      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
+        .select('submissionData.esgLinkAssessmentLevel')
+        .lean();
+      const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
+      const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
+      if (!valid) {
+        return res.status(400).json({ success: false, message: error });
+      }
+      user.esgAccessControls = sanitized;
+    } else {
+      user.esgAccessControls = buildClosedEsgChecklist();
+    }
+
     try {
       await user.save();
     } catch (saveErr) {
@@ -6746,6 +6805,21 @@ const createApprover = async (req, res) => {
       accessibleModules: ['esg_link'],
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
+
+    // 🆕 ESGLink access control checklist
+    if (req.body.esgAccessControls) {
+      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
+        .select('submissionData.esgLinkAssessmentLevel')
+        .lean();
+      const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
+      const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
+      if (!valid) {
+        return res.status(400).json({ success: false, message: error });
+      }
+      user.esgAccessControls = sanitized;
+    } else {
+      user.esgAccessControls = buildClosedEsgChecklist();
+    }
 
     try {
       await user.save();

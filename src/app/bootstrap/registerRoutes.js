@@ -45,6 +45,10 @@ const notificationRoutes         = require('../../common/routes/Notification/not
 const ticketRoutes               = require('../../common/routes/Ticket/ticketRoutes');
 const auditLogRoutes             = require('../../common/routes/AuditLog/auditLogRoutes');
 
+// ── ESGLink ───────────────────────────────────────────────────────────────────
+const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/routes/boundaryR');
+const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/routes/metricR');
+
 // ============================================================================
 // REGISTER ALL ROUTES
 // ============================================================================
@@ -98,6 +102,10 @@ function registerRoutes(app) {
   // ── Support & audit ───────────────────────────────────────────────────────
   app.use('/api/tickets',    ticketRoutes);
   app.use('/api/audit-logs', auditLogRoutes);
+
+  // ── ESGLink Core ──────────────────────────────────────────────────────────
+  app.use('/api/esglink/core', esgLinkBoundaryR);
+  app.use('/api/esglink/core', esgLinkMetricR);
 }
 
 module.exports = { registerRoutes };

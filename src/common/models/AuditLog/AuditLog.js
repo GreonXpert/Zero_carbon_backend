@@ -33,6 +33,7 @@ const MODULE_ENUM = [
   'reports',
   'tickets',
   'system',
+  'esg_metric',
   'other',
 ];
 

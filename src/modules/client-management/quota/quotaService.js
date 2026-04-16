@@ -22,12 +22,14 @@ const ConsultantClientQuota = require('./ConsultantClientQuota');
 const Client                = require('../client/Client');
 
 // ── Lazy model loaders (avoid circular deps) ──────────────────
-const getFlowchart        = () => require('../../zero-carbon/organization/models/Flowchart');
-const getProcessFlowchart = () => require('../../zero-carbon/organization/models/ProcessFlowchart');
-const getReduction        = () => require('../../zero-carbon/reduction/models/Reduction');
-const getTransport        = () => require('../../zero-carbon/organization/models/TransportFlowchart');
-const getSbti             = () => require('../../zero-carbon/decarbonization/SbtiTarget');
-const getUserModel        = () => require('../../../common/models/User');
+const getFlowchart          = () => require('../../zero-carbon/organization/models/Flowchart');
+const getProcessFlowchart   = () => require('../../zero-carbon/organization/models/ProcessFlowchart');
+const getReduction          = () => require('../../zero-carbon/reduction/models/Reduction');
+const getTransport          = () => require('../../zero-carbon/organization/models/TransportFlowchart');
+const getSbti               = () => require('../../zero-carbon/decarbonization/SbtiTarget');
+const getUserModel          = () => require('../../../common/models/User');
+// ESGLink models
+const getEsgLinkBoundary    = () => require('../../esg-link/esgLink_core/models/EsgLinkBoundary');
 
 // ─────────────────────────────────────────────────────────────
 // INTERNAL HELPER: safe ObjectId normalizer
@@ -78,7 +80,7 @@ const getAssignedConsultantId = async (clientId) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// 2. LIVE USAGE COMPUTATION (flowchart resources only)
+// 2. LIVE USAGE COMPUTATION (all resource types)
 // ─────────────────────────────────────────────────────────────
 const computeUsage = async (clientId) => {
   const Flowchart          = getFlowchart();
@@ -86,8 +88,9 @@ const computeUsage = async (clientId) => {
   const Reduction          = getReduction();
   const TransportFlowchart = getTransport();
   const SbtiTarget         = getSbti();
+  const EsgLinkBoundary    = getEsgLinkBoundary();
 
-  const [flowchart, processChart, reductionCount, transportCount, sbtiCount] =
+  const [flowchart, processChart, reductionCount, transportCount, sbtiCount, esgBoundary] =
     await Promise.all([
       Flowchart.findOne({ clientId, isActive: true })
         .select('nodes')
@@ -98,6 +101,10 @@ const computeUsage = async (clientId) => {
       Reduction.countDocuments({ clientId, isDeleted: { $ne: true } }),
       TransportFlowchart.countDocuments({ clientId, isActive: true }),
       SbtiTarget.countDocuments({ clientId }),
+      // ESGLink: one active boundary doc per client, nodes array inside
+      EsgLinkBoundary.findOne({ clientId, isActive: true })
+        .select('nodes')
+        .lean(),
     ]);
 
   const countScopeDetails = (nodes = []) =>
@@ -108,6 +115,7 @@ const computeUsage = async (clientId) => {
     );
 
   return {
+    // ZeroCarbon
     flowchartNodes:        flowchart?.nodes?.length      ?? 0,
     flowchartScopeDetails: countScopeDetails(flowchart?.nodes),
     processNodes:          processChart?.nodes?.length   ?? 0,
@@ -115,6 +123,10 @@ const computeUsage = async (clientId) => {
     reductionProjects:     reductionCount,
     transportFlows:        transportCount,
     sbtiTargets:           sbtiCount,
+    // ESGLink (live-counted)
+    esgLinkBoundaryNodes:  esgBoundary?.nodes?.length ?? 0,
+    esgLinkMetrics:        0, // placeholder — Metrics model not yet created
+    esgLinkFormulas:       0, // placeholder — Formula model not yet created
   };
 };
 
@@ -167,6 +179,7 @@ const getQuotaStatus = async (clientId, consultantId) => {
   ]);
 
   const RESOURCE_KEYS = [
+    // ZeroCarbon
     'flowchartNodes',
     'flowchartScopeDetails',
     'processNodes',
@@ -174,6 +187,10 @@ const getQuotaStatus = async (clientId, consultantId) => {
     'reductionProjects',
     'transportFlows',
     'sbtiTargets',
+    // ESGLink
+    'esgLinkBoundaryNodes',
+    'esgLinkMetrics',
+    'esgLinkFormulas',
   ];
 
   const limitsPlain = (quota.limits && typeof quota.limits.toObject === 'function')

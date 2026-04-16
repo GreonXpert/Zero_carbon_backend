@@ -74,7 +74,7 @@ NetReductionEntrySchema.pre('validate', function(next){
 });
 
 NetReductionEntrySchema.add({
-  formulaId:            { type: mongoose.Schema.Types.ObjectId, ref: 'ReductionFormula' },
+  formulaId:            { type: mongoose.Schema.Types.ObjectId, ref: 'Formula' },
   variables:            { type: mongoose.Schema.Types.Mixed, default: {} }, // realtime payload used for evaluation
   netReductionInFormula:{ type: Number, default: 0 },                         // result before subtracting LE
 

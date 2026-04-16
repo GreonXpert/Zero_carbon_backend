@@ -1,21 +1,14 @@
-const mongoose = require("mongoose");
+'use strict';
 
-const DeleteRequestSchema = new mongoose.Schema({
-  formulaId: { type: mongoose.Schema.Types.ObjectId, ref: "ReductionFormula", required: true },
-  requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  requestedAt: { type: Date, default: Date.now },
+/**
+ * DeleteRequest.js — Backward-Compatibility Re-Export
+ *
+ * The authoritative DeleteRequest model has moved to:
+ *   src/modules/common/formula/models/DeleteRequest.js
+ *
+ * This file is kept so that any existing code that does:
+ *   require('../models/DeleteRequest')
+ * continues to work without change.
+ */
 
-  status: {
-    type: String,
-    enum: ["pending", "approved", "rejected"],
-    default: "pending"
-  },
-
-  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  approvedAt: { type: Date },
-
-  reason: { type: String }   // optional reason from consultant
-
-}, { timestamps: true });
-
-module.exports = mongoose.model("DeleteRequest", DeleteRequestSchema);
+module.exports = require('../../../common/formula/models/DeleteRequest');

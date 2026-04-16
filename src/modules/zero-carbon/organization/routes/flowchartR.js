@@ -12,6 +12,7 @@ const {
   assignOrUnassignEmployeeHeadToNode,
   addNodeToFlowchart,
   hardDeleteScopeDetail,
+  getFlowchartBoundary,
 } = require('../controllers/flowchartController');
 
 const {
@@ -49,6 +50,11 @@ router.get('/:clientId/summary', zcGate ,requireOrgFlowchartRead('view'), getFlo
 
 // Get all flowcharts (hierarchy-based)
 router.get('/all', zcGate ,requireOrgFlowchartRead('view'), getAllFlowcharts);
+
+// ESGLink Boundary import — returns structure only (no scope details)
+// Consumed by ESGLink Core boundary setup when importing from ZeroCarbon
+// NOTE: must be registered BEFORE /:clientId to avoid route conflict
+router.get('/:clientId/boundary', zcGate, requireOrgFlowchartRead('view'), getFlowchartBoundary);
 
 // Get single flowchart for a client
 router.get('/:clientId', zcGate ,requireOrgFlowchartRead('view'), getFlowchart);

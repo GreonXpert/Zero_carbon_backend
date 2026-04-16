@@ -28,6 +28,7 @@ const {
 // Allowed resource limit keys (existing LimitsSchema)
 // ─────────────────────────────────────────────────────────────
 const ALLOWED_LIMIT_KEYS = [
+  // ZeroCarbon
   'flowchartNodes',
   'flowchartScopeDetails',
   'processNodes',
@@ -35,12 +36,23 @@ const ALLOWED_LIMIT_KEYS = [
   'reductionProjects',
   'transportFlows',
   'sbtiTargets',
+  // ESGLink
+  'esgLinkBoundaryNodes',
+  'esgLinkMetrics',
+  'esgLinkFormulas',
 ];
 
 // ─────────────────────────────────────────────────────────────
 // Allowed userType quota keys
 // ─────────────────────────────────────────────────────────────
-const ALLOWED_USER_TYPE_QUOTA_KEYS = ['employeeHead', 'employee', 'viewer', 'auditor'];
+const ALLOWED_USER_TYPE_QUOTA_KEYS = [
+  // ZeroCarbon
+  'employeeHead', 'employee',
+  // Multi-module
+  'viewer', 'auditor',
+  // 🆕 ESGLink
+  'contributor', 'reviewer', 'approver',
+];
 
 // ─────────────────────────────────────────────────────────────
 // INTERNAL HELPER: resolve + authorize consultant for a client
@@ -482,18 +494,26 @@ exports.syncUserTypeUsedCounts = async (req, res) => {
     // A soft-deleted user has isActive: false AND isDeleted: true.
     // Adding isDeleted: { $ne: true } makes the sync criteria consistent
     // with what the atomic usedCount actually tracks.
-    const [ehCount, empCount, viewerCount, auditorCount] = await Promise.all([
+    const [ehCount, empCount, viewerCount, auditorCount, contributorCount, reviewerCount, approverCount] = await Promise.all([
       User.countDocuments({ clientId, userType: 'client_employee_head', isActive: true, isDeleted: { $ne: true } }),
       User.countDocuments({ clientId, userType: 'employee',             isActive: true, isDeleted: { $ne: true } }),
       User.countDocuments({ clientId, userType: 'viewer',               isActive: true, isDeleted: { $ne: true } }),
       User.countDocuments({ clientId, userType: 'auditor',              isActive: true, isDeleted: { $ne: true } }),
+      // 🆕 ESGLink user types
+      User.countDocuments({ clientId, userType: 'contributor',          isActive: true, isDeleted: { $ne: true } }),
+      User.countDocuments({ clientId, userType: 'reviewer',             isActive: true, isDeleted: { $ne: true } }),
+      User.countDocuments({ clientId, userType: 'approver',             isActive: true, isDeleted: { $ne: true } }),
     ]);
 
     const syncPayload = {
-      'userTypeQuotas.employeeHead.usedCount': ehCount,
-      'userTypeQuotas.employee.usedCount':     empCount,
-      'userTypeQuotas.viewer.usedCount':       viewerCount,
-      'userTypeQuotas.auditor.usedCount':      auditorCount,
+      'userTypeQuotas.employeeHead.usedCount':  ehCount,
+      'userTypeQuotas.employee.usedCount':      empCount,
+      'userTypeQuotas.viewer.usedCount':        viewerCount,
+      'userTypeQuotas.auditor.usedCount':       auditorCount,
+      // 🆕 ESGLink
+      'userTypeQuotas.contributor.usedCount':   contributorCount,
+      'userTypeQuotas.reviewer.usedCount':      reviewerCount,
+      'userTypeQuotas.approver.usedCount':      approverCount,
       setBy: user._id || user.id,
       setAt: new Date(),
     };
@@ -518,6 +538,9 @@ exports.syncUserTypeUsedCounts = async (req, res) => {
         employee:     empCount,
         viewer:       viewerCount,
         auditor:      auditorCount,
+        contributor:  contributorCount,
+        reviewer:     reviewerCount,
+        approver:     approverCount,
       },
       data: status,
     });

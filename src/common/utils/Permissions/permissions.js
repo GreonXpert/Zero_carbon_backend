@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Client = require('../../../modules/client-management/client/Client');
 const User = require('../../models/User')
 
@@ -116,8 +117,13 @@ const getId = (x) => {
     return { allowed: true, reason: 'Super admin access' };
   }
 
-  // Get client details
-  const client = await Client.findOne({ clientId });
+  // Get client details — accept either the string clientId field ("Greon008")
+  // OR the MongoDB ObjectId (_id) so callers don't get a confusing "not found"
+  // when they accidentally pass the _id instead of the clientId string.
+  const idQuery = mongoose.Types.ObjectId.isValid(clientId)
+    ? { $or: [{ clientId }, { _id: clientId }] }
+    : { clientId };
+  const client = await Client.findOne(idQuery);
   if (!client) {
     return { allowed: false, reason: 'Client not found' };
   }

@@ -353,6 +353,19 @@ const clientSchema = new mongoose.Schema(
         enum: ['reduction', 'decarbonization', 'organization', 'process'],
         default: []
       },
+      // ESGLink-specific assessment level (independent of ZeroCarbon assessmentLevel)
+      esgLinkAssessmentLevel: {
+        module: {
+          type: String,
+          enum: ['esg_link_core'],
+          default: null
+        },
+        frameworks: {
+          type: [String],
+          enum: ['BRSR', 'GRI', 'TCFD', 'CDP', 'SASB', 'UNGC', 'ISO_26000', 'SDG'],
+          default: []
+        }
+      },
       projectProfile: {
         type: [ProjectProfileSchema],
         default: []

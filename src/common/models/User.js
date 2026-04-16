@@ -362,6 +362,66 @@ const userSchema = new mongoose.Schema(
         },
       },
     },
+
+    // ╔══════════════════════════════════════════════════════════╗
+    // ║  ESGLink ACCESS CONTROLS CHECKLIST                       ║
+    // ║  For users with accessibleModules containing 'esg_link'. ║
+    // ║  Assigned by client_admin at create/edit time.           ║
+    // ║  All defaults are FALSE (fail-closed).                   ║
+    // ╚══════════════════════════════════════════════════════════╝
+    esgAccessControls: {
+      modules: {
+        dataCollectionEsgLink: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            list:        { type: Boolean, default: false },
+            detail:      { type: Boolean, default: false },
+            submit:      { type: Boolean, default: false },
+            editHistory: { type: Boolean, default: false },
+          },
+        },
+        esgLinkBoundary: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            view:   { type: Boolean, default: false },
+            edit:   { type: Boolean, default: false },
+            assign: { type: Boolean, default: false },
+          },
+        },
+        metrics: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            list:   { type: Boolean, default: false },
+            detail: { type: Boolean, default: false },
+            create: { type: Boolean, default: false },
+            edit:   { type: Boolean, default: false },
+          },
+        },
+        formula: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            list:   { type: Boolean, default: false },
+            detail: { type: Boolean, default: false },
+            create: { type: Boolean, default: false },
+            edit:   { type: Boolean, default: false },
+          },
+        },
+        framework: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            // One boolean section per allowed framework (matches ALLOWED_FRAMEWORK_SECTIONS)
+            BRSR:      { type: Boolean, default: false },
+            GRI:       { type: Boolean, default: false },
+            TCFD:      { type: Boolean, default: false },
+            CDP:       { type: Boolean, default: false },
+            SASB:      { type: Boolean, default: false },
+            UNGC:      { type: Boolean, default: false },
+            ISO_26000: { type: Boolean, default: false },
+            SDG:       { type: Boolean, default: false },
+          },
+        },
+      },
+    },
   },
   { timestamps: true }
 );

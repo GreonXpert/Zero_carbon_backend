@@ -2207,6 +2207,136 @@ const hardDeleteScopeDetail = async (req, res) => {
 };
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// getFlowchartBoundary
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Returns the structural skeleton of the ZeroCarbon Organisation Flowchart
+ * for use by the ESGLink Core Boundary import.
+ *
+ * Returns ONLY:
+ *   - nodes: stripped to [ { id, label, type, position, details: { name, department, location } } ]
+ *   - edges: full raw edge objects (id, source, target, label)
+ *   - clientId
+ *   - chartVersion
+ *
+ * Does NOT return: scopeDetails, emissionFactors, apiKeyRequests, reductionSetup,
+ * iotConnections, or any other ZeroCarbon-specific sub-documents.
+ *
+ * Access: super_admin, consultant_admin (own clients), consultant (assigned)
+ * Condition: client must have assessmentLevel including 'organization'
+ */
+const getFlowchartBoundary = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'clientId is required' });
+    }
+
+    // 1) Permission gate — reuse canManageFlowchart (consultant, consultant_admin, super_admin only)
+    const permissionCheck = await canManageFlowchart(req.user, clientId);
+    if (!permissionCheck.allowed) {
+      return res.status(403).json({
+        message: 'You do not have permission to access the boundary data for this client',
+        reason: permissionCheck.reason
+      });
+    }
+
+    // 2) Load the client — verify they have zero_carbon module and assessmentLevel: organization
+    // NOTE: Use submissionData:1 (not the narrower submissionData.assessmentLevel:1)
+    // because Mongoose's inline-nested-schema projection can silently omit the
+    // subfield when only a dot-path is specified, even with .lean().
+    const client = await Client.findOne(
+      { clientId },
+      { submissionData: 1, accessibleModules: 1, _id: 0 }
+    ).lean();
+
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
+    }
+
+    const hasZeroCarbon = (client.accessibleModules || []).includes('zero_carbon');
+    if (!hasZeroCarbon) {
+      return res.status(400).json({
+        message: 'Client does not have the zero_carbon module — no boundary data available to import',
+        code: 'NO_ZERO_CARBON_MODULE'
+      });
+    }
+
+    // 3) Normalize assessmentLevel and verify 'organization' is present
+    const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+    const raw = client?.submissionData?.assessmentLevel;
+    let levels = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    levels = levels
+      .map(v => String(v || '').trim().toLowerCase())
+      .flatMap(v => v === 'both' ? ['organization', 'process'] : [v])
+      .filter(v => ALLOWED.includes(v));
+
+    if (!levels.includes('organization')) {
+      return res.status(400).json({
+        message: 'Client assessmentLevel does not include "organization" — no organisational flowchart available to import',
+        code: 'NO_ORGANIZATION_LEVEL',
+        assessmentLevel: levels
+      });
+    }
+
+    // 4) Fetch the flowchart
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true }).lean();
+
+    if (!flowchart) {
+      return res.status(404).json({
+        message: 'No active organisational flowchart found for this client',
+        code: 'FLOWCHART_NOT_FOUND'
+      });
+    }
+
+    // 5) Strip nodes to boundary-safe fields only (exclude all ZeroCarbon-specific sub-documents)
+    const boundaryNodes = (flowchart.nodes || []).map(node => ({
+      id:       node.id,
+      label:    node.label,
+      type:     node.type,
+      position: node.position || {},
+      details: {
+        name:       node.details?.name       || node.label || '',
+        department: node.details?.department || '',
+        location:   node.details?.location   || '',
+        entityType: node.details?.entityType || '',
+      }
+    }));
+
+    // 6) Return edges as-is (id, source, target, label only — they carry no sensitive detail)
+    const boundaryEdges = (flowchart.edges || []).map(edge => ({
+      id:     edge.id,
+      source: edge.source,
+      target: edge.target,
+      label:  edge.label || ''
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: 'Flowchart boundary data fetched successfully',
+      data: {
+        clientId,
+        chartVersion:  flowchart.version || 1,
+        sourceChartId: flowchart._id,
+        nodeCount:     boundaryNodes.length,
+        edgeCount:     boundaryEdges.length,
+        nodes:         boundaryNodes,
+        edges:         boundaryEdges
+      }
+    });
+
+  } catch (error) {
+    console.error('getFlowchartBoundary error:', error);
+    return res.status(500).json({
+      message: 'Server error fetching flowchart boundary',
+      error: error.message
+    });
+  }
+};
+
+
 module.exports = {
   saveFlowchart,
   addNodeToFlowchart,
@@ -2219,5 +2349,6 @@ module.exports = {
   getConsolidatedSummary,
   updateFlowchartNode,
   assignOrUnassignEmployeeHeadToNode,
-  hardDeleteScopeDetail
+  hardDeleteScopeDetail,
+  getFlowchartBoundary
 };

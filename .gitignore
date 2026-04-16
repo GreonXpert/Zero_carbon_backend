@@ -36,7 +36,8 @@ yarn-error.*
 .env
 
 claude/
-
+Documents/
+Document/
 # typescript
 *.tsbuildinfo
 

@@ -289,6 +289,8 @@ function validateM3Input(body) {
 }
 
 async function computeInternalValue(item, reductionDoc) {
+  // Lazily resolve the common Formula model (avoids circular deps at module load time)
+  const ReductionFormula = require('../../../common/formula/models/Formula');
   let sum = 0;
 
   for (const ref of (item.internalSources || [])) {

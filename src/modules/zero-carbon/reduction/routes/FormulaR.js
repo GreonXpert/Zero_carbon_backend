@@ -1,31 +1,30 @@
-// routes/Reduction/m2FormulaR.js
-const router = require('express').Router();
-const ctrl = require('../controllers/FormulaController');
+'use strict';
+
+/**
+ * FormulaR.js — Reduction-Module Formula Routes
+ *
+ * This file:
+ *   1. Delegates all common formula CRUD + delete-request routes to the
+ *      common formula router at src/modules/common/formula/routes/FormulaR.js
+ *   2. Adds the reduction-specific POST /attach/:clientId/:projectId route
+ *      (kept here because it involves Reduction model logic)
+ *
+ * Mounted at: /api/formulas  (in registerRoutes.js — no change needed there)
+ */
+
+const express = require('express');
+const router  = express.Router();
+
 const { auth, checkRole } = require('../../../../common/middleware/auth');
+const { attachFormulaToReduction } = require('../controllers/attachFormulaToReduction');
 
-
-// all endpoints require login + role
-router.use(auth);
-
+// ── Reduction-specific route (attach formula to a Reduction project) ──────────
+// Registered BEFORE delegating to the common router to ensure specificity.
 const works = ['consultant', 'consultant_admin', 'super_admin'];
-const gets = ['consultant', 'consultant_admin', 'super_admin', 'client_admin', 'auditor'];
+router.post('/attach/:clientId/:projectId', auth, checkRole(...works), attachFormulaToReduction);
 
-router.get('/delete-requests', checkRole(...works), ctrl.getDeleteRequestedIds);
-router.get('/delete-requests/:requestId', checkRole(...works), ctrl.getDeleteRequestedById);
-router.get('/delete-requests/filter/query', checkRole(...works), ctrl.filterDeleteRequested);
-
-// CRUD for formulas
-router.post('/', checkRole(...works), ctrl.createFormula);
-router.get('/', checkRole(...gets),  ctrl.listFormulas);
-router.get('/:formulaId',checkRole(...gets),  ctrl.getFormula);
-router.put('/:formulaId', checkRole(...works), ctrl.updateFormula);
-router.delete('/:formulaId/:mode?',checkRole(...works), ctrl.deleteFormula);
-// map formula to a reduction project (m2)
-router.post('/attach/:clientId/:projectId',
- checkRole(...works), 
-  ctrl.attachFormulaToReduction
-);
-router.post('/delete-requests/:requestId/approve', checkRole('super_admin','consultant_admin'), ctrl.approveDeleteRequest);
-router.post('/delete-requests/:requestId/reject', checkRole('super_admin','consultant_admin'), ctrl.rejectDeleteRequest);
+// ── All other formula routes → delegated to common module ─────────────────────
+const commonFormulaRouter = require('../../../common/formula/routes/FormulaR');
+router.use('/', commonFormulaRouter);
 
 module.exports = router;

@@ -24,9 +24,14 @@
 
 const mongoose = require('mongoose');
 
-// ── Existing: Flowchart/Resource limits ───────────────────────
+// ── Flowchart/Resource limits ─────────────────────────────────
+// ZeroCarbon: flowchartNodes, flowchartScopeDetails, processNodes,
+//             processScopeDetails, reductionProjects, transportFlows, sbtiTargets
+// ESGLink:    esgLinkBoundaryNodes (live-counted from EsgLinkBoundary.nodes)
+//             esgLinkMetrics, esgLinkFormulas (placeholder — models not yet created)
 const LimitsSchema = new mongoose.Schema(
   {
+    // ── ZeroCarbon resources ──────────────────────────────────
     flowchartNodes:        { type: Number, default: null, min: 0 },
     flowchartScopeDetails: { type: Number, default: null, min: 0 },
     processNodes:          { type: Number, default: null, min: 0 },
@@ -34,6 +39,10 @@ const LimitsSchema = new mongoose.Schema(
     reductionProjects:     { type: Number, default: null, min: 0 },
     transportFlows:        { type: Number, default: null, min: 0 },
     sbtiTargets:           { type: Number, default: null, min: 0 },
+    // ── ESGLink resources ─────────────────────────────────────
+    esgLinkBoundaryNodes:  { type: Number, default: null, min: 0 }, // nodes in EsgLinkBoundary
+    esgLinkMetrics:        { type: Number, default: null, min: 0 }, // placeholder (model TBD)
+    esgLinkFormulas:       { type: Number, default: null, min: 0 }, // placeholder (model TBD)
   },
   { _id: false }
 );

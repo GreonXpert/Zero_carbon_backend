@@ -75,7 +75,7 @@ const M2Schema = new mongoose.Schema({
 
   // mapping to a formula that computes "netReductionInFormula"
   formulaRef: {
-    formulaId:   { type: Schema.Types.ObjectId, ref: 'ReductionFormula' },
+    formulaId:   { type: Schema.Types.ObjectId, ref: 'Formula' },
     version:     { type: Number },
         // NEW: declare each symbol’s role at Reduction level
     // allowed: 'frozen' | 'realtime' | 'manual'
@@ -213,7 +213,7 @@ const M3ItemSchema = new mongoose.Schema({
    */
   formulaId: {
     type: Schema.Types.ObjectId,
-    ref: 'ReductionFormula',
+    ref: 'Formula',
     required: true
   },
 
@@ -713,7 +713,7 @@ if (this.reductionDataEntry) {
     }
             // --- M2 variable role validation ---
     if (this.calculationMethodology === 'methodology2' && this.m2?.formulaRef?.formulaId) {
-      const Formula = mongoose.model('ReductionFormula');
+      const Formula = mongoose.model('Formula');
       const f = await Formula.findById(this.m2.formulaRef.formulaId).lean();
       if (!f || f.isDeleted) throw new Error('Formula not found for this reduction');
 
