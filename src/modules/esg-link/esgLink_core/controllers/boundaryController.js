@@ -388,6 +388,7 @@ const addNodeToBoundary = async (req, res) => {
     boundary.nodes.push(...validNodes);
     boundary.version        = (boundary.version || 1) + 1;
     boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('nodes');
 
     await boundary.save();
 
@@ -404,6 +405,91 @@ const addNodeToBoundary = async (req, res) => {
   } catch (error) {
     console.error('addNodeToBoundary error:', error);
     return res.status(500).json({ message: 'Server error adding node', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5b. appendNodeToBoundary
+//     PATCH /api/esglink/core/:clientId/boundary/nodes
+//     Safe append — never touches existing node IDs or their metricsDetails.
+//     Returns 200 (not 201) since it partially updates an existing boundary.
+// ─────────────────────────────────────────────────────────────────────────────
+const appendNodeToBoundary = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Accept single node object or array
+    const rawNodes = Array.isArray(req.body.nodes) ? req.body.nodes
+                   : req.body.node                  ? [req.body.node]
+                   : [];
+
+    if (rawNodes.length === 0) {
+      return res.status(400).json({ message: 'Provide "node" (object) or "nodes" (array) in request body' });
+    }
+
+    const perm = await canManageBoundary(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false });
+    if (!boundary) return res.status(404).json({ message: 'Boundary not found', code: 'BOUNDARY_NOT_FOUND' });
+
+    // Validate and check for duplicate IDs against existing nodes
+    const existingIds = new Set(boundary.nodes.map(n => n.id));
+    const errors      = [];
+    const validNodes  = [];
+
+    rawNodes.forEach((n, i) => {
+      const pfx = rawNodes.length > 1 ? `nodes[${i}]: ` : '';
+      if (!n.id)    { errors.push(`${pfx}id is required`);    return; }
+      if (!n.label) { errors.push(`${pfx}label is required`); return; }
+      if (existingIds.has(n.id)) {
+        errors.push(`${pfx}node id "${n.id}" already exists in boundary`);
+        return;
+      }
+      existingIds.add(n.id);
+      validNodes.push({
+        id:       n.id,
+        label:    n.label,
+        type:     n.type || 'entity',
+        position: n.position || { x: 0, y: 0 },
+        details: {
+          name:       n.details?.name       || n.label,
+          department: n.details?.department || '',
+          location:   n.details?.location   || '',
+          entityType: n.details?.entityType || '',
+          notes:      n.details?.notes      || '',
+        },
+        metricsDetails: [],
+      });
+    });
+
+    if (errors.length) return res.status(400).json({ message: 'Node validation failed', errors });
+
+    boundary.nodes.push(...validNodes);
+    boundary.version        = (boundary.version || 1) + 1;
+    boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('nodes');
+    await boundary.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `${validNodes.length} node(s) appended to boundary`,
+      data: {
+        boundaryId:  boundary._id,
+        version:     boundary.version,
+        addedNodes:  validNodes.map(n => ({
+          id:       n.id,
+          label:    n.label,
+          type:     n.type,
+          position: n.position,
+          details:  n.details,
+        })),
+      },
+    });
+
+  } catch (error) {
+    console.error('appendNodeToBoundary error:', error);
+    return res.status(500).json({ message: 'Server error appending node', error: error.message });
   }
 };
 
@@ -453,6 +539,7 @@ const addEdgeToBoundary = async (req, res) => {
     boundary.edges.push(...validEdges);
     boundary.version        = (boundary.version || 1) + 1;
     boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('edges');
 
     await boundary.save();
 
@@ -495,6 +582,8 @@ const removeNodeFromBoundary = async (req, res) => {
 
     boundary.version        = (boundary.version || 1) + 1;
     boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('nodes');
+    boundary.markModified('edges');
 
     await boundary.save();
 
@@ -759,9 +848,9 @@ module.exports = {
   getBoundary,
   updateBoundaryNode,
   addNodeToBoundary,
+  appendNodeToBoundary,
   addEdgeToBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
   checkBoundaryImportAvailability,
-  assignMetricToNode
 };

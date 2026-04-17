@@ -55,9 +55,10 @@ Nine handler functions:
 | `createBoundaryManually` | POST | Manual node/edge setup |
 | `getBoundary` | GET | Fetch active boundary with populate |
 | `updateBoundaryNode` | PATCH | Edit a single node; calls `markModified('nodes')` |
-| `addNodeToBoundary` | POST | Append node(s) with duplicate ID check |
-| `addEdgeToBoundary` | POST | Append edge(s) with source/target validation |
-| `removeNodeFromBoundary` | DELETE | Remove node + cascade-delete its edges |
+| `addNodeToBoundary` | POST | Append node(s) with duplicate ID check; calls `markModified('nodes')` |
+| `appendNodeToBoundary` | PATCH | Safe-append node(s) to an existing boundary — preferred when metric mappings already exist; guarantees no existing node or `metricsDetails[]` is modified; calls `markModified('nodes')` |
+| `addEdgeToBoundary` | POST | Append edge(s) with source/target validation; calls `markModified('edges')` |
+| `removeNodeFromBoundary` | DELETE | Remove node + cascade-delete its edges; calls `markModified('nodes')` + `markModified('edges')` |
 | `deleteBoundary` | DELETE | Soft-delete entire boundary |
 | `checkBoundaryImportAvailability` | GET | Checks if ZeroCarbon import is possible |
 

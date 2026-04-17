@@ -19,6 +19,7 @@ const {
   addMetricToNode,
   updateMapping,
   removeMapping,
+  reactivateMapping,
   updateWorkflowDefaults,
   getMyAssignedMetrics,
   getMappingById,
@@ -47,6 +48,10 @@ router.patch('/:clientId/boundary/nodes/:nodeId/metrics/:mappingId', eslGate, up
 // DELETE /:clientId/boundary/nodes/:nodeId/metrics/:mappingId
 // Soft-deactivate a mapped metric (sets mappingStatus: 'inactive')
 router.delete('/:clientId/boundary/nodes/:nodeId/metrics/:mappingId', eslGate, removeMapping);
+
+// PATCH /:clientId/boundary/nodes/:nodeId/metrics/:mappingId/reactivate
+// Reactivate an inactive mapped metric (sets mappingStatus: 'active')
+router.patch('/:clientId/boundary/nodes/:nodeId/metrics/:mappingId/reactivate', eslGate, reactivateMapping);
 
 // PATCH /:clientId/boundary/nodes/:nodeId/workflow-defaults
 // Update node-level reviewer/approver defaults (consultant_admin+ only)

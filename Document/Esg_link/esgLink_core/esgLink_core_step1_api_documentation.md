@@ -31,9 +31,10 @@ All boundary endpoints enforce the following role rules (same model as ZeroCarbo
 | 5 | GET | `/api/esglink/core/:clientId/boundary` | Get active boundary |
 | 6 | PATCH | `/api/esglink/core/:clientId/boundary/nodes/:nodeId` | Update a node |
 | 7 | POST | `/api/esglink/core/:clientId/boundary/nodes` | Add node(s) |
-| 8 | POST | `/api/esglink/core/:clientId/boundary/edges` | Add edge(s) |
-| 9 | DELETE | `/api/esglink/core/:clientId/boundary/nodes/:nodeId` | Remove a node |
-| 10 | DELETE | `/api/esglink/core/:clientId/boundary` | Soft-delete boundary |
+| 8 | PATCH | `/api/esglink/core/:clientId/boundary/nodes` | Append node(s) — safe, no existing node touched |
+| 9 | POST | `/api/esglink/core/:clientId/boundary/edges` | Add edge(s) |
+| 10 | DELETE | `/api/esglink/core/:clientId/boundary/nodes/:nodeId` | Remove a node |
+| 11 | DELETE | `/api/esglink/core/:clientId/boundary` | Soft-delete boundary |
 
 ---
 
@@ -527,7 +528,107 @@ Provide only the fields to update. All fields are optional.
 
 ---
 
-## 8. POST `/api/esglink/core/:clientId/boundary/edges`
+## 8. PATCH `/api/esglink/core/:clientId/boundary/nodes`
+
+**Purpose:** Safely appends one or more new nodes to an existing boundary. Unlike `POST /boundary/nodes`, this endpoint is the preferred method when the boundary already has metric mappings — it guarantees that existing node IDs and their `metricsDetails[]` are **never touched**. Duplicate node ID is rejected.
+
+**Auth:** Required (ESGLink module gate)  
+**Roles:** `super_admin`, `consultant_admin`, `consultant`
+
+### URL Parameters
+| Param | Type | Description |
+|-------|------|-------------|
+| `clientId` | string | The client's unique ID |
+
+### Request Body — Single Node
+```json
+{
+  "node": {
+    "id": "site-bangalore",
+    "label": "Bangalore Office",
+    "type": "site",
+    "position": { "x": 500, "y": 300 },
+    "details": {
+      "name": "Bangalore Office",
+      "department": "Operations",
+      "location": "Bangalore",
+      "entityType": "site",
+      "notes": "Southern operations hub"
+    }
+  }
+}
+```
+
+### Request Body — Multiple Nodes
+```json
+{
+  "nodes": [
+    { "id": "site-bangalore", "label": "Bangalore Office", "type": "site" },
+    { "id": "dept-legal", "label": "Legal Department", "type": "department" }
+  ]
+}
+```
+
+### Field Reference — Node Object
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | string | ✅ | — | Unique node identifier (must not exist in boundary) |
+| `label` | string | ✅ | — | Display name shown in diagram |
+| `type` | string | ❌ | `"entity"` | One of: `entity`, `department`, `site`, `subsidiary`, `holding`, `custom` |
+| `position.x` | number | ❌ | `0` | X coordinate for diagram layout |
+| `position.y` | number | ❌ | `0` | Y coordinate for diagram layout |
+| `details.name` | string | ❌ | `label` | Full name |
+| `details.department` | string | ❌ | `""` | Department name |
+| `details.location` | string | ❌ | `""` | Physical location |
+| `details.entityType` | string | ❌ | `""` | Entity classification |
+| `details.notes` | string | ❌ | `""` | Free-text notes |
+
+### Success Response — `200 OK`
+```json
+{
+  "success": true,
+  "message": "1 node(s) appended to boundary",
+  "data": {
+    "boundaryId": "65a1b2c3d4e5f6789012345a",
+    "version": 5,
+    "addedNodes": [
+      {
+        "id": "site-bangalore",
+        "label": "Bangalore Office",
+        "type": "site",
+        "position": { "x": 500, "y": 300 },
+        "details": {
+          "name": "Bangalore Office",
+          "department": "Operations",
+          "location": "Bangalore",
+          "entityType": "site",
+          "notes": "Southern operations hub"
+        }
+      }
+    ]
+  }
+}
+```
+
+### Error Responses
+| Status | Code | Description |
+|--------|------|-------------|
+| 400 | — | No node(s) provided in request body |
+| 400 | — | Node missing `id` or `label` |
+| 400 | — | Node `id` already exists in the boundary |
+| 403 | — | Caller lacks permission |
+| 404 | `BOUNDARY_NOT_FOUND` | No active boundary exists |
+
+### When to use PATCH vs POST
+| Scenario | Use |
+|----------|-----|
+| Boundary already has metric mappings and you need to add a new node | **PATCH** (this endpoint) |
+| Initial boundary setup, adding multiple nodes at once | `POST /boundary/nodes` |
+| Either works for adding nodes — PATCH is always the safer choice | **PATCH** recommended |
+
+---
+
+## 10. POST `/api/esglink/core/:clientId/boundary/edges`
 
 **Purpose:** Adds one or more new edges to the existing boundary. Source and target node IDs must already exist in the boundary. Accepts either `"edge": {...}` or `"edges": [...]`.
 
@@ -588,7 +689,7 @@ Provide only the fields to update. All fields are optional.
 
 ---
 
-## 9. DELETE `/api/esglink/core/:clientId/boundary/nodes/:nodeId`
+## 11. DELETE `/api/esglink/core/:clientId/boundary/nodes/:nodeId`
 
 **Purpose:** Removes a node from the boundary. **Also removes all edges** where that node is the `source` or `target` — cascade deletion prevents orphaned edges.
 
@@ -630,7 +731,7 @@ The `removedEdges` array lists the `id`s of all edges that were cascade-deleted.
 
 ---
 
-## 10. DELETE `/api/esglink/core/:clientId/boundary`
+## 12. DELETE `/api/esglink/core/:clientId/boundary`
 
 **Purpose:** Soft-deletes the entire ESGLink Boundary for a client. The document is marked `isActive: false, isDeleted: true` — it is not removed from the database. After deletion, a new boundary can be created (import or manual).
 

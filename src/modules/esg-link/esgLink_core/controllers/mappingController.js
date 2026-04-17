@@ -184,39 +184,45 @@ const addMetricToNode = async (req, res) => {
       }
     }
 
-    // Validate assignees
-    const allAssignees = [
-      ...(req.body.contributors || []),
-      ...(req.body.reviewers    || []),
-      ...(req.body.approvers    || []),
-    ];
-    if (allAssignees.length > 0) {
-      const assigneeCheck = await validateAssignees(allAssignees, clientId, UserModel);
-      if (!assigneeCheck.valid) {
-        return res.status(400).json({ message: assigneeCheck.message, code: 'INVALID_ASSIGNEE' });
-      }
+    // Validate assignees by role type
+    if ((req.body.contributors || []).length > 0) {
+      const check = await validateAssignees(req.body.contributors, clientId, 'contributor', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_CONTRIBUTOR' });
+    }
+    if ((req.body.reviewers || []).length > 0) {
+      const check = await validateAssignees(req.body.reviewers, clientId, 'reviewer', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_REVIEWER' });
+    }
+    if ((req.body.approvers || []).length > 0) {
+      const check = await validateAssignees(req.body.approvers, clientId, 'approver', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_APPROVER' });
     }
 
     // Build formula snapshot for derived/intensity
     let formulaSnap = { formulaVersionAtAssignment: null, formulaSnapshot: null };
     if ((metric.metricType === 'derived' || metric.metricType === 'intensity') && metric.formulaId) {
-      formulaSnap = await buildFormulaSnapshot(metric.formulaId, Formula);
+      try {
+        formulaSnap = await buildFormulaSnapshot(metric.formulaId, Formula);
+      } catch (snapErr) {
+        return res.status(400).json({ message: 'Formula referenced by this metric is no longer available', code: 'FORMULA_UNAVAILABLE' });
+      }
     }
 
     // Build mapping entry
     const newMapping = buildMappingEntry(req.body, req.user, metric, formulaSnap);
 
-    // Push into node and save (must use .save() — encryption plugin requires full doc lifecycle)
+    // Push into node — Mongoose assigns _id to subdoc here, BEFORE save
     node.metricsDetails.push(newMapping);
+    // Capture the subdoc reference now (encryption plugin re-encrypts nodes in-memory after save,
+    // making boundary.nodes unreadable post-save without a fresh DB fetch)
+    const savedMapping = node.metricsDetails[node.metricsDetails.length - 1];
+    const nodeLabel    = node.label;
+
     node.updatedAt = new Date();
     boundary.version = (boundary.version || 1) + 1;
     boundary.lastModifiedBy = req.user._id;
     boundary.markModified('nodes');
     await boundary.save();
-
-    // Retrieve the saved mapping (last pushed)
-    const savedNode    = _findNode(boundary, nodeId);
-    const savedMapping = savedNode.metricsDetails[savedNode.metricsDetails.length - 1];
 
     // Audit log
     logEventFireAndForget({
@@ -234,12 +240,12 @@ const addMetricToNode = async (req, res) => {
     });
 
     // Notifications + socket (fire-and-forget)
-    const effectiveReviewers = resolveEffectiveReviewers(savedMapping, savedNode);
-    const effectiveApprovers = resolveEffectiveApprovers(savedMapping, savedNode);
+    const effectiveReviewers = resolveEffectiveReviewers(savedMapping, node);
+    const effectiveApprovers = resolveEffectiveApprovers(savedMapping, node);
     const notifyIds = [...(effectiveReviewers || []), ...(effectiveApprovers || [])];
     _notifyUsers(notifyIds, {
       title: `Metric mapped: ${metric.metricName}`,
-      message: `Metric ${metric.metricCode} has been mapped to node "${savedNode.label}" by ${req.user.name || req.user.email}.`,
+      message: `Metric ${metric.metricCode} has been mapped to node "${nodeLabel}" by ${req.user.name || req.user.email}.`,
       systemAction: 'esg_link_metric_mapped',
       boundaryId: boundary._id,
       clientId,
@@ -334,18 +340,22 @@ const updateMapping = async (req, res) => {
       }
     }
 
-    // Validate assignees if being updated
-    const allAssignees = [
-      ...(body.contributors || []),
-      ...(body.reviewers    || []),
-      ...(body.approvers    || []),
-    ];
-    if (allAssignees.length > 0) {
-      const assigneeCheck = await validateAssignees(allAssignees, clientId, UserModel);
-      if (!assigneeCheck.valid) {
-        return res.status(400).json({ message: assigneeCheck.message, code: 'INVALID_ASSIGNEE' });
-      }
+    // Validate assignees if being updated, by role type
+    if ((body.contributors || []).length > 0) {
+      const check = await validateAssignees(body.contributors, clientId, 'contributor', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_CONTRIBUTOR' });
     }
+    if ((body.reviewers || []).length > 0) {
+      const check = await validateAssignees(body.reviewers, clientId, 'reviewer', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_REVIEWER' });
+    }
+    if ((body.approvers || []).length > 0) {
+      const check = await validateAssignees(body.approvers, clientId, 'approver', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_APPROVER' });
+    }
+
+    // Capture previous status BEFORE applying updates
+    const previousStatus = mapping.mappingStatus;
 
     // Version bump if meaningful fields changed
     const shouldBump = hasMeaningfulChange(body);
@@ -374,8 +384,8 @@ const updateMapping = async (req, res) => {
     boundary.markModified('nodes');
     await boundary.save();
 
-    // Determine subAction by status change
-    const statusChanged = body.mappingStatus && body.mappingStatus !== mapping.mappingStatus;
+    // Determine subAction by status change (compare against pre-update status)
+    const statusChanged = body.mappingStatus && body.mappingStatus !== previousStatus;
     let subAction = 'mapping_updated';
     if (statusChanged) {
       const subActionMap = {
@@ -513,6 +523,80 @@ const removeMapping = async (req, res) => {
   }
 };
 
+// ── reactivateMapping ────────────────────────────────────────────────────────
+// PATCH /:clientId/boundary/nodes/:nodeId/metrics/:mappingId/reactivate
+
+const reactivateMapping = async (req, res) => {
+  try {
+    const { clientId, nodeId, mappingId } = req.params;
+
+    const perm = await canManageMapping(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    const boundary = await _getActiveBoundary(clientId);
+    if (!boundary) return res.status(404).json({ message: 'Boundary not found', code: 'BOUNDARY_NOT_FOUND' });
+
+    const node = _findNode(boundary, nodeId);
+    if (!node) return res.status(404).json({ message: 'Node not found', code: 'NODE_NOT_FOUND' });
+
+    const mapping = _findMapping(node, mappingId);
+    if (!mapping) return res.status(404).json({ message: 'Mapping not found', code: 'MAPPING_NOT_FOUND' });
+
+    if (mapping.mappingStatus !== 'inactive') {
+      return res.status(400).json({ message: 'Only inactive mappings can be reactivated', code: 'MAPPING_NOT_INACTIVE' });
+    }
+
+    mapping.mappingStatus = 'active';
+    mapping.updatedBy = req.user._id;
+    mapping.updatedAt = new Date();
+
+    boundary.version = (boundary.version || 1) + 1;
+    boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('nodes');
+    await boundary.save();
+
+    logEventFireAndForget({
+      req,
+      module:        'esg_link_mapping',
+      action:        'update',
+      subAction:     'mapping_reactivated',
+      entityType:    'EsgLinkBoundary',
+      entityId:      boundary._id.toString(),
+      clientId,
+      changeSummary: `Mapping ${mappingId} (${mapping.metricCode}) reactivated on node ${nodeId}`,
+      metadata:      { nodeId, mappingId, metricCode: mapping.metricCode },
+      severity:      'info',
+      status:        'success',
+    });
+
+    const notifyIds = [
+      ...(mapping.contributors || []),
+      ...(resolveEffectiveReviewers(mapping, node)),
+      ...(resolveEffectiveApprovers(mapping, node)),
+    ];
+    _notifyUsers(notifyIds, {
+      title:        `Mapping reactivated: ${mapping.metricCode}`,
+      message:      `Mapping for metric ${mapping.metricCode} on node "${node.label}" has been reactivated.`,
+      systemAction: 'esg_link_mapping_reactivated',
+      boundaryId:   boundary._id,
+      clientId,
+      actorId:      req.user._id,
+    });
+    _emitSocket(notifyIds, 'mapping_reactivated', { clientId, boundaryId: boundary._id, nodeId, mappingId });
+
+    return res.status(200).json({
+      message:       'Mapping reactivated successfully',
+      nodeId,
+      mappingId,
+      mappingStatus: 'active',
+      updatedAt:     mapping.updatedAt,
+    });
+  } catch (err) {
+    console.error('[mappingController] reactivateMapping error:', err);
+    return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
+  }
+};
+
 // ── 4. updateWorkflowDefaults ─────────────────────────────────────────────────
 // PATCH /:clientId/boundary/nodes/:nodeId/workflow-defaults
 
@@ -528,13 +612,14 @@ const updateWorkflowDefaults = async (req, res) => {
       return res.status(400).json({ message: 'nodeReviewerIds or nodeApproverIds is required', code: 'NO_UPDATE_FIELDS' });
     }
 
-    // Validate all provided IDs
-    const allIds = [...(nodeReviewerIds || []), ...(nodeApproverIds || [])];
-    if (allIds.length > 0) {
-      const check = await validateAssignees(allIds, clientId, UserModel);
-      if (!check.valid) {
-        return res.status(400).json({ message: check.message, code: 'INVALID_ASSIGNEE' });
-      }
+    // Validate reviewer and approver IDs separately by their expected role type
+    if ((nodeReviewerIds || []).length > 0) {
+      const check = await validateAssignees(nodeReviewerIds, clientId, 'reviewer', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_REVIEWER' });
+    }
+    if ((nodeApproverIds || []).length > 0) {
+      const check = await validateAssignees(nodeApproverIds, clientId, 'approver', UserModel);
+      if (!check.valid) return res.status(400).json({ message: check.message, code: 'INVALID_APPROVER' });
     }
 
     const boundary = await _getActiveBoundary(clientId);
@@ -740,6 +825,7 @@ module.exports = {
   addMetricToNode,
   updateMapping,
   removeMapping,
+  reactivateMapping,
   updateWorkflowDefaults,
   getMyAssignedMetrics,
   getMappingById,

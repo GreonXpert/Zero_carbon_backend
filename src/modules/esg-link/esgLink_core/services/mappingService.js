@@ -98,6 +98,9 @@ const buildMappingEntry = (payload, actor, metric, formulaSnap = {}) => {
   }));
 
   return {
+    // Explicitly assign _id as a string so it survives the encryption plugin's
+    // JSON.stringify → encrypt → decrypt → JSON.parse round-trip without being dropped.
+    _id:        new mongoose.Types.ObjectId().toString(),
     metricId:   metric._id,
     metricCode: metric.metricCode || '',
     metricName: metric.metricName || '',
@@ -230,18 +233,20 @@ const resolveEffectiveApprovers = (mapping, node) => {
 
 /**
  * validateAssignees
- * Checks that all provided user IDs are:
- *   1. Valid ObjectIds
- *   2. Exist in DB with userType 'consultant'
- *   3. Are assigned to the given clientId (via consultantInfo.assignedClients)
+ * Checks that all provided user IDs exist in DB with the expected userType
+ * and are assigned to the given client.
+ *
+ * - contributor / reviewer / approver: assigned via User.clientId field
+ * - consultant: assigned via consultantInfo.assignedClients array
  *
  * Returns { valid: true } or { valid: false, message: string }
  *
- * @param {string[]} userIds   - array of user id strings
+ * @param {string[]} userIds    - array of user id strings
  * @param {string}   clientId
- * @param {Model}    UserModel - pass-in to avoid circular requires
+ * @param {string}   userType   - 'contributor' | 'reviewer' | 'approver' | 'consultant'
+ * @param {Model}    UserModel  - pass-in to avoid circular requires
  */
-const validateAssignees = async (userIds, clientId, UserModel) => {
+const validateAssignees = async (userIds, clientId, userType, UserModel) => {
   if (!userIds || userIds.length === 0) return { valid: true };
 
   for (const id of userIds) {
@@ -250,28 +255,39 @@ const validateAssignees = async (userIds, clientId, UserModel) => {
     }
   }
 
-  const users = await UserModel.find({
+  const ESG_ROLE_TYPES = ['contributor', 'reviewer', 'approver'];
+
+  const query = {
     _id: { $in: userIds },
-    userType: 'consultant',
+    userType,
     isDeleted: { $ne: true },
-  }).select('_id userType consultantInfo').lean();
+  };
+
+  // ESG assignee roles are tied to a client via the clientId field on the User document
+  if (ESG_ROLE_TYPES.includes(userType)) {
+    query.clientId = clientId;
+  }
+
+  const users = await UserModel.find(query).select('_id userType consultantInfo').lean();
 
   if (users.length !== userIds.length) {
     return {
       valid: false,
-      message: 'One or more assignee IDs not found or not of type consultant',
+      message: `One or more ${userType} IDs not found or not assigned to client ${clientId}`,
     };
   }
 
-  // Check each consultant is assigned to this client
-  for (const u of users) {
-    const assignedClients = u.assignedClients || [];
-    const isAssigned = assignedClients.some(c => String(c) === String(clientId));
-    if (!isAssigned) {
-      return {
-        valid: false,
-        message: `User ${u._id} is not assigned to client ${clientId}`,
-      };
+  // For consultants, additionally verify assignment via consultantInfo.assignedClients
+  if (userType === 'consultant') {
+    for (const u of users) {
+      const assignedClients = u.consultantInfo?.assignedClients || [];
+      const isAssigned = assignedClients.some(c => String(c) === String(clientId));
+      if (!isAssigned) {
+        return {
+          valid: false,
+          message: `Consultant ${u._id} is not assigned to client ${clientId}`,
+        };
+      }
     }
   }
 

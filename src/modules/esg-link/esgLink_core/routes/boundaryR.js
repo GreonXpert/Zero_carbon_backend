@@ -17,11 +17,11 @@ const {
   getBoundary,
   updateBoundaryNode,
   addNodeToBoundary,
+  appendNodeToBoundary,
   addEdgeToBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
   checkBoundaryImportAvailability,
-  assignMetricToNode
 } = require('../controllers/boundaryController');
 
 // All routes require authentication
@@ -58,8 +58,12 @@ router.post('/:clientId/boundary', eslGate, createBoundaryManually);
 // Update a specific node
 router.patch('/:clientId/boundary/nodes/:nodeId', eslGate, updateBoundaryNode);
 
-// Add new node(s)
+// Add new node(s) — POST (original)
 router.post('/:clientId/boundary/nodes', eslGate, addNodeToBoundary);
+
+// Append new node(s) — PATCH (safe append; never touches existing nodes or their metricsDetails)
+// Register before /:clientId/boundary/nodes/:nodeId to avoid Express param confusion
+router.patch('/:clientId/boundary/nodes', eslGate, appendNodeToBoundary);
 
 // Add new edge(s)
 router.post('/:clientId/boundary/edges', eslGate, addEdgeToBoundary);
@@ -74,11 +78,5 @@ router.delete('/:clientId/boundary/nodes/:nodeId', eslGate, removeNodeFromBounda
 // Soft-delete entire boundary
 router.delete('/:clientId/boundary', eslGate, deleteBoundary);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// METRIC MAPPING (Step 3)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Assign a metric from the library to a boundary node
-router.post('/:clientId/boundary/nodes/:nodeId/metrics', eslGate, assignMetricToNode);
 
 module.exports = router;
