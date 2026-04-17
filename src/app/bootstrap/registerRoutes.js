@@ -48,6 +48,7 @@ const auditLogRoutes             = require('../../common/routes/AuditLog/auditLo
 // ── ESGLink ───────────────────────────────────────────────────────────────────
 const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/routes/boundaryR');
 const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/routes/metricR');
+const esgLinkMappingR            = require('../../modules/esg-link/esgLink_core/routes/mappingR');
 
 // ============================================================================
 // REGISTER ALL ROUTES
@@ -106,6 +107,7 @@ function registerRoutes(app) {
   // ── ESGLink Core ──────────────────────────────────────────────────────────
   app.use('/api/esglink/core', esgLinkBoundaryR);
   app.use('/api/esglink/core', esgLinkMetricR);
+  app.use('/api/esglink/core', esgLinkMappingR);
 }
 
 module.exports = { registerRoutes };

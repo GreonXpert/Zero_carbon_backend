@@ -852,11 +852,21 @@ const createConsultantAdmin = async (req, res) => {
     const employeeId = req.body.employeeId;
     const companyName = req.body.companyName;
     const concurrentLoginLimit= req.body.concurrentLoginLimit || 1;
+    const accessibleModules = req.body.accessibleModules;
 
     if (!email || !password || !userName) {
-      return res.status(400).json({ 
-        message: "email, password and userName are required" 
+      return res.status(400).json({
+        message: "email, password and userName are required"
       });
+    }
+
+    if (!accessibleModules || !Array.isArray(accessibleModules) || accessibleModules.length === 0) {
+      return res.status(400).json({ message: "accessibleModules is required (e.g. [\"zero_carbon\"] or [\"zero_carbon\",\"esg_link\"])" });
+    }
+    const VALID_MODULES_CA = ['zero_carbon', 'esg_link'];
+    const invalidCA = accessibleModules.filter(m => !VALID_MODULES_CA.includes(m));
+    if (invalidCA.length > 0) {
+      return res.status(400).json({ message: `Invalid module(s): ${invalidCA.join(', ')}. Allowed: ${VALID_MODULES_CA.join(', ')}` });
     }
 
     const existingUser = await User.findOne({
@@ -884,7 +894,8 @@ const createConsultantAdmin = async (req, res) => {
       createdBy: req.user.id,
       isActive: true,
       sandbox: false,
-      concurrentLoginLimit
+      concurrentLoginLimit,
+      accessibleModules,
     });
 
     await consultantAdmin.save();
@@ -981,7 +992,8 @@ const createConsultant = async (req, res) => {
       jobRole,
       branch,
       teamName,
-      concurrentLoginLimit
+      concurrentLoginLimit,
+      accessibleModules,
     } = req.body;
     
     // ==========================================
@@ -1043,13 +1055,22 @@ const createConsultant = async (req, res) => {
     }
     
     if (!branch) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: "Branch is required for Consultant creation",
         field: "branch",
         details: "Please specify the branch/location for this consultant"
       });
     }
-    
+
+    if (!accessibleModules || !Array.isArray(accessibleModules) || accessibleModules.length === 0) {
+      return res.status(400).json({ message: "accessibleModules is required (e.g. [\"zero_carbon\"] or [\"zero_carbon\",\"esg_link\"])", field: "accessibleModules" });
+    }
+    const VALID_MODULES_C = ['zero_carbon', 'esg_link'];
+    const invalidC = accessibleModules.filter(m => !VALID_MODULES_C.includes(m));
+    if (invalidC.length > 0) {
+      return res.status(400).json({ message: `Invalid module(s): ${invalidC.join(', ')}. Allowed: ${VALID_MODULES_C.join(', ')}`, field: "accessibleModules" });
+    }
+
     // ==========================================
     // 4. INPUT VALIDATION - Format & Business Rules
     // ==========================================
@@ -1147,7 +1168,8 @@ const createConsultant = async (req, res) => {
       consultantAdminId: req.user.id,
       parentUser: req.user.id, // Set parent user relationship
       isActive: true,
-      isFirstLogin: true, // Force password change on first login
+      isFirstLogin: true,
+      accessibleModules,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -1157,9 +1179,9 @@ const createConsultant = async (req, res) => {
         canSubmitData: false,
         canAudit: false
       },
-      concurrentLoginLimit: concurrentLoginLimit || 1 // Default to 1 if not specified
+      concurrentLoginLimit: concurrentLoginLimit || 1
     });
-    
+
     await consultant.save();
     
     console.log(`✅ Consultant created: ${consultant.userName} (ID: ${consultant.employeeId})`);
@@ -1671,13 +1693,14 @@ const createEmployeeHead = async (req, res) => {
           userType: "client_employee_head",
           address,
           isActive: true,
-          isFirstLogin: true, // Force password change on first login
+          isFirstLogin: true,
           companyName: req.user.companyName,
           clientId: req.user.clientId,
-          department: department.trim(), // Trim whitespace
-          location: location.trim(), // Trim whitespace
+          department: department.trim(),
+          location: location.trim(),
           createdBy: req.user.id,
           parentUser: req.user.id,
+          accessibleModules: ['zero_carbon'],
           permissions: {
             canViewAllClients: false,
             canManageUsers: true,
@@ -1972,6 +1995,7 @@ const createEmployee = async (req, res) => {
           assignedModules,
           createdBy: req.user.id,
           parentUser: req.user.id,
+          accessibleModules: ['zero_carbon'],
           permissions: {
             canViewAllClients: false,
             canManageUsers: false,
@@ -2041,10 +2065,33 @@ const createEmployee = async (req, res) => {
 
 const createAuditor = async (req, res) => {
   try {
-    if (!req.user || req.user.userType !== 'client_admin') {
-      return res.status(403).json({
-        message: 'Only Client Admin can create Auditors',
-      });
+    const actor = req.user;
+    if (!actor || !['client_admin', 'consultant_admin', 'consultant'].includes(actor.userType)) {
+      return res.status(403).json({ message: 'Only Client Admin, Consultant Admin, or Consultant can create Auditors' });
+    }
+
+    // ── Resolve clientId and clientDoc based on caller type ─────────────────
+    let resolvedClientId;
+    let clientDoc;
+    if (actor.userType === 'client_admin') {
+      resolvedClientId = actor.clientId;
+      clientDoc = await Client.findOne({ clientId: resolvedClientId });
+      if (!clientDoc) return res.status(404).json({ message: 'Client not found' });
+    } else {
+      const { clientId } = req.body;
+      if (!clientId) return res.status(400).json({ message: 'clientId is required in request body' });
+      clientDoc = await Client.findOne({ clientId });
+      if (!clientDoc) return res.status(404).json({ message: `Client not found: ${clientId}` });
+      if (actor.userType === 'consultant_admin') {
+        if (!clientDoc.leadInfo?.consultantAdminId?.equals(actor._id)) {
+          return res.status(403).json({ message: 'You are not the managing Consultant Admin for this client' });
+        }
+      } else {
+        if (!clientDoc.leadInfo?.assignedConsultantId?.equals(actor._id)) {
+          return res.status(403).json({ message: 'You are not the assigned Consultant for this client' });
+        }
+      }
+      resolvedClientId = clientId;
     }
 
     const {
@@ -2055,8 +2102,8 @@ const createAuditor = async (req, res) => {
       address,
       auditPeriod,
       auditScope,
-      accessControls,   // optional checklist from client_admin
-      accessibleModules, // 🆕 which module(s) this auditor accesses
+      accessControls,
+      accessibleModules,
     } = req.body;
 
     // Check if user already exists
@@ -2067,35 +2114,25 @@ const createAuditor = async (req, res) => {
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
     const VALID_MODULES = ['zero_carbon', 'esg_link'];
-    let resolvedModules;
-    if (accessibleModules && accessibleModules.length > 0) {
-      const modulesArray = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
-      const invalid = modulesArray.filter(m => !VALID_MODULES.includes(m));
-      if (invalid.length > 0) {
-        return res.status(400).json({ message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${VALID_MODULES.join(', ')}` });
-      }
-      // Check client has those modules
-      const clientDoc = await Client.findOne({ clientId: req.user.clientId });
-      if (clientDoc) {
-        for (const mod of modulesArray) {
-          if (!clientDoc.accessibleModules?.includes(mod)) {
-            return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
-          }
-          if (!isModuleSubscriptionActive(clientDoc, mod)) {
-            return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
-          }
-        }
-      }
-      resolvedModules = modulesArray;
-    } else {
-      // Default to client's accessible modules
-      const clientDoc = await Client.findOne({ clientId: req.user.clientId });
-      resolvedModules = clientDoc?.accessibleModules || ['zero_carbon'];
+    if (!accessibleModules || (Array.isArray(accessibleModules) ? accessibleModules.length === 0 : !accessibleModules)) {
+      return res.status(400).json({ message: 'accessibleModules is required. Specify which module(s) this auditor should access.' });
     }
+    const modulesArray = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
+    const invalid = modulesArray.filter(m => !VALID_MODULES.includes(m));
+    if (invalid.length > 0) {
+      return res.status(400).json({ message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${VALID_MODULES.join(', ')}` });
+    }
+    for (const mod of modulesArray) {
+      if (!clientDoc.accessibleModules?.includes(mod)) {
+        return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
+      }
+      if (!isModuleSubscriptionActive(clientDoc, mod)) {
+        return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
+      }
+    }
+    const resolvedModules = modulesArray;
 
     // ── Parse + validate accessControls ─────────────────────────────────────
-    // parseAccessControls handles both application/json (object) and
-    // multipart/form-data (JSON string) transparently.
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
     if (!acParsed.ok) {
@@ -2104,13 +2141,10 @@ const createAuditor = async (req, res) => {
     if (acParsed.value) {
       const validation = validateAndSanitizeChecklist(acParsed.value);
       if (!validation.valid) {
-        return res.status(400).json({
-          message: `Invalid accessControls: ${validation.error}`,
-        });
+        return res.status(400).json({ message: `Invalid accessControls: ${validation.error}` });
       }
       resolvedAccessControls = validation.sanitized;
     } else {
-      // Fail-closed default: all false. client_admin must explicitly grant access.
       resolvedAccessControls = AUDITOR_DEFAULT_CHECKLIST;
     }
 
@@ -2123,13 +2157,13 @@ const createAuditor = async (req, res) => {
       userName,
       userType: 'auditor',
       address,
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
+      companyName: clientDoc.companyName || resolvedClientId,
+      clientId: resolvedClientId,
       auditPeriod,
       auditScope,
-      createdBy: req.user.id,
+      createdBy: actor.id,
       isActive: true,
-      accessibleModules: resolvedModules, // 🆕 store which module(s) this auditor accesses
+      accessibleModules: resolvedModules,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -2143,7 +2177,7 @@ const createAuditor = async (req, res) => {
     });
 
     // ── Quota enforcement ────────────────────────────────────────────────────
-    const auditorSlot = await reserveUserTypeSlot(req.user.clientId, 'auditor');
+    const auditorSlot = await reserveUserTypeSlot(resolvedClientId, 'auditor');
     if (!auditorSlot.allowed) {
       return res.status(429).json({
         message: auditorSlot.message || 'Auditor quota exceeded for this client.',
@@ -2159,11 +2193,10 @@ const createAuditor = async (req, res) => {
       await auditor.save();
     } catch (saveErr) {
       if (auditorSlot.reserved && auditorSlot.consultantId) {
-        await releaseUserTypeSlot(req.user.clientId, 'auditor', auditorSlot.consultantId).catch(() => {});
+        await releaseUserTypeSlot(resolvedClientId, 'auditor', auditorSlot.consultantId).catch(() => {});
       }
       throw saveErr;
     }
-    // ── End quota enforcement ────────────────────────────────────────────────
 
     logUserCreated(req, auditor).catch(() => {});
     try {
@@ -2179,15 +2212,12 @@ const createAuditor = async (req, res) => {
         email: auditor.email,
         userName: auditor.userName,
         auditPeriod: auditor.auditPeriod,
-        accessControls: auditor.accessControls, // 🆕 return checklist in response
+        accessControls: auditor.accessControls,
       },
     });
   } catch (error) {
     console.error('Create auditor error:', error);
-    res.status(500).json({
-      message: 'Failed to create Auditor',
-      error: error.message,
-    });
+    res.status(500).json({ message: 'Failed to create Auditor', error: error.message });
   }
 };
 
@@ -2197,10 +2227,33 @@ const createAuditor = async (req, res) => {
 
 const createViewer = async (req, res) => {
   try {
-    if (!req.user || req.user.userType !== 'client_admin') {
-      return res.status(403).json({
-        message: 'Only Client Admin can create Viewers',
-      });
+    const actor = req.user;
+    if (!actor || !['client_admin', 'consultant_admin', 'consultant'].includes(actor.userType)) {
+      return res.status(403).json({ message: 'Only Client Admin, Consultant Admin, or Consultant can create Viewers' });
+    }
+
+    // ── Resolve clientId and clientDoc based on caller type ─────────────────
+    let resolvedClientId;
+    let clientDocV;
+    if (actor.userType === 'client_admin') {
+      resolvedClientId = actor.clientId;
+      clientDocV = await Client.findOne({ clientId: resolvedClientId });
+      if (!clientDocV) return res.status(404).json({ message: 'Client not found' });
+    } else {
+      const { clientId } = req.body;
+      if (!clientId) return res.status(400).json({ message: 'clientId is required in request body' });
+      clientDocV = await Client.findOne({ clientId });
+      if (!clientDocV) return res.status(404).json({ message: `Client not found: ${clientId}` });
+      if (actor.userType === 'consultant_admin') {
+        if (!clientDocV.leadInfo?.consultantAdminId?.equals(actor._id)) {
+          return res.status(403).json({ message: 'You are not the managing Consultant Admin for this client' });
+        }
+      } else {
+        if (!clientDocV.leadInfo?.assignedConsultantId?.equals(actor._id)) {
+          return res.status(403).json({ message: 'You are not the assigned Consultant for this client' });
+        }
+      }
+      resolvedClientId = clientId;
     }
 
     const {
@@ -2211,8 +2264,8 @@ const createViewer = async (req, res) => {
       address,
       viewerPurpose,
       viewerExpiryDate,
-      accessControls,    // optional checklist from client_admin
-      accessibleModules, // 🆕 which module(s) this viewer accesses
+      accessControls,
+      accessibleModules,
     } = req.body;
 
     // Check if user already exists
@@ -2223,33 +2276,25 @@ const createViewer = async (req, res) => {
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
     const VALID_MODULES_V = ['zero_carbon', 'esg_link'];
-    let resolvedModulesV;
-    if (accessibleModules && accessibleModules.length > 0) {
-      const modulesArrayV = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
-      const invalidV = modulesArrayV.filter(m => !VALID_MODULES_V.includes(m));
-      if (invalidV.length > 0) {
-        return res.status(400).json({ message: `Invalid module(s): ${invalidV.join(', ')}. Allowed: ${VALID_MODULES_V.join(', ')}` });
-      }
-      const clientDocV = await Client.findOne({ clientId: req.user.clientId });
-      if (clientDocV) {
-        for (const mod of modulesArrayV) {
-          if (!clientDocV.accessibleModules?.includes(mod)) {
-            return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
-          }
-          if (!isModuleSubscriptionActive(clientDocV, mod)) {
-            return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
-          }
-        }
-      }
-      resolvedModulesV = modulesArrayV;
-    } else {
-      const clientDocV = await Client.findOne({ clientId: req.user.clientId });
-      resolvedModulesV = clientDocV?.accessibleModules || ['zero_carbon'];
+    if (!accessibleModules || (Array.isArray(accessibleModules) ? accessibleModules.length === 0 : !accessibleModules)) {
+      return res.status(400).json({ message: 'accessibleModules is required. Specify which module(s) this viewer should access.' });
     }
+    const modulesArrayV = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
+    const invalidV = modulesArrayV.filter(m => !VALID_MODULES_V.includes(m));
+    if (invalidV.length > 0) {
+      return res.status(400).json({ message: `Invalid module(s): ${invalidV.join(', ')}. Allowed: ${VALID_MODULES_V.join(', ')}` });
+    }
+    for (const mod of modulesArrayV) {
+      if (!clientDocV.accessibleModules?.includes(mod)) {
+        return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
+      }
+      if (!isModuleSubscriptionActive(clientDocV, mod)) {
+        return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
+      }
+    }
+    const resolvedModulesV = modulesArrayV;
 
     // ── Parse + validate accessControls ─────────────────────────────────────
-    // parseAccessControls handles both application/json (object) and
-    // multipart/form-data (JSON string) transparently.
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
     if (!acParsed.ok) {
@@ -2258,13 +2303,10 @@ const createViewer = async (req, res) => {
     if (acParsed.value) {
       const validation = validateAndSanitizeChecklist(acParsed.value);
       if (!validation.valid) {
-        return res.status(400).json({
-          message: `Invalid accessControls: ${validation.error}`,
-        });
+        return res.status(400).json({ message: `Invalid accessControls: ${validation.error}` });
       }
       resolvedAccessControls = validation.sanitized;
     } else {
-      // Fail-closed default: all false. client_admin must explicitly grant access.
       resolvedAccessControls = VIEWER_DEFAULT_CHECKLIST;
     }
 
@@ -2277,13 +2319,13 @@ const createViewer = async (req, res) => {
       userName,
       userType: 'viewer',
       address,
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
+      companyName: clientDocV.companyName || resolvedClientId,
+      clientId: resolvedClientId,
       viewerPurpose,
       viewerExpiryDate,
-      createdBy: req.user.id,
+      createdBy: actor.id,
       isActive: true,
-      accessibleModules: resolvedModulesV, // 🆕 store which module(s) this viewer accesses
+      accessibleModules: resolvedModulesV,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -2297,7 +2339,7 @@ const createViewer = async (req, res) => {
     });
 
     // ── Quota enforcement ────────────────────────────────────────────────────
-    const viewerSlot = await reserveUserTypeSlot(req.user.clientId, 'viewer');
+    const viewerSlot = await reserveUserTypeSlot(resolvedClientId, 'viewer');
     if (!viewerSlot.allowed) {
       return res.status(429).json({
         message: viewerSlot.message || 'Viewer quota exceeded for this client.',
@@ -2313,11 +2355,10 @@ const createViewer = async (req, res) => {
       await viewer.save();
     } catch (saveErr) {
       if (viewerSlot.reserved && viewerSlot.consultantId) {
-        await releaseUserTypeSlot(req.user.clientId, 'viewer', viewerSlot.consultantId).catch(() => {});
+        await releaseUserTypeSlot(resolvedClientId, 'viewer', viewerSlot.consultantId).catch(() => {});
       }
       throw saveErr;
     }
-    // ── End quota enforcement ────────────────────────────────────────────────
 
     logUserCreated(req, viewer).catch(() => {});
     try {
@@ -6604,28 +6645,56 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Helper: validate ESGLink module access for client_admin creation routes.
- * Returns { ok: true } or { ok: false, res: response }
+ * Helper: validate ESGLink module access for consultant/consultant_admin creation routes.
+ * Allowed callers:
+ *   - consultant_admin: must be the admin who created the client (leadInfo.consultantAdminId)
+ *   - consultant: must be the currently assigned consultant (leadInfo.assignedConsultantId)
+ * Returns { ok: true, clientDoc, resolvedClientId } or { ok: false }
  */
 async function _validateEsgLinkAccess(req, res) {
-  if (!req.user || req.user.userType !== 'client_admin') {
-    res.status(403).json({ message: 'Only Client Admin can create ESGLink users' });
+  const actor = req.user;
+  if (!actor || !['consultant_admin', 'consultant'].includes(actor.userType)) {
+    res.status(403).json({ message: 'Only Consultant Admin or Consultant can create ESGLink users' });
     return { ok: false };
   }
-  const clientDoc = await Client.findOne({ clientId: req.user.clientId });
+
+  const { clientId } = req.body;
+  if (!clientId) {
+    res.status(400).json({ message: 'clientId is required in request body' });
+    return { ok: false };
+  }
+
+  const clientDoc = await Client.findOne({ clientId });
   if (!clientDoc) {
-    res.status(404).json({ message: 'Client not found' });
+    res.status(404).json({ message: `Client not found: ${clientId}` });
     return { ok: false };
   }
+
+  if (actor.userType === 'consultant_admin') {
+    const isOwner = clientDoc.leadInfo?.consultantAdminId?.equals(actor._id);
+    if (!isOwner) {
+      res.status(403).json({ message: 'You are not the managing Consultant Admin for this client' });
+      return { ok: false };
+    }
+  } else {
+    // consultant
+    const isAssigned = clientDoc.leadInfo?.assignedConsultantId?.equals(actor._id);
+    if (!isAssigned) {
+      res.status(403).json({ message: 'You are not the assigned Consultant for this client' });
+      return { ok: false };
+    }
+  }
+
   if (!clientDoc.accessibleModules?.includes('esg_link')) {
-    res.status(403).json({ message: 'Your organisation does not have access to the ESGLink module' });
+    res.status(403).json({ message: 'This client does not have access to the ESGLink module' });
     return { ok: false };
   }
   if (!isModuleSubscriptionActive(clientDoc, 'esg_link')) {
-    res.status(403).json({ message: 'Your organisation\'s ESGLink subscription is not active' });
+    res.status(403).json({ message: "This client's ESGLink subscription is not active" });
     return { ok: false };
   }
-  return { ok: true };
+
+  return { ok: true, clientDoc, resolvedClientId: clientId };
 }
 
 // ─── createContributor ────────────────────────────────────────────────────────
@@ -6633,6 +6702,7 @@ const createContributor = async (req, res) => {
   try {
     const check = await _validateEsgLinkAccess(req, res);
     if (!check.ok) return;
+    const { clientDoc, resolvedClientId } = check;
 
     const { email, password, contactNumber, userName, address } = req.body;
 
@@ -6643,7 +6713,7 @@ const createContributor = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
-    const slot = await reserveUserTypeSlot(req.user.clientId, 'contributor');
+    const slot = await reserveUserTypeSlot(resolvedClientId, 'contributor');
     if (!slot.allowed) {
       return res.status(429).json({
         message: slot.message || 'Contributor quota exceeded for this client.',
@@ -6658,19 +6728,15 @@ const createContributor = async (req, res) => {
       userName,
       address,
       userType: 'contributor',
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
+      companyName: clientDoc.companyName || clientDoc.clientId,
+      clientId: resolvedClientId,
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: false, canEditBoundaries: false, canSubmitData: true, canAudit: false },
     });
 
-    // 🆕 ESGLink access control checklist
     if (req.body.esgAccessControls) {
-      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
-        .select('submissionData.esgLinkAssessmentLevel')
-        .lean();
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
@@ -6685,7 +6751,7 @@ const createContributor = async (req, res) => {
       await user.save();
     } catch (saveErr) {
       if (slot.reserved && slot.consultantId) {
-        await releaseUserTypeSlot(req.user.clientId, 'contributor', slot.consultantId).catch(() => {});
+        await releaseUserTypeSlot(resolvedClientId, 'contributor', slot.consultantId).catch(() => {});
       }
       throw saveErr;
     }
@@ -6703,6 +6769,7 @@ const createReviewer = async (req, res) => {
   try {
     const check = await _validateEsgLinkAccess(req, res);
     if (!check.ok) return;
+    const { clientDoc, resolvedClientId } = check;
 
     const { email, password, contactNumber, userName, address } = req.body;
 
@@ -6713,7 +6780,7 @@ const createReviewer = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
-    const slot = await reserveUserTypeSlot(req.user.clientId, 'reviewer');
+    const slot = await reserveUserTypeSlot(resolvedClientId, 'reviewer');
     if (!slot.allowed) {
       return res.status(429).json({
         message: slot.message || 'Reviewer quota exceeded for this client.',
@@ -6728,19 +6795,15 @@ const createReviewer = async (req, res) => {
       userName,
       address,
       userType: 'reviewer',
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
+      companyName: clientDoc.companyName || clientDoc.clientId,
+      clientId: resolvedClientId,
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
 
-    // 🆕 ESGLink access control checklist
     if (req.body.esgAccessControls) {
-      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
-        .select('submissionData.esgLinkAssessmentLevel')
-        .lean();
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
@@ -6755,7 +6818,7 @@ const createReviewer = async (req, res) => {
       await user.save();
     } catch (saveErr) {
       if (slot.reserved && slot.consultantId) {
-        await releaseUserTypeSlot(req.user.clientId, 'reviewer', slot.consultantId).catch(() => {});
+        await releaseUserTypeSlot(resolvedClientId, 'reviewer', slot.consultantId).catch(() => {});
       }
       throw saveErr;
     }
@@ -6773,6 +6836,7 @@ const createApprover = async (req, res) => {
   try {
     const check = await _validateEsgLinkAccess(req, res);
     if (!check.ok) return;
+    const { clientDoc, resolvedClientId } = check;
 
     const { email, password, contactNumber, userName, address } = req.body;
 
@@ -6783,7 +6847,7 @@ const createApprover = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
-    const slot = await reserveUserTypeSlot(req.user.clientId, 'approver');
+    const slot = await reserveUserTypeSlot(resolvedClientId, 'approver');
     if (!slot.allowed) {
       return res.status(429).json({
         message: slot.message || 'Approver quota exceeded for this client.',
@@ -6798,19 +6862,15 @@ const createApprover = async (req, res) => {
       userName,
       address,
       userType: 'approver',
-      companyName: req.user.companyName,
-      clientId: req.user.clientId,
+      companyName: clientDoc.companyName || clientDoc.clientId,
+      clientId: resolvedClientId,
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
 
-    // 🆕 ESGLink access control checklist
     if (req.body.esgAccessControls) {
-      const clientDoc = await Client.findOne({ clientId: req.user.clientId })
-        .select('submissionData.esgLinkAssessmentLevel')
-        .lean();
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
@@ -6825,7 +6885,7 @@ const createApprover = async (req, res) => {
       await user.save();
     } catch (saveErr) {
       if (slot.reserved && slot.consultantId) {
-        await releaseUserTypeSlot(req.user.clientId, 'approver', slot.consultantId).catch(() => {});
+        await releaseUserTypeSlot(resolvedClientId, 'approver', slot.consultantId).catch(() => {});
       }
       throw saveErr;
     }

@@ -275,24 +275,24 @@ router.post(
 /**
  * Create Auditor
  * POST /api/users/auditor
- * Auth: client_admin only
+ * Auth: client_admin | consultant_admin | consultant
  */
 router.post(
   "/auditor",
   uploadUserImage,
-  checkRole('client_admin'),
+  checkRole('client_admin', 'consultant_admin', 'consultant'),
   createAuditor
 );
 
 /**
  * Create Viewer
  * POST /api/users/viewer
- * Auth: client_admin only
+ * Auth: client_admin | consultant_admin | consultant
  */
 router.post(
   "/viewer",
   uploadUserImage,
-  checkRole('client_admin'),
+  checkRole('client_admin', 'consultant_admin', 'consultant'),
   createViewer
 );
 

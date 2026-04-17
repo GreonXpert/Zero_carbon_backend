@@ -20,7 +20,8 @@ const {
   addEdgeToBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
-  checkBoundaryImportAvailability
+  checkBoundaryImportAvailability,
+  assignMetricToNode
 } = require('../controllers/boundaryController');
 
 // All routes require authentication
@@ -72,5 +73,12 @@ router.delete('/:clientId/boundary/nodes/:nodeId', eslGate, removeNodeFromBounda
 
 // Soft-delete entire boundary
 router.delete('/:clientId/boundary', eslGate, deleteBoundary);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// METRIC MAPPING (Step 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Assign a metric from the library to a boundary node
+router.post('/:clientId/boundary/nodes/:nodeId/metrics', eslGate, assignMetricToNode);
 
 module.exports = router;

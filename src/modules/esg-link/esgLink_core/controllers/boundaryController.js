@@ -12,9 +12,13 @@
  *   - removeNodeFromBoundary        — remove a node (and its edges)
  *   - deleteBoundary                — soft-delete entire boundary
  *   - checkBoundaryImportAvailability — check if ZeroCarbon import is possible
+ *   - assignMetricToNode            — Step 3: map metric library entry to a node
  */
 
 const EsgLinkBoundary = require('../models/EsgLinkBoundary');
+const EsgMetric = require('../models/EsgMetric');
+const EsgMetricNodeMapping = require('../models/EsgMetricNodeMapping');
+const User = require('../../../../common/models/User');
 const Client = require('../../../../modules/client-management/client/Client');
 const { canManageBoundary, canViewBoundary } = require('../utils/boundaryPermissions');
 const {
@@ -583,6 +587,172 @@ const checkBoundaryImportAvailability = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. assignMetricToNode
+//     POST /api/esglink/core/:clientId/boundary/nodes/:nodeId/metrics
+// ─────────────────────────────────────────────────────────────────────────────
+const assignMetricToNode = async (req, res) => {
+  try {
+    const { clientId, nodeId } = req.params;
+    const {
+      metricId,
+      mappingStatus         = 'draft',
+      frequency,
+      boundaryScope         = '',
+      rollUpBehavior        = 'sum',
+      reportingLevelNote    = '',
+      allowedSourceTypes    = ['manual'],
+      defaultSourceType     = 'manual',
+      zeroCarbonReference   = false,
+      ingestionInstructions = '',
+      validationRules       = [],
+      evidenceRequirement   = 'optional',
+      evidenceTypeNote      = '',
+      contributors          = [],
+      reviewers             = [],
+      approvers             = [],
+      inheritNodeReviewers  = false,
+      inheritNodeApprovers  = false,
+      approvalLevel         = 'single'
+    } = req.body;
+
+    // 1) Permission check
+    const perm = await canManageBoundary(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    // 2) Required fields
+    if (!metricId) {
+      return res.status(400).json({ message: 'metricId is required', code: 'MISSING_METRIC_ID' });
+    }
+    if (!frequency) {
+      return res.status(400).json({ message: 'frequency is required', code: 'MISSING_FREQUENCY' });
+    }
+
+    // 3) Boundary must exist and contain the node
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false });
+    if (!boundary) {
+      return res.status(404).json({ message: 'No active boundary found for this client', code: 'BOUNDARY_NOT_FOUND' });
+    }
+    const targetNode = boundary.nodes.find(n => n.id === nodeId);
+    if (!targetNode) {
+      return res.status(404).json({ message: `Node "${nodeId}" not found in boundary`, code: 'NODE_NOT_FOUND' });
+    }
+
+    // 4) Metric must exist and be accessible to this client
+    const metric = await EsgMetric.findOne({
+      _id: metricId,
+      isDeleted: false,
+      $or: [{ isGlobal: true }, { clientId }]
+    }).lean();
+    if (!metric) {
+      return res.status(404).json({ message: 'Metric not found or not accessible to this client', code: 'METRIC_NOT_FOUND' });
+    }
+
+    // 5) Duplicate mapping check
+    const duplicate = await EsgMetricNodeMapping.findOne({
+      clientId,
+      boundaryNodeId: nodeId,
+      metricId,
+      isDeleted: false
+    });
+    if (duplicate) {
+      return res.status(409).json({
+        message: 'This metric is already mapped to this boundary node',
+        code: 'DUPLICATE_MAPPING',
+        mappingId: duplicate._id
+      });
+    }
+
+    // 6) Validate assignees against their correct userTypes
+    //    contributors → userType 'contributor'
+    //    reviewers    → userType 'reviewer'
+    //    approvers    → userType 'approver'
+    if (contributors.length > 0) {
+      const found = await User.find({
+        _id: { $in: contributors },
+        userType: 'contributor',
+        clientId,
+        isActive: true
+      }).select('_id').lean();
+      if (found.length !== contributors.length) {
+        return res.status(400).json({
+          message: 'One or more contributor IDs not found or not of type contributor for this client',
+          code: 'INVALID_CONTRIBUTOR'
+        });
+      }
+    }
+
+    if (reviewers.length > 0) {
+      const found = await User.find({
+        _id: { $in: reviewers },
+        userType: 'reviewer',
+        clientId,
+        isActive: true
+      }).select('_id').lean();
+      if (found.length !== reviewers.length) {
+        return res.status(400).json({
+          message: 'One or more reviewer IDs not found or not of type reviewer for this client',
+          code: 'INVALID_REVIEWER'
+        });
+      }
+    }
+
+    if (approvers.length > 0) {
+      const found = await User.find({
+        _id: { $in: approvers },
+        userType: 'approver',
+        clientId,
+        isActive: true
+      }).select('_id').lean();
+      if (found.length !== approvers.length) {
+        return res.status(400).json({
+          message: 'One or more approver IDs not found or not of type approver for this client',
+          code: 'INVALID_APPROVER'
+        });
+      }
+    }
+
+    // 7) Create mapping
+    const mapping = new EsgMetricNodeMapping({
+      clientId,
+      boundaryNodeId:       nodeId,
+      boundaryDocId:        boundary._id,
+      metricId,
+      mappingStatus,
+      frequency,
+      boundaryScope,
+      rollUpBehavior,
+      reportingLevelNote,
+      allowedSourceTypes,
+      defaultSourceType,
+      zeroCarbonReference,
+      ingestionInstructions,
+      validationRules,
+      evidenceRequirement,
+      evidenceTypeNote,
+      contributors,
+      reviewers,
+      approvers,
+      inheritNodeReviewers,
+      inheritNodeApprovers,
+      approvalLevel,
+      createdBy: req.user._id
+    });
+
+    await mapping.save();
+
+    return res.status(201).json({
+      success: true,
+      message: `Metric "${metric.metricName}" mapped to node "${targetNode.label}"`,
+      data: mapping
+    });
+
+  } catch (error) {
+    console.error('assignMetricToNode error:', error);
+    return res.status(500).json({ message: 'Server error assigning metric to node', error: error.message });
+  }
+};
+
 module.exports = {
   importBoundaryFromZeroCarbon,
   createBoundaryManually,
@@ -592,5 +762,6 @@ module.exports = {
   addEdgeToBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
-  checkBoundaryImportAvailability
+  checkBoundaryImportAvailability,
+  assignMetricToNode
 };

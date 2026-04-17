@@ -34,6 +34,7 @@ const MODULE_ENUM = [
   'tickets',
   'system',
   'esg_metric',
+  'esg_link_mapping',
   'other',
 ];
 
