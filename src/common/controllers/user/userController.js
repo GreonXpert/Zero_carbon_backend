@@ -822,6 +822,98 @@ const resendLoginOTP = async (req, res) => {
   }
 };
 
+function resolveAccessibleModules({
+  rawModules,
+  required = false,
+  defaultModules = ['zero_carbon'],
+  allowedModules = ['zero_carbon', 'esg_link'],
+  clientDoc = null,
+  enforceClientModuleCheck = false,
+}) {
+  let modules = [];
+
+  if (Array.isArray(rawModules)) {
+    modules = rawModules;
+  } else if (typeof rawModules === 'string') {
+    const trimmed = rawModules.trim();
+
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+
+        if (Array.isArray(parsed)) {
+          modules = parsed;
+        } else {
+          modules = [trimmed];
+        }
+      } catch (_) {
+        modules = trimmed.includes(',')
+          ? trimmed.split(',').map((m) => m.trim()).filter(Boolean)
+          : [trimmed];
+      }
+    }
+  } else if (rawModules !== undefined && rawModules !== null) {
+    modules = [String(rawModules).trim()].filter(Boolean);
+  }
+
+  modules = [...new Set(modules.map((m) => String(m).trim()).filter(Boolean))];
+
+  if (modules.length === 0 && Array.isArray(defaultModules) && defaultModules.length > 0) {
+    modules = [...new Set(defaultModules.map((m) => String(m).trim()).filter(Boolean))];
+  }
+
+  if (required && modules.length === 0) {
+    return {
+      ok: false,
+      status: 400,
+      field: 'accessibleModules',
+      message:
+        'accessibleModules is required (e.g. ["zero_carbon"] or ["zero_carbon","esg_link"])',
+    };
+  }
+
+  const invalid = modules.filter((m) => !allowedModules.includes(m));
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      field: 'accessibleModules',
+      message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${allowedModules.join(', ')}`,
+    };
+  }
+
+  if (clientDoc && enforceClientModuleCheck) {
+    const clientModules =
+      Array.isArray(clientDoc.accessibleModules) && clientDoc.accessibleModules.length
+        ? clientDoc.accessibleModules
+        : ['zero_carbon'];
+
+    for (const mod of modules) {
+      if (!clientModules.includes(mod)) {
+        return {
+          ok: false,
+          status: 403,
+          field: 'accessibleModules',
+          message: `Client does not have access to module: ${mod}`,
+        };
+      }
+
+      if (!isModuleSubscriptionActive(clientDoc, mod)) {
+        return {
+          ok: false,
+          status: 403,
+          field: 'accessibleModules',
+          message: `The ${mod} subscription is not active for this client`,
+        };
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    value: modules,
+  };
+}
 // ==========================================
 // Create Consultant Admin (Super Admin only)
 // ==========================================
@@ -852,7 +944,19 @@ const createConsultantAdmin = async (req, res) => {
     const employeeId = req.body.employeeId;
     const companyName = req.body.companyName;
     const concurrentLoginLimit= req.body.concurrentLoginLimit || 1;
-    const accessibleModules = req.body.accessibleModules;
+    const accessibleModulesResult = resolveAccessibleModules({
+  rawModules: req.body.accessibleModules,
+  required: true,
+});
+
+if (!accessibleModulesResult.ok) {
+  return res.status(accessibleModulesResult.status).json({
+    message: accessibleModulesResult.message,
+    field: accessibleModulesResult.field,
+  });
+}
+
+const accessibleModules = accessibleModulesResult.value;
 
     if (!email || !password || !userName) {
       return res.status(400).json({
@@ -993,7 +1097,7 @@ const createConsultant = async (req, res) => {
       branch,
       teamName,
       concurrentLoginLimit,
-      accessibleModules,
+accessibleModules,
     } = req.body;
     
     // ==========================================
@@ -1062,14 +1166,20 @@ const createConsultant = async (req, res) => {
       });
     }
 
-    if (!accessibleModules || !Array.isArray(accessibleModules) || accessibleModules.length === 0) {
-      return res.status(400).json({ message: "accessibleModules is required (e.g. [\"zero_carbon\"] or [\"zero_carbon\",\"esg_link\"])", field: "accessibleModules" });
-    }
-    const VALID_MODULES_C = ['zero_carbon', 'esg_link'];
-    const invalidC = accessibleModules.filter(m => !VALID_MODULES_C.includes(m));
-    if (invalidC.length > 0) {
-      return res.status(400).json({ message: `Invalid module(s): ${invalidC.join(', ')}. Allowed: ${VALID_MODULES_C.join(', ')}`, field: "accessibleModules" });
-    }
+const accessibleModulesResult = resolveAccessibleModules({
+  rawModules: accessibleModules,
+  required: true,
+  allowedModules: ['zero_carbon', 'esg_link'],
+});
+
+if (!accessibleModulesResult.ok) {
+  return res.status(accessibleModulesResult.status).json({
+    message: accessibleModulesResult.message,
+    field: accessibleModulesResult.field,
+  });
+}
+
+const resolvedAccessibleModules = accessibleModulesResult.value;
 
     // ==========================================
     // 4. INPUT VALIDATION - Format & Business Rules
@@ -1169,7 +1279,7 @@ const createConsultant = async (req, res) => {
       parentUser: req.user.id, // Set parent user relationship
       isActive: true,
       isFirstLogin: true,
-      accessibleModules,
+      accessibleModules: resolvedAccessibleModules,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -1186,7 +1296,7 @@ const createConsultant = async (req, res) => {
     
     console.log(`✅ Consultant created: ${consultant.userName} (ID: ${consultant.employeeId})`);
     logUserCreated(req, consultant).catch(() => {})
-    
+  
     // ==========================================
     // 7. HANDLE PROFILE IMAGE (Optional)
     // ==========================================
@@ -2113,24 +2223,21 @@ const createAuditor = async (req, res) => {
     }
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
-    const VALID_MODULES = ['zero_carbon', 'esg_link'];
-    if (!accessibleModules || (Array.isArray(accessibleModules) ? accessibleModules.length === 0 : !accessibleModules)) {
-      return res.status(400).json({ message: 'accessibleModules is required. Specify which module(s) this auditor should access.' });
-    }
-    const modulesArray = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
-    const invalid = modulesArray.filter(m => !VALID_MODULES.includes(m));
-    if (invalid.length > 0) {
-      return res.status(400).json({ message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${VALID_MODULES.join(', ')}` });
-    }
-    for (const mod of modulesArray) {
-      if (!clientDoc.accessibleModules?.includes(mod)) {
-        return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
-      }
-      if (!isModuleSubscriptionActive(clientDoc, mod)) {
-        return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
-      }
-    }
-    const resolvedModules = modulesArray;
+    const accessibleModulesResult = resolveAccessibleModules({
+  rawModules: accessibleModules,
+  required: true,
+  clientDoc,
+  enforceClientModuleCheck: true,
+});
+
+if (!accessibleModulesResult.ok) {
+  return res.status(accessibleModulesResult.status).json({
+    message: accessibleModulesResult.message,
+    field: accessibleModulesResult.field,
+  });
+}
+
+const resolvedModules = accessibleModulesResult.value;
 
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
@@ -2275,25 +2382,21 @@ const createViewer = async (req, res) => {
     }
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
-    const VALID_MODULES_V = ['zero_carbon', 'esg_link'];
-    if (!accessibleModules || (Array.isArray(accessibleModules) ? accessibleModules.length === 0 : !accessibleModules)) {
-      return res.status(400).json({ message: 'accessibleModules is required. Specify which module(s) this viewer should access.' });
-    }
-    const modulesArrayV = Array.isArray(accessibleModules) ? accessibleModules : [accessibleModules];
-    const invalidV = modulesArrayV.filter(m => !VALID_MODULES_V.includes(m));
-    if (invalidV.length > 0) {
-      return res.status(400).json({ message: `Invalid module(s): ${invalidV.join(', ')}. Allowed: ${VALID_MODULES_V.join(', ')}` });
-    }
-    for (const mod of modulesArrayV) {
-      if (!clientDocV.accessibleModules?.includes(mod)) {
-        return res.status(403).json({ message: `Client does not have access to module: ${mod}` });
-      }
-      if (!isModuleSubscriptionActive(clientDocV, mod)) {
-        return res.status(403).json({ message: `The ${mod} subscription is not active for this client` });
-      }
-    }
-    const resolvedModulesV = modulesArrayV;
+const accessibleModulesResult = resolveAccessibleModules({
+  rawModules: accessibleModules,
+  required: true,
+  clientDoc: clientDocV,
+  enforceClientModuleCheck: true,
+});
 
+if (!accessibleModulesResult.ok) {
+  return res.status(accessibleModulesResult.status).json({
+    message: accessibleModulesResult.message,
+    field: accessibleModulesResult.field,
+  });
+}
+
+const resolvedModulesV = accessibleModulesResult.value;
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
