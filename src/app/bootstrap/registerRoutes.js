@@ -46,9 +46,11 @@ const ticketRoutes               = require('../../common/routes/Ticket/ticketRou
 const auditLogRoutes             = require('../../common/routes/AuditLog/auditLogRoutes');
 
 // ── ESGLink ───────────────────────────────────────────────────────────────────
-const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/routes/boundaryR');
-const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/routes/metricR');
-const esgLinkMappingR            = require('../../modules/esg-link/esgLink_core/routes/mappingR');
+const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/boundary/routes/boundaryR');
+const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/metric/routes/metricR');
+const esgLinkMappingR            = require('../../modules/esg-link/esgLink_core/boundary/routes/mappingR');
+const { submissionR: esgDataR,
+        ingestionR: esgIngestR } = require('../../modules/esg-link/esgLink_core/data-collection/routes/index');
 
 // ============================================================================
 // REGISTER ALL ROUTES
@@ -108,6 +110,12 @@ function registerRoutes(app) {
   app.use('/api/esglink/core', esgLinkBoundaryR);
   app.use('/api/esglink/core', esgLinkMetricR);
   app.use('/api/esglink/core', esgLinkMappingR);
+
+  // ── ESGLink Data Collection (JWT-protected) ───────────────────────────────
+  app.use('/api/esglink/data', esgDataR);
+
+  // ── ESGLink IoT / API Ingestion (API-key protected — no JWT) ─────────────
+  app.use('/api/esg-ingest', esgIngestR);
 }
 
 module.exports = { registerRoutes };

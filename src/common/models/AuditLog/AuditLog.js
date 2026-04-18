@@ -35,6 +35,7 @@ const MODULE_ENUM = [
   'system',
   'esg_metric',
   'esg_link_mapping',
+  'esg_data_collection',
   'other',
 ];
 

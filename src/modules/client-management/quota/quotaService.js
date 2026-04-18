@@ -29,7 +29,7 @@ const getTransport          = () => require('../../zero-carbon/organization/mode
 const getSbti               = () => require('../../zero-carbon/decarbonization/SbtiTarget');
 const getUserModel          = () => require('../../../common/models/User');
 // ESGLink models
-const getEsgLinkBoundary    = () => require('../../esg-link/esgLink_core/models/EsgLinkBoundary');
+const getEsgLinkBoundary    = () => require('../../esg-link/esgLink_core/boundary/models/EsgLinkBoundary');
 
 // ─────────────────────────────────────────────────────────────
 // INTERNAL HELPER: safe ObjectId normalizer

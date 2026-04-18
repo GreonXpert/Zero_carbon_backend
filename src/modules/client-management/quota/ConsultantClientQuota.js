@@ -43,6 +43,11 @@ const LimitsSchema = new mongoose.Schema(
     esgLinkBoundaryNodes:  { type: Number, default: null, min: 0 }, // nodes in EsgLinkBoundary
     esgLinkMetrics:        { type: Number, default: null, min: 0 }, // placeholder (model TBD)
     esgLinkFormulas:       { type: Number, default: null, min: 0 }, // placeholder (model TBD)
+    // ── ESGLink Data Collection evidence mode ─────────────────
+    // Controls whether contributors may upload files to S3, paste URLs, or both.
+    // 'both' (default) — no restriction; 'file_only' — no URL evidence;
+    // 'url_only' — no file uploads (zero S3 cost for this client)
+    esgEvidenceMode:       { type: String, enum: ['file_only', 'url_only', 'both'], default: 'both' },
   },
   { _id: false }
 );

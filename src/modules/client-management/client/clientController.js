@@ -58,7 +58,7 @@ const {
 } = require('../../zero-carbon/workflow/assessmentLevel');
 
 const { validateEsgLinkAssessmentLevel } = require('../../esg-link/utils/esgLinkAssessmentLevel');
-const { renderEsgLinkClientDataHTML } = require('../../esg-link/workflow/pdfTemplates');
+const { renderEsgLinkClientDataHTML } = require('../../esg-link/esgLink_core/workflow/pdfTemplates');
 
 const { logEvent } = require('../../../common/services/audit/auditLogService');
 const { isModuleSubscriptionActive } = require('../../../common/utils/Permissions/modulePermission');

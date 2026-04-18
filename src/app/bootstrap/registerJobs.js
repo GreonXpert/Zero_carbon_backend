@@ -11,6 +11,7 @@ const { startZeroCarbonExpiryChecker }  = require('../../modules/zero-carbon/wor
 const { startEsgLinkExpiryChecker }     = require('../../modules/zero-carbon/workflow/jobs/esgLinkExpiryChecker');
 const { startSummaryMaintenanceJob }    = require('../../modules/zero-carbon/workflow/jobs/summaryMaintenanceJob');
 const { startSLAChecker }               = require('../../common/utils/jobs/ticketSlaChecker');
+const { startEsgDataFrequencyChecker }  = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgDataFrequencyChecker');
 const { publishScheduledNotifications } = require('../../common/controllers/notification/notificationControllers');
 const Notification                      = require('../../common/models/Notification/Notification');
 
@@ -61,6 +62,9 @@ function registerJobs() {
 
   // ── Summary maintenance job (hourly recalc + daily cleanup) ──────────────
   startSummaryMaintenanceJob();
+
+  // ── ESG data frequency reminder checker (daily at 07:00 UTC) ─────────────
+  startEsgDataFrequencyChecker();
 
   // ── Scheduled notification publisher (every 5 minutes) ───────────────────
   cron.schedule('*/5 * * * *', async () => {

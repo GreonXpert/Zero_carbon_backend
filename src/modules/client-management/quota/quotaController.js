@@ -40,6 +40,7 @@ const ALLOWED_LIMIT_KEYS = [
   'esgLinkBoundaryNodes',
   'esgLinkMetrics',
   'esgLinkFormulas',
+  'esgEvidenceMode',
 ];
 
 // ─────────────────────────────────────────────────────────────
