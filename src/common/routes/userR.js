@@ -268,7 +268,7 @@ router.post(
 router.post(
   "/employee",
   uploadUserImage,
-  checkRole('client_employee_head'),
+  checkRole('client_employee_head', 'client_admin'),
   createEmployee
 );
 

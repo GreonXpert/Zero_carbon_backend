@@ -939,6 +939,38 @@ function registerSockets(io) {
       }
     });
 
+    // ── ESG Summary subscription handlers ─────────────────────────────────
+
+    socket.on('subscribe-esg-summary', async ({ clientId, boundaryId, year } = {}) => {
+      try {
+        if (!clientId) return;
+        socket.join(`esg-summary-${clientId}`);
+        socket.emit('esg-summary-subscribed', { room: `esg-summary-${clientId}`, clientId, timestamp: new Date().toISOString() });
+
+        if (boundaryId && year) {
+          try {
+            const { getCachedSummary } = require('../../modules/esg-link/esgLink_core/summary/services/summaryService');
+            const cached = await getCachedSummary(clientId, boundaryId, parseInt(year, 10));
+            if (cached) {
+              socket.emit('esg_summary_updated', {
+                type: 'initial', clientId, boundaryDocId: boundaryId,
+                periodYear: parseInt(year, 10), summary: cached,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          } catch (_) {}
+        }
+      } catch (err) {
+        console.error('Error in subscribe-esg-summary:', err.message);
+      }
+    });
+
+    socket.on('unsubscribe-esg-summary', ({ clientId } = {}) => {
+      if (!clientId) return;
+      socket.leave(`esg-summary-${clientId}`);
+      socket.emit('esg-summary-unsubscribed', { clientId });
+    });
+
     // ── Common handlers ────────────────────────────────────────────────────
 
     socket.on('disconnect', () => {
@@ -1144,6 +1176,35 @@ function registerSockets(io) {
   global.broadcastSLAAlert            = broadcastSLAAlert;
 
   global.broadcastMinimalDataUpdate   = broadcastMinimalDataUpdate;
+
+  // ── ESG Summary realtime broadcasts ──────────────────────────────────────
+  global.broadcastEsgSummaryUpdate = function(clientId, boundaryDocId, eventType, payload) {
+    try {
+      if (!io) return;
+      io.to(`esg-summary-${clientId}`).emit('esg_summary_updated', {
+        type: eventType,
+        clientId,
+        boundaryDocId,
+        ...(payload || {}),
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error in broadcastEsgSummaryUpdate:', err.message);
+    }
+  };
+
+  global.broadcastEsgRoleUpdate = function(userId, eventType, payload) {
+    try {
+      if (!io) return;
+      io.to(`user_${userId}`).emit('esg_my_summary_updated', {
+        type: eventType,
+        ...(payload || {}),
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error in broadcastEsgRoleUpdate:', err.message);
+    }
+  };
 
   console.log('✅ All broadcast functions registered globally');
 

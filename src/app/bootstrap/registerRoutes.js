@@ -51,6 +51,8 @@ const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/
 const esgLinkMappingR            = require('../../modules/esg-link/esgLink_core/boundary/routes/mappingR');
 const { submissionR: esgDataR,
         ingestionR: esgIngestR } = require('../../modules/esg-link/esgLink_core/data-collection/routes/index');
+const esgRollUpR                 = require('../../modules/esg-link/esgLink_core/rollup/routes/rollUpR');
+const esgSummaryR                = require('../../modules/esg-link/esgLink_core/summary/routes/summaryR');
 
 // ============================================================================
 // REGISTER ALL ROUTES
@@ -110,9 +112,11 @@ function registerRoutes(app) {
   app.use('/api/esglink/core', esgLinkBoundaryR);
   app.use('/api/esglink/core', esgLinkMetricR);
   app.use('/api/esglink/core', esgLinkMappingR);
+  app.use('/api/esglink/core', esgRollUpR);
 
   // ── ESGLink Data Collection (JWT-protected) ───────────────────────────────
   app.use('/api/esglink/data', esgDataR);
+  app.use('/api/esglink/data', esgSummaryR);
 
   // ── ESGLink IoT / API Ingestion (API-key protected — no JWT) ─────────────
   app.use('/api/esg-ingest', esgIngestR);

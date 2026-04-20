@@ -6,6 +6,55 @@ const EsgSubmissionThread = require('../models/EsgSubmissionThread');
 const EsgLinkBoundary     = require('../../boundary/models/EsgLinkBoundary');
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
 const { canReview, canApprove, isConsultantForClient } = require('../utils/submissionPermissions');
+const { triggerSummaryRefresh } = require('../../summary/services/summaryService');
+
+// ─── Internal: fire-and-forget summary refresh + socket broadcast ─────────────
+function _refreshSummaryAsync(doc, toStatus, reviewers, approvers) {
+  setImmediate(async () => {
+    try {
+      const clientId      = doc.clientId;
+      const boundaryDocId = doc.boundaryDocId;
+      const periodYear    = doc.period && doc.period.year ? doc.period.year : new Date().getFullYear();
+
+      triggerSummaryRefresh(clientId, boundaryDocId, periodYear);
+
+      const eventType =
+        toStatus === 'approved'  ? 'approved_refresh'         :
+        toStatus === 'rejected'  ? 'approved_refresh'         :
+        toStatus === 'under_review' ? 'approver_pending_refresh' :
+        'reviewer_pending_refresh';
+
+      if (global.broadcastEsgSummaryUpdate) {
+        global.broadcastEsgSummaryUpdate(
+          clientId,
+          boundaryDocId ? boundaryDocId.toString() : '',
+          eventType,
+          { periodYear }
+        );
+      }
+
+      if (global.broadcastEsgRoleUpdate) {
+        if (['submitted', 'clarification_requested', 'resubmitted'].includes(toStatus)) {
+          for (const reviewerId of (reviewers || [])) {
+            global.broadcastEsgRoleUpdate(reviewerId.toString(), 'reviewer_pending_refresh', { clientId, periodYear });
+          }
+        }
+        if (toStatus === 'under_review') {
+          for (const approverId of (approvers || [])) {
+            global.broadcastEsgRoleUpdate(approverId.toString(), 'approver_pending_refresh', { clientId, periodYear });
+          }
+        }
+        if (toStatus === 'approved' || toStatus === 'rejected') {
+          for (const approverId of (approvers || [])) {
+            global.broadcastEsgRoleUpdate(approverId.toString(), 'approved_refresh', { clientId, periodYear });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[workflowService] summary refresh error:', err.message);
+    }
+  });
+}
 
 // ─── Valid Transition Map ─────────────────────────────────────────────────────
 const VALID_TRANSITIONS = {
@@ -194,6 +243,9 @@ async function transition(submissionId, targetStatus, actor, options = {}) {
     metadata:      { nodeId: submission.nodeId, mappingId: submission.mappingId },
   });
 
+  // ── 8. Fire-and-forget summary refresh ───────────────────────────────────
+  _refreshSummaryAsync(submission, targetStatus, reviewers, approvers);
+
   return { doc: submission, fromStatus, toStatus: targetStatus, reviewers, approvers };
 }
 
@@ -351,6 +403,9 @@ async function recordApproverDecision(submissionId, actorId, decision, note, opt
     changeSummary: `Approver decision: ${decision} — final status: ${finalStatus}`,
     metadata:      { approvalPct, rejectionPct },
   });
+
+  // ── 8. Fire-and-forget summary refresh ───────────────────────────────────
+  _refreshSummaryAsync(submission, finalStatus, [], approvers);
 
   return {
     doc:              submission,

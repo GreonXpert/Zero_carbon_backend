@@ -2066,9 +2066,9 @@ module.exports = { createEmployeeHead };
 // Create Employee (Employee Head only)
 const createEmployee = async (req, res) => {
   try {
-    if (!req.user || req.user.userType !== "client_employee_head") {
-      return res.status(403).json({ 
-        message: "Only Employee Head can create Employees" 
+    if (!req.user || !['client_employee_head', 'client_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        message: "Only Employee Head or Client Admin can create Employees"
       });
     }
 
@@ -2091,6 +2091,7 @@ const createEmployee = async (req, res) => {
         if (exists) throw new Error('Email or Username already exists');
 
         const hashed = bcrypt.hashSync(password, 10);
+        const employeeHeadId = req.user.userType === 'client_employee_head' ? req.user.id : null;
         const emp = new User({
           email,
           password: hashed,
@@ -2102,7 +2103,7 @@ const createEmployee = async (req, res) => {
           companyName: req.user.companyName,
           clientId: req.user.clientId,
           department: req.user.department,
-          employeeHeadId: req.user.id,
+          employeeHeadId,
           assignedModules,
           createdBy: req.user.id,
           parentUser: req.user.id,
@@ -2224,21 +2225,26 @@ const createAuditor = async (req, res) => {
     }
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
+    const rawModulesForAuditor =
+      actor.userType === 'client_admin' && (accessibleModules === undefined || accessibleModules === null)
+        ? (clientDoc.accessibleModules?.length ? clientDoc.accessibleModules : ['zero_carbon'])
+        : accessibleModules;
+
     const accessibleModulesResult = resolveAccessibleModules({
-  rawModules: accessibleModules,
-  required: true,
-  clientDoc,
-  enforceClientModuleCheck: true,
-});
+      rawModules: rawModulesForAuditor,
+      required: true,
+      clientDoc,
+      enforceClientModuleCheck: true,
+    });
 
-if (!accessibleModulesResult.ok) {
-  return res.status(accessibleModulesResult.status).json({
-    message: accessibleModulesResult.message,
-    field: accessibleModulesResult.field,
-  });
-}
+    if (!accessibleModulesResult.ok) {
+      return res.status(accessibleModulesResult.status).json({
+        message: accessibleModulesResult.message,
+        field: accessibleModulesResult.field,
+      });
+    }
 
-const resolvedModules = accessibleModulesResult.value;
+    const resolvedModules = accessibleModulesResult.value;
 
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
@@ -2383,21 +2389,26 @@ const createViewer = async (req, res) => {
     }
 
     // ── Resolve and validate accessibleModules ───────────────────────────────
-const accessibleModulesResult = resolveAccessibleModules({
-  rawModules: accessibleModules,
-  required: true,
-  clientDoc: clientDocV,
-  enforceClientModuleCheck: true,
-});
+    const rawModulesForViewer =
+      actor.userType === 'client_admin' && (accessibleModules === undefined || accessibleModules === null)
+        ? (clientDocV.accessibleModules?.length ? clientDocV.accessibleModules : ['zero_carbon'])
+        : accessibleModules;
 
-if (!accessibleModulesResult.ok) {
-  return res.status(accessibleModulesResult.status).json({
-    message: accessibleModulesResult.message,
-    field: accessibleModulesResult.field,
-  });
-}
+    const accessibleModulesResult = resolveAccessibleModules({
+      rawModules: rawModulesForViewer,
+      required: true,
+      clientDoc: clientDocV,
+      enforceClientModuleCheck: true,
+    });
 
-const resolvedModulesV = accessibleModulesResult.value;
+    if (!accessibleModulesResult.ok) {
+      return res.status(accessibleModulesResult.status).json({
+        message: accessibleModulesResult.message,
+        field: accessibleModulesResult.field,
+      });
+    }
+
+    const resolvedModulesV = accessibleModulesResult.value;
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
@@ -6757,36 +6768,46 @@ async function _checkSessionLimitAuthority(requester, targetUser) {
  */
 async function _validateEsgLinkAccess(req, res) {
   const actor = req.user;
-  if (!actor || !['consultant_admin', 'consultant'].includes(actor.userType)) {
-    res.status(403).json({ message: 'Only Consultant Admin or Consultant can create ESGLink users' });
+  if (!actor || !['consultant_admin', 'consultant', 'client_admin'].includes(actor.userType)) {
+    res.status(403).json({ message: 'Only Consultant Admin, Consultant, or Client Admin can create ESGLink users' });
     return { ok: false };
   }
 
-  const { clientId } = req.body;
-  if (!clientId) {
-    res.status(400).json({ message: 'clientId is required in request body' });
-    return { ok: false };
-  }
+  let clientDoc;
+  let resolvedClientId;
 
-  const clientDoc = await Client.findOne({ clientId });
-  if (!clientDoc) {
-    res.status(404).json({ message: `Client not found: ${clientId}` });
-    return { ok: false };
-  }
-
-  if (actor.userType === 'consultant_admin') {
-    const isOwner = clientDoc.leadInfo?.consultantAdminId?.equals(actor._id);
-    if (!isOwner) {
-      res.status(403).json({ message: 'You are not the managing Consultant Admin for this client' });
+  if (actor.userType === 'client_admin') {
+    resolvedClientId = actor.clientId;
+    clientDoc = await Client.findOne({ clientId: resolvedClientId });
+    if (!clientDoc) {
+      res.status(404).json({ message: 'Client not found' });
       return { ok: false };
     }
   } else {
-    // consultant
-    const isAssigned = clientDoc.leadInfo?.assignedConsultantId?.equals(actor._id);
-    if (!isAssigned) {
-      res.status(403).json({ message: 'You are not the assigned Consultant for this client' });
+    const { clientId } = req.body;
+    if (!clientId) {
+      res.status(400).json({ message: 'clientId is required in request body' });
       return { ok: false };
     }
+    clientDoc = await Client.findOne({ clientId });
+    if (!clientDoc) {
+      res.status(404).json({ message: `Client not found: ${clientId}` });
+      return { ok: false };
+    }
+    if (actor.userType === 'consultant_admin') {
+      const isOwner = clientDoc.leadInfo?.consultantAdminId?.equals(actor._id);
+      if (!isOwner) {
+        res.status(403).json({ message: 'You are not the managing Consultant Admin for this client' });
+        return { ok: false };
+      }
+    } else {
+      const isAssigned = clientDoc.leadInfo?.assignedConsultantId?.equals(actor._id);
+      if (!isAssigned) {
+        res.status(403).json({ message: 'You are not the assigned Consultant for this client' });
+        return { ok: false };
+      }
+    }
+    resolvedClientId = clientId;
   }
 
   if (!clientDoc.accessibleModules?.includes('esg_link')) {
@@ -6798,7 +6819,7 @@ async function _validateEsgLinkAccess(req, res) {
     return { ok: false };
   }
 
-  return { ok: true, clientDoc, resolvedClientId: clientId };
+  return { ok: true, clientDoc, resolvedClientId };
 }
 
 // ─── createContributor ────────────────────────────────────────────────────────

@@ -110,11 +110,20 @@ registerSockets(io);
 // ============================================================================
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     console.log('✅ Database connected successfully');
 
     // Seed super-admin on first boot
     initializeSuperAdmin();
+
+    // Seed built-in ESG rollUpBehaviors
+    try {
+      const { seedBuiltInBehaviors } = require('./src/modules/esg-link/esgLink_core/rollup/services/rollUpService');
+      await seedBuiltInBehaviors();
+      console.log('✅ ESG rollUpBehavior built-ins seeded');
+    } catch (err) {
+      console.error('⚠️  ESG rollUpBehavior seed error (non-fatal):', err.message);
+    }
 
     // ── Start all cron jobs and background workers ──────────────────────────
     registerJobs();
