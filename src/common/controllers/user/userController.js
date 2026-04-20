@@ -444,7 +444,8 @@ const verifyLoginOTP = async (req, res) => {
       isFirstLogin: user.isFirstLogin,
       profileImage: user.profileImage || null,
       sandbox: user.sandbox === true,
-      assessmentLevel: user.assessmentLevel || []
+      assessmentLevel: user.assessmentLevel || [],
+      accessibleModules: user.accessibleModules || ['zero_carbon'],
     };
 
     // ==========================================================
