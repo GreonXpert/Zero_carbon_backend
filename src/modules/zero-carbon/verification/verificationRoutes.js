@@ -62,32 +62,28 @@ router.delete(
 router.get(
   "/pending-approvals",
   auth,
-  checkRole("consultant_admin", "super_admin"),
-  listPendingApprovals
+checkRole("consultant_admin", "consultant", "super_admin"), listPendingApprovals
 );
 
 // Get stats for pending approvals (must come before /:id route)
 router.get(
   "/pending-approvals/stats/overview",
   auth,
-  checkRole("consultant_admin", "super_admin"),
-  getPendingApprovalStats
+checkRole("consultant_admin", "consultant", "super_admin"),  getPendingApprovalStats
 );
 
 // Get detail of one pending approval
 router.get(
   "/pending-approvals/:id",
   auth,
-  checkRole("consultant_admin", "super_admin"),
-  getPendingApprovalDetail
+checkRole("consultant_admin", "consultant", "super_admin"),  getPendingApprovalDetail
 );
 
 // Approve a pending entry → finalizes save into DataEntry or NetReductionEntry
 router.post(
   "/pending-approvals/:id/approve",
   auth,
-  checkRole("consultant_admin", "consultant"),
-  approvePendingEntry
+checkRole("consultant_admin", "consultant", "super_admin"),  approvePendingEntry
 );
 
 // Reject a pending entry → nothing is saved to main collections

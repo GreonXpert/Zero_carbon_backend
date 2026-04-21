@@ -5,6 +5,8 @@ const PendingApproval = require("./PendingApproval");
 const DataEntry = require("../organization/models/DataEntry");
 const NetReductionEntry = require("../reduction/models/NetReductionEntry");
 const { notifySubmitterOfOutcome } = require("../workflow/notifications/thresholdNotifications");
+const User = require("../../../common/models/User");
+const Client = require("../../client-management/client/Client");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THRESHOLD CONFIG — CRUD
