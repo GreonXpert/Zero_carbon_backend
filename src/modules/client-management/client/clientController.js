@@ -3496,7 +3496,17 @@ const getClientById = async (req, res) => {
 
 
 
-// Update client assignment
+/**
+ * Save consultantId into ALL users of the client so every client-side user
+ * knows who their assigned consultant is. Pass null to clear on removal.
+ */
+const syncConsultantToClientUsers = async (clientId, consultant) => {
+  await User.updateMany(
+    { clientId },
+    { $set: { consultantId: consultant?._id || null } }
+  );
+};
+
 // Update client assignment
 const assignConsultant = async (req, res) => {
   try {
@@ -3552,13 +3562,16 @@ const assignConsultant = async (req, res) => {
     // Handle previous consultant unassignment
     if (previousConsultantId) {
       // Remove client from previous consultant's assignedClients array
-      await User.findByIdAndUpdate(
-        previousConsultantId,
-        { 
-          $pull: { assignedClients: clientId },
-          $set: { hasAssignedClients: false } // Will be updated correctly below
-        }
-      );
+      await User.findByIdAndUpdate(previousConsultantId, {
+        $pull: { assignedClients: clientId }
+      });
+      // Set hasAssignedClients correctly based on remaining assignments
+      const prevRemaining = await User.findById(previousConsultantId).select('assignedClients');
+      if (prevRemaining) {
+        await User.findByIdAndUpdate(previousConsultantId, {
+          $set: { hasAssignedClients: prevRemaining.assignedClients.length > 0 }
+        });
+      }
       
       // Update consultant history - mark previous assignment as inactive
       const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
@@ -3625,24 +3638,16 @@ client.workflowTracking.assignedConsultantId = consultantId;
     // Update new consultant's assignedClients array and hasAssignedClients flag
     await User.findByIdAndUpdate(
       consultantId,
-      { 
+      {
         $addToSet: { assignedClients: clientId },
         $set: { hasAssignedClients: true }
       },
       { new: true }
     );
-    
-    // Update previous consultant's hasAssignedClients flag
-    if (previousConsultantId) {
-      const previousConsultantClients = await User.findById(previousConsultantId).select('assignedClients');
-      if (previousConsultantClients && previousConsultantClients.assignedClients.length === 0) {
-        await User.findByIdAndUpdate(
-          previousConsultantId,
-          { $set: { hasAssignedClients: false } }
-        );
-      }
-    }
-    
+
+    // Sync consultantId to all client-side users
+    await syncConsultantToClientUsers(clientId, consultant);
+
     // ADD THIS: Emit real-time updates (keep existing real-time functionality)
     if (typeof emitClientListUpdate === 'function') {
       await emitClientListUpdate(client, 'updated', req.user.id);
@@ -4941,12 +4946,15 @@ const changeConsultant = async (req, res) => {
     // Update new consultant's assignedClients array and hasAssignedClients flag
     await User.findByIdAndUpdate(
       newConsultantId,
-      { 
+      {
         $addToSet: { assignedClients: clientId },
         $set: { hasAssignedClients: true }
       }
     );
-    
+
+    // Sync consultantId to all client-side users
+    await syncConsultantToClientUsers(clientId, newConsultant);
+
     // === NOTIFICATIONS ===
     
     // Notify the previously assigned consultant
@@ -5112,7 +5120,10 @@ const removeConsultant = async (req, res) => {
         { $set: { hasAssignedClients: false } }
       );
     }
-    
+
+    // Clear consultantId from all client-side users
+    await syncConsultantToClientUsers(clientId, null);
+
     // Mark assignment as inactive in consultant history
     const historyIndex = client.leadInfo.consultantHistory.findIndex(
       h => h.consultantId.toString() === currentConsultantId.toString() && h.isActive

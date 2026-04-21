@@ -96,9 +96,15 @@ async function resolveThresholdConfig(clientId, scopeIdentifier, flowType, nodeI
 async function checkDataEntry({ clientId, nodeId, scopeIdentifier, numericMap, inputType }) {
   const PASS = { shouldRequireApproval: false };
 
+  console.log(`🔍 [checkDataEntry] CALLED: clientId=${clientId}, nodeId=${nodeId}, scopeIdentifier=${scopeIdentifier}, inputType=${inputType}`);
+
   // 1. Load threshold config
   const config = await resolveThresholdConfig(clientId, scopeIdentifier, "dataEntry", nodeId);
-  if (!config) return PASS;
+  console.log(`🔍 [checkDataEntry] Config found: ${!!config}`);
+  if (!config) {
+    console.log(`⚠️ [checkDataEntry] No threshold config found → PASS (no checking enabled)`);
+    return PASS;
+  }
 
   // 2. Check if this inputType is covered
   if (
@@ -111,20 +117,32 @@ async function checkDataEntry({ clientId, nodeId, scopeIdentifier, numericMap, i
 
   // 3. Compute raw incoming value
   const rawIncoming = sumNumericMap(numericMap);
-  if (!isFinite(rawIncoming) || rawIncoming < 0) return PASS;
+  if (!isFinite(rawIncoming) || rawIncoming < 0) {
+    console.log(`⚠️ [checkDataEntry] Incoming value invalid: ${rawIncoming} (type: ${typeof rawIncoming}). Likely encrypted or missing dataValues.`);
+    return PASS;
+  }
 
   // 4. Fetch historical average (includes frequency resolution)
+  const minSamples = config.minSamplesBeforeCheck || 3;
+  console.log(`[checkDataEntry] Threshold check for ${clientId}/${nodeId}/${scopeIdentifier} (inputType=${inputType})`);
+  console.log(`  ↳ Config: threshold=${config.thresholdPercentage}%, baselineSampleSize=${config.baselineSampleSize}, minSamples=${minSamples}`);
+  console.log(`  ↳ Incoming raw value: ${rawIncoming}`);
+
   const history = await getDataEntryHistoricalAverage({
     clientId,
     nodeId,
     scopeIdentifier,
     sampleSize: config.baselineSampleSize,
-    minSamples: 3
+    minSamples
   });
 
-  if (!history) return PASS; // Not enough history — save normally
+  if (!history) {
+    console.log(`  ↳ No baseline found (need ${minSamples}+ approved entries) → PASS`);
+    return PASS;
+  }
 
   const { average, sampleCount, frequency } = history;
+  console.log(`  ↳ Baseline established: ${sampleCount} entries, avg=${average.toFixed(4)}, freq=${frequency}`);
 
   // 5. Normalize incoming value to daily baseline using the same frequency
   const normalizedIncoming = normalizeToDailyValue(rawIncoming, frequency);
@@ -132,6 +150,10 @@ async function checkDataEntry({ clientId, nodeId, scopeIdentifier, numericMap, i
   // 6. Compute deviation
   const deviation = Math.abs(normalizedIncoming - average);
   const deviationPct = (deviation / average) * 100;
+
+  console.log(`  ↳ Normalized incoming: ${normalizedIncoming.toFixed(4)}`);
+  console.log(`  ↳ Deviation: ${deviation.toFixed(4)}, Deviation%: ${deviationPct.toFixed(2)}%`);
+  console.log(`  ↳ Comparison: ${deviationPct.toFixed(2)}% > ${config.thresholdPercentage}% ? ${deviationPct > config.thresholdPercentage ? '✅ FLAG' : '❌ PASS'}`);
 
   // 7. Compare against threshold
   if (deviationPct > config.thresholdPercentage) {
@@ -190,21 +212,34 @@ async function checkNetReduction({
     return PASS;
   }
 
+  const minSamples = config.minSamplesBeforeCheck || 3;
+  console.log(`[checkNetReduction] Threshold check for ${clientId}/${projectId} (inputType=${inputType})`);
+  console.log(`  ↳ Config: threshold=${config.thresholdPercentage}%, baselineSampleSize=${config.baselineSampleSize}, minSamples=${minSamples}`);
+  console.log(`  ↳ Incoming NR value: ${netReductionValue}`);
+
   const history = await getNetReductionHistoricalAverage({
     clientId,
     projectId,
     calculationMethodology,
     sampleSize: config.baselineSampleSize,
-    minSamples: 3
+    minSamples
   });
 
-  if (!history) return PASS;
+  if (!history) {
+    console.log(`  ↳ No baseline found (need ${minSamples}+ entries) → PASS`);
+    return PASS;
+  }
 
   const { average, sampleCount, frequency } = history;
+  console.log(`  ↳ Baseline: ${sampleCount} entries, avg=${average.toFixed(4)}, freq=${frequency}`);
 
   const normalizedIncoming = normalizeToDailyValue(netReductionValue, frequency);
   const deviation = Math.abs(normalizedIncoming - average);
   const deviationPct = (deviation / average) * 100;
+
+  console.log(`  ↳ Normalized NR: ${normalizedIncoming.toFixed(4)}`);
+  console.log(`  ↳ Deviation: ${deviation.toFixed(4)}, Deviation%: ${deviationPct.toFixed(2)}%`);
+  console.log(`  ↳ Comparison: ${deviationPct.toFixed(2)}% > ${config.thresholdPercentage}% ? ${deviationPct > config.thresholdPercentage ? '✅ FLAG' : '❌ PASS'}`);
 
   if (deviationPct > config.thresholdPercentage) {
     return {

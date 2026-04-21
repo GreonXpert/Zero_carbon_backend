@@ -1813,11 +1813,8 @@ async function saveOneEntry({
       });
 
       if (check.shouldRequireApproval) {
-        // Serialize Map → plain object for storage in MongoDB Mixed field
-        const serializedDataValues = {};
-        for (const [k, v] of numericMap) {
-          serializedDataValues[k] = v;
-        }
+        // numericMap is already a plain object from toNumericMap()
+        const serializedDataValues = numericMap;
 
         const pending = await PendingApproval.create({
           flowType: 'dataEntry',

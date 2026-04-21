@@ -48,6 +48,18 @@ const LimitsSchema = new mongoose.Schema(
     // 'both' (default) — no restriction; 'file_only' — no URL evidence;
     // 'url_only' — no file uploads (zero S3 cost for this client)
     esgEvidenceMode:       { type: String, enum: ['file_only', 'url_only', 'both'], default: 'both' },
+
+    // ── GreOn IQ access and quota (extended for GreOn IQ module) ─────────────
+    // greonIQEnabled: master switch — if false, no user under this quota record
+    //   can access GreOn IQ regardless of individual allocations.
+    // greonIQMonthlyLimit: total client-level monthly credit pool. null = unlimited
+    //   (only used for client-level pool tracking by consultant_admin).
+    //   Individual user limits are stored in GreOnIQQuotaAllocation, not here.
+    // greonIQChatRetentionLimit: default session retention for users under this
+    //   quota if no individual allocation overrides it. Range: 10-100.
+    greonIQEnabled:            { type: Boolean, default: false },
+    greonIQMonthlyLimit:       { type: Number,  default: null, min: 0 },
+    greonIQChatRetentionLimit: { type: Number,  default: 10,   min: 10, max: 100 },
   },
   { _id: false }
 );

@@ -3,6 +3,7 @@ const DataEntry = require("../../organization/models/DataEntry");
 const NetReductionEntry = require("../../reduction/models/NetReductionEntry");
 const DataCollectionConfig = require("../../organization/models/DataCollectionConfig");
 const { normalizeToDailyValue } = require("./normalizationService");
+const { decrypt } = require("../../../../common/utils/encryptionUtil");
 
 /**
  * Resolves the collection frequency for a DataEntry stream.
@@ -43,6 +44,12 @@ function resolveDataEntryRawValue(entry) {
   let total = 0;
   const values = entry.dataValues;
 
+  // 🔐 CRITICAL: Detect if dataValues is still encrypted (should have been decrypted)
+  if (typeof values === "string" && values.startsWith("v1:")) {
+    console.error(`❌ [resolveDataEntryRawValue] Entry ${entry._id} still has encrypted dataValues! Decryption must have failed.`);
+    return 0;
+  }
+
   // dataValues is a Mongoose Map – when .lean() is used it becomes a plain object
   if (values instanceof Map) {
     for (const v of values.values()) {
@@ -54,6 +61,11 @@ function resolveDataEntryRawValue(entry) {
       const n = Number(v);
       if (isFinite(n)) total += n;
     }
+  }
+
+  // Debug: log if total is 0 (might indicate encrypted or unparsed data)
+  if (total === 0 && entry.dataValues && typeof entry.dataValues === "object") {
+    console.warn(`⚠️ [resolveDataEntryRawValue] Entry ${entry._id} has dataValues but resolved to 0. Type: ${typeof entry.dataValues}, Keys: ${Object.keys(entry.dataValues).slice(0, 3).join(',')}`);
   }
 
   return total;
@@ -92,12 +104,28 @@ async function getDataEntryHistoricalAverage({
   })
     .sort({ timestamp: -1 })
     .limit(sampleSize)
-    .select("dataValues")
+    .select("dataValues _id")
     .lean();
 
-  if (!entries || entries.length < minSamples) return null;
+  if (!entries || entries.length < minSamples) {
+    console.log(`  [historicalAverageService] Found ${entries?.length || 0} entries, need ${minSamples}+ → returning null`);
+    return null;
+  }
 
-  const dailyValues = entries.map(e => {
+  // 🔐 CRITICAL FIX: Explicitly decrypt dataValues since .lean() may skip post('find') hook
+  const decryptedEntries = entries.map(e => {
+    if (e.dataValues && typeof e.dataValues === 'string') {
+      try {
+        return { ...e, dataValues: decrypt(e.dataValues) };
+      } catch (err) {
+        console.error(`❌ [historicalAverageService] Decryption failed for entry ${e._id}:`, err.message);
+        return { ...e, dataValues: null };
+      }
+    }
+    return e;
+  });
+
+  const dailyValues = decryptedEntries.map(e => {
     const raw = resolveDataEntryRawValue(e);
     return normalizeToDailyValue(raw, frequency);
   });
@@ -105,7 +133,12 @@ async function getDataEntryHistoricalAverage({
   const sum = dailyValues.reduce((acc, v) => acc + v, 0);
   const average = sum / dailyValues.length;
 
-  if (average === 0) return null;
+  if (average === 0) {
+    console.log(`  [historicalAverageService] Calculated average is 0 → returning null`);
+    return null;
+  }
+
+  console.log(`  [historicalAverageService] Calculated baseline: ${entries.length} entries, daily values: [${dailyValues.slice(0, 3).map(v => v.toFixed(2)).join(', ')}...], avg=${average.toFixed(4)}`);
 
   return { average, sampleCount: entries.length, frequency };
 }

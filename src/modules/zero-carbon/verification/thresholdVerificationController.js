@@ -197,13 +197,31 @@ const deleteThresholdConfig = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Get consultant's assigned client IDs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const getConsultantAssignedClients = async (userId) => {
+  try {
+    const User = require("../../../common/models/User");
+    const user = await User.findById(userId)
+      .select("assignedClients")
+      .lean();
+    return user?.assignedClients?.map(c => String(c)) || [];
+  } catch (err) {
+    console.error("[getConsultantAssignedClients] Error:", err.message);
+    return [];
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PENDING APPROVALS
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * GET /api/verification/pending-approvals
  * List pending approvals (filterable by clientId, flowType, status).
- * Role: consultant_admin, super_admin
+ * consultant_admin: sees only their assigned clients
+ * super_admin: sees all clients
  */
 const listPendingApprovals = async (req, res) => {
   try {
@@ -216,6 +234,32 @@ const listPendingApprovals = async (req, res) => {
     } = req.query;
 
     const filter = {};
+
+    // Authorization: consultant_admin can only see their assigned clients
+    if (req.user.userType === "consultant_admin") {
+      const assignedClientIds = await getConsultantAssignedClients(req.user._id);
+      if (assignedClientIds.length === 0) {
+        return res.status(200).json({
+          success: true,
+          total: 0,
+          page: 1,
+          pages: 0,
+          message: "No clients assigned",
+          data: []
+        });
+      }
+      filter.clientId = { $in: assignedClientIds };
+
+      // If specific clientId requested, verify it's assigned
+      if (clientId && !assignedClientIds.includes(clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: `Client ${clientId} is not assigned to you`
+        });
+      }
+    }
+
+    // Apply optional filters
     if (clientId) filter.clientId = clientId;
     if (flowType) filter.flowType = flowType;
     if (status) filter.status = status;
@@ -248,7 +292,8 @@ const listPendingApprovals = async (req, res) => {
 /**
  * GET /api/verification/pending-approvals/:id
  * Get full detail of one pending approval record.
- * Role: consultant_admin, super_admin
+ * consultant_admin: can only view their assigned clients
+ * super_admin: can view all
  */
 const getPendingApprovalDetail = async (req, res) => {
   try {
@@ -266,6 +311,17 @@ const getPendingApprovalDetail = async (req, res) => {
       return res.status(404).json({ success: false, message: "Pending approval not found" });
     }
 
+    // Authorization: consultant_admin can only view their assigned clients
+    if (req.user.userType === "consultant_admin") {
+      const assignedClientIds = await getConsultantAssignedClients(req.user._id);
+      if (!assignedClientIds.includes(record.clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You do not have access to this pending approval"
+        });
+      }
+    }
+
     return res.status(200).json({ success: true, data: record });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -279,7 +335,7 @@ const getPendingApprovalDetail = async (req, res) => {
 /**
  * POST /api/verification/pending-approvals/:id/approve
  * Approve a pending anomaly entry and finalize its save into the target collection.
- * Role: consultant_admin
+ * Only consultant_admin can approve (super_admin cannot)
  */
 const approvePendingEntry = async (req, res) => {
   try {
@@ -288,9 +344,26 @@ const approvePendingEntry = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid ID" });
     }
 
+    // Only consultant or consultant_admin can approve (not super_admin)
+    if (!["consultant_admin", "consultant"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultant or consultant_admin can approve pending entries"
+      });
+    }
+
     const record = await PendingApproval.findById(id);
     if (!record) {
       return res.status(404).json({ success: false, message: "Pending approval not found" });
+    }
+
+    // Verify consultant has access to this client
+    const assignedClientIds = await getConsultantAssignedClients(req.user._id);
+    if (!assignedClientIds.includes(record.clientId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to approve entries for this client"
+      });
     }
 
     if (record.status !== "Pending_Approval") {
@@ -465,7 +538,7 @@ const approvePendingEntry = async (req, res) => {
 /**
  * POST /api/verification/pending-approvals/:id/reject
  * Reject a pending anomaly entry. Nothing is saved to DataEntry/NetReductionEntry.
- * Role: consultant_admin
+ * Only consultant_admin can reject (super_admin cannot)
  */
 const rejectPendingEntry = async (req, res) => {
   try {
@@ -474,11 +547,28 @@ const rejectPendingEntry = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid ID" });
     }
 
+    // Only consultant or consultant_admin can reject (not super_admin)
+    if (!["consultant_admin", "consultant"].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only consultant or consultant_admin can reject pending entries"
+      });
+    }
+
     const { reason } = req.body;
 
     const record = await PendingApproval.findById(id);
     if (!record) {
       return res.status(404).json({ success: false, message: "Pending approval not found" });
+    }
+
+    // Verify consultant has access to this client
+    const assignedClientIds = await getConsultantAssignedClients(req.user._id);
+    if (!assignedClientIds.includes(record.clientId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to reject entries for this client"
+      });
     }
 
     if (record.status !== "Pending_Approval") {
@@ -522,6 +612,102 @@ const rejectPendingEntry = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// STATS — Dashboard overview
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/verification/pending-approvals/stats/overview
+ * Get statistics for pending approvals
+ */
+const getPendingApprovalStats = async (req, res) => {
+  try {
+    const filter = {};
+
+    // Authorization: consultant_admin sees only their assigned clients
+    if (req.user.userType === "consultant_admin") {
+      const assignedClientIds = await getConsultantAssignedClients(req.user._id);
+      if (assignedClientIds.length === 0) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            totalPending: 0,
+            totalApproved: 0,
+            totalRejected: 0,
+            byFlowType: { dataEntry: 0, netReduction: 0 },
+            oldestPending: null
+          }
+        });
+      }
+      filter.clientId = { $in: assignedClientIds };
+    }
+
+    // Get counts by status
+    const stats = await PendingApproval.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get counts by flow type (pending only)
+    const flowStats = await PendingApproval.aggregate([
+      { $match: { ...filter, status: 'Pending_Approval' } },
+      {
+        $group: {
+          _id: '$flowType',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get oldest pending
+    const oldest = await PendingApproval.findOne({
+      ...filter,
+      status: 'Pending_Approval'
+    })
+      .sort({ submittedAt: 1 })
+      .select('submittedAt')
+      .lean();
+
+    // Format response
+    const statsObj = {
+      totalPending: 0,
+      totalApproved: 0,
+      totalRejected: 0
+    };
+
+    stats.forEach(stat => {
+      if (stat._id === 'Pending_Approval') statsObj.totalPending = stat.count;
+      if (stat._id === 'Approved') statsObj.totalApproved = stat.count;
+      if (stat._id === 'Rejected') statsObj.totalRejected = stat.count;
+    });
+
+    const byFlowType = { dataEntry: 0, netReduction: 0 };
+    flowStats.forEach(fs => {
+      if (fs._id === 'dataEntry') byFlowType.dataEntry = fs.count;
+      if (fs._id === 'netReduction') byFlowType.netReduction = fs.count;
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        totalPending: statsObj.totalPending,
+        totalApproved: statsObj.totalApproved,
+        totalRejected: statsObj.totalRejected,
+        byFlowType,
+        oldestPending: oldest?.submittedAt || null
+      }
+    });
+
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   createOrUpdateThresholdConfig,
   getThresholdConfigs,
@@ -530,5 +716,6 @@ module.exports = {
   listPendingApprovals,
   getPendingApprovalDetail,
   approvePendingEntry,
-  rejectPendingEntry
+  rejectPendingEntry,
+  getPendingApprovalStats
 };

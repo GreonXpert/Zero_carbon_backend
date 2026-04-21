@@ -61,6 +61,15 @@ const ThresholdConfigSchema = new mongoose.Schema(
       max: 50
     },
 
+    // Minimum number of historical entries needed before starting threshold checks
+    // Set to 1 for immediate anomaly detection, 2-3 for more data points, default 3
+    minSamplesBeforeCheck: {
+      type: Number,
+      default: 3,
+      min: 1,
+      max: 10
+    },
+
     // If set, only intercept entries from these inputTypes.
     // Empty array means all inputTypes are subject to threshold check.
     appliesToInputTypes: {

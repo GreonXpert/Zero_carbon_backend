@@ -122,6 +122,7 @@ const userSchema = new mongoose.Schema(
     
     // Client relationship
     clientId: { type: String }, // Format: Greon001, Greon002, etc.
+    consultantId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Assigned consultant for client-side users
     
     // Super Admin specific
     role: { type: String }, // Only for super admin

@@ -10,7 +10,8 @@ const {
   listPendingApprovals,
   getPendingApprovalDetail,
   approvePendingEntry,
-  rejectPendingEntry
+  rejectPendingEntry,
+  getPendingApprovalStats
 } = require("./thresholdVerificationController");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +66,14 @@ router.get(
   listPendingApprovals
 );
 
+// Get stats for pending approvals (must come before /:id route)
+router.get(
+  "/pending-approvals/stats/overview",
+  auth,
+  checkRole("consultant_admin", "super_admin"),
+  getPendingApprovalStats
+);
+
 // Get detail of one pending approval
 router.get(
   "/pending-approvals/:id",
@@ -77,7 +86,7 @@ router.get(
 router.post(
   "/pending-approvals/:id/approve",
   auth,
-  checkRole("consultant_admin"),
+  checkRole("consultant_admin", "consultant"),
   approvePendingEntry
 );
 
@@ -85,7 +94,7 @@ router.post(
 router.post(
   "/pending-approvals/:id/reject",
   auth,
-  checkRole("consultant_admin"),
+  checkRole("consultant_admin", "consultant"),
   rejectPendingEntry
 );
 
