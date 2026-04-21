@@ -35,7 +35,7 @@ const PendingApprovalSchema = new mongoose.Schema(
 
     clientId: {
       type: String,
-      required: true,
+      required: true,  
       index: true
     },
 
@@ -43,7 +43,7 @@ const PendingApprovalSchema = new mongoose.Schema(
     nodeId: { type: String },
     scopeIdentifier: { type: String },
 
-    // ── NetReduction context ───────────────────────────────────────────
+    // ── NetReduction context of Reduction ───────────────────────────────────────────
     projectId: { type: String },
     calculationMethodology: { type: String },
 
