@@ -202,13 +202,80 @@ const deleteThresholdConfig = async (req, res) => {
 
 const getConsultantAssignedClients = async (userId) => {
   try {
-    const User = require("../../../common/models/User");
     const user = await User.findById(userId)
-      .select("assignedClients")
+      .select("_id userType assignedClients")
       .lean();
-    return user?.assignedClients?.map(c => String(c)) || [];
-  } catch (err) {
-    console.error("[getConsultantAssignedClients] Error:", err.message);
+
+    if (!user) return [];
+
+    const clientIds = new Set(
+      (user.assignedClients || []).map((id) => String(id))
+    );
+
+    // super admin: allow all
+    if (user.userType === "super_admin") {
+      const allClientIds = await Client.distinct("clientId");
+      allClientIds.forEach((id) => clientIds.add(String(id)));
+      return [...clientIds];
+    }
+
+    // consultant_admin: same authority pattern as fetchConsultantClients
+    if (user.userType === "consultant_admin") {
+      const authorityIds = [String(user._id)];
+
+      const consultants = await User.find({
+        userType: "consultant",
+        createdBy: user._id,
+      })
+        .select("_id")
+        .lean();
+
+      consultants.forEach((c) => authorityIds.push(String(c._id)));
+
+      const dbClientIds = await Client.distinct("clientId", {
+        $or: [
+          { "leadInfo.consultantAdminId": { $in: authorityIds } },
+          { "leadInfo.assignedConsultantId": { $in: authorityIds } },
+          {
+            "leadInfo.consultantHistory": {
+              $elemMatch: {
+                $or: [
+                  { consultantAdminId: { $in: authorityIds } },
+                  { assignedConsultantId: { $in: authorityIds } },
+                ],
+              },
+            },
+          },
+          { "workflowTracking.assignedConsultantId": { $in: authorityIds } },
+        ],
+      });
+
+      dbClientIds.forEach((id) => clientIds.add(String(id)));
+      return [...clientIds];
+    }
+
+    // consultant: own assigned visibility
+    if (user.userType === "consultant") {
+      const consultantId = String(user._id);
+
+      const dbClientIds = await Client.distinct("clientId", {
+        $or: [
+          { "leadInfo.assignedConsultantId": consultantId },
+          {
+            "leadInfo.consultantHistory": {
+              $elemMatch: { assignedConsultantId: consultantId },
+            },
+          },
+          { "workflowTracking.assignedConsultantId": consultantId },
+        ],
+      });
+
+      dbClientIds.forEach((id) => clientIds.add(String(id)));
+    }
+
+    return [...clientIds];
+  } catch (error) {
+    console.error("Error getting consultant assigned clients:", error);
     return [];
   }
 };

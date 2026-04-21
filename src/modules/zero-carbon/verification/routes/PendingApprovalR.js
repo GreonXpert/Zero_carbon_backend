@@ -9,7 +9,7 @@ const {
   getPendingApprovalStats
 } = require('../controllers/PendingApprovalController');
 
-const { protectRoute } = require('../../../common/utils/jwtAuth');
+const { protectRoute } = require('../../../../common/middleware/auth');
 
 /**
  * All routes require authentication
