@@ -1,0 +1,1140 @@
+
+> bcknd@1.0.0 start
+> nodemon index.js
+
+[33m[nodemon] 3.1.7[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): *.*[39m
+[33m[nodemon] watching extensions: js,mjs,cjs,json[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:30476) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:38228) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:38228) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+[32m[nodemon] restarting due to changes...[39m
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:23432) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:42692) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:42692) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:34452) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:30272) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:30272) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:31308) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:23808) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:23808) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+[32m[nodemon] restarting due to changes...[39m
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:18100) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:22300) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:22300) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:32120) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:42712) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:42712) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:33820) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:35680) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:35680) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+[32m[nodemon] restarting due to changes...[39m
+Super Admin account already exists
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:37616) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:33112) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:36104) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[32m[nodemon] restarting due to changes...[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:33292) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:33292) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:42504) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:35140) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:35140) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:38176) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:16612) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:16612) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:36732) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:36692) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:36692) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[SLA CHECKER] Running scheduled SLA check...
+[SLA CHECKER] Starting SLA check...
+🔄 Checking for scheduled notifications...
+[SLA CHECKER] Found 0 active tickets to check
+[SLA CHECKER] Completed. Breached: 0, Warnings: 0, Auto-escalated: 0
+🔄 Found 1 clients needing summary updates
+📊 Calculating monthly emission summary for client: Greon001
+Found 7 data entries.
+📊 NEW emissionSummary totals: { totalCO2e: 5781.186, s1: 5781.186, s2: 0, s3: 0 }
+[ProcessEmissionSummary] Fetched 0 ProcessEmissionDataEntry record(s) for client Greon001 in period [2026-04-01T00:00:00.000Z – 2026-04-30T23:59:59.999Z]
+📊 [ProcessEmissionSummary] Building monthly summary for client: Greon001 | preloaded=0
+[ProcessEmissionSummary] ProcessFlowchart: 4 node(s) for Greon001
+[ProcessEmissionSummary] STRATEGY A (DB fallback, ProcessEmissionDataEntry): 0 entries
+[ProcessEmissionSummary] STRATEGY B — using 7 main-chart entries with ProcessFlowchart allocationPct applied manually.
+[ProcessEmissionSummary] Entry #1: nodeId=greon001-plant, scopeId=S1-SC-001, strategy=B(main), isPreAllocated=false, allocationPct=null, original.CO2e=2890.5930, allocated.CO2e=2890.5930
+[ProcessEmissionSummary] Finished: strategy=B(main entries), processed=4, totalOriginalCO2e=5851.1280, totalAllocatedCO2e=5851.1280
+📊 [ProcessEmissionSummary] Built — totalAllocatedCO2e: 5851.128, dataPoints: 4
+🔄 Checking for scheduled notifications...
+🔄 Checking for scheduled notifications...
+🔄 Found 1 clients needing summary updates
+📊 Calculating monthly emission summary for client: Greon001
+Found 7 data entries.
+📊 NEW emissionSummary totals: { totalCO2e: 5781.186, s1: 5781.186, s2: 0, s3: 0 }
+[ProcessEmissionSummary] Fetched 0 ProcessEmissionDataEntry record(s) for client Greon001 in period [2026-04-01T00:00:00.000Z – 2026-04-30T23:59:59.999Z]
+📊 [ProcessEmissionSummary] Building monthly summary for client: Greon001 | preloaded=0
+[ProcessEmissionSummary] ProcessFlowchart: 4 node(s) for Greon001
+[ProcessEmissionSummary] STRATEGY A (DB fallback, ProcessEmissionDataEntry): 0 entries
+[ProcessEmissionSummary] STRATEGY B — using 7 main-chart entries with ProcessFlowchart allocationPct applied manually.
+[ProcessEmissionSummary] Entry #1: nodeId=greon001-plant, scopeId=S1-SC-001, strategy=B(main), isPreAllocated=false, allocationPct=null, original.CO2e=2890.5930, allocated.CO2e=2890.5930
+[ProcessEmissionSummary] Finished: strategy=B(main entries), processed=4, totalOriginalCO2e=5851.1280, totalAllocatedCO2e=5851.1280
+📊 [ProcessEmissionSummary] Built — totalAllocatedCO2e: 5851.128, dataPoints: 4
+🔄 Checking for scheduled notifications...
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:37192) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:37192) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:1264) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:41704) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:41704) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+[32m[nodemon] restarting due to changes...[39m
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:39940) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:41304) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:41304) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:29208) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::5000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\index.js:141:8)
+    at Module._compile (node:internal/modules/cjs/loader:1562:14)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:170:5)
+    at node:internal/main/run_main_module:36:49
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 5000
+}
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:28856) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:28856) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+D:\Desktop\Zero Carbon\Zero_carbon_backend\src\modules\client-management\client\clientController.js:6043
+const syncConsultantToClientUsers = async (clientId, consultant) => {
+      ^
+
+SyntaxError: Identifier 'syncConsultantToClientUsers' has already been declared
+    at wrapSafe (node:internal/modules/cjs/loader:1512:18)
+    at Module._compile (node:internal/modules/cjs/loader:1534:20)
+    at Object..js (node:internal/modules/cjs/loader:1699:10)
+    at Module.load (node:internal/modules/cjs/loader:1313:32)
+    at Function._load (node:internal/modules/cjs/loader:1123:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:217:24)
+    at Module.require (node:internal/modules/cjs/loader:1335:12)
+    at require (node:internal/modules/helpers:136:16)
+    at Object.<anonymous> (D:\Desktop\Zero Carbon\Zero_carbon_backend\src\modules\client-management\client\clientR.js:48:5)
+
+Node.js v22.13.1
+[31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[32m[nodemon] restarting due to changes...[39m
+[32m[nodemon] starting `node index.js`[39m
+[TICKET CHAT SOCKET] Socket.IO instance configured
+✅ All broadcast functions registered globally
+(node:20852) [MONGOOSE] Warning: `errors` is a reserved schema pathname and may break some functionality. You are allowed to use it, but use at your own risk. To disable this warning pass `suppressReservedKeysWarning` as a schema option.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 Server started on port 5000
+📡 Socket.IO server running with authentication
+(node:20852) NOTE: The AWS SDK for JavaScript (v2) has reached end-of-support.
+It will no longer receive updates or releases.
+
+Please migrate your code to use AWS SDK for JavaScript (v3).
+For more information, check the blog post at https://a.co/cUPnyil
+MongoDB Connected
+✅ Database connected successfully
+Super Admin account already exists
+✅ ESG rollUpBehavior built-ins seeded
+[checkExpiredSubscriptions] Deprecated — subscription expiry is handled by dedicated cron jobs (zeroCarbonExpiryChecker / esgLinkExpiryChecker).
+Monthly summary cron job scheduled
+🔐 Starting API Key expiry checker...
+[API Key Checker] Cron job initialized - runs daily at 9:00 AM IST
+[MISSED CYCLE DETECTOR] Initializing missed cycle detector cron job...
+[MISSED CYCLE DETECTOR] Cron job started (runs daily at 03:00 UTC)
+[SLA CHECKER] Initializing SLA checker cron job...
+[SLA CHECKER] SLA checker cron job started (runs every 15 minutes)
+[ESGLink Expiry] Cron initialized — runs daily at 02:00 UTC
+[ZeroCarbon Expiry] Cron initialized — runs daily at 02:05 UTC
+[Summary Maintenance] Jobs initialized — hourly recalculation + daily cleanup at 02:00 UTC
+[ESG] ESG data frequency checker scheduled at 07:00 UTC daily
+[GreOn IQ] Weekly reset job registered (Mon 00:00 IST).
+[GreOn IQ] Monthly reset job registered (1st of month 00:00 IST).
+[GreOn IQ] Retention cleanup job registered (Daily 02:30 IST).
+Missed summaries check completed
+✅ Missed summaries check complete
+
+[2026-04-21T08:57:27.985Z] ➜ POST /api/verification/pending-approvals/69e734bd451b9f846e1e9b7d/approve
+  Params: {}
+  Query : {}
+  Body  : {}
+[2026-04-21T08:57:27.987Z] POST /api/verification/pending-approvals/69e734bd451b9f846e1e9b7d/approve
+
+[2026-04-21T08:58:41.475Z] ➜ PATCH /clients/Greon001/change-consultant
+  Params: {}
+  Query : {}
+  Body  : {
+  newConsultantId: '698c1a5d24e5dd9d55c0a133',
+  reasonForChange: 'Testing'
+}
+[2026-04-21T08:58:41.475Z] PATCH /clients/Greon001/change-consultant
+
+[2026-04-21T08:58:50.378Z] ➜ PATCH /api/clients/Greon001/change-consultant
+  Params: {}
+  Query : {}
+  Body  : {
+  newConsultantId: '698c1a5d24e5dd9d55c0a133',
+  reasonForChange: 'Testing'
+}
+[2026-04-21T08:58:50.379Z] PATCH /api/clients/Greon001/change-consultant
+
+[2026-04-21T08:59:10.244Z] ➜ PATCH /api/clients/Greon001/change-consultant
+  Params: {}
+  Query : {}
+  Body  : {
+  newConsultantId: '698c1a5d24e5dd9d55c0a133',
+  reasonForChange: 'Testing'
+}
+[2026-04-21T08:59:10.245Z] PATCH /api/clients/Greon001/change-consultant
+Email sent successfully: <77f693bf-cf36-282b-8720-6c4dce7c61cf@gmail.com>
+
+[2026-04-21T08:59:34.941Z] ➜ POST /api/verification/pending-approvals/69e734bd451b9f846e1e9b7d/approve
+  Params: {}
+  Query : {}
+  Body  : {}
+[2026-04-21T08:59:34.942Z] POST /api/verification/pending-approvals/69e734bd451b9f846e1e9b7d/approve
+[SLA CHECKER] Running scheduled SLA check...
+[SLA CHECKER] Starting SLA check...
+🔄 Checking for scheduled notifications...
+🔄 Checking for scheduled notifications...
+[Summary Maintenance] Starting pending recalculations...
+[SLA CHECKER] Found 0 active tickets to check
+[SLA CHECKER] Completed. Breached: 0, Warnings: 0, Auto-escalated: 0
+[Summary Maintenance] Found 0 summaries needing recalculation
+[Summary Maintenance] Pending recalculations complete

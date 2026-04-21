@@ -45,6 +45,9 @@ const notificationRoutes         = require('../../common/routes/Notification/not
 const ticketRoutes               = require('../../common/routes/Ticket/ticketRoutes');
 const auditLogRoutes             = require('../../common/routes/AuditLog/auditLogRoutes');
 
+// ── GreOn IQ ──────────────────────────────────────────────────────────────────
+const greonIQRoutes              = require('../../modules/greon-iq/routes/greonIQRoutes');
+
 // ── ESGLink ───────────────────────────────────────────────────────────────────
 const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/boundary/routes/boundaryR');
 const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/metric/routes/metricR');
@@ -107,6 +110,9 @@ function registerRoutes(app) {
   // ── Support & audit ───────────────────────────────────────────────────────
   app.use('/api/tickets',    ticketRoutes);
   app.use('/api/audit-logs', auditLogRoutes);
+
+  // ── GreOn IQ — AI Analytics Assistant ────────────────────────────────────
+  app.use('/api/greon-iq', greonIQRoutes);
 
   // ── ESGLink Core ──────────────────────────────────────────────────────────
   app.use('/api/esglink/core', esgLinkBoundaryR);

@@ -13,6 +13,9 @@ const { startSummaryMaintenanceJob }    = require('../../modules/zero-carbon/wor
 const { startSLAChecker }               = require('../../common/utils/jobs/ticketSlaChecker');
 const { startEsgDataFrequencyChecker }  = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgDataFrequencyChecker');
 const { publishScheduledNotifications } = require('../../common/controllers/notification/notificationControllers');
+const { startGreOnIQWeeklyReset }       = require('../../modules/greon-iq/jobs/greonIQWeeklyReset');
+const { startGreOnIQMonthlyReset }      = require('../../modules/greon-iq/jobs/greonIQMonthlyReset');
+const { startGreOnIQRetentionCleanup }  = require('../../modules/greon-iq/jobs/greonIQRetentionCleanup');
 const Notification                      = require('../../common/models/Notification/Notification');
 
 // ============================================================================
@@ -65,6 +68,11 @@ function registerJobs() {
 
   // ── ESG data frequency reminder checker (daily at 07:00 UTC) ─────────────
   startEsgDataFrequencyChecker();
+
+  // ── GreOn IQ quota resets + retention cleanup (IST-based) ────────────────
+  startGreOnIQWeeklyReset();      // Mon 00:00 IST — zero weekly usage counters
+  startGreOnIQMonthlyReset();     // 1st of month 00:00 IST — zero monthly counters
+  startGreOnIQRetentionCleanup(); // Daily 02:30 IST — trim sessions exceeding retention limit
 
   // ── Scheduled notification publisher (every 5 minutes) ───────────────────
   cron.schedule('*/5 * * * *', async () => {
