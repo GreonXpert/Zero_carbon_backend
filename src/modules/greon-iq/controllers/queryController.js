@@ -238,6 +238,8 @@ async function query(req, res) {
       sessionId: session._id,
       ...publicComposed,
       quotaConsumed: deductResult.totalCredits || baseCredits,
+      tokensIn,
+      tokensOut,
     });
 
   } catch (err) {

@@ -126,6 +126,11 @@ const ChatMessageSchema = new mongoose.Schema(
     quotaUsed:        { type: Number,         default: 0 },
     trace:            { type: TraceSchema,    default: null },
     aiMeta:           { type: AiMetaSchema,   default: null },
+    // User feedback on assistant messages (like/dislike toggle)
+    feedback: {
+      value:     { type: String, enum: ['like', 'dislike', null], default: null },
+      updatedAt: { type: Date,   default: null },
+    },
   },
   {
     timestamps: true,

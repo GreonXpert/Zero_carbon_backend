@@ -20,6 +20,7 @@ const historyController   = require('../controllers/historyController');
 const quotaController     = require('../controllers/quotaController');
 const retentionController = require('../controllers/retentionController');
 const reportController    = require('../controllers/reportController');
+const analyticsController = require('../controllers/analyticsController');
 
 // ── JWT auth on all routes ─────────────────────────────────────────────────
 router.use(auth);
@@ -42,6 +43,13 @@ router.post('/query', queryController.query);
 router.get('/history',               historyController.list);
 router.get('/history/:sessionId',    historyController.getSession);
 router.delete('/history/:sessionId', historyController.deleteSession);
+router.patch('/history/:sessionId/pin', historyController.togglePin);
+
+// ── Message feedback ──────────────────────────────────────────────────────────
+router.post('/messages/:messageId/feedback', historyController.messageFeedback);
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+router.get('/analytics', analyticsController.getSummary);
 
 // ── Quota ─────────────────────────────────────────────────────────────────────
 router.get('/quota',                       quotaController.getQuota);

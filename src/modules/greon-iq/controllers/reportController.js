@@ -19,7 +19,8 @@ const { toMarkdown }          = require('../exporters/markdownExporter');
 const { writeAuditLog }       = require('../services/auditService');
 const { getBaseCredits }      = require('../utils/quotaMathHelpers');
 const { explainQuotaExhausted, explainGreonIQDisabled } = require('../utils/permissionExplainer');
-const ChatSession             = require('../models/ChatSession');
+const ChatSession                = require('../models/ChatSession');
+const GreOnIQInteractionEvent    = require('../models/GreOnIQInteractionEvent');
 
 // Resolve report context from either direct body fields or an existing session.
 // Returns { question, intent, clientId, contextState, requestedSections } or an error object.
@@ -280,6 +281,23 @@ async function exportFromResponse(req, res) {
       enabledCheck,
       user,
     });
+
+    // ── Record interaction event (non-fatal) ──────────────────────────────
+    try {
+      const sessionId = queryResponse.sessionId || queryResponse._id || null;
+      if (sessionId) {
+        await GreOnIQInteractionEvent.create({
+          userId:       user._id,
+          clientId:     resolvedClientId,
+          sessionId,
+          messageId:    null,
+          eventType:    'export',
+          exportFormat: format,
+        });
+      }
+    } catch (evtErr) {
+      console.error('[GreOnIQ] export event write error (non-fatal):', evtErr.message);
+    }
 
     res.setHeader('Content-Type', result.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);

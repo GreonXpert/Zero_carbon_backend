@@ -113,7 +113,7 @@ async function listSessions(userId, clientId, { page = 1, limit = 20 } = {}) {
   const skip = (page - 1) * limit;
   const [sessions, total] = await Promise.all([
     ChatSession.find({ userId, clientId, isActive: true })
-      .sort({ updatedAt: -1 })
+      .sort({ isPinned: -1, updatedAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),

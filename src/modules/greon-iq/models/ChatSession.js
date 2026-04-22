@@ -67,11 +67,17 @@ const ChatSessionSchema = new mongoose.Schema(
       type:    Boolean,
       default: true,
     },
+    // Pin flag: pinned sessions are excluded from retention cleanup and sorted first
+    isPinned: {
+      type:    Boolean,
+      default: false,
+      index:   true,
+    },
   },
   { timestamps: true }
 );
 
-// Composite index: look up sessions for a user+client, ordered newest first
-ChatSessionSchema.index({ userId: 1, clientId: 1, createdAt: -1 });
+// Composite index: pinned sessions first, then newest first within each group
+ChatSessionSchema.index({ userId: 1, clientId: 1, isPinned: -1, updatedAt: -1 });
 
 module.exports = mongoose.model('ChatSession', ChatSessionSchema);

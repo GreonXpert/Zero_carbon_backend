@@ -26,7 +26,7 @@ const { getChatRetentionLimit } = require('./quotaResolutionService');
 async function trimForUser(user, clientId) {
   const limit = await getChatRetentionLimit(user, clientId);
 
-  const sessions = await ChatSession.find({ userId: user._id, clientId })
+  const sessions = await ChatSession.find({ userId: user._id, clientId, isPinned: { $ne: true } })
     .sort({ updatedAt: -1 })   // newest first
     .select('_id')
     .lean();
@@ -62,7 +62,7 @@ async function runNightlyCleanup() {
       // Use default limit since we don't have the user object — resolve via DB
       const limit = await _resolveRetentionLimit(String(userId), String(clientId));
 
-      const sessions = await ChatSession.find({ userId, clientId })
+      const sessions = await ChatSession.find({ userId, clientId, isPinned: { $ne: true } })
         .sort({ updatedAt: -1 })
         .select('_id')
         .lean();
