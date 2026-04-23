@@ -33,7 +33,7 @@ const netReductionRoutes         = require('../../modules/zero-carbon/reduction/
 const FormulaR                   = require('../../modules/zero-carbon/reduction/routes/FormulaR');
 const netReductionSummaryR       = require('../../modules/zero-carbon/reduction/routes/netReductionSummaryR');
 
-const DecarbonizationRoutes      = require('../../modules/zero-carbon/decarbonization/sbtiRoutes');
+const m3Routes                   = require('../../modules/zero-carbon/m3/index');
 const verificationRoutes         = require('../../modules/zero-carbon/verification/verificationRoutes');
 
 const { dataCollectionRouter,
@@ -82,7 +82,7 @@ function registerRoutes(app) {
   app.use('/api/reductions',         reductionRoutes);
   app.use('/api/net-reduction',      netReductionRoutes);
   app.use('/api/formulas',           FormulaR);
-  app.use('/api/sbti',               DecarbonizationRoutes);
+  app.use('/api/v1/m3',              m3Routes);
   app.use('/api/data-collection',    dataCollectionRouter);
   app.use('/api/verification',       verificationRoutes);
 

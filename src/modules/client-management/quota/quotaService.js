@@ -26,7 +26,7 @@ const getFlowchart          = () => require('../../zero-carbon/organization/mode
 const getProcessFlowchart   = () => require('../../zero-carbon/organization/models/ProcessFlowchart');
 const getReduction          = () => require('../../zero-carbon/reduction/models/Reduction');
 const getTransport          = () => require('../../zero-carbon/organization/models/TransportFlowchart');
-const getSbti               = () => require('../../zero-carbon/decarbonization/SbtiTarget');
+const getM3Target           = () => require('../../zero-carbon/m3/models/TargetMaster');
 const getUserModel          = () => require('../../../common/models/User');
 // ESGLink models
 const getEsgLinkBoundary    = () => require('../../esg-link/esgLink_core/boundary/models/EsgLinkBoundary');
@@ -87,10 +87,10 @@ const computeUsage = async (clientId) => {
   const ProcessFlowchart   = getProcessFlowchart();
   const Reduction          = getReduction();
   const TransportFlowchart = getTransport();
-  const SbtiTarget         = getSbti();
+  const TargetMaster       = getM3Target();
   const EsgLinkBoundary    = getEsgLinkBoundary();
 
-  const [flowchart, processChart, reductionCount, transportCount, sbtiCount, esgBoundary] =
+  const [flowchart, processChart, reductionCount, transportCount, m3TargetCount, esgBoundary] =
     await Promise.all([
       Flowchart.findOne({ clientId, isActive: true })
         .select('nodes')
@@ -100,7 +100,7 @@ const computeUsage = async (clientId) => {
         .lean(),
       Reduction.countDocuments({ clientId, isDeleted: { $ne: true } }),
       TransportFlowchart.countDocuments({ clientId, isActive: true }),
-      SbtiTarget.countDocuments({ clientId }),
+      TargetMaster.countDocuments({ clientId, isDeleted: { $ne: true } }),
       // ESGLink: one active boundary doc per client, nodes array inside
       EsgLinkBoundary.findOne({ clientId, isActive: true })
         .select('nodes')
@@ -122,7 +122,7 @@ const computeUsage = async (clientId) => {
     processScopeDetails:   countScopeDetails(processChart?.nodes),
     reductionProjects:     reductionCount,
     transportFlows:        transportCount,
-    sbtiTargets:           sbtiCount,
+    sbtiTargets:           m3TargetCount,
     // ESGLink (live-counted)
     esgLinkBoundaryNodes:  esgBoundary?.nodes?.length ?? 0,
     esgLinkMetrics:        0, // placeholder — Metrics model not yet created

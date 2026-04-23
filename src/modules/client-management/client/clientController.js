@@ -13,7 +13,7 @@ const ProcessFlowchart = require("../../zero-carbon/organization/models/ProcessF
 
 // ⬇️ NEW imports for reductions + sandbox audit + (optional) SBTi
 const Reduction = require("../../zero-carbon/reduction/models/Reduction");        // adjust path if needed
-const SbtiTarget = require("../../zero-carbon/decarbonization/SbtiTarget"); // adjust path if needed
+const TargetMaster = require("../../zero-carbon/m3/models/TargetMaster");
 
 const {
   createLeadActionNotification,
@@ -208,7 +208,7 @@ async function updateClientIdReferencesOnActivation(oldClientId, newClientId, ac
 
   //6) (Optional) if you also want to update SBTi targets by model
   try {
-    const sbtiRes = await SbtiTarget.updateMany(
+    const sbtiRes = await TargetMaster.updateMany(
       { clientId: oldClientId },
       { $set: { clientId: newClientId } }
     );

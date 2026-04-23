@@ -7,7 +7,7 @@ const User = require('../../../common/models/User');
 const Flowchart = require('../../zero-carbon/organization/models/Flowchart');
 const ProcessFlowchart = require('../../zero-carbon/organization/models/ProcessFlowchart');
 const Reduction = require('../../zero-carbon/reduction/models/Reduction');
-const SbtiTarget = require('../../zero-carbon/decarbonization/SbtiTarget');
+const TargetMaster = require('../../zero-carbon/m3/models/TargetMaster');
 
 /**
  * Helper to find a client by clientId (string).
@@ -147,7 +147,7 @@ const rejectSandboxClient = async (req, res) => {
     });
 
     // DECARBONIZATION
-    deleteResults.decarbonization = await SbtiTarget.deleteMany({
+    deleteResults.decarbonization = await TargetMaster.deleteMany({
       clientId: client.clientId,
     });
 
@@ -272,7 +272,7 @@ const resetSandboxClient = async (req, res) => {
       deleteModules.includes("decarbonization") &&
       clientLevels.includes("decarbonization")
     ) {
-      deleteResults.sbti = await SbtiTarget.deleteMany({
+      deleteResults.sbti = await TargetMaster.deleteMany({
         clientId: client.clientId,
       });
     }

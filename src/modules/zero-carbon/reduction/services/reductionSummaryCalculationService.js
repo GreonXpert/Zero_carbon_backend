@@ -11,7 +11,8 @@
 const moment = require('moment');
 const NetReductionEntry = require('../models/NetReductionEntry');
 const Reduction = require('../models/Reduction');
-const SbtiTarget = require('../../decarbonization/SbtiTarget');
+const TargetMaster = require('../../m3/models/TargetMaster');
+const PathwayAnnual = require('../../m3/models/PathwayAnnual');
 
 function safeNumber(n) {
   const x = Number(n);
@@ -54,26 +55,28 @@ function getPrevRange(periodType, from, to) {
 }
 
 async function getClientTargetEmissionReduction(clientId) {
-  // “SBTI Target is Decarbonisation” → SbtiTarget is our source of target.
-  // We pick the most recently updated target for the client.
-  const sbti = await SbtiTarget.findOne({ clientId }).sort({ updatedAt: -1, createdAt: -1 }).lean();
-  if (!sbti) return 0;
+  // Pick the most recently updated M3 target for the client.
+  const target = await TargetMaster.findOne({ clientId, isDeleted: { $ne: true } })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .lean();
+  if (!target) return 0;
 
-  const base = safeNumber(sbti.baseEmission_tCO2e);
+  const base = safeNumber(target.base_year_emissions);
+  if (!base || base <= 0) return 0;
 
-  // Prefer trajectory point for targetYear
+  // Prefer PathwayAnnual row for the target year
   let targetEmission = null;
-  if (Array.isArray(sbti.trajectory) && sbti.trajectory.length) {
-    const tp = sbti.trajectory.find((t) => Number(t.year) === Number(sbti.targetYear)) || sbti.trajectory[sbti.trajectory.length - 1];
-    targetEmission = tp ? safeNumber(tp.targetEmission_tCO2e) : null;
+  if (target.target_year) {
+    const pathway = await PathwayAnnual.findOne({
+      target_id: target._id,
+      calendar_year: target.target_year,
+    }).lean();
+    if (pathway) targetEmission = safeNumber(pathway.allowed_emissions);
   }
 
-  // Fallback: absolute method min reduction percent
-  if (targetEmission === null) {
-    const minRedPct = safeNumber(sbti.absolute?.minimumReductionPercent);
-    if (minRedPct > 0 && base > 0) {
-      targetEmission = base * (1 - minRedPct / 100);
-    }
+  // Fallback: derive from target_reduction_pct
+  if (targetEmission === null && target.target_reduction_pct > 0) {
+    targetEmission = base * (1 - target.target_reduction_pct / 100);
   }
 
   if (targetEmission === null) return 0;

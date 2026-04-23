@@ -78,7 +78,7 @@ const MODULE_REGISTRY = {
     product:         'zero_carbon',
     accessModule:    'decarbonization',
     sections:        ['sbti', 'targets', 'progress'],
-    retriever:       'sbtiRetriever',
+    retriever:       'm3Retriever',
     supportsCharts:  true,
     supportsTables:  true,
     supportsReports: false,

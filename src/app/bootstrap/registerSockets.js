@@ -10,7 +10,7 @@ const Notification = require('../../common/models/Notification/Notification');
 const calculationSummaryController = require('../../modules/zero-carbon/calculation/CalculationSummary');
 const dataCollectionController     = require('../../modules/zero-carbon/organization/controllers/dataCollectionController');
 const netReductionController       = require('../../modules/zero-carbon/reduction/controllers/netReductionController');
-const sbtiController               = require('../../modules/zero-carbon/decarbonization/sbtiController');
+// M3 module uses ApprovalWorkflowLog for state changes; no socket injection needed
 const dataCompletionController     = require('../../modules/zero-carbon/data-collection/controllers/dataCompletionController');
 const ticketController             = require('../../common/controllers/ticket/ticketController');
 const auditLogController           = require('../../common/controllers/audit-log/auditLogController');
@@ -139,7 +139,7 @@ function registerSockets(io) {
   dataCollectionController.setSocketIO(io);
   calculationSummaryController.setSocketIO(io);
   netReductionController.setSocketIO(io);
-  sbtiController.setSocketIO(io);
+  // (M3 Net Zero module uses database-backed workflow logs, no socket injection)
   dataCompletionController.setSocketIO(io);
   ticketController.setSocketIO(io);
   auditLogController.setSocketIO(io);
