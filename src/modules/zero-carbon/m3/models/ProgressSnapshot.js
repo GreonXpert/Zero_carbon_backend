@@ -18,6 +18,8 @@ const ProgressSnapshotSchema = new mongoose.Schema({
   gap_pct: { type: Number, default: 0 },
   // M1 ingestion timestamp for stale-live detection
   ingestion_timestamp: { type: Date, default: null },
+  // ── Enterprise guide additions ─────────────────────────────────────────────
+  m1_summary_id: { type: mongoose.Schema.Types.ObjectId, ref: 'EmissionSummary', default: null },
 }, { timestamps: true });
 
 ProgressSnapshotSchema.index({ target_id: 1, snapshot_date: -1, snapshot_type: 1 });

@@ -27,6 +27,8 @@ function validateTargetPayload(data) {
     scope3_coverage_pct,
     target_reduction_pct,
     denominator_unit,
+    effective_from,
+    effective_to,
   } = data;
 
   // Framework ↔ TargetFamily gating
@@ -79,6 +81,15 @@ function validateTargetPayload(data) {
   if (method_name && INTENSITY_METHODS.has(method_name)) {
     if (!denominator_unit) {
       errors.push(ERRORS.DENOMINATOR_REQUIRED);
+    }
+  }
+
+  // effective_from must not be after effective_to when both are set
+  if (effective_from && effective_to) {
+    const from = new Date(effective_from);
+    const to   = new Date(effective_to);
+    if (!isNaN(from) && !isNaN(to) && from > to) {
+      errors.push(ERRORS.EFFECTIVE_DATE_INVALID);
     }
   }
 

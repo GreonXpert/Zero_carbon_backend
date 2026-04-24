@@ -32,7 +32,12 @@ const auth = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
       // ── 1. Verify user still exists ──────────────────────────────────────
-      const user = await User.findById(decoded.id).select('-password');
+      // Support both token shapes:
+      //   full token  (verifyLoginOTP) → { id, sessionId, ... }
+      //   temp token  (login step 1)   → { userId, email, ... }
+      // The session check below will still reject temp tokens (no sessionId).
+      const userId = decoded.id || decoded.userId;
+      const user = await User.findById(userId).select('-password');
 
       if (!user) {
         return res.status(401).json({ message: "User not found" });

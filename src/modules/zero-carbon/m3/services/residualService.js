@@ -4,7 +4,7 @@ const ResidualPosition = require('../models/ResidualPosition');
 const CreditLedger = require('../models/CreditLedger');
 const InitiativeAttribution = require('../models/InitiativeAttribution');
 const EvidenceAttachment = require('../models/EvidenceAttachment');
-const { ApprovableEntityType } = require('../constants/enums');
+const { ApprovableEntityType, CreditStatus } = require('../constants/enums');
 const { ERRORS } = require('../constants/messages');
 
 /**
@@ -73,7 +73,51 @@ async function updateCredit(creditId, data, user) {
   if (credit.retirement_status) {
     const e = new Error('Retired credits cannot be modified.'); e.status = 422; throw e;
   }
+  const blocked = [CreditStatus.CANCELLED, CreditStatus.TRANSFERRED_OUT, CreditStatus.RETIRED];
+  if (blocked.includes(credit.credit_status)) {
+    const e = new Error(`Credits in ${credit.credit_status} status cannot be modified.`); e.status = 422; throw e;
+  }
   Object.assign(credit, data, { updated_by: user._id });
+  await credit.save();
+  return credit;
+}
+
+/**
+ * Puts a credit on HOLD (pause, reversible → HELD).
+ * Only ACTIVE credits can be put on hold.
+ */
+async function holdCredit(creditId, user) {
+  const credit = await CreditLedger.findById(creditId);
+  if (!credit) { const e = new Error('Credit not found.'); e.status = 404; throw e; }
+
+  if (credit.credit_status !== CreditStatus.ACTIVE) {
+    const e = new Error(`Only ACTIVE credits can be put on hold. Current status: ${credit.credit_status}.`);
+    e.status = 422; throw e;
+  }
+
+  credit.credit_status = CreditStatus.HELD;
+  credit.updated_by    = user._id;
+  await credit.save();
+  return credit;
+}
+
+/**
+ * Cancels a credit (irreversible → CANCELLED).
+ * ACTIVE or HELD credits can be cancelled.
+ */
+async function cancelCredit(creditId, reason, user) {
+  const credit = await CreditLedger.findById(creditId);
+  if (!credit) { const e = new Error('Credit not found.'); e.status = 404; throw e; }
+
+  const cancellable = [CreditStatus.ACTIVE, CreditStatus.HELD];
+  if (!cancellable.includes(credit.credit_status)) {
+    const e = new Error(`Credits in ${credit.credit_status} status cannot be cancelled.`);
+    e.status = 422; throw e;
+  }
+
+  credit.credit_status = CreditStatus.CANCELLED;
+  credit.updated_by    = user._id;
+  if (reason) credit.cancellation_reason = reason;   // stored loosely as a field
   await credit.save();
   return credit;
 }
@@ -116,6 +160,8 @@ module.exports = {
   createCredit,
   updateCredit,
   retireCredit,
+  holdCredit,
+  cancelCredit,
   listCredits,
   getCreditById,
 };

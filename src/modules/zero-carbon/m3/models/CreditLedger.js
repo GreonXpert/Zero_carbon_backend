@@ -1,7 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const { CreditPurpose } = require('../constants/enums');
+const { CreditPurpose, CreditStatus } = require('../constants/enums');
 
 const CreditLedgerSchema = new mongoose.Schema({
   clientId:               { type: String, required: true, index: true },
@@ -16,6 +16,12 @@ const CreditLedgerSchema = new mongoose.Schema({
   },
   retirement_status: { type: Boolean, default: false },
   retired_at:        { type: Date, default: null },
+  // ── Enterprise guide additions ─────────────────────────────────────────────
+  credit_status:   { type: String, enum: Object.values(CreditStatus), default: CreditStatus.ACTIVE },
+  vintage_year:    { type: Number, default: null },       // year credit was issued/generated
+  registry_name:   { type: String, default: null },       // e.g. "Verra", "Gold Standard"
+  registry_id:     { type: String, default: null },       // registry certificate / serial number
+  project_id:      { type: String, default: null },       // upstream project reference
   created_by:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   updated_by:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });

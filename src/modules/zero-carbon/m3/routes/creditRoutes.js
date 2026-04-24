@@ -11,6 +11,8 @@ router.post ('/credits',          c.createCredit);
 router.get  ('/credits',          c.listCredits);
 router.get  ('/credits/:id',      c.getCredit);
 router.patch('/credits/:id',      c.updateCredit);
-router.post ('/credits/:id/retire', c.retireCredit);
+router.post ('/credits/:id/retire',  c.retireCredit);
+router.post ('/credits/:id/hold',    c.holdCredit);
+router.post ('/credits/:id/cancel',  c.cancelCredit);
 
 module.exports = router;

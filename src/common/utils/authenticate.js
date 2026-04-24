@@ -15,7 +15,9 @@ console.log("token",token)
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Attach user info to req.user (i.e., the userId)
-    const user = await User.findById(decoded.id);
+    // Support both token shapes: full token uses `id`, temp token uses `userId`
+    const userId = decoded.id || decoded.userId;
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
     }

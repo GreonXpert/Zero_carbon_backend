@@ -4,10 +4,32 @@ const ProgressSnapshot = require('../models/ProgressSnapshot');
 const PathwayAnnual = require('../models/PathwayAnnual');
 const DataQualityFlag = require('../models/DataQualityFlag');
 const OrgSettings = require('../models/OrgSettings');
+const EmissionSummary = require('../../calculation/EmissionSummary');
 const {
   ProgressStatus, SnapshotType, DQFlagCode, Severity,
 } = require('../constants/enums');
 const { WARNINGS } = require('../constants/messages');
+
+/**
+ * Pulls the yearly EmissionSummary from M1 for a given client + calendar year.
+ * Returns { CO2e, ingestion_timestamp, summaryId } or null if not found.
+ */
+async function pullM1Emissions(clientId, year) {
+  const doc = await EmissionSummary.findOne({
+    clientId,
+    'period.type': 'yearly',
+    'period.year': year,
+  }).sort({ 'metadata.lastCalculated': -1 }).lean();
+
+  if (!doc) return null;
+
+  const CO2e = doc.emissionSummary?.totalEmissions?.CO2e ?? 0;
+  return {
+    CO2e,
+    ingestion_timestamp: doc.metadata?.lastCalculated || new Date(),
+    summaryId: doc._id,
+  };
+}
 
 function computeProgressStatus(actual, allowed) {
   if (actual <= allowed * 0.95) return ProgressStatus.Ahead_of_Target;
@@ -21,7 +43,7 @@ function computeProgressStatus(actual, allowed) {
  */
 async function computeProgressSnapshot({
   targetId, clientId, snapshotDate, snapshotType = SnapshotType.ANNUAL,
-  actualEmissions, calendarYear, ingestionTimestamp,
+  actualEmissions, calendarYear, ingestionTimestamp, m1SummaryId = null,
 }) {
   const pathway = await PathwayAnnual.findOne({ target_id: targetId, calendar_year: calendarYear });
   if (!pathway) return null;
@@ -40,6 +62,7 @@ async function computeProgressSnapshot({
         progress_status:     status,
         gap_pct,
         ingestion_timestamp: ingestionTimestamp || new Date(),
+        ...(m1SummaryId ? { m1_summary_id: m1SummaryId } : {}),
       },
     },
     { upsert: true, new: true }
@@ -83,4 +106,4 @@ async function getLiveSnapshot(targetId) {
     .sort({ snapshot_date: -1 });
 }
 
-module.exports = { computeProgressSnapshot, getProgress, getLiveSnapshot };
+module.exports = { pullM1Emissions, computeProgressSnapshot, getProgress, getLiveSnapshot };

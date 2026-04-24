@@ -13,6 +13,7 @@ const OperationalBudget = require('../models/OperationalBudget');
 const OutputActivityRecord = require('../models/OutputActivityRecord');
 const MethodLibrary = require('../models/MethodLibrary');
 const OrgSettings = require('../models/OrgSettings');
+const EmissionSummary = require('../../calculation/EmissionSummary');
 const { computePathwayHash } = require('../utils/hashHelper');
 const {
   MethodName, BudgetGranularity, SeasonalityMethod,
@@ -101,11 +102,62 @@ async function generatePathway(target) {
   }
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Returns the number of days in a given month/year (UTC). */
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate(); // month is 1-based; Date(y,m,0) = last day of month m-1
+}
+
+/**
+ * Resolves a 12-element monthly-weight array that sums to 1.0.
+ * Falls back to EQUAL distribution and logs a warning when data is insufficient.
+ */
+async function resolveMonthlyWeights(method, settings, clientId, year) {
+  if (method === SeasonalityMethod.M1_HISTORICAL) {
+    const priorYear = year - 1;
+    const docs = await EmissionSummary.find({
+      clientId,
+      'period.type': 'monthly',
+      'period.year': priorYear,
+    }).sort({ 'period.month': 1 }).lean();
+
+    if (docs.length === 12) {
+      const totals = docs.map(d => d.emissionSummary?.totalEmissions?.CO2e || 0);
+      const sum = totals.reduce((a, b) => a + b, 0);
+      if (sum > 0) {
+        return totals.map(t => t / sum);
+      }
+    }
+    // Insufficient data — fall back to EQUAL
+    console.warn(WARNINGS.SEASONALITY_FALLBACK);
+    return Array(12).fill(1 / 12);
+  }
+
+  if (method === SeasonalityMethod.CUSTOM_CURVE) {
+    const curve = settings?.custom_seasonality_curve;
+    if (Array.isArray(curve) && curve.length === 12) {
+      const sum = curve.reduce((a, b) => a + b, 0);
+      if (sum > 0) return curve.map(w => w / sum);
+    }
+    // No curve stored — fall back to EQUAL
+    return Array(12).fill(1 / 12);
+  }
+
+  // EQUAL (default)
+  return Array(12).fill(1 / 12);
+}
+
 // ── Operational Budget Derivation ────────────────────────────────────────────
 
+/**
+ * Derives ANNUAL, QUARTERLY, MONTHLY, and DAILY OperationalBudget documents
+ * for each pathway row.  The monthly distribution is driven by OrgSettings
+ * `seasonality_default_method` (EQUAL | M1_HISTORICAL | CUSTOM_CURVE).
+ */
 async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
   const settings = await OrgSettings.findOne({ clientId });
-  const method = settings?.seasonality_default_method || SeasonalityMethod.EQUAL;
+  const method   = settings?.seasonality_default_method || SeasonalityMethod.EQUAL;
 
   for (const row of pathwayRows) {
     const pathwayDoc = await PathwayAnnual.findOne({
@@ -114,42 +166,54 @@ async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
     });
     if (!pathwayDoc) continue;
 
-    const annual = row.allowed_emissions;
+    const annual  = row.allowed_emissions;
+    const year    = row.calendar_year;
+    const baseSet = { clientId, parent_pathway_id: pathwayDoc._id, is_system_derived: true };
 
-    if (method === SeasonalityMethod.EQUAL || method === SeasonalityMethod.CUSTOM_CURVE) {
-      // Monthly equal distribution (CUSTOM_CURVE falls back to EQUAL in V1)
-      const monthlyBudget = annual / 12;
-      for (let m = 1; m <= 12; m++) {
-        const periodKey = `${row.calendar_year}-${String(m).padStart(2, '0')}`;
+    // ── ANNUAL ────────────────────────────────────────────────────────────────
+    await OperationalBudget.findOneAndUpdate(
+      { target_id: targetId, granularity: BudgetGranularity.ANNUAL, period_key: String(year) },
+      { $set: { ...baseSet, budget_emissions: annual } },
+      { upsert: true }
+    );
+
+    // ── Resolve monthly weights (drives MONTHLY, QUARTERLY, DAILY) ─────────
+    const weights = await resolveMonthlyWeights(method, settings, clientId, year);
+
+    // ── MONTHLY ───────────────────────────────────────────────────────────────
+    const monthlyBudgets = [];
+    for (let m = 1; m <= 12; m++) {
+      const budget     = annual * weights[m - 1];
+      const periodKey  = `${year}-${String(m).padStart(2, '0')}`;
+      monthlyBudgets.push(budget);
+      await OperationalBudget.findOneAndUpdate(
+        { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: periodKey },
+        { $set: { ...baseSet, budget_emissions: budget } },
+        { upsert: true }
+      );
+    }
+
+    // ── QUARTERLY (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec) ────────
+    const quarterMonths = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+    for (let q = 1; q <= 4; q++) {
+      const qBudget   = quarterMonths[q - 1].reduce((s, m) => s + monthlyBudgets[m - 1], 0);
+      const periodKey = `${year}-Q${q}`;
+      await OperationalBudget.findOneAndUpdate(
+        { target_id: targetId, granularity: BudgetGranularity.QUARTERLY, period_key: periodKey },
+        { $set: { ...baseSet, budget_emissions: qBudget } },
+        { upsert: true }
+      );
+    }
+
+    // ── DAILY (budget = monthly / days_in_month per day) ─────────────────────
+    for (let m = 1; m <= 12; m++) {
+      const days       = daysInMonth(year, m);
+      const dailyBudget = monthlyBudgets[m - 1] / days;
+      for (let d = 1; d <= days; d++) {
+        const periodKey = `${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
         await OperationalBudget.findOneAndUpdate(
-          { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: periodKey },
-          {
-            $set: {
-              clientId,
-              parent_pathway_id:  pathwayDoc._id,
-              budget_emissions:   monthlyBudget,
-              is_system_derived:  true,
-            },
-          },
-          { upsert: true }
-        );
-      }
-    } else if (method === SeasonalityMethod.M1_HISTORICAL) {
-      // Fallback to EQUAL with warning if no historical data
-      console.warn(WARNINGS.SEASONALITY_FALLBACK);
-      const monthlyBudget = annual / 12;
-      for (let m = 1; m <= 12; m++) {
-        const periodKey = `${row.calendar_year}-${String(m).padStart(2, '0')}`;
-        await OperationalBudget.findOneAndUpdate(
-          { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: periodKey },
-          {
-            $set: {
-              clientId,
-              parent_pathway_id:  pathwayDoc._id,
-              budget_emissions:   monthlyBudget,
-              is_system_derived:  true,
-            },
-          },
+          { target_id: targetId, granularity: BudgetGranularity.DAILY, period_key: periodKey },
+          { $set: { ...baseSet, budget_emissions: dailyBudget } },
           { upsert: true }
         );
       }

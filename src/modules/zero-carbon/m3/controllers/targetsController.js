@@ -1,11 +1,14 @@
 'use strict';
 
-const targetService = require('../services/targetService');
-const pathwayService = require('../services/pathwayService');
-const progressService = require('../services/progressService');
-const forecastService = require('../services/forecastService');
-const InitiativeAttribution = require('../models/InitiativeAttribution');
-const EvidenceAttachment = require('../models/EvidenceAttachment');
+const targetService        = require('../services/targetService');
+const pathwayService       = require('../services/pathwayService');
+const progressService      = require('../services/progressService');
+const forecastService      = require('../services/forecastService');
+const dqService            = require('../services/dqService');
+const outputActivityService= require('../services/outputActivityService');
+const InitiativeAttribution= require('../models/InitiativeAttribution');
+const EvidenceAttachment   = require('../models/EvidenceAttachment');
+const DataQualityFlag      = require('../models/DataQualityFlag');
 const { assertWriteAccess, assertCanApprove, resolveClientId } = require('../utils/m3Permission');
 
 const respond = (res, data, status = 200) => res.status(status).json({ success: true, data });
@@ -166,5 +169,136 @@ exports.getAttachments = async (req, res) => {
       entity_id:   req.params.targetId,
     });
     respond(res, data);
+  } catch (e) { err(res, e); }
+};
+
+// ── Phase 4: M1 Progress Compute ─────────────────────────────────────────────
+
+exports.computeProgress = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+
+    const { calendarYear } = req.body;
+    if (!calendarYear) {
+      return res.status(422).json({ success: false, message: 'calendarYear is required.' });
+    }
+
+    const m1 = await progressService.pullM1Emissions(target.clientId, Number(calendarYear));
+    if (!m1) {
+      return res.status(404).json({ success: false, message: `No M1 EmissionSummary found for year ${calendarYear}.` });
+    }
+
+    const snapshot = await progressService.computeProgressSnapshot({
+      targetId:           target._id,
+      clientId:           target.clientId,
+      snapshotDate:       new Date(),
+      calendarYear:       Number(calendarYear),
+      actualEmissions:    m1.CO2e,
+      ingestionTimestamp: m1.ingestion_timestamp,
+      m1SummaryId:        m1.summaryId,
+    });
+
+    respond(res, snapshot, 201);
+  } catch (e) { err(res, e); }
+};
+
+// ── Phase 5: Forecast Compute ─────────────────────────────────────────────────
+
+exports.computeForecast = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+
+    const { calendarYear, forecastMethod } = req.body;
+    if (!calendarYear) {
+      return res.status(422).json({ success: false, message: 'calendarYear is required.' });
+    }
+
+    const snapshot = await forecastService.computeForecastByMethod({
+      targetId:      target._id,
+      clientId:      target.clientId,
+      calendarYear:  Number(calendarYear),
+      forecastMethod,
+    });
+
+    if (!snapshot) {
+      return res.status(404).json({ success: false, message: `No pathway found for year ${calendarYear}.` });
+    }
+
+    respond(res, snapshot, 201);
+  } catch (e) { err(res, e); }
+};
+
+// ── Phase 6: DQ Flag Endpoints ────────────────────────────────────────────────
+
+exports.listDqFlags = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    const { severity, resolved } = req.query;
+    const flags = await dqService.listFlags({
+      clientId:   target.clientId,
+      entityType: 'TargetMaster',
+      entityId:   String(target._id),
+      severity,
+      resolved:   resolved !== undefined ? resolved === 'true' : undefined,
+    });
+    respond(res, flags);
+  } catch (e) { err(res, e); }
+};
+
+exports.resolveDqFlag = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+
+    const flag = await DataQualityFlag.findOneAndUpdate(
+      { _id: req.params.flagId, entity_id: String(target._id), resolved: false },
+      { $set: { resolved: true, resolved_by: req.user._id, resolved_at: new Date() } },
+      { new: true }
+    );
+    if (!flag) {
+      return res.status(404).json({ success: false, message: 'DQ flag not found or already resolved.' });
+    }
+    respond(res, flag);
+  } catch (e) { err(res, e); }
+};
+
+// ── Phase 7: OutputActivityRecord CRUD ───────────────────────────────────────
+
+exports.createOutputRecord = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    const record = await outputActivityService.createRecord(
+      { ...req.body, target_id: target._id, clientId: target.clientId },
+      req.user
+    );
+    respond(res, record, 201);
+  } catch (e) { err(res, e); }
+};
+
+exports.listOutputRecords = async (req, res) => {
+  try {
+    const data = await outputActivityService.listRecords(req.params.targetId, req.query);
+    respond(res, data);
+  } catch (e) { err(res, e); }
+};
+
+exports.updateOutputRecord = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    const updated = await outputActivityService.updateRecord(req.params.recordId, req.body, req.user);
+    respond(res, updated);
+  } catch (e) { err(res, e); }
+};
+
+exports.deleteOutputRecord = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    const result = await outputActivityService.deleteRecord(req.params.recordId);
+    respond(res, result);
   } catch (e) { err(res, e); }
 };

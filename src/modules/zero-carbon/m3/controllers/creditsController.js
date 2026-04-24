@@ -80,3 +80,23 @@ exports.getCredit = async (req, res) => {
     ok(res, data);
   } catch (e) { err(res, e); }
 };
+
+// ── Phase 8: Credit lifecycle ─────────────────────────────────────────────────
+
+exports.holdCredit = async (req, res) => {
+  try {
+    const credit = await residualService.getCreditById(req.params.id);
+    await assertWriteAccess(req, credit.clientId);
+    const data = await residualService.holdCredit(req.params.id, req.user);
+    ok(res, data);
+  } catch (e) { err(res, e); }
+};
+
+exports.cancelCredit = async (req, res) => {
+  try {
+    const credit = await residualService.getCreditById(req.params.id);
+    await assertWriteAccess(req, credit.clientId);
+    const data = await residualService.cancelCredit(req.params.id, req.body.reason, req.user);
+    ok(res, data);
+  } catch (e) { err(res, e); }
+};

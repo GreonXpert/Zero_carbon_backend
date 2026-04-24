@@ -175,6 +175,54 @@ const ScopeBoundary = Object.freeze({
   S3:     'S3',
 });
 
+// ── Enterprise guide — new enums ─────────────────────────────────────────────
+
+const MetricType = Object.freeze({
+  ABSOLUTE_EMISSIONS:        'ABSOLUTE_EMISSIONS',
+  GEI_INTENSITY:             'GEI_INTENSITY',
+  PHYSICAL_INTENSITY:        'PHYSICAL_INTENSITY',
+  RENEWABLE_ELECTRICITY_PCT: 'RENEWABLE_ELECTRICITY_PCT',
+  SUPPLIER_ENGAGEMENT_PCT:   'SUPPLIER_ENGAGEMENT_PCT',
+  FLAG_METRIC:               'FLAG_METRIC',
+  RESIDUAL_EMISSIONS:        'RESIDUAL_EMISSIONS',
+  NEUTRALIZATION_REQUIREMENT:'NEUTRALIZATION_REQUIREMENT',
+});
+
+const OrgBoundaryBasis = Object.freeze({
+  OPERATIONAL_CONTROL: 'OPERATIONAL_CONTROL',
+  FINANCIAL_CONTROL:   'FINANCIAL_CONTROL',
+  EQUITY_SHARE:        'EQUITY_SHARE',
+});
+
+const TargetBoundaryLevel = Object.freeze({
+  ORGANIZATION:  'ORGANIZATION',
+  BUSINESS_UNIT: 'BUSINESS_UNIT',
+  FACILITY:      'FACILITY',
+  SOURCE:        'SOURCE',
+});
+
+const CreditStatus = Object.freeze({
+  ACTIVE:          'ACTIVE',
+  HELD:            'HELD',
+  CANCELLED:       'CANCELLED',
+  TRANSFERRED_OUT: 'TRANSFERRED_OUT',
+  RETIRED:         'RETIRED',
+});
+
+const ForecastMethod = Object.freeze({
+  LINEAR_EXTRAPOLATION:  'LINEAR_EXTRAPOLATION',
+  YTD_ANNUALIZED:        'YTD_ANNUALIZED',
+  WEIGHTED_TRAILING_90D: 'WEIGHTED_TRAILING_90D',
+  CUSTOM:                'CUSTOM',
+});
+
+const MeasurementBasis = Object.freeze({
+  DIRECT_MEASUREMENT: 'DIRECT_MEASUREMENT',
+  CALCULATION:        'CALCULATION',
+  ESTIMATION:         'ESTIMATION',
+  M2_VERIFIED:        'M2_VERIFIED',
+});
+
 // ── Framework ↔ TargetFamily gating matrix ──────────────────────────────────
 const FRAMEWORK_FAMILY_GATE = Object.freeze({
   [FrameworkName.SBTI]: [
@@ -256,6 +304,12 @@ module.exports = {
   RecalcEventStatus,
   SourceSystem,
   ScopeBoundary,
+  MetricType,
+  OrgBoundaryBasis,
+  TargetBoundaryLevel,
+  CreditStatus,
+  ForecastMethod,
+  MeasurementBasis,
   FRAMEWORK_FAMILY_GATE,
   FRAMEWORK_METHOD_GATE,
   INTENSITY_METHODS,

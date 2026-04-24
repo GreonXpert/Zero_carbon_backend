@@ -44,3 +44,21 @@ exports.getAttribution = async (req, res) => {
     ok(res, data);
   } catch (e) { err(res, e); }
 };
+
+/**
+ * GET /initiative-attributions?target_id=xxx&clientId=xxx
+ * Lists all non-deleted attributions for the given target (or client).
+ */
+exports.listAttributions = async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    const query    = { isDeleted: false };
+    if (req.query.target_id)    query.target_id    = req.query.target_id;
+    if (clientId)               query.clientId     = clientId;
+    if (req.query.initiative_id) query.initiative_id = req.query.initiative_id;
+    if (req.query.verification_status) query.verification_status = req.query.verification_status;
+
+    const data = await InitiativeAttribution.find(query).sort({ createdAt: -1 });
+    ok(res, data);
+  } catch (e) { err(res, e); }
+};

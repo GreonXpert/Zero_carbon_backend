@@ -74,6 +74,18 @@ const ERRORS = Object.freeze({
 
   SBTI_VALIDATED_PUBLISH_REQUIRES_CERT:
     'Cannot publish SBTi Validated target without a validation certificate attachment.',
+
+  BASE_YEAR_EMISSIONS_REQUIRED_PUBLISH:
+    'Base year emissions must be set before a target can be published.',
+
+  RETURN_COMMENT_REQUIRED:
+    'A comment is required when returning a target for revision.',
+
+  REJECT_COMMENT_REQUIRED:
+    'A comment is required when rejecting a recalculation event.',
+
+  EFFECTIVE_DATE_INVALID:
+    'effective_from must not be later than effective_to.',
 });
 
 const WARNINGS = Object.freeze({

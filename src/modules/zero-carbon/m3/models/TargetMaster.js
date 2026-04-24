@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const {
   TargetFamily, FrameworkName, MethodName,
   LifecycleStatus, ApprovalStatus, ScopeBoundary,
+  MetricType, OrgBoundaryBasis, TargetBoundaryLevel,
 } = require('../constants/enums');
 
 const TargetMasterSchema = new mongoose.Schema({
@@ -42,6 +43,19 @@ const TargetMasterSchema = new mongoose.Schema({
 
   // Optimistic concurrency
   version: { type: Number, default: 1 },
+
+  // ── Enterprise guide additions ─────────────────────────────────────────────
+  target_name:           { type: String, trim: true, default: null },
+  framework_version:     { type: String, trim: true, default: null },    // e.g. "SBTi_v5"
+  metric_type:           { type: String, enum: [...Object.values(MetricType), null], default: null },
+  org_boundary_basis:    { type: String, enum: Object.values(OrgBoundaryBasis), default: OrgBoundaryBasis.OPERATIONAL_CONTROL },
+  target_boundary_level: { type: String, enum: Object.values(TargetBoundaryLevel), default: TargetBoundaryLevel.ORGANIZATION },
+  scope_coverage_pct:    { type: Number, default: null, min: 0, max: 100 }, // overall across all scopes
+  owner_role:            { type: String, default: null },
+  owner_user_id:         { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  effective_from:        { type: Date, default: null },   // set on publish → ACTIVE
+  effective_to:          { type: Date, default: null },   // set on archive / supersede
+  superseded_by:         { type: mongoose.Schema.Types.ObjectId, ref: 'TargetMaster', default: null },
 
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

@@ -17,6 +17,11 @@ const EvidenceAttachmentSchema = new mongoose.Schema({
   attachment_type: { type: String, required: true },
   uploaded_by:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   uploaded_at:     { type: Date, default: Date.now },
+  // ── Audit / governance fields ──────────────────────────────────────────────
+  storage_ref:     { type: String, default: null },   // S3 key or local path
+  checksum:        { type: String, default: null },   // SHA256 hex of file content
+  file_size_bytes: { type: Number, default: null },
+  mime_type:       { type: String, default: null },   // e.g. "application/pdf"
 });
 
 EvidenceAttachmentSchema.index({ entity_type: 1, entity_id: 1 });

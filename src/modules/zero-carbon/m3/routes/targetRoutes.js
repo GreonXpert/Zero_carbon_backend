@@ -28,4 +28,18 @@ router.get   ('/:targetId/history',            c.getHistory);
 router.get   ('/:targetId/initiatives',        c.getInitiatives);
 router.get   ('/:targetId/attachments',        c.getAttachments);
 
+// ── Phase 4 & 5: Compute triggers ────────────────────────────────────────────
+router.post  ('/:targetId/progress/compute',   c.computeProgress);
+router.post  ('/:targetId/forecast/compute',   c.computeForecast);
+
+// ── Phase 6: DQ flags ─────────────────────────────────────────────────────────
+router.get   ('/:targetId/dq-flags',                      c.listDqFlags);
+router.post  ('/:targetId/dq-flags/:flagId/resolve',      c.resolveDqFlag);
+
+// ── Phase 7: OutputActivityRecord CRUD ───────────────────────────────────────
+router.post  ('/:targetId/output-records',                c.createOutputRecord);
+router.get   ('/:targetId/output-records',                c.listOutputRecords);
+router.patch ('/:targetId/output-records/:recordId',      c.updateOutputRecord);
+router.delete('/:targetId/output-records/:recordId',      c.deleteOutputRecord);
+
 module.exports = router;

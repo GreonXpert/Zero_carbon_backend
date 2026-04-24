@@ -9,7 +9,7 @@ const {
   RecalculationTrigger,
 } = require('../constants/enums');
 const { ERRORS } = require('../constants/messages');
-const pathwayService = require('./pathwayService');
+const pathwayService  = require('./pathwayService');
 
 async function createRecalcEvent(data, user) {
   // "Other" trigger requires justification
@@ -99,6 +99,10 @@ async function approveRecalcEvent(eventId, user) {
 }
 
 async function rejectRecalcEvent(eventId, comment, user) {
+  if (!comment || !String(comment).trim()) {
+    const e = new Error(ERRORS.REJECT_COMMENT_REQUIRED); e.status = 422; throw e;
+  }
+
   const event = await RecalculationEvent.findById(eventId);
   if (!event) { const e = new Error('Recalculation event not found.'); e.status = 404; throw e; }
   if (event.status !== RecalcEventStatus.PENDING) {

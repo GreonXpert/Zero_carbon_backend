@@ -1,7 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const { ApprovalDepth, SeasonalityMethod } = require('../constants/enums');
+const { ApprovalDepth, SeasonalityMethod, ForecastMethod } = require('../constants/enums');
 
 const OrgSettingsSchema = new mongoose.Schema({
   clientId: { type: String, required: true, unique: true },
@@ -21,6 +21,21 @@ const OrgSettingsSchema = new mongoose.Schema({
   live_ingest_cadence_minutes:    { type: Number, default: 15, min: 5, max: 1440 },
   evidence_retention_days:        { type: Number, default: 3650 },
   fiscal_year_boundary:           { type: String, default: 'calendar' },
+  // ── Enterprise guide additions ─────────────────────────────────────────────
+  forecast_method_default: {
+    type: String,
+    enum: Object.values(ForecastMethod),
+    default: ForecastMethod.LINEAR_EXTRAPOLATION,
+  },
+  // 12 monthly weights that must sum to 1.0 (used when seasonality_default_method = CUSTOM_CURVE)
+  custom_seasonality_curve: {
+    type: [Number],
+    default: null,
+    validate: {
+      validator(v) { return v == null || v.length === 0 || v.length === 12; },
+      message: 'custom_seasonality_curve must contain exactly 12 values.',
+    },
+  },
   updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 

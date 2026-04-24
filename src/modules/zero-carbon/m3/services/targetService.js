@@ -150,6 +150,10 @@ async function reviewTarget(targetId, user) {
 }
 
 async function returnTarget(targetId, comment, user) {
+  if (!comment || !String(comment).trim()) {
+    const e = new Error(ERRORS.RETURN_COMMENT_REQUIRED); e.status = 422; throw e;
+  }
+
   const target = await TargetMaster.findById(targetId);
   if (!target) { const e = new Error('Target not found.'); e.status = 404; throw e; }
 
@@ -203,6 +207,11 @@ async function publishTarget(targetId, comment, user) {
     const e = new Error('Target must be APPROVED before publishing.'); e.status = 422; throw e;
   }
 
+  // V21: base_year_emissions is mandatory before publish
+  if (target.base_year_emissions == null) {
+    const e = new Error(ERRORS.BASE_YEAR_EMISSIONS_REQUIRED_PUBLISH); e.status = 422; throw e;
+  }
+
   // SBTi Validated targets require a validation certificate evidence attachment
   if (target.target_family === TargetFamily.SBTi_Validated) {
     const certCount = await EvidenceAttachment.countDocuments({
@@ -231,7 +240,8 @@ async function publishTarget(targetId, comment, user) {
   const prev = target.approval_status;
   target.approval_status  = ApprovalStatus.PUBLISHED;
   target.lifecycle_status = LifecycleStatus.ACTIVE;
-  target.updated_by = user._id;
+  target.effective_from   = target.effective_from || new Date();   // set once on first publish
+  target.updated_by       = user._id;
   await target.save();
 
   await ApprovalWorkflowLog.create(buildWorkflowLog(
@@ -250,7 +260,8 @@ async function archiveTarget(targetId, user) {
 
   const prev = target.lifecycle_status;
   target.lifecycle_status = LifecycleStatus.ARCHIVED;
-  target.updated_by = user._id;
+  target.effective_to     = new Date();
+  target.updated_by       = user._id;
   await target.save();
 
   await ApprovalWorkflowLog.create(buildWorkflowLog(
