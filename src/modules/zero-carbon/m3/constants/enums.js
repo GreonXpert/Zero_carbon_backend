@@ -216,6 +216,13 @@ const ForecastMethod = Object.freeze({
   CUSTOM:                'CUSTOM',
 });
 
+const ComplianceObligationType = Object.freeze({
+  REPORTING:     'REPORTING',
+  CAP_AND_TRADE: 'CAP_AND_TRADE',
+  CARBON_TAX:    'CARBON_TAX',
+  PERMIT_BASED:  'PERMIT_BASED',
+});
+
 const MeasurementBasis = Object.freeze({
   DIRECT_MEASUREMENT: 'DIRECT_MEASUREMENT',
   CALCULATION:        'CALCULATION',
@@ -309,6 +316,7 @@ module.exports = {
   TargetBoundaryLevel,
   CreditStatus,
   ForecastMethod,
+  ComplianceObligationType,
   MeasurementBasis,
   FRAMEWORK_FAMILY_GATE,
   FRAMEWORK_METHOD_GATE,

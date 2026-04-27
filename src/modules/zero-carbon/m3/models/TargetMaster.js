@@ -5,6 +5,7 @@ const {
   TargetFamily, FrameworkName, MethodName,
   LifecycleStatus, ApprovalStatus, ScopeBoundary,
   MetricType, OrgBoundaryBasis, TargetBoundaryLevel,
+  ComplianceObligationType,
 } = require('../constants/enums');
 
 const TargetMasterSchema = new mongoose.Schema({
@@ -61,6 +62,20 @@ const TargetMasterSchema = new mongoose.Schema({
   updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
   isDeleted: { type: Boolean, default: false },
+
+  // ── Regulatory Compliance fields (populated when target_family = Regulatory_Compliance_Target) ──
+  regulation_name:           { type: String, default: null },
+  regulatory_authority:      { type: String, default: null },
+  jurisdiction:              { type: String, default: null },
+  compliance_obligation_type:{ type: String, enum: [...Object.values(ComplianceObligationType), null], default: null },
+  submission_deadline:       { type: Date, default: null },
+  permit_number:             { type: String, default: null },
+  installation_id:           { type: String, default: null },
+  allowances_allocated:      { type: Number, default: null },
+  penalty_rate_per_tonne:    { type: Number, default: null },
+  verification_required:     { type: Boolean, default: false },
+  verification_standard:     { type: String, default: null },
+  verifier_name:             { type: String, default: null },
 }, { timestamps: true });
 
 TargetMasterSchema.index({ clientId: 1, target_code: 1 }, { unique: true });
