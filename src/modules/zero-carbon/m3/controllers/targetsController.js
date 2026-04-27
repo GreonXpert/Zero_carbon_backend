@@ -376,18 +376,19 @@ exports.getLayoutPreference = async (req, res) => {
       userId:   req.user._id,
       targetId: req.params.targetId,
     }).lean();
-    respond(res, pref || null);
+    // Only return hidden_cards — drag positions are not persisted
+    respond(res, pref ? { hidden_cards: pref.hidden_cards } : null);
   } catch (e) { err(res, e); }
 };
 
 exports.saveLayoutPreference = async (req, res) => {
   try {
-    const { layouts, hidden_cards } = req.body;
+    const { hidden_cards } = req.body;
     const pref = await UserLayoutPreference.findOneAndUpdate(
       { userId: req.user._id, targetId: req.params.targetId },
-      { $set: { layouts: layouts || null, hidden_cards: hidden_cards || [] } },
+      { $set: { hidden_cards: Array.isArray(hidden_cards) ? hidden_cards : [] } },
       { upsert: true, new: true }
     );
-    respond(res, pref);
+    respond(res, { hidden_cards: pref.hidden_cards });
   } catch (e) { err(res, e); }
 };
