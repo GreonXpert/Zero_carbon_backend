@@ -4,11 +4,14 @@ const targetService        = require('../services/targetService');
 const pathwayService       = require('../services/pathwayService');
 const progressService      = require('../services/progressService');
 const forecastService      = require('../services/forecastService');
+const trajectoryService    = require('../services/trajectoryService');
 const dqService            = require('../services/dqService');
 const outputActivityService= require('../services/outputActivityService');
 const InitiativeAttribution= require('../models/InitiativeAttribution');
 const EvidenceAttachment   = require('../models/EvidenceAttachment');
 const DataQualityFlag      = require('../models/DataQualityFlag');
+const PathwayAnnual            = require('../models/PathwayAnnual');
+const UserLayoutPreference     = require('../models/UserLayoutPreference');
 const { assertWriteAccess, assertCanApprove, resolveClientId } = require('../utils/m3Permission');
 
 const respond = (res, data, status = 200) => res.status(status).json({ success: true, data });
@@ -18,8 +21,9 @@ exports.createTarget = async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     await assertWriteAccess(req, clientId);
-    const target = await targetService.createTarget({ ...req.body, clientId }, req.user);
-    respond(res, target, 201);
+    const { target, baseYearNote } = await targetService.createTarget({ ...req.body, clientId }, req.user);
+    const payload = baseYearNote ? { ...target.toObject(), _note: baseYearNote } : target;
+    respond(res, payload, 201);
   } catch (e) { err(res, e); }
 };
 
@@ -184,7 +188,7 @@ exports.computeProgress = async (req, res) => {
       return res.status(422).json({ success: false, message: 'calendarYear is required.' });
     }
 
-    const m1 = await progressService.pullM1Emissions(target.clientId, Number(calendarYear));
+    const m1 = await progressService.pullM1Emissions(target.clientId, Number(calendarYear), target.scope_boundary);
     if (!m1) {
       return res.status(404).json({ success: false, message: `No M1 EmissionSummary found for year ${calendarYear}.` });
     }
@@ -195,11 +199,72 @@ exports.computeProgress = async (req, res) => {
       snapshotDate:       new Date(),
       calendarYear:       Number(calendarYear),
       actualEmissions:    m1.CO2e,
-      ingestionTimestamp: m1.ingestion_timestamp,
+      ingestionTimestamp: m1.ingestionTimestamp || m1.ingestion_timestamp,
       m1SummaryId:        m1.summaryId,
     });
 
     respond(res, snapshot, 201);
+  } catch (e) { err(res, e); }
+};
+
+// ── Phase 6: Trajectory ───────────────────────────────────────────────────────
+
+exports.getTrajectory = async (req, res) => {
+  try {
+    const data = await trajectoryService.getTargetTrajectory(req.params.targetId);
+    respond(res, data);
+  } catch (e) { err(res, e); }
+};
+
+exports.recomputeTrajectoryProgress = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+
+    const pathwayRows = await PathwayAnnual
+      .find({ target_id: target._id })
+      .sort({ calendar_year: 1 })
+      .lean();
+
+    if (!pathwayRows.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'No pathway rows found. Publish the target first to generate a pathway.',
+      });
+    }
+
+    const results = [];
+    for (const row of pathwayRows) {
+      const m1 = await progressService.pullM1Emissions(
+        target.clientId, row.calendar_year, target.scope_boundary, target.scope3_coverage_pct ?? 100
+      );
+      if (!m1) {
+        results.push({ calendar_year: row.calendar_year, status: 'skipped', reason: 'No M1 EmissionSummary data' });
+        continue;
+      }
+      const snapshot = await progressService.computeProgressSnapshot({
+        targetId:           target._id,
+        clientId:           target.clientId,
+        snapshotDate:       new Date(),
+        calendarYear:       row.calendar_year,
+        actualEmissions:    m1.CO2e,
+        ingestionTimestamp: m1.ingestionTimestamp || m1.ingestion_timestamp,
+        m1SummaryId:        m1.summaryId,
+      });
+      results.push({ calendar_year: row.calendar_year, status: 'computed', snapshot_id: snapshot._id });
+    }
+
+    // Broadcast real-time update to all clients in this client's room
+    if (global.io) {
+      global.io.to(`client_${target.clientId}`).emit('m3:trajectory:updated', {
+        targetId: String(target._id),
+        clientId: target.clientId,
+        results,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    respond(res, { target_id: target._id, results });
   } catch (e) { err(res, e); }
 };
 
@@ -300,5 +365,29 @@ exports.deleteOutputRecord = async (req, res) => {
     await assertWriteAccess(req, target.clientId);
     const result = await outputActivityService.deleteRecord(req.params.recordId);
     respond(res, result);
+  } catch (e) { err(res, e); }
+};
+
+// ── User Layout Preferences ────────────────────────────────────────────────────
+
+exports.getLayoutPreference = async (req, res) => {
+  try {
+    const pref = await UserLayoutPreference.findOne({
+      userId:   req.user._id,
+      targetId: req.params.targetId,
+    }).lean();
+    respond(res, pref || null);
+  } catch (e) { err(res, e); }
+};
+
+exports.saveLayoutPreference = async (req, res) => {
+  try {
+    const { layouts, hidden_cards } = req.body;
+    const pref = await UserLayoutPreference.findOneAndUpdate(
+      { userId: req.user._id, targetId: req.params.targetId },
+      { $set: { layouts: layouts || null, hidden_cards: hidden_cards || [] } },
+      { upsert: true, new: true }
+    );
+    respond(res, pref);
   } catch (e) { err(res, e); }
 };

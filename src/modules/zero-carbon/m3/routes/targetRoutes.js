@@ -32,6 +32,10 @@ router.get   ('/:targetId/attachments',        c.getAttachments);
 router.post  ('/:targetId/progress/compute',   c.computeProgress);
 router.post  ('/:targetId/forecast/compute',   c.computeForecast);
 
+// ── Trajectory ────────────────────────────────────────────────────────────────
+router.get   ('/:targetId/trajectory',                 c.getTrajectory);
+router.post  ('/:targetId/trajectory/recompute',       c.recomputeTrajectoryProgress);
+
 // ── Phase 6: DQ flags ─────────────────────────────────────────────────────────
 router.get   ('/:targetId/dq-flags',                      c.listDqFlags);
 router.post  ('/:targetId/dq-flags/:flagId/resolve',      c.resolveDqFlag);
@@ -41,5 +45,9 @@ router.post  ('/:targetId/output-records',                c.createOutputRecord);
 router.get   ('/:targetId/output-records',                c.listOutputRecords);
 router.patch ('/:targetId/output-records/:recordId',      c.updateOutputRecord);
 router.delete('/:targetId/output-records/:recordId',      c.deleteOutputRecord);
+
+// ── User Layout Preferences ────────────────────────────────────────────────────
+router.get   ('/:targetId/layout-preference',             c.getLayoutPreference);
+router.put   ('/:targetId/layout-preference',             c.saveLayoutPreference);
 
 module.exports = router;
