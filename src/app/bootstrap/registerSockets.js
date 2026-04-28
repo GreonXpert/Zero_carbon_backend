@@ -971,6 +971,26 @@ function registerSockets(io) {
       socket.emit('esg-summary-unsubscribed', { clientId });
     });
 
+    // ── M3 Net Zero trajectory handlers ───────────────────────────────────
+
+    socket.on('m3:subscribe-trajectory', ({ targetId, clientId }) => {
+      try {
+        const room = `m3:trajectory:${targetId}`;
+        socket.join(room);
+        socket.emit('m3:trajectory:subscribed', { targetId, clientId, timestamp: new Date().toISOString() });
+      } catch (error) {
+        console.error('Error subscribing to M3 trajectory:', error);
+      }
+    });
+
+    socket.on('m3:unsubscribe-trajectory', ({ targetId }) => {
+      try {
+        socket.leave(`m3:trajectory:${targetId}`);
+      } catch (error) {
+        console.error('Error unsubscribing from M3 trajectory:', error);
+      }
+    });
+
     // ── Common handlers ────────────────────────────────────────────────────
 
     socket.on('disconnect', () => {

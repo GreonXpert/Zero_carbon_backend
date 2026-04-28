@@ -9,7 +9,8 @@ const { canManageFlowchart } = require('../../../../common/utils/Permissions/per
 const { ERRORS } = require('../constants/messages');
 
 const WRITE_ROLES = new Set(['consultant_admin', 'consultant', 'client_admin', 'super_admin']);
-const APPROVE_DENIED_ROLES = new Set(['consultant', 'full_user', 'team_user']);
+// consultant_admin, client_admin, and consultant may approve allocations
+const APPROVE_DENIED_ROLES = new Set(['full_user', 'team_user']);
 
 /**
  * Throws HTTP-friendly error if the user cannot write for this clientId.

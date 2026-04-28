@@ -10,6 +10,8 @@ const { LifecycleStatus, ApprovalStatus, WorkflowEventType, ApprovableEntityType
 const { ERRORS } = require('../constants/messages');
 const dqService = require('./dqService');
 const pathwayService = require('./pathwayService');
+const { pullBaseYearEmissionsByAssessmentLevel } = require('./emissionSummaryScopeService');
+const { getNormalizedAssessmentLevels } = require('../../data-collection/utils/dataCollection');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +50,24 @@ async function createTarget(data, user) {
     throw err;
   }
 
+  let baseYearNote = null;
+
+  if (data.base_year_emissions == null && data.base_year && data.scope_boundary) {
+    const assessmentLevels = await getNormalizedAssessmentLevels(data.clientId);
+    const result = await pullBaseYearEmissionsByAssessmentLevel(
+      data.clientId,
+      data.base_year,
+      data.scope_boundary,
+      assessmentLevels,
+      data.scope3_coverage_pct ?? 100,
+    );
+    if (result.found && result.CO2e !== null) {
+      data.base_year_emissions = result.CO2e;
+    } else {
+      baseYearNote = 'No yearly EmissionSummary found for base_year. Please set base_year_emissions manually.';
+    }
+  }
+
   const target = await TargetMaster.create({
     ...data,
     lifecycle_status: LifecycleStatus.DRAFT,
@@ -61,8 +81,8 @@ async function createTarget(data, user) {
     target, WorkflowEventType.CREATED, user, null, LifecycleStatus.DRAFT
   ));
 
-  // Auto-raise DQ flag if base_year_emissions is missing
-  if (!data.base_year_emissions) {
+  // Auto-raise DQ flag if base_year_emissions is still missing after auto-fetch
+  if (!target.base_year_emissions) {
     await dqService.raiseFlag({
       clientId:   target.clientId,
       entityType: ApprovableEntityType.TargetMaster,
@@ -74,7 +94,7 @@ async function createTarget(data, user) {
     });
   }
 
-  return target;
+  return { target, baseYearNote };
 }
 
 async function updateTarget(targetId, data, user) {

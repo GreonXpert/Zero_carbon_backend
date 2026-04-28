@@ -1,44 +1,65 @@
 'use strict';
 
 // ============================================================================
-// Pathway Service — Three calculation engines:
-//   1. Absolute Contraction (linear annual)
-//   2. SDA (Sectoral Decarbonization Approach)
-//   3. Regulatory GEI (CCTS primary example)
-// Plus: Residual position calculation
+// Pathway Service — Seven calculation engines:
+//   1. Absolute Contraction (linear annual absolute reduction)
+//   2. SDA (Sectoral Decarbonization – intensity via sector curve)
+//   3. Regulatory GEI (CCTS – flat intensity cap each year)
+//   4. RE Tracking (Renewable Electricity %, linear to target)
+//   5. Supplier Engagement Tracking (engagement %, linear to target)
+//   6. FLAG (Forests, Land & Agriculture – ACL on land-use emissions)
+//   7. Internal Custom (ACL logic on base_year_emissions)
+//   8. Residual Offset (ISO 14068 – net emissions linear toward 0)
 // ============================================================================
 
-const PathwayAnnual = require('../models/PathwayAnnual');
+const PathwayAnnual    = require('../models/PathwayAnnual');
 const OperationalBudget = require('../models/OperationalBudget');
-const OutputActivityRecord = require('../models/OutputActivityRecord');
-const MethodLibrary = require('../models/MethodLibrary');
-const OrgSettings = require('../models/OrgSettings');
-const EmissionSummary = require('../../calculation/EmissionSummary');
+const MethodLibrary    = require('../models/MethodLibrary');
+const OrgSettings      = require('../models/OrgSettings');
+const EmissionSummary  = require('../../calculation/EmissionSummary');
 const { computePathwayHash } = require('../utils/hashHelper');
 const {
   MethodName, BudgetGranularity, SeasonalityMethod,
 } = require('../constants/enums');
 const { WARNINGS } = require('../constants/messages');
 
-// ── Absolute Contraction Engine ──────────────────────────────────────────────
-
-/**
- * allowed_Y = base_year_emissions × (1 - (reduction_pct × (Y - base_year) / (target_year - base_year)))
- */
-function calcAbsoluteAllowed(baseEmissions, reductionPct, baseYear, targetYear, year) {
-  return baseEmissions * (1 - (reductionPct / 100) * (year - baseYear) / (targetYear - baseYear));
+// ── Engine 1: Absolute Contraction ──────────────────────────────────────────
+// allowed_Y = base × (1 − pct × progress)
+function calcAbsoluteAllowed(base, pct, baseYear, targetYear, year) {
+  return base * (1 - (pct / 100) * (year - baseYear) / (targetYear - baseYear));
 }
 
-// ── SDA Engine ───────────────────────────────────────────────────────────────
+// ── Engine 2: SDA (sector-curve intensity) ──────────────────────────────────
+// factor_Y = (1 − annual_rate) ^ (Y − base_year)
+// allowed_GEI_Y = base_GEI × factor_Y
+function calcSDAFactor(annualRate, baseYear, year) {
+  return Math.pow(1 - annualRate, year - baseYear);
+}
 
-/**
- * allowed_GEI_Y = base_GEI × sectoral_curve_factor[Y]
- * Sectoral curve loaded from MethodLibrary.required_parameters.sectoralCurve = { year: factor }
- */
-function calcSDAAllowed(baseGEI, sectoralCurve, year) {
-  const factor = sectoralCurve[year];
-  if (factor == null) return null;
-  return baseGEI * factor;
+// ── Engine 3: Regulatory GEI (flat intensity cap) ───────────────────────────
+// PathwayAnnual stores the target_intensity_value unchanged every year.
+// Trajectory service computes actual GEI = actual_emissions / output_value.
+
+// ── Engine 4: RE Tracking (linear % interpolation) ──────────────────────────
+// pathway_pct_Y = base_re_pct + (target_re_pct − base_re_pct) × progress
+function calcREAllowed(baseRePct, targetRePct, baseYear, targetYear, year) {
+  const progress = (year - baseYear) / (targetYear - baseYear);
+  return parseFloat((baseRePct + (targetRePct - baseRePct) * progress).toFixed(4));
+}
+
+// ── Engine 5: Supplier Engagement (linear % interpolation) ──────────────────
+function calcSupplierAllowed(basePct, targetPct, baseYear, targetYear, year) {
+  return calcREAllowed(basePct, targetPct, baseYear, targetYear, year);
+}
+
+// ── Engine 6 & 7: FLAG / Internal Custom (same as ACL) ──────────────────────
+// Uses flag_base_emissions (FLAG) or base_year_emissions (Internal_Custom)
+
+// ── Engine 8: Residual Offset (net linear toward 0) ─────────────────────────
+// net_target_Y = base_net × (1 − progress)
+function calcResidualAllowed(baseNet, baseYear, targetYear, year) {
+  const progress = (year - baseYear) / (targetYear - baseYear);
+  return parseFloat((baseNet * (1 - progress)).toFixed(4));
 }
 
 // ── Main Pathway Generator ───────────────────────────────────────────────────
@@ -49,45 +70,160 @@ async function generatePathway(target) {
     method_name, framework_name,
     base_year, base_year_emissions,
     target_year, target_reduction_pct,
+    // RE Tracking
+    base_re_pct, target_re_pct,
+    // Supplier Engagement
+    base_supplier_engagement_pct, target_supplier_engagement_pct,
+    // FLAG
+    flag_base_emissions,
+    // SDA
+    sda_sector,
+    target_intensity_value,
+    // Residual
+    residual_manual_removal_tco2e,
+    residual_removal_source,
   } = target;
 
   const rows = [];
 
+  // ── 1. Absolute Contraction ────────────────────────────────────────────────
   if (method_name === MethodName.Absolute_Contraction) {
+    if (base_year_emissions == null || target_reduction_pct == null) return;
     for (let year = base_year + 1; year <= target_year; year++) {
-      const allowed = calcAbsoluteAllowed(
-        base_year_emissions, target_reduction_pct, base_year, target_year, year
-      );
-      const hash = computePathwayHash(
-        targetId, year, framework_name, method_name,
-        { base_year_emissions, target_reduction_pct, base_year, target_year }
-      );
-      rows.push({ clientId, target_id: targetId, calendar_year: year, allowed_emissions: allowed, recompute_hash: hash });
-    }
-  } else if (method_name === MethodName.SDA) {
-    const methodDoc = await MethodLibrary.findOne({ method_code: 'SDA' });
-    const sectoralCurve = methodDoc?.required_parameters?.sectoralCurve || {};
-
-    // base_GEI requires base-year output — skip if not available
-    const baseOutput = await OutputActivityRecord.findOne({ target_id: targetId, calendar_year: base_year });
-    if (!baseOutput) return;
-
-    const baseGEI = base_year_emissions / baseOutput.output_value;
-
-    for (let year = base_year + 1; year <= target_year; year++) {
-      const allowedGEI = calcSDAAllowed(baseGEI, sectoralCurve, year);
-      if (allowedGEI == null) continue;
-      const hash = computePathwayHash(targetId, year, framework_name, method_name, { baseGEI, year });
+      const allowed = calcAbsoluteAllowed(base_year_emissions, target_reduction_pct, base_year, target_year, year);
       rows.push({
         clientId, target_id: targetId, calendar_year: year,
-        allowed_emissions: allowedGEI,
-        recompute_hash: hash,
+        allowed_emissions: parseFloat(allowed.toFixed(4)),
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { base_year_emissions, target_reduction_pct, base_year, target_year }),
       });
     }
   }
-  // Regulatory GEI pathway stored per-compliance-year via complianceService, not here
 
-  // Upsert pathway rows
+  // ── 2. SDA ─────────────────────────────────────────────────────────────────
+  else if (method_name === MethodName.SDA) {
+    if (base_year_emissions == null || !sda_sector) return;
+
+    const methodDoc = await MethodLibrary.findOne({ method_code: 'SDA' }).lean();
+    const sectorData = methodDoc?.required_parameters?.sectors?.[sda_sector];
+    if (!sectorData) {
+      console.warn(`[pathwayService] SDA sector '${sda_sector}' not found in MethodLibrary.`);
+      return;
+    }
+    const { annual_reduction_rate } = sectorData;
+
+    // base_GEI from TargetMaster: target_intensity_value holds the base year GEI
+    // (user enters it manually as the starting intensity; or we use base_year_emissions / 1 if not set)
+    const baseGEI = target_intensity_value ?? base_year_emissions;
+    if (baseGEI == null) return;
+
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const factor     = calcSDAFactor(annual_reduction_rate, base_year, year);
+      const allowedGEI = parseFloat((baseGEI * factor).toFixed(6));
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: allowedGEI,
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { baseGEI, annual_reduction_rate, sda_sector }),
+      });
+    }
+  }
+
+  // ── 3. Regulatory GEI (flat intensity cap) ─────────────────────────────────
+  else if (method_name === MethodName.Regulatory_GEI) {
+    if (target_intensity_value == null) return;
+    for (let year = base_year + 1; year <= target_year; year++) {
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: target_intensity_value,   // flat cap every year
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { target_intensity_value }),
+      });
+    }
+  }
+
+  // ── 4. RE Tracking ─────────────────────────────────────────────────────────
+  else if (method_name === MethodName.RE_Tracking) {
+    if (base_re_pct == null || target_re_pct == null) return;
+    // Base year row (year = base_year) already handled as synthetic row in trajectoryService.
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const allowedPct = calcREAllowed(base_re_pct, target_re_pct, base_year, target_year, year);
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: allowedPct,   // % value stored as the pathway figure
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { base_re_pct, target_re_pct, base_year, target_year }),
+      });
+    }
+  }
+
+  // ── 5. Supplier Engagement ─────────────────────────────────────────────────
+  else if (method_name === MethodName.Supplier_Engagement_Tracking) {
+    const basePct   = base_supplier_engagement_pct ?? 0;
+    const targetPct = target_supplier_engagement_pct;
+    if (targetPct == null) return;
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const allowedPct = calcSupplierAllowed(basePct, targetPct, base_year, target_year, year);
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: allowedPct,
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { basePct, targetPct, base_year, target_year }),
+      });
+    }
+  }
+
+  // ── 6. FLAG ────────────────────────────────────────────────────────────────
+  else if (method_name === MethodName.FLAG) {
+    const flagBase = flag_base_emissions ?? base_year_emissions;
+    if (flagBase == null || target_reduction_pct == null) return;
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const allowed = calcAbsoluteAllowed(flagBase, target_reduction_pct, base_year, target_year, year);
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: parseFloat(allowed.toFixed(4)),
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { flagBase, target_reduction_pct, base_year, target_year }),
+      });
+    }
+  }
+
+  // ── 7. Internal Custom (ACL) ───────────────────────────────────────────────
+  else if (method_name === MethodName.Internal_Custom) {
+    if (base_year_emissions == null || target_reduction_pct == null) return;
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const allowed = calcAbsoluteAllowed(base_year_emissions, target_reduction_pct, base_year, target_year, year);
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: parseFloat(allowed.toFixed(4)),
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { base_year_emissions, target_reduction_pct, base_year, target_year }),
+      });
+    }
+  }
+
+  // ── 8. Residual Offset ─────────────────────────────────────────────────────
+  else if (method_name === MethodName.Residual_Offset) {
+    // base_net = base_year_emissions − base_year_removals
+    // For pathway generation, we use residual_manual_removal_tco2e as the base removal
+    // (if source is 'auto' the base removal is 0 — to be updated when actual data arrives).
+    const baseRemovals = (residual_removal_source === 'manual' && residual_manual_removal_tco2e != null)
+      ? residual_manual_removal_tco2e
+      : 0;
+    const baseNet = (base_year_emissions ?? 0) - baseRemovals;
+
+    for (let year = base_year + 1; year <= target_year; year++) {
+      const allowedNet = calcResidualAllowed(baseNet, base_year, target_year, year);
+      rows.push({
+        clientId, target_id: targetId, calendar_year: year,
+        allowed_emissions: allowedNet,
+        recompute_hash: computePathwayHash(targetId, year, framework_name, method_name,
+          { baseNet, base_year, target_year }),
+      });
+    }
+  }
+
+  // ── Upsert pathway rows ────────────────────────────────────────────────────
   for (const row of rows) {
     await PathwayAnnual.findOneAndUpdate(
       { target_id: row.target_id, calendar_year: row.calendar_year },
@@ -96,23 +232,24 @@ async function generatePathway(target) {
     );
   }
 
-  // Derive operational budgets for newly created pathway rows
-  if (rows.length > 0) {
+  // Derive operational budgets only for emission-unit methods (not %, not GEI intensity)
+  const emissionUnitMethods = [
+    MethodName.Absolute_Contraction,
+    MethodName.FLAG,
+    MethodName.Internal_Custom,
+    MethodName.Residual_Offset,
+  ];
+  if (rows.length > 0 && emissionUnitMethods.includes(method_name)) {
     await deriveOperationalBudgets(targetId, clientId, rows);
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Returns the number of days in a given month/year (UTC). */
 function daysInMonth(year, month) {
-  return new Date(year, month, 0).getDate(); // month is 1-based; Date(y,m,0) = last day of month m-1
+  return new Date(year, month, 0).getDate();
 }
 
-/**
- * Resolves a 12-element monthly-weight array that sums to 1.0.
- * Falls back to EQUAL distribution and logs a warning when data is insufficient.
- */
 async function resolveMonthlyWeights(method, settings, clientId, year) {
   if (method === SeasonalityMethod.M1_HISTORICAL) {
     const priorYear = year - 1;
@@ -125,11 +262,8 @@ async function resolveMonthlyWeights(method, settings, clientId, year) {
     if (docs.length === 12) {
       const totals = docs.map(d => d.emissionSummary?.totalEmissions?.CO2e || 0);
       const sum = totals.reduce((a, b) => a + b, 0);
-      if (sum > 0) {
-        return totals.map(t => t / sum);
-      }
+      if (sum > 0) return totals.map(t => t / sum);
     }
-    // Insufficient data — fall back to EQUAL
     console.warn(WARNINGS.SEASONALITY_FALLBACK);
     return Array(12).fill(1 / 12);
   }
@@ -140,21 +274,13 @@ async function resolveMonthlyWeights(method, settings, clientId, year) {
       const sum = curve.reduce((a, b) => a + b, 0);
       if (sum > 0) return curve.map(w => w / sum);
     }
-    // No curve stored — fall back to EQUAL
     return Array(12).fill(1 / 12);
   }
 
-  // EQUAL (default)
   return Array(12).fill(1 / 12);
 }
 
-// ── Operational Budget Derivation ────────────────────────────────────────────
-
-/**
- * Derives ANNUAL, QUARTERLY, MONTHLY, and DAILY OperationalBudget documents
- * for each pathway row.  The monthly distribution is driven by OrgSettings
- * `seasonality_default_method` (EQUAL | M1_HISTORICAL | CUSTOM_CURVE).
- */
+// ── Operational Budget Derivation (emission-unit methods only) ───────────────
 async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
   const settings = await OrgSettings.findOne({ clientId });
   const method   = settings?.seasonality_default_method || SeasonalityMethod.EQUAL;
@@ -166,25 +292,22 @@ async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
     });
     if (!pathwayDoc) continue;
 
-    const annual  = row.allowed_emissions;
-    const year    = row.calendar_year;
+    const annual = row.allowed_emissions;
+    const year   = row.calendar_year;
     const baseSet = { clientId, parent_pathway_id: pathwayDoc._id, is_system_derived: true };
 
-    // ── ANNUAL ────────────────────────────────────────────────────────────────
     await OperationalBudget.findOneAndUpdate(
       { target_id: targetId, granularity: BudgetGranularity.ANNUAL, period_key: String(year) },
       { $set: { ...baseSet, budget_emissions: annual } },
       { upsert: true }
     );
 
-    // ── Resolve monthly weights (drives MONTHLY, QUARTERLY, DAILY) ─────────
     const weights = await resolveMonthlyWeights(method, settings, clientId, year);
 
-    // ── MONTHLY ───────────────────────────────────────────────────────────────
     const monthlyBudgets = [];
     for (let m = 1; m <= 12; m++) {
-      const budget     = annual * weights[m - 1];
-      const periodKey  = `${year}-${String(m).padStart(2, '0')}`;
+      const budget    = annual * weights[m - 1];
+      const periodKey = `${year}-${String(m).padStart(2, '0')}`;
       monthlyBudgets.push(budget);
       await OperationalBudget.findOneAndUpdate(
         { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: periodKey },
@@ -193,7 +316,6 @@ async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
       );
     }
 
-    // ── QUARTERLY (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec) ────────
     const quarterMonths = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
     for (let q = 1; q <= 4; q++) {
       const qBudget   = quarterMonths[q - 1].reduce((s, m) => s + monthlyBudgets[m - 1], 0);
@@ -205,9 +327,8 @@ async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
       );
     }
 
-    // ── DAILY (budget = monthly / days_in_month per day) ─────────────────────
     for (let m = 1; m <= 12; m++) {
-      const days       = daysInMonth(year, m);
+      const days        = daysInMonth(year, m);
       const dailyBudget = monthlyBudgets[m - 1] / days;
       for (let d = 1; d <= days; d++) {
         const periodKey = `${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;

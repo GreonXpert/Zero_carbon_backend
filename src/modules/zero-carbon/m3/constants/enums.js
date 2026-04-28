@@ -29,6 +29,7 @@ const MethodName = Object.freeze({
   Supplier_Engagement_Tracking:'Supplier_Engagement_Tracking',
   FLAG:                        'FLAG',
   Internal_Custom:             'Internal_Custom',
+  Residual_Offset:             'Residual_Offset',
 });
 
 const LifecycleStatus = Object.freeze({
@@ -263,6 +264,7 @@ const FRAMEWORK_METHOD_GATE = Object.freeze({
   [FrameworkName.ISO_14068]: [
     MethodName.Absolute_Contraction,
     MethodName.Internal_Custom,
+    MethodName.Residual_Offset,
   ],
   [FrameworkName.ISO_NZG]: [
     MethodName.Absolute_Contraction,
@@ -277,7 +279,7 @@ const FRAMEWORK_METHOD_GATE = Object.freeze({
   ],
 });
 
-// ── Intensity-based methods (require denominator) ───────────────────────────
+// ── Intensity-based methods (require denominator_unit + target_intensity_value) ─
 const INTENSITY_METHODS = new Set([
   MethodName.SDA,
   MethodName.Regulatory_GEI,
@@ -286,7 +288,62 @@ const INTENSITY_METHODS = new Set([
 // ── Methods requiring target_reduction_pct ──────────────────────────────────
 const REDUCTION_PCT_METHODS = new Set([
   MethodName.Absolute_Contraction,
+  MethodName.FLAG,
+  MethodName.Internal_Custom,
 ]);
+
+// ── Percentage-target methods (RE / Supplier) ───────────────────────────────
+const PCT_TARGET_METHODS = new Set([
+  MethodName.RE_Tracking,
+  MethodName.Supplier_Engagement_Tracking,
+]);
+
+// ── Methods whose "actual" uses a higher-is-better comparison ───────────────
+const HIGHER_IS_BETTER_METHODS = new Set([
+  MethodName.RE_Tracking,
+  MethodName.Supplier_Engagement_Tracking,
+]);
+
+// ── Residual / neutrality methods ───────────────────────────────────────────
+const RESIDUAL_METHODS = new Set([
+  MethodName.Residual_Offset,
+]);
+
+// ── Removal filter types (used by Residual_Offset) ──────────────────────────
+const ResidualRemovalFilterType = Object.freeze({
+  TOTAL:               'total',
+  BY_CATEGORY:         'by_category',
+  BY_LOCATION:         'by_location',
+  BY_PROJECT:          'by_project',
+  BY_SCOPE:            'by_scope',
+  BY_PROJECT_ACTIVITY: 'by_project_activity',
+});
+
+// ── FLAG emission source options ─────────────────────────────────────────────
+const FlagEmissionSource = Object.freeze({
+  MANUAL:           'manual',
+  SCOPE1_FILTERED:  'scope1_filtered',
+  SCOPE3_FILTERED:  'scope3_filtered',
+});
+
+// ── Supplier engagement metric options ───────────────────────────────────────
+const SupplierMetric = Object.freeze({
+  COUNT: 'count',
+  SPEND: 'spend',
+});
+
+// ── SDA sector codes ─────────────────────────────────────────────────────────
+const SdaSector = Object.freeze({
+  POWER:                'Power',
+  BUILDINGS:            'Buildings',
+  TRANSPORT_PASSENGER:  'Transport_Passenger',
+  TRANSPORT_FREIGHT:    'Transport_Freight',
+  STEEL:                'Steel',
+  CEMENT:               'Cement',
+  CHEMICALS:            'Chemicals',
+  PAPER:                'Paper',
+  INDUSTRY_GENERAL:     'Industry_General',
+});
 
 module.exports = {
   TargetFamily,
@@ -322,4 +379,11 @@ module.exports = {
   FRAMEWORK_METHOD_GATE,
   INTENSITY_METHODS,
   REDUCTION_PCT_METHODS,
+  PCT_TARGET_METHODS,
+  HIGHER_IS_BETTER_METHODS,
+  RESIDUAL_METHODS,
+  ResidualRemovalFilterType,
+  FlagEmissionSource,
+  SupplierMetric,
+  SdaSector,
 };

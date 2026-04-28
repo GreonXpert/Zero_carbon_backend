@@ -44,6 +44,40 @@ exports.updateAllocation = async (req, res) => {
   } catch (e) { err(res, e); }
 };
 
+/**
+ * POST /targets/:targetId/allocations/bulk
+ * Body: { rows: GeneratedRow[], chartType, chartId }
+ *
+ * Upserts all rows in one request. Existing DRAFT rows are updated;
+ * missing rows are created; SUBMITTED/APPROVED rows are skipped.
+ */
+exports.bulkUpsertAllocations = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    assertCanDraftAllocation(req);
+
+    const { rows = [], chartType, chartId } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      const e = new Error('rows array is required and must not be empty.'); e.status = 422; throw e;
+    }
+    if (!chartType) {
+      const e = new Error('chartType is required.'); e.status = 422; throw e;
+    }
+
+    const result = await allocationService.bulkUpsertAllocations(
+      req.params.targetId,
+      target.clientId,
+      rows,
+      chartType,
+      chartId || null,
+      req.user
+    );
+
+    ok(res, result, 200);
+  } catch (e) { err(res, e); }
+};
+
 exports.submitAllocation = async (req, res) => {
   try {
     const alloc = await allocationService.getAllocationById(req.params.allocationId);
@@ -59,6 +93,15 @@ exports.approveAllocation = async (req, res) => {
     await assertWriteAccess(req, alloc.clientId);
     assertCanApprove(req);
     const data = await allocationService.approveAllocation(req.params.allocationId, req.user);
+    ok(res, data);
+  } catch (e) { err(res, e); }
+};
+
+exports.deleteAllocation = async (req, res) => {
+  try {
+    const alloc = await allocationService.getAllocationById(req.params.allocationId);
+    await assertWriteAccess(req, alloc.clientId);
+    const data = await allocationService.deleteAllocation(req.params.allocationId, req.user);
     ok(res, data);
   } catch (e) { err(res, e); }
 };

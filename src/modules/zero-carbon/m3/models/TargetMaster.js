@@ -6,6 +6,8 @@ const {
   LifecycleStatus, ApprovalStatus, ScopeBoundary,
   MetricType, OrgBoundaryBasis, TargetBoundaryLevel,
   ComplianceObligationType,
+  FlagEmissionSource, SupplierMetric, SdaSector,
+  ResidualRemovalFilterType,
 } = require('../constants/enums');
 
 const TargetMasterSchema = new mongoose.Schema({
@@ -62,6 +64,31 @@ const TargetMasterSchema = new mongoose.Schema({
   updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
   isDeleted: { type: Boolean, default: false },
+
+  // ── RE Tracking fields ────────────────────────────────────────────────────
+  base_re_pct:              { type: Number, default: null, min: 0, max: 100 },
+  target_re_pct:            { type: Number, default: null, min: 0, max: 100 },
+
+  // ── Supplier Engagement fields ────────────────────────────────────────────
+  supplier_metric:                  { type: String, enum: [...Object.values(SupplierMetric), null], default: SupplierMetric.COUNT },
+  base_supplier_engagement_pct:     { type: Number, default: null, min: 0, max: 100 },
+  target_supplier_engagement_pct:   { type: Number, default: null, min: 0, max: 100 },
+
+  // ── FLAG (Forests, Land & Agriculture) fields ─────────────────────────────
+  flag_emission_source:    { type: String, enum: [...Object.values(FlagEmissionSource), null], default: null },
+  flag_scope_filter:       { type: String, enum: ['S1', 'S3', null], default: null },
+  flag_filter_categories:  [{ type: String }],
+  flag_filter_activities:  [{ type: String }],
+  flag_base_emissions:     { type: Number, default: null },
+
+  // ── SDA-specific sector ───────────────────────────────────────────────────
+  sda_sector:              { type: String, enum: [...Object.values(SdaSector), null], default: null },
+
+  // ── Residual Offset / ISO 14068 fields ───────────────────────────────────
+  residual_removal_source:        { type: String, enum: ['auto', 'manual', null], default: 'auto' },
+  residual_removal_filter_type:   { type: String, enum: [...Object.values(ResidualRemovalFilterType), null], default: ResidualRemovalFilterType.TOTAL },
+  residual_removal_filter_values: [{ type: String }],
+  residual_manual_removal_tco2e:  { type: Number, default: null },
 
   // ── Regulatory Compliance fields (populated when target_family = Regulatory_Compliance_Target) ──
   regulation_name:           { type: String, default: null },

@@ -5,6 +5,7 @@ const PathwayAnnual = require('../models/PathwayAnnual');
 const DataQualityFlag = require('../models/DataQualityFlag');
 const OrgSettings = require('../models/OrgSettings');
 const EmissionSummary = require('../../calculation/EmissionSummary');
+const { pullYearlyEmissionSummaryByBoundary } = require('./emissionSummaryScopeService');
 const {
   ProgressStatus, SnapshotType, DQFlagCode, Severity,
 } = require('../constants/enums');
@@ -12,9 +13,24 @@ const { WARNINGS } = require('../constants/messages');
 
 /**
  * Pulls the yearly EmissionSummary from M1 for a given client + calendar year.
- * Returns { CO2e, ingestion_timestamp, summaryId } or null if not found.
+ *
+ * When scopeBoundary is provided (S1, S1S2, S3, S1S2S3) the CO2e value is extracted
+ * from emissionSummary.byScope using the scope-aware helper so the result matches the
+ * target's declared boundary. Falls back to totalEmissions.CO2e when byScope is absent
+ * on the document (legacy records) — the helper logs a warning in that case.
+ *
+ * When scopeBoundary is omitted the legacy path reads totalEmissions.CO2e directly,
+ * preserving backward compatibility for any callers that pre-date this change.
+ *
+ * Returns { CO2e, ingestionTimestamp, summaryId, scopeBoundary?, scopeBreakdown? } or null.
  */
-async function pullM1Emissions(clientId, year) {
+async function pullM1Emissions(clientId, year, scopeBoundary, scope3CoveragePct = 100) {
+  // Scope-aware path — used when a target's scope_boundary is known.
+  if (scopeBoundary) {
+    return pullYearlyEmissionSummaryByBoundary(clientId, year, scopeBoundary, scope3CoveragePct);
+  }
+
+  // Legacy path — totalEmissions.CO2e only. Kept for backward compatibility.
   const doc = await EmissionSummary.findOne({
     clientId,
     'period.type': 'yearly',
@@ -23,11 +39,10 @@ async function pullM1Emissions(clientId, year) {
 
   if (!doc) return null;
 
-  const CO2e = doc.emissionSummary?.totalEmissions?.CO2e ?? 0;
   return {
-    CO2e,
-    ingestion_timestamp: doc.metadata?.lastCalculated || new Date(),
-    summaryId: doc._id,
+    CO2e:               doc.emissionSummary?.totalEmissions?.CO2e ?? 0,
+    ingestionTimestamp: doc.metadata?.lastCalculated || new Date(),
+    summaryId:          doc._id,
   };
 }
 
@@ -52,11 +67,15 @@ async function computeProgressSnapshot({
   const status    = computeProgressStatus(actualEmissions, allowed);
   const gap_pct   = allowed > 0 ? ((actualEmissions - allowed) / allowed) * 100 : 0;
 
+  // calendar_year is the identity key — one canonical snapshot per (target, type, year).
+  // snapshot_date is stored as a "last computed at" timestamp only, not used for deduplication.
   const snapshot = await ProgressSnapshot.findOneAndUpdate(
-    { target_id: targetId, snapshot_type: snapshotType, snapshot_date: snapshotDate },
+    { target_id: targetId, snapshot_type: snapshotType, calendar_year: calendarYear },
     {
       $set: {
         clientId,
+        snapshot_date:       snapshotDate,
+        calendar_year:       calendarYear,
         actual_emissions:    actualEmissions,
         allowed_emissions:   allowed,
         progress_status:     status,
@@ -102,8 +121,12 @@ async function getProgress(targetId) {
 }
 
 async function getLiveSnapshot(targetId) {
-  return ProgressSnapshot.findOne({ target_id: targetId, snapshot_type: SnapshotType.LIVE })
+  const live = await ProgressSnapshot.findOne({ target_id: targetId, snapshot_type: SnapshotType.LIVE })
     .sort({ snapshot_date: -1 });
+  if (live) return live;
+  // Fall back to the most recent ANNUAL snapshot
+  return ProgressSnapshot.findOne({ target_id: targetId, snapshot_type: SnapshotType.ANNUAL })
+    .sort({ calendar_year: -1 });
 }
 
 module.exports = { pullM1Emissions, computeProgressSnapshot, getProgress, getLiveSnapshot };

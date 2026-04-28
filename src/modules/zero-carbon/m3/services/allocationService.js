@@ -23,47 +23,33 @@ function logEntry(alloc, action, actor, before, after, comment = null) {
     timestamp:     new Date(),
   };
 }
-// function normalizeAllocationPayload(data) {
-//   const scopeDetailAllocationPct =
-//     data.scopeDetailAllocationPct ??
-//     data.allocated_pct ??
-//     100;
 
-//   return {
-//     ...data,
+/** Auto-generate source_code: {clientId}_ALLOC_{zero-padded-serial} */
+async function generateSourceCode(clientId) {
+  const count = await SourceAllocation.countDocuments({ clientId, isDeleted: false });
+  return `${clientId}_ALLOC_${String(count + 1).padStart(4, '0')}`;
+}
 
-//     // backward-compatible value used by existing reconciliation logic
-//     allocated_pct: Number(data.allocated_pct ?? scopeDetailAllocationPct),
-
-//     scopeAllocationPct: Number(data.scopeAllocationPct ?? 100),
-//     categoryAllocationPct: Number(data.categoryAllocationPct ?? 100),
-//     nodeAllocationPct: Number(data.nodeAllocationPct ?? 100),
-//     scopeDetailAllocationPct: Number(scopeDetailAllocationPct),
-
-//     absoluteAllocatedValue: Number(data.absoluteAllocatedValue ?? 0),
-
-//     // optional backward-compatible mapping
-//     source_code: data.source_code || data.scopeIdentifier || data.nodeId,
-//     category_code: data.category_code || data.categoryName || 'UNCATEGORIZED',
-//     facility_id: data.facility_id || data.nodeId,
-//   };
-// }
+/** Strip keys whose value is undefined so Object.assign never wipes existing fields */
+function stripUndefined(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
 
 async function createAllocation(targetId, data, user) {
+  const source_code = data.source_code || (await generateSourceCode(data.clientId));
+  const payload = normalizeAllocationPayload({ ...data, source_code });
 
-  const payload = normalizeAllocationPayload(data);
-
-  const errors = validateAllocationRow(data);
+  const errors = validateAllocationRow(payload);
   if (errors.length) { const e = new Error(errors.join(' | ')); e.status = 422; throw e; }
 
   const alloc = await SourceAllocation.create({
     ...payload,
-    target_id:              targetId,
-    clientId:               data.clientId,
-    reconciliation_status:  AllocationStatus.DRAFT,
-    version:                1,
-    created_by:             user._id,
-    updated_by:             user._id,
+    target_id:             targetId,
+    clientId:              data.clientId,
+    reconciliation_status: AllocationStatus.DRAFT,
+    version:               1,
+    created_by:            user._id,
+    updated_by:            user._id,
   });
 
   await ApprovalWorkflowLog.create(logEntry(alloc, WorkflowEventType.CREATED, user, null, AllocationStatus.DRAFT));
@@ -71,7 +57,6 @@ async function createAllocation(targetId, data, user) {
 }
 
 async function updateAllocation(allocationId, data, user) {
-  const payload = normalizeAllocationPayload(data);
   const alloc = await SourceAllocation.findById(allocationId);
   if (!alloc || alloc.isDeleted) { const e = new Error('Allocation not found.'); e.status = 404; throw e; }
   if (alloc.reconciliation_status !== AllocationStatus.DRAFT) {
@@ -81,12 +66,52 @@ async function updateAllocation(allocationId, data, user) {
     const e = new Error(ERRORS.OPTIMISTIC_CONCURRENCY); e.status = 409; throw e;
   }
 
-Object.assign(alloc, payload, {
-  version: alloc.version + 1,
-  updated_by: user._id,
-});
+  // Normalize but never overwrite source_code from the immutable existing value
+  const normalized = normalizeAllocationPayload(data);
+  delete normalized.source_code;  // source_code is set once at create, never changed
+  const safePayload = stripUndefined(normalized);
+
+  Object.assign(alloc, safePayload, {
+    version:    alloc.version + 1,
+    updated_by: user._id,
+  });
   await alloc.save();
+
   return alloc;
+}
+
+/**
+ * Bulk upsert — create or update all rows in one call.
+ */
+async function bulkUpsertAllocations(targetId, clientId, rows, chartType, chartId, user) {
+  const results = [];
+  const errors  = [];
+
+  for (const row of rows) {
+    try {
+      const existing = await SourceAllocation.findOne({
+        target_id:       targetId,
+        nodeId:          row.nodeId,
+        scopeIdentifier: row.scopeIdentifier,
+        chartType,
+        isDeleted:       false,
+      });
+
+      let saved;
+      if (!existing) {
+        saved = await createAllocation(targetId, { ...row, clientId, chartType, chartId }, user);
+      } else if (existing.reconciliation_status === AllocationStatus.DRAFT) {
+        saved = await updateAllocation(String(existing._id), { ...row, version: existing.version }, user);
+      } else {
+        saved = existing;
+      }
+      results.push(saved);
+    } catch (e) {
+      errors.push({ nodeId: row.nodeId, scopeIdentifier: row.scopeIdentifier, message: e.message });
+    }
+  }
+
+  return { saved: results, errors };
 }
 
 async function submitAllocation(allocationId, user) {
@@ -96,16 +121,17 @@ async function submitAllocation(allocationId, user) {
     const e = new Error('Only DRAFT allocations can be submitted.'); e.status = 422; throw e;
   }
 
-  // Reconciliation check
   const siblings = await SourceAllocation.find({
-  target_id: alloc.target_id,
-  chartType: alloc.chartType,
-  scopeIdentifier: alloc.scopeIdentifier,
-  isDeleted: false,
-});
-  const settings = await OrgSettings.findOne({ clientId: alloc.clientId });
+    target_id:       alloc.target_id,
+    chartType:       alloc.chartType,
+    scopeIdentifier: alloc.scopeIdentifier,
+    isDeleted:       false,
+  });
+
+  const settings  = await OrgSettings.findOne({ clientId: alloc.clientId });
   const tolerance = settings?.allocation_tolerance_pct ?? 0.005;
-  const pcts = siblings.map(s => s.allocated_pct);
+  const pcts      = siblings.map(s => s.allocated_pct);
+
   const check = validateAllocationSum(pcts, tolerance);
   if (!check.valid) {
     alloc.reconciliation_status = AllocationStatus.DRAFT;
@@ -136,13 +162,24 @@ async function approveAllocation(allocationId, user) {
 
   await ApprovalWorkflowLog.create(logEntry(alloc, WorkflowEventType.APPROVED, user, prev, AllocationStatus.APPROVED));
 
-  // Re-derive operational budgets after allocation approval
   const pathwayRows = await pathwayService.getPathway(String(alloc.target_id));
   if (pathwayRows.length) {
     await pathwayService.deriveOperationalBudgets(String(alloc.target_id), alloc.clientId, pathwayRows);
   }
 
   return alloc;
+}
+
+async function deleteAllocation(allocationId, user) {
+  const alloc = await SourceAllocation.findById(allocationId);
+  if (!alloc || alloc.isDeleted) { const e = new Error('Allocation not found.'); e.status = 404; throw e; }
+  if (alloc.reconciliation_status !== AllocationStatus.DRAFT) {
+    const e = new Error('Only DRAFT allocations can be deleted.'); e.status = 422; throw e;
+  }
+  alloc.isDeleted = true;
+  alloc.updated_by = user._id;
+  await alloc.save();
+  return { deleted: true, id: allocationId };
 }
 
 async function listAllocations(targetId) {
@@ -158,8 +195,10 @@ async function getAllocationById(allocationId) {
 module.exports = {
   createAllocation,
   updateAllocation,
+  bulkUpsertAllocations,
   submitAllocation,
   approveAllocation,
+  deleteAllocation,
   listAllocations,
   getAllocationById,
 };
