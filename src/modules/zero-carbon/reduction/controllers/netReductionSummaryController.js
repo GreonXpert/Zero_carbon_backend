@@ -77,6 +77,16 @@ function computeSummary(entries, projectMeta) {
     totalNetReduction: 0,
     entriesCount: entries.length,
 
+    m3Summary: {
+      totalBE: 0,
+      totalPE: 0,
+      totalLE: 0,
+      totalNetWithoutUncertainty: 0,
+      totalNetWithUncertainty: 0,
+      entriesCount: 0,
+      byCategory: {},
+    },
+
     byProject: [],
     byCategory: {},
     byScope: {},
@@ -161,6 +171,30 @@ function computeSummary(entries, projectMeta) {
       };
     summary.byMethodology[methodology].totalNetReduction += net;
     summary.byMethodology[methodology].entriesCount++;
+
+    // --- M3 BE / PE / LE TOTALS ---
+    if (e.calculationMethodology === "methodology3" && e.m3) {
+      const be = Number(e.m3.BE_total || 0);
+      const pe = Number(e.m3.PE_total || 0);
+      const le = Number(e.m3.LE_total || 0);
+      const nwou = Number(e.m3.netWithoutUncertainty || 0);
+      const nwu = Number(e.m3.netWithUncertainty || 0);
+
+      summary.m3Summary.totalBE = round6(summary.m3Summary.totalBE + be);
+      summary.m3Summary.totalPE = round6(summary.m3Summary.totalPE + pe);
+      summary.m3Summary.totalLE = round6(summary.m3Summary.totalLE + le);
+      summary.m3Summary.totalNetWithoutUncertainty = round6(summary.m3Summary.totalNetWithoutUncertainty + nwou);
+      summary.m3Summary.totalNetWithUncertainty = round6(summary.m3Summary.totalNetWithUncertainty + nwu);
+      summary.m3Summary.entriesCount++;
+
+      if (!summary.m3Summary.byCategory[category]) {
+        summary.m3Summary.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
+      }
+      summary.m3Summary.byCategory[category].totalBE = round6(summary.m3Summary.byCategory[category].totalBE + be);
+      summary.m3Summary.byCategory[category].totalPE = round6(summary.m3Summary.byCategory[category].totalPE + pe);
+      summary.m3Summary.byCategory[category].totalLE = round6(summary.m3Summary.byCategory[category].totalLE + le);
+      summary.m3Summary.byCategory[category].entriesCount++;
+    }
   }
 
   summary.byProject = [...projectMap.values()];
@@ -191,6 +225,11 @@ async function calculatePeriodSummary(clientId, periodType, year, month, week, d
       reductionSummary: {
         totalNetReduction: 0,
         entriesCount: 0,
+        m3Summary: {
+          totalBE: 0, totalPE: 0, totalLE: 0,
+          totalNetWithoutUncertainty: 0, totalNetWithUncertainty: 0,
+          entriesCount: 0, byCategory: {},
+        },
         calculationSummary,
         byProject: [],
         byCategory: {},

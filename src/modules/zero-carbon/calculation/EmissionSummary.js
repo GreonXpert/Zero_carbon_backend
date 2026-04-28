@@ -807,6 +807,29 @@ const emissionSummarySchema = new mongoose.Schema(
           { _id: false }
         ),
         default: {}
+      },
+
+      // M3 Methodology totals — BE (Baseline), PE (Project), LE (Leakage)
+      m3Summary: {
+        totalBE: { type: Number, default: 0 },
+        totalPE: { type: Number, default: 0 },
+        totalLE: { type: Number, default: 0 },
+        totalNetWithoutUncertainty: { type: Number, default: 0 },
+        totalNetWithUncertainty: { type: Number, default: 0 },
+        entriesCount: { type: Number, default: 0 },
+        byCategory: {
+          type: Map,
+          of: new mongoose.Schema(
+            {
+              totalBE: { type: Number, default: 0 },
+              totalPE: { type: Number, default: 0 },
+              totalLE: { type: Number, default: 0 },
+              entriesCount: { type: Number, default: 0 }
+            },
+            { _id: false }
+          ),
+          default: {}
+        }
       }
     },
       processEmissionSummary: {
