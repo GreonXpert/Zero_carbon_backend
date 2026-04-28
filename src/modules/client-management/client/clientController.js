@@ -3852,6 +3852,9 @@ const manageSubscription = async (req, res) => {
         notes: reason || "",
       });
 
+      // accountDetails is Mixed type (encrypted blob) — Mongoose won't auto-detect
+      // nested property changes without an explicit markModified call.
+      client.markModified('accountDetails');
       await client.save();
 
       // Notify the specific consultant_admin assigned to this client
@@ -4007,7 +4010,9 @@ const manageSubscription = async (req, res) => {
         return res.status(400).json({ message: "Unsupported action" });
     }
 
-    // Save all changes
+    // accountDetails is Mixed type (encrypted blob) — Mongoose won't auto-detect
+    // nested property changes without an explicit markModified call.
+    client.markModified('accountDetails');
     await client.save();
 
     return res.status(200).json({
@@ -5513,6 +5518,8 @@ const manageEsgLinkSubscription = async (req, res) => {
         notes: reason || "",
       });
 
+      // accountDetails is Mixed type (encrypted blob) — must explicitly mark modified.
+      client.markModified('accountDetails');
       await client.save();
 
       await logEvent({
@@ -5601,6 +5608,8 @@ const manageEsgLinkSubscription = async (req, res) => {
         return res.status(400).json({ message: "Unsupported action" });
     }
 
+    // accountDetails is Mixed type (encrypted blob) — must explicitly mark modified.
+    client.markModified('accountDetails');
     await client.save();
 
     await logEvent({
