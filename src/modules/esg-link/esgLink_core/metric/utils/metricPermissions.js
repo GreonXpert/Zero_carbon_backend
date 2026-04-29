@@ -81,8 +81,22 @@ const canViewClientMetrics = async (user, clientId) => {
   return canManageClientMetric(user, clientId);
 };
 
+/**
+ * canApproveMetricChange
+ * Allowed: super_admin only — reviews pending global metric approval requests
+ * @param {object} user - req.user
+ * @returns {{ allowed: boolean, reason: string }}
+ */
+const canApproveMetricChange = (user) => {
+  if (user.userType === 'super_admin') {
+    return { allowed: true, reason: 'Super admin access' };
+  }
+  return { allowed: false, reason: 'Only super_admin can approve or reject global metric change requests' };
+};
+
 module.exports = {
   canManageGlobalMetric,
   canManageClientMetric,
   canViewClientMetrics,
+  canApproveMetricChange,
 };

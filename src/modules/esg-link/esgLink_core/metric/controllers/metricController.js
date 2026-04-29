@@ -34,6 +34,7 @@ const {
   validateSubcategoryCode,
   hasDefinitionChange,
 } = require('../services/metricService');
+const { createApprovalRequest } = require('../services/metricApprovalService');
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -120,7 +121,41 @@ const createGlobalMetric = async (req, res) => {
       }
     }
 
-    // Auto-generate metric code
+    // consultant_admin → raise approval request; super_admin → create directly
+    if (req.user.userType === 'consultant_admin') {
+      const approval = await createApprovalRequest({
+        actionType:      'create',
+        proposedPayload: {
+          metricName, metricDescription, esgCategory, subcategoryCode, metricType,
+          primaryUnit, allowedUnits, dataType, formulaId,
+          isBrsrCore, regulatorySourceRef, notesForUi,
+        },
+        requestedBy: req.user,
+      });
+
+      logEventFireAndForget({
+        req,
+        module:        'esg_metric',
+        action:        'create',
+        subAction:     'global_metric_create_requested',
+        entityType:    'EsgMetricApproval',
+        entityId:      approval._id.toString(),
+        clientId:      null,
+        changeSummary: `consultant_admin requested creation of global metric "${metricName}" — pending super_admin approval`,
+        severity:      'info',
+        status:        'success',
+      });
+
+      return res.status(202).json({
+        message:    'Global metric creation submitted for super_admin approval',
+        approvalId: approval._id,
+        status:     'pending',
+        actionType: 'create',
+        proposedPayload: approval.proposedPayload,
+      });
+    }
+
+    // super_admin: create directly
     const metricCode = await generateMetricCode({
       esgCategory, subcategoryCode, isGlobal: true, clientId: null,
     });
@@ -156,7 +191,7 @@ const createGlobalMetric = async (req, res) => {
       entityType:    'EsgMetric',
       entityId:      metric._id.toString(),
       clientId:      null,
-      changeSummary: `Global metric "${metric.metricName}" (${metric.metricCode}) created`,
+      changeSummary: `Global metric "${metric.metricName}" (${metric.metricCode}) created by super_admin`,
       severity:      'info',
       status:        'success',
     });
@@ -177,6 +212,9 @@ const createGlobalMetric = async (req, res) => {
       },
     });
   } catch (err) {
+    if (err.code === 'DUPLICATE_PENDING') {
+      return res.status(409).json({ message: err.message, code: 'DUPLICATE_PENDING', approvalId: err.approvalId });
+    }
     console.error('[metricController] createGlobalMetric error:', err);
     return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
   }
@@ -338,12 +376,44 @@ const updateMetric = async (req, res) => {
       }
     }
 
-    // Track if formulaId is changing (for subAction specificity)
+    // consultant_admin on global metric → raise approval request
+    if (metric.isGlobal && req.user.userType === 'consultant_admin') {
+      const approval = await createApprovalRequest({
+        actionType:      'update',
+        metricId:        metric._id,
+        proposedPayload: payload,
+        metricSnapshot:  metric.toObject(),
+        requestedBy:     req.user,
+      });
+
+      logEventFireAndForget({
+        req,
+        module:        'esg_metric',
+        action:        'update',
+        subAction:     'global_metric_update_requested',
+        entityType:    'EsgMetricApproval',
+        entityId:      approval._id.toString(),
+        clientId:      null,
+        changeSummary: `consultant_admin requested update of global metric "${metric.metricName}" (${metric.metricCode}) — pending super_admin approval`,
+        metadata:      { updatedFields: Object.keys(payload) },
+        severity:      'info',
+        status:        'success',
+      });
+
+      return res.status(202).json({
+        message:         'Metric update submitted for super_admin approval',
+        approvalId:      approval._id,
+        status:          'pending',
+        actionType:      'update',
+        proposedPayload: payload,
+      });
+    }
+
+    // super_admin or client-scoped metric: update directly
     const formulaChanged =
       Object.prototype.hasOwnProperty.call(payload, 'formulaId') &&
       String(metric.formulaId) !== String(payload.formulaId);
 
-    // Version bump only for definition-level changes
     const bumpVersion = hasDefinitionChange(payload);
     if (bumpVersion) {
       payload.version = metric.version + 1;
@@ -379,6 +449,9 @@ const updateMetric = async (req, res) => {
       },
     });
   } catch (err) {
+    if (err.code === 'DUPLICATE_PENDING') {
+      return res.status(409).json({ message: err.message, code: 'DUPLICATE_PENDING', approvalId: err.approvalId });
+    }
     console.error('[metricController] updateMetric error:', err);
     return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
   }
@@ -417,6 +490,39 @@ const publishMetric = async (req, res) => {
       });
     }
 
+    // consultant_admin → raise approval request
+    if (req.user.userType === 'consultant_admin') {
+      const approval = await createApprovalRequest({
+        actionType:      'publish',
+        metricId:        metric._id,
+        proposedPayload: {},
+        metricSnapshot:  metric.toObject(),
+        requestedBy:     req.user,
+      });
+
+      logEventFireAndForget({
+        req,
+        module:        'esg_metric',
+        action:        'update',
+        subAction:     'global_metric_publish_requested',
+        entityType:    'EsgMetricApproval',
+        entityId:      approval._id.toString(),
+        clientId:      null,
+        changeSummary: `consultant_admin requested publish of global metric "${metric.metricName}" (${metric.metricCode}) — pending super_admin approval`,
+        severity:      'info',
+        status:        'success',
+      });
+
+      return res.status(202).json({
+        message:    'Metric publish submitted for super_admin approval',
+        approvalId: approval._id,
+        status:     'pending',
+        actionType: 'publish',
+        metricId:   metric._id,
+      });
+    }
+
+    // super_admin: publish directly
     metric.publishedStatus = 'published';
     metric.publishedAt     = new Date();
     metric.updatedBy       = req.user._id;
@@ -430,7 +536,7 @@ const publishMetric = async (req, res) => {
       entityType:    'EsgMetric',
       entityId:      metric._id.toString(),
       clientId:      null,
-      changeSummary: `Global metric "${metric.metricName}" (${metric.metricCode}) published`,
+      changeSummary: `Global metric "${metric.metricName}" (${metric.metricCode}) published by super_admin`,
       severity:      'info',
       status:        'success',
     });
@@ -446,6 +552,9 @@ const publishMetric = async (req, res) => {
       },
     });
   } catch (err) {
+    if (err.code === 'DUPLICATE_PENDING') {
+      return res.status(409).json({ message: err.message, code: 'DUPLICATE_PENDING', approvalId: err.approvalId });
+    }
     console.error('[metricController] publishMetric error:', err);
     return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
   }
@@ -482,6 +591,39 @@ const retireMetric = async (req, res) => {
       });
     }
 
+    // consultant_admin on global metric → raise approval request
+    if (metric.isGlobal && req.user.userType === 'consultant_admin') {
+      const approval = await createApprovalRequest({
+        actionType:      'retire',
+        metricId:        metric._id,
+        proposedPayload: {},
+        metricSnapshot:  metric.toObject(),
+        requestedBy:     req.user,
+      });
+
+      logEventFireAndForget({
+        req,
+        module:        'esg_metric',
+        action:        'update',
+        subAction:     'global_metric_retire_requested',
+        entityType:    'EsgMetricApproval',
+        entityId:      approval._id.toString(),
+        clientId:      null,
+        changeSummary: `consultant_admin requested retire of global metric "${metric.metricName}" (${metric.metricCode}) — pending super_admin approval`,
+        severity:      'warning',
+        status:        'success',
+      });
+
+      return res.status(202).json({
+        message:    'Metric retire submitted for super_admin approval',
+        approvalId: approval._id,
+        status:     'pending',
+        actionType: 'retire',
+        metricId:   metric._id,
+      });
+    }
+
+    // super_admin or client-scoped metric: retire directly
     metric.publishedStatus = 'retired';
     metric.retiredAt       = new Date();
     metric.updatedBy       = req.user._id;
@@ -512,6 +654,9 @@ const retireMetric = async (req, res) => {
       },
     });
   } catch (err) {
+    if (err.code === 'DUPLICATE_PENDING') {
+      return res.status(409).json({ message: err.message, code: 'DUPLICATE_PENDING', approvalId: err.approvalId });
+    }
     console.error('[metricController] retireMetric error:', err);
     return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
   }
@@ -536,6 +681,39 @@ const deleteMetric = async (req, res) => {
     const perm = canManageGlobalMetric(req.user);
     if (_guardPermission(perm, res)) return;
 
+    // consultant_admin on global metric → raise approval request
+    if (metric.isGlobal && req.user.userType === 'consultant_admin') {
+      const approval = await createApprovalRequest({
+        actionType:      'delete',
+        metricId:        metric._id,
+        proposedPayload: {},
+        metricSnapshot:  metric.toObject(),
+        requestedBy:     req.user,
+      });
+
+      logEventFireAndForget({
+        req,
+        module:        'esg_metric',
+        action:        'delete',
+        subAction:     'global_metric_delete_requested',
+        entityType:    'EsgMetricApproval',
+        entityId:      approval._id.toString(),
+        clientId:      null,
+        changeSummary: `consultant_admin requested deletion of global metric "${metric.metricName}" (${metric.metricCode}) — pending super_admin approval`,
+        severity:      'warning',
+        status:        'success',
+      });
+
+      return res.status(202).json({
+        message:    'Metric deletion submitted for super_admin approval',
+        approvalId: approval._id,
+        status:     'pending',
+        actionType: 'delete',
+        metricId:   metric._id,
+      });
+    }
+
+    // super_admin or client-scoped metric: delete directly
     metric.isDeleted  = true;
     metric.deletedAt  = new Date();
     metric.deletedBy  = req.user._id;
@@ -559,6 +737,9 @@ const deleteMetric = async (req, res) => {
       deletedAt: metric.deletedAt,
     });
   } catch (err) {
+    if (err.code === 'DUPLICATE_PENDING') {
+      return res.status(409).json({ message: err.message, code: 'DUPLICATE_PENDING', approvalId: err.approvalId });
+    }
     console.error('[metricController] deleteMetric error:', err);
     return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
   }
