@@ -45,6 +45,13 @@ const {
   listAvailableMetrics,
 } = require('../controllers/metricController');
 
+const {
+  listMetricApprovals,
+  getMetricApproval,
+  approveMetricChange,
+  rejectMetricChange,
+} = require('../controllers/metricApprovalController');
+
 // All metric routes require authentication
 router.use(auth);
 
@@ -55,6 +62,25 @@ const eslGate = requireActiveModuleSubscription('esg_link');
 // GLOBAL METRIC ROUTES  (literal /metrics prefix — no clientId in path)
 // These MUST appear before /:clientId/metrics to avoid Express treating
 // the word "metrics" as a :clientId param.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APPROVAL QUEUE ROUTES  (super_admin only — must appear before /metrics/:metricId
+// to prevent Express treating 'approvals' as a :metricId param)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// List pending (or filtered) approval requests
+router.get('/metrics/approvals', eslGate, listMetricApprovals);
+
+// Get a single approval request by ID
+router.get('/metrics/approvals/:approvalId', eslGate, getMetricApproval);
+
+// Approve a pending request — executes the deferred action on EsgMetric
+router.post('/metrics/approvals/:approvalId/approve', eslGate, approveMetricChange);
+
+// Reject a pending request — stores rejectionReason, no metric change
+router.post('/metrics/approvals/:approvalId/reject', eslGate, rejectMetricChange);
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Create a new global metric (draft state, super_admin / consultant_admin only)
