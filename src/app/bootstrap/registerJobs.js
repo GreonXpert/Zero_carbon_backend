@@ -17,6 +17,10 @@ const { startGreOnIQWeeklyReset }       = require('../../modules/greon-iq/jobs/g
 const { startGreOnIQMonthlyReset }      = require('../../modules/greon-iq/jobs/greonIQMonthlyReset');
 const { startGreOnIQRetentionCleanup }  = require('../../modules/greon-iq/jobs/greonIQRetentionCleanup');
 const Notification                      = require('../../common/models/Notification/Notification');
+const {
+  startForecastNightlyCron,
+  registerEmissionSummaryHook,
+} = require('../../modules/zero-carbon/m3/jobs/m3ForecastAutoJob');
 
 // ============================================================================
 // REGISTER ALL CRON JOBS AND BACKGROUND TASKS
@@ -73,6 +77,10 @@ function registerJobs() {
   startGreOnIQWeeklyReset();      // Mon 00:00 IST — zero weekly usage counters
   startGreOnIQMonthlyReset();     // 1st of month 00:00 IST — zero monthly counters
   startGreOnIQRetentionCleanup(); // Daily 02:30 IST — trim sessions exceeding retention limit
+
+  // ── M3 Forecast auto-recompute ────────────────────────────────────────────
+  registerEmissionSummaryHook();  // trigger recompute whenever emission data is saved
+  startForecastNightlyCron();     // nightly full recompute at 01:00 UTC
 
   // ── Scheduled notification publisher (every 5 minutes) ───────────────────
   cron.schedule('*/5 * * * *', async () => {

@@ -162,12 +162,45 @@ async function approveAllocation(allocationId, user) {
 
   await ApprovalWorkflowLog.create(logEntry(alloc, WorkflowEventType.APPROVED, user, prev, AllocationStatus.APPROVED));
 
-  const pathwayRows = await pathwayService.getPathway(String(alloc.target_id));
-  if (pathwayRows.length) {
-    await pathwayService.deriveOperationalBudgets(String(alloc.target_id), alloc.clientId, pathwayRows);
-  }
+  // Budget derivation runs in the background — response does not depend on it
+  pathwayService.getPathway(String(alloc.target_id))
+    .then(rows => rows.length && pathwayService.deriveOperationalBudgets(String(alloc.target_id), alloc.clientId, rows))
+    .catch(e => console.error('[approveAllocation] budget derivation error:', e.message));
 
   return alloc;
+}
+
+async function approveAllAllocations(targetId, user) {
+  const allocations = await SourceAllocation.find({
+    target_id:             targetId,
+    reconciliation_status: AllocationStatus.SUBMITTED,
+    isDeleted:             false,
+  }).lean();
+
+  if (!allocations.length) {
+    const e = new Error('No SUBMITTED allocations found for this target.'); e.status = 422; throw e;
+  }
+
+  const ids     = allocations.map(a => a._id);
+  const clientId = allocations[0].clientId;
+
+  // Update all statuses in one query
+  await SourceAllocation.updateMany(
+    { _id: { $in: ids } },
+    { $set: { reconciliation_status: AllocationStatus.APPROVED, updated_by: user._id } }
+  );
+
+  // Batch-insert workflow logs
+  await ApprovalWorkflowLog.insertMany(
+    allocations.map(alloc => logEntry(alloc, WorkflowEventType.APPROVED, user, AllocationStatus.SUBMITTED, AllocationStatus.APPROVED))
+  );
+
+  // Derive budgets once for the target in the background
+  pathwayService.getPathway(targetId)
+    .then(rows => rows.length && pathwayService.deriveOperationalBudgets(targetId, clientId, rows))
+    .catch(e => console.error('[approveAllAllocations] budget derivation error:', e.message));
+
+  return { approved: allocations.length, ids };
 }
 
 async function deleteAllocation(allocationId, user) {
@@ -198,6 +231,7 @@ module.exports = {
   bulkUpsertAllocations,
   submitAllocation,
   approveAllocation,
+  approveAllAllocations,
   deleteAllocation,
   listAllocations,
   getAllocationById,

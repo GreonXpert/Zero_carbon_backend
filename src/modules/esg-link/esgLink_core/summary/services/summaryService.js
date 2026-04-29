@@ -6,6 +6,81 @@ const EsgBoundarySummary = require('../models/EsgBoundarySummary');
 const EsgMetric          = require('../../metric/models/EsgMetric');
 const { execute }        = require('../../rollup/utils/rollUpExecutor');
 
+// ─── Period resolution ────────────────────────────────────────────────────────
+
+function parsePeriodLabelToDate(label) {
+  if (!label) return null;
+  const parts = label.split('-').map(Number);
+  if (parts.length === 1) return new Date(parts[0], 0, 1);
+  if (parts.length === 2) return new Date(parts[0], parts[1] - 1, 1);
+  if (parts.length === 3) return new Date(parts[0], parts[1] - 1, parts[2]);
+  return null;
+}
+
+function resolvePeriod({ periodType, year, month, date, fyStart, fyEnd }) {
+  if (!periodType || periodType === 'year') {
+    const y = year || new Date().getFullYear();
+    return {
+      periodType:  'year',
+      periodKey:   String(y),
+      periodYear:  y,
+      periodStart: new Date(y, 0, 1),
+      periodEnd:   new Date(y, 11, 31),
+      dbFilter:    { 'period.year': y },
+    };
+  }
+  if (periodType === 'month') {
+    const label = `${year}-${String(month).padStart(2, '0')}`;
+    return {
+      periodType:  'month',
+      periodKey:   label,
+      periodYear:  year,
+      periodStart: new Date(year, month - 1, 1),
+      periodEnd:   new Date(year, month, 0),
+      dbFilter:    { 'period.periodLabel': label },
+    };
+  }
+  if (periodType === 'day') {
+    const [y, m, d] = date.split('-').map(Number);
+    return {
+      periodType:  'day',
+      periodKey:   date,
+      periodYear:  y,
+      periodStart: new Date(y, m - 1, d),
+      periodEnd:   new Date(y, m - 1, d),
+      dbFilter:    { 'period.periodLabel': date },
+    };
+  }
+  if (periodType === 'financial_year') {
+    const startDate = new Date(fyStart);
+    const endDate   = new Date(fyEnd);
+    const years = [...new Set([startDate.getFullYear(), endDate.getFullYear()])];
+    return {
+      periodType:  'financial_year',
+      periodKey:   `${fyStart}_${fyEnd}`,
+      periodYear:  startDate.getFullYear(),
+      periodStart: startDate,
+      periodEnd:   endDate,
+      dbFilter:    { 'period.year': { $in: years } },
+      jsFilter: (entry) => {
+        const d = parsePeriodLabelToDate(entry.period.periodLabel);
+        return d && d >= startDate && d <= endDate;
+      },
+    };
+  }
+  throw new Error(`Unknown periodType: ${periodType}`);
+}
+
+// Derive periodDef from a saved EsgDataEntry's period sub-document
+function resolvePeriodFromEntry(period) {
+  const label = (period && period.periodLabel) || '';
+  const year  = (period && period.year) || new Date().getFullYear();
+  const parts = label.split('-');
+  if (parts.length === 3) return resolvePeriod({ periodType: 'day', date: label });
+  if (parts.length === 2) return resolvePeriod({ periodType: 'month', year: parseInt(parts[0], 10), month: parseInt(parts[1], 10) });
+  return resolvePeriod({ periodType: 'year', year });
+}
+
 // ─── Bucket classification ────────────────────────────────────────────────────
 
 function classifyEntry(entry) {
@@ -70,7 +145,7 @@ function buildLayer(entries, nodeMap) {
   const byMetric          = [];
   const byNodeMap         = new Map();
   const byCategoryMap     = new Map();
-  const byScopeMap        = new Map(); // boundaryScope → { total, metrics[] }
+  const byScopeMap        = new Map();
 
   for (const group of metricGroups.values()) {
     const nodeValues = Array.from(group.nodes.values());
@@ -98,12 +173,10 @@ function buildLayer(entries, nodeMap) {
       entryCount: nodeValues.length,
     });
 
-    // ── byCategory accumulation ───────────────────────────────────────────
     if (group.esgCategory) {
       byCategoryMap.set(group.esgCategory, (byCategoryMap.get(group.esgCategory) || 0) + combined);
     }
 
-    // ── byBoundaryScope accumulation ──────────────────────────────────────
     const scopeKey = group.boundaryScope || 'unspecified';
     if (!byScopeMap.has(scopeKey)) {
       byScopeMap.set(scopeKey, { total: 0, entryCount: 0, metrics: [] });
@@ -121,7 +194,6 @@ function buildLayer(entries, nodeMap) {
       primaryUnit:     group.primaryUnit,
     });
 
-    // ── byNode accumulation ───────────────────────────────────────────────
     for (const n of nodeValues) {
       if (!byNodeMap.has(n.nodeId)) {
         byNodeMap.set(n.nodeId, { nodeId: n.nodeId, nodeLabel: n.nodeLabel, metrics: [] });
@@ -199,11 +271,8 @@ function enrichEntriesFromBoundary(entries, boundary) {
 }
 
 // ─── Enrich entries with esgCategory + subcategoryCode from EsgMetric library ─
-// metricsDetails snapshots do NOT store esgCategory/subcategoryCode —
-// we must look them up from the EsgMetric collection using metricId.
 
 async function enrichEntriesFromMetricLibrary(entries) {
-  // Collect unique metricIds
   const uniqueIds = [...new Set(
     entries.map((e) => e.metricId).filter(Boolean).map((id) => id.toString())
   )];
@@ -234,7 +303,7 @@ async function enrichEntriesFromMetricLibrary(entries) {
 
 // ─── Core: compute and save ───────────────────────────────────────────────────
 
-async function computeAndSaveSummary(clientId, boundaryDocId, periodYear) {
+async function computeAndSaveSummary(clientId, boundaryDocId, periodDef) {
   const start = Date.now();
 
   const boundary = await EsgLinkBoundary.findOne({ _id: boundaryDocId, clientId, isDeleted: false });
@@ -248,13 +317,16 @@ async function computeAndSaveSummary(clientId, boundaryDocId, periodYear) {
   const rawEntries = await EsgDataEntry.find({
     clientId,
     boundaryDocId,
-    'period.year': periodYear,
-    isDeleted:     false,
+    ...periodDef.dbFilter,
+    isDeleted:      false,
     workflowStatus: { $nin: ['superseded', 'rejected'] },
   }).lean();
 
+  // For financial_year: apply JS post-filter to scope entries to exact date range
+  const filteredEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
+
   // Step 1: enrich from boundary metricsDetails (code, name, type, rollUpBehavior)
-  const boundaryEnriched = enrichEntriesFromBoundary(rawEntries, boundary);
+  const boundaryEnriched = enrichEntriesFromBoundary(filteredEntries, boundary);
 
   // Step 2: enrich esgCategory + subcategoryCode from EsgMetric library
   const entries = await enrichEntriesFromMetricLibrary(boundaryEnriched);
@@ -271,16 +343,24 @@ async function computeAndSaveSummary(clientId, boundaryDocId, periodYear) {
   const draftSummary           = buildLayer(buckets.draft,           nodeMap);
 
   const doc = await EsgBoundarySummary.findOneAndUpdate(
-    { clientId, boundaryDocId, periodYear },
+    {
+      clientId,
+      boundaryDocId,
+      periodType: periodDef.periodType,
+      periodKey:  periodDef.periodKey,
+    },
     {
       $set: {
+        periodYear:  periodDef.periodYear,
+        periodStart: periodDef.periodStart,
+        periodEnd:   periodDef.periodEnd,
         approvedSummary,
         reviewerPendingSummary,
         approverPendingSummary,
         draftSummary,
         lastComputedAt:        new Date(),
         computationDurationMs: Date.now() - start,
-        totalEntries:          entries.length,
+        totalEntries:          filteredEntries.length,
       },
     },
     { upsert: true, new: true }
@@ -289,38 +369,107 @@ async function computeAndSaveSummary(clientId, boundaryDocId, periodYear) {
   return doc;
 }
 
+// ─── Financial year helper (April–March) ─────────────────────────────────────
+
+function getFinancialYearForDate(d) {
+  if (!d) return null;
+  const month = d.getMonth() + 1; // 1–12
+  const year  = d.getFullYear();
+  const fyStartYear = month >= 4 ? year : year - 1;
+  const fyEndYear   = fyStartYear + 1;
+  const fyStart = `${fyStartYear}-04-01`;
+  const fyEnd   = `${fyEndYear}-03-31`;
+  return resolvePeriod({ periodType: 'financial_year', fyStart, fyEnd });
+}
+
+// Build all 4 periodDefs from an entry's period sub-document
+function resolveAllPeriodsFromEntry(period) {
+  const label = (period && period.periodLabel) || '';
+  const year  = (period && period.year) || new Date().getFullYear();
+  const parts = label.split('-');
+
+  const periods = [];
+
+  // 1. Always: yearly
+  periods.push(resolvePeriod({ periodType: 'year', year }));
+
+  // 2. Monthly (if periodLabel has at least year+month)
+  if (parts.length >= 2) {
+    periods.push(resolvePeriod({
+      periodType: 'month',
+      year:  parseInt(parts[0], 10),
+      month: parseInt(parts[1], 10),
+    }));
+  }
+
+  // 3. Daily (if periodLabel has year+month+day)
+  if (parts.length === 3) {
+    periods.push(resolvePeriod({ periodType: 'day', date: label }));
+  }
+
+  // 4. Financial year (April–March) for the representative date
+  const representativeDate = parsePeriodLabelToDate(label) || new Date(year, 0, 1);
+  const fyDef = getFinancialYearForDate(representativeDate);
+  if (fyDef) periods.push(fyDef);
+
+  return periods;
+}
+
 // ─── Fire-and-forget ─────────────────────────────────────────────────────────
 
-function triggerSummaryRefresh(clientId, boundaryDocId, periodYear) {
+function triggerSummaryRefresh(clientId, boundaryDocId, periodDef) {
   setImmediate(async () => {
     try {
-      await computeAndSaveSummary(clientId, boundaryDocId, periodYear);
+      await computeAndSaveSummary(clientId, boundaryDocId, periodDef);
     } catch (err) {
       console.error('[ESG Summary] refresh error:', err.message);
     }
   });
 }
 
+// Trigger all 4 period-type summaries in one fire-and-forget call
+function triggerAllPeriodSummaryRefresh(clientId, boundaryDocId, period) {
+  const allPeriods = resolveAllPeriodsFromEntry(period);
+  setImmediate(async () => {
+    for (const periodDef of allPeriods) {
+      try {
+        await computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+      } catch (err) {
+        console.error(`[ESG Summary] refresh error (${periodDef.periodType}:${periodDef.periodKey}):`, err.message);
+      }
+    }
+  });
+}
+
 // ─── Cached read ─────────────────────────────────────────────────────────────
 
-async function getCachedSummary(clientId, boundaryDocId, periodYear, { forceRefresh = false } = {}) {
-  if (forceRefresh) return computeAndSaveSummary(clientId, boundaryDocId, periodYear);
-  const doc = await EsgBoundarySummary.findOne({ clientId, boundaryDocId, periodYear }).lean();
-  if (!doc) return computeAndSaveSummary(clientId, boundaryDocId, periodYear);
+async function getCachedSummary(clientId, boundaryDocId, periodDef, { forceRefresh = false } = {}) {
+  if (forceRefresh) return computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+  const doc = await EsgBoundarySummary.findOne({
+    clientId,
+    boundaryDocId,
+    periodType: periodDef.periodType,
+    periodKey:  periodDef.periodKey,
+  }).lean();
+  if (!doc) return computeAndSaveSummary(clientId, boundaryDocId, periodDef);
   return doc;
 }
 
 // ─── Role-scoped summary ─────────────────────────────────────────────────────
 
-async function getSummaryForUser(user, clientId, boundaryDocId, periodYear, options = {}) {
+async function getSummaryForUser(user, clientId, boundaryDocId, periodDef, options = {}) {
   const { forceRefresh = false, allowedLayers = ['approved'] } = options;
-  const summaryDoc = await getCachedSummary(clientId, boundaryDocId, periodYear, { forceRefresh });
+  const summaryDoc = await getCachedSummary(clientId, boundaryDocId, periodDef, { forceRefresh });
   if (!summaryDoc) return null;
 
   const result = {
     clientId,
     boundaryDocId,
-    periodYear,
+    periodType:  periodDef.periodType,
+    periodKey:   periodDef.periodKey,
+    periodYear:  periodDef.periodYear,
+    periodStart: periodDef.periodStart,
+    periodEnd:   periodDef.periodEnd,
     lastComputedAt: summaryDoc.lastComputedAt,
     totalEntries:   summaryDoc.totalEntries,
   };
@@ -335,8 +484,8 @@ async function getSummaryForUser(user, clientId, boundaryDocId, periodYear, opti
 
 // ─── Hierarchy summary ────────────────────────────────────────────────────────
 
-async function getHierarchySummary(clientId, boundaryDocId, periodYear, options = {}) {
-  const summaryDoc = await getCachedSummary(clientId, boundaryDocId, periodYear, options);
+async function getHierarchySummary(clientId, boundaryDocId, periodDef, options = {}) {
+  const summaryDoc = await getCachedSummary(clientId, boundaryDocId, periodDef, options);
   if (!summaryDoc) return null;
 
   const boundary = await EsgLinkBoundary.findOne({ _id: boundaryDocId, clientId, isDeleted: false }).lean();
@@ -356,7 +505,11 @@ async function getHierarchySummary(clientId, boundaryDocId, periodYear, options 
   return {
     clientId,
     boundaryDocId,
-    periodYear,
+    periodType:  periodDef.periodType,
+    periodKey:   periodDef.periodKey,
+    periodYear:  periodDef.periodYear,
+    periodStart: periodDef.periodStart,
+    periodEnd:   periodDef.periodEnd,
     lastComputedAt: summaryDoc.lastComputedAt,
     hierarchy,
     overallTotals:  (summaryDoc.approvedSummary || {}).totals || {},
@@ -365,12 +518,12 @@ async function getHierarchySummary(clientId, boundaryDocId, periodYear, options 
 
 // ─── Dashboard summary ────────────────────────────────────────────────────────
 
-async function getDashboardSummary(clientId, periodYear) {
+async function getDashboardSummary(clientId, periodDef) {
   const boundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false }).select('_id').lean();
 
   const results = [];
   for (const b of boundaries) {
-    const summaryDoc = await getCachedSummary(clientId, b._id, periodYear);
+    const summaryDoc = await getCachedSummary(clientId, b._id, periodDef);
     if (summaryDoc) {
       results.push({
         boundaryDocId:         b._id,
@@ -387,12 +540,21 @@ async function getDashboardSummary(clientId, periodYear) {
     for (const k of ['E', 'S', 'G', 'overall']) combined[k] += (r.approvedTotals[k] || 0);
   }
 
-  return { clientId, periodYear, boundaries: results, combinedApprovedTotals: combined };
+  return {
+    clientId,
+    periodType:  periodDef.periodType,
+    periodKey:   periodDef.periodKey,
+    periodYear:  periodDef.periodYear,
+    periodStart: periodDef.periodStart,
+    periodEnd:   periodDef.periodEnd,
+    boundaries: results,
+    combinedApprovedTotals: combined,
+  };
 }
 
 // ─── Reviewer pending (own assignments) ──────────────────────────────────────
 
-async function getReviewerPendingForReviewer(userId, clientId, periodYear) {
+async function getReviewerPendingForReviewer(userId, clientId, periodDef) {
   const userIdStr  = userId.toString();
   const boundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false }).lean();
   const assignedMappingIds = new Set();
@@ -411,20 +573,29 @@ async function getReviewerPendingForReviewer(userId, clientId, periodYear) {
     }
   }
 
-  const pendingEntries = await EsgDataEntry.find({
+  const rawEntries = await EsgDataEntry.find({
     clientId,
-    'period.year':  periodYear,
+    ...periodDef.dbFilter,
     workflowStatus: { $in: ['submitted', 'clarification_requested', 'resubmitted'] },
     isDeleted:      false,
     mappingId:      { $in: Array.from(assignedMappingIds) },
   }).lean();
 
-  return { clientId, periodYear, assignedPendingEntries: pendingEntries, count: pendingEntries.length };
+  const pendingEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
+
+  return {
+    clientId,
+    periodType:  periodDef.periodType,
+    periodKey:   periodDef.periodKey,
+    periodYear:  periodDef.periodYear,
+    assignedPendingEntries: pendingEntries,
+    count: pendingEntries.length,
+  };
 }
 
 // ─── Approver pending (own assignments) ──────────────────────────────────────
 
-async function getApproverPendingForApprover(userId, clientId, periodYear) {
+async function getApproverPendingForApprover(userId, clientId, periodDef) {
   const userIdStr  = userId.toString();
   const boundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false }).lean();
   const assignedMappingIds = new Set();
@@ -443,9 +614,9 @@ async function getApproverPendingForApprover(userId, clientId, periodYear) {
     }
   }
 
-  const pendingEntries = await EsgDataEntry.find({
+  const rawEntries = await EsgDataEntry.find({
     clientId,
-    'period.year':                    periodYear,
+    ...periodDef.dbFilter,
     workflowStatus:                   'under_review',
     'approvalDecisions.approverId':   userId,
     'approvalDecisions.decision':     'pending',
@@ -453,33 +624,125 @@ async function getApproverPendingForApprover(userId, clientId, periodYear) {
     mappingId:                        { $in: Array.from(assignedMappingIds) },
   }).lean();
 
-  return { clientId, periodYear, assignedPendingEntries: pendingEntries, count: pendingEntries.length };
+  const pendingEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
+
+  return {
+    clientId,
+    periodType:  periodDef.periodType,
+    periodKey:   periodDef.periodKey,
+    periodYear:  periodDef.periodYear,
+    assignedPendingEntries: pendingEntries,
+    count: pendingEntries.length,
+  };
 }
 
 // ─── My-view (role-scoped) ────────────────────────────────────────────────────
 
-async function getMyViewSummary(user, clientId, periodYear) {
+async function getMyViewSummary(user, clientId, periodDef) {
   const userId = (user._id || user.id).toString();
   const role   = user.userType;
 
-  if (role === 'reviewer')    return getReviewerPendingForReviewer(userId, clientId, periodYear);
-  if (role === 'approver')    return getApproverPendingForApprover(userId, clientId, periodYear);
+  if (role === 'reviewer')    return getReviewerPendingForReviewer(userId, clientId, periodDef);
+  if (role === 'approver')    return getApproverPendingForApprover(userId, clientId, periodDef);
   if (role === 'contributor') {
-    const myEntries = await EsgDataEntry.find({
-      clientId, 'period.year': periodYear, submittedBy: userId, isDeleted: false,
+    const rawEntries = await EsgDataEntry.find({
+      clientId,
+      ...periodDef.dbFilter,
+      submittedBy: userId,
+      isDeleted:   false,
     }).lean();
-    return { clientId, periodYear, myEntries, count: myEntries.length };
+    const myEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
+    return {
+      clientId,
+      periodType: periodDef.periodType,
+      periodKey:  periodDef.periodKey,
+      periodYear: periodDef.periodYear,
+      myEntries,
+      count: myEntries.length,
+    };
   }
-  return getDashboardSummary(clientId, periodYear);
+  return getDashboardSummary(clientId, periodDef);
+}
+
+// ─── Available periods for a boundary ────────────────────────────────────────
+
+async function getAvailablePeriods(clientId, boundaryDocId) {
+  const docs = await EsgBoundarySummary.find(
+    { clientId, boundaryDocId },
+    { periodType: 1, periodKey: 1, periodYear: 1, periodStart: 1, periodEnd: 1, lastComputedAt: 1, totalEntries: 1 }
+  ).sort({ periodType: 1, periodKey: 1 }).lean();
+
+  return docs.map((d) => ({
+    periodType:     d.periodType,
+    periodKey:      d.periodKey,
+    periodYear:     d.periodYear,
+    periodStart:    d.periodStart,
+    periodEnd:      d.periodEnd,
+    lastComputedAt: d.lastComputedAt,
+    totalEntries:   d.totalEntries,
+  }));
+}
+
+// ─── Refresh all 4 period types for every period found in EsgDataEntry ───────
+
+async function refreshAllBoundaryPeriods(clientId, boundaryDocId) {
+  // Collect every unique (periodLabel, periodYear) pair that has data
+  const combos = await EsgDataEntry.aggregate([
+    {
+      $match: {
+        clientId,
+        boundaryDocId,
+        isDeleted:      false,
+        workflowStatus: { $nin: ['superseded', 'rejected'] },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          periodLabel: '$period.periodLabel',
+          periodYear:  '$period.year',
+        },
+      },
+    },
+  ]);
+
+  const results = [];
+  const seen    = new Set(); // avoid duplicate periodDef keys
+
+  for (const combo of combos) {
+    const period  = { year: combo._id.periodYear, periodLabel: combo._id.periodLabel || '' };
+    const allDefs = resolveAllPeriodsFromEntry(period);
+
+    for (const periodDef of allDefs) {
+      const dedupKey = `${periodDef.periodType}:${periodDef.periodKey}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+
+      try {
+        await computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+        results.push({ periodType: periodDef.periodType, periodKey: periodDef.periodKey, success: true });
+      } catch (err) {
+        results.push({ periodType: periodDef.periodType, periodKey: periodDef.periodKey, success: false, error: err.message });
+      }
+    }
+  }
+
+  return results;
 }
 
 module.exports = {
+  resolvePeriod,
+  resolvePeriodFromEntry,
+  resolveAllPeriodsFromEntry,
   computeAndSaveSummary,
   triggerSummaryRefresh,
+  triggerAllPeriodSummaryRefresh,
   getCachedSummary,
   getSummaryForUser,
   getHierarchySummary,
   getDashboardSummary,
+  getAvailablePeriods,
+  refreshAllBoundaryPeriods,
   getReviewerPendingForReviewer,
   getApproverPendingForApprover,
   getMyViewSummary,

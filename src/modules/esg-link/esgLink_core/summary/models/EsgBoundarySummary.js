@@ -114,9 +114,22 @@ const esgBoundarySummarySchema = new mongoose.Schema(
       index:    true,
     },
     periodYear: {
-      type:     Number,
+      type: Number,
+      // not required — kept for backward compat / display only
+    },
+    periodType: {
+      type:     String,
+      enum:     ['year', 'month', 'day', 'financial_year'],
+      default:  'year',
       required: true,
     },
+    periodKey: {
+      type:     String,
+      required: true,
+      // '2024' | '2024-03' | '2024-03-15' | '2023-04-01_2024-03-31'
+    },
+    periodStart: { type: Date },
+    periodEnd:   { type: Date },
 
     // workflowStatus = 'approved'
     approvedSummary:        { type: SummaryLayerSchema, default: () => ({}) },
@@ -137,6 +150,6 @@ const esgBoundarySummarySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-esgBoundarySummarySchema.index({ clientId: 1, boundaryDocId: 1, periodYear: 1 }, { unique: true });
+esgBoundarySummarySchema.index({ clientId: 1, boundaryDocId: 1, periodType: 1, periodKey: 1 }, { unique: true });
 
 module.exports = mongoose.model('EsgBoundarySummary', esgBoundarySummarySchema);

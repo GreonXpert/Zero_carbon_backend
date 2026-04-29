@@ -156,6 +156,26 @@ const esgMetricSchema = new mongoose.Schema(
       // Internal hint for frontend rendering (admin-only).
     },
 
+    // ── Framework mapping cache (auto-maintained by metricFrameworkSyncService) ──
+    // Source of truth is QuestionMetricMapping collection; this array is a
+    // denormalised cache rebuilt after every mapping create/update/delete.
+    // Do NOT write this field directly — call syncMetricFrameworkFlags(metricId).
+    frameworkMappings: {
+      type: [
+        {
+          frameworkCode:  { type: String },
+          questionCode:   { type: String },
+          sectionCode:    { type: String },
+          principleCode:  { type: String },
+          indicatorType:  { type: String },
+          isCore:         { type: Boolean, default: false },
+          mappingId:      { type: mongoose.Schema.Types.ObjectId },
+          _id:            false,
+        },
+      ],
+      default: [],
+    },
+
     // ── Ownership ─────────────────────────────────────────────────────────────
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -210,6 +230,9 @@ esgMetricSchema.index({ esgCategory: 1, subcategoryCode: 1 });
 // Code-generation counter queries
 esgMetricSchema.index({ isGlobal: 1, esgCategory: 1, subcategoryCode: 1, isDeleted: 1 });
 esgMetricSchema.index({ clientId: 1, esgCategory: 1, subcategoryCode: 1, isDeleted: 1 });
+
+// Framework mapping cache queries
+esgMetricSchema.index({ isBrsrCore: 1, 'frameworkMappings.frameworkCode': 1 });
 
 // ── Exports ────────────────────────────────────────────────────────────────────
 

@@ -48,7 +48,7 @@ const auditLogRoutes             = require('../../common/routes/AuditLog/auditLo
 // ── GreOn IQ ──────────────────────────────────────────────────────────────────
 const greonIQRoutes              = require('../../modules/greon-iq/routes/greonIQRoutes');
 
-// ── ESGLink ───────────────────────────────────────────────────────────────────
+// ── ESGLink Core ──────────────────────────────────────────────────────────────
 const esgLinkBoundaryR           = require('../../modules/esg-link/esgLink_core/boundary/routes/boundaryR');
 const esgLinkMetricR             = require('../../modules/esg-link/esgLink_core/metric/routes/metricR');
 const esgLinkMappingR            = require('../../modules/esg-link/esgLink_core/boundary/routes/mappingR');
@@ -56,6 +56,13 @@ const { submissionR: esgDataR,
         ingestionR: esgIngestR } = require('../../modules/esg-link/esgLink_core/data-collection/routes/index');
 const esgRollUpR                 = require('../../modules/esg-link/esgLink_core/rollup/routes/rollUpR');
 const esgSummaryR                = require('../../modules/esg-link/esgLink_core/summary/routes/summaryR');
+
+// ── ESGLink Framework (BRSR + future frameworks) ──────────────────────────────
+const esgFrameworkR              = require('../../modules/esg-link/framework/routes/framework.routes');
+const esgBrsrQuestionR           = require('../../modules/esg-link/framework/routes/brsrQuestion.routes');
+const esgBrsrClientR             = require('../../modules/esg-link/framework/routes/brsrClient.routes');
+const esgBrsrAnswerR             = require('../../modules/esg-link/framework/routes/brsrAnswer.routes');
+const esgBrsrReviewR             = require('../../modules/esg-link/framework/routes/brsrReview.routes');
 
 // ============================================================================
 // REGISTER ALL ROUTES
@@ -126,6 +133,13 @@ function registerRoutes(app) {
 
   // ── ESGLink IoT / API Ingestion (API-key protected — no JWT) ─────────────
   app.use('/api/esg-ingest', esgIngestR);
+
+  // ── ESGLink Framework (BRSR + future frameworks) ─────────────────────────
+  app.use('/api/esg-link', esgFrameworkR);
+  app.use('/api/esg-link', esgBrsrQuestionR);
+  app.use('/api/esg-link', esgBrsrClientR);
+  app.use('/api/esg-link', esgBrsrAnswerR);
+  app.use('/api/esg-link', esgBrsrReviewR);
 }
 
 module.exports = { registerRoutes };

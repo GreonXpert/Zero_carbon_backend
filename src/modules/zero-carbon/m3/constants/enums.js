@@ -81,11 +81,12 @@ const RecalculationTrigger = Object.freeze({
 });
 
 const SnapshotType = Object.freeze({
-  ANNUAL:    'ANNUAL',
-  MONTHLY:   'MONTHLY',
-  QUARTERLY: 'QUARTERLY',
-  DAILY:     'DAILY',
-  LIVE:      'LIVE',
+  ANNUAL:      'ANNUAL',
+  MONTHLY:     'MONTHLY',
+  QUARTERLY:   'QUARTERLY',
+  HALF_YEARLY: 'HALF_YEARLY',
+  DAILY:       'DAILY',
+  LIVE:        'LIVE',
 });
 
 const AllocationStatus = Object.freeze({

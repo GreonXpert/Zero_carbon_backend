@@ -6,7 +6,7 @@ const EsgSubmissionThread = require('../models/EsgSubmissionThread');
 const EsgLinkBoundary     = require('../../boundary/models/EsgLinkBoundary');
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
 const { canReview, canApprove, isConsultantForClient } = require('../utils/submissionPermissions');
-const { triggerSummaryRefresh } = require('../../summary/services/summaryService');
+const { triggerAllPeriodSummaryRefresh, resolvePeriodFromEntry } = require('../../summary/services/summaryService');
 
 // ─── Internal: fire-and-forget summary refresh + socket broadcast ─────────────
 function _refreshSummaryAsync(doc, toStatus, reviewers, approvers) {
@@ -14,39 +14,41 @@ function _refreshSummaryAsync(doc, toStatus, reviewers, approvers) {
     try {
       const clientId      = doc.clientId;
       const boundaryDocId = doc.boundaryDocId;
-      const periodYear    = doc.period && doc.period.year ? doc.period.year : new Date().getFullYear();
+      const periodDef     = resolvePeriodFromEntry(doc.period);
 
-      triggerSummaryRefresh(clientId, boundaryDocId, periodYear);
+      triggerAllPeriodSummaryRefresh(clientId, boundaryDocId, doc.period);
 
       const eventType =
-        toStatus === 'approved'  ? 'approved_refresh'         :
-        toStatus === 'rejected'  ? 'approved_refresh'         :
+        toStatus === 'approved'     ? 'approved_refresh'         :
+        toStatus === 'rejected'     ? 'approved_refresh'         :
         toStatus === 'under_review' ? 'approver_pending_refresh' :
         'reviewer_pending_refresh';
+
+      const periodPayload = { periodKey: periodDef.periodKey, periodType: periodDef.periodType, periodYear: periodDef.periodYear };
 
       if (global.broadcastEsgSummaryUpdate) {
         global.broadcastEsgSummaryUpdate(
           clientId,
           boundaryDocId ? boundaryDocId.toString() : '',
           eventType,
-          { periodYear }
+          periodPayload
         );
       }
 
       if (global.broadcastEsgRoleUpdate) {
         if (['submitted', 'clarification_requested', 'resubmitted'].includes(toStatus)) {
           for (const reviewerId of (reviewers || [])) {
-            global.broadcastEsgRoleUpdate(reviewerId.toString(), 'reviewer_pending_refresh', { clientId, periodYear });
+            global.broadcastEsgRoleUpdate(reviewerId.toString(), 'reviewer_pending_refresh', { clientId, ...periodPayload });
           }
         }
         if (toStatus === 'under_review') {
           for (const approverId of (approvers || [])) {
-            global.broadcastEsgRoleUpdate(approverId.toString(), 'approver_pending_refresh', { clientId, periodYear });
+            global.broadcastEsgRoleUpdate(approverId.toString(), 'approver_pending_refresh', { clientId, ...periodPayload });
           }
         }
         if (toStatus === 'approved' || toStatus === 'rejected') {
           for (const approverId of (approvers || [])) {
-            global.broadcastEsgRoleUpdate(approverId.toString(), 'approved_refresh', { clientId, periodYear });
+            global.broadcastEsgRoleUpdate(approverId.toString(), 'approved_refresh', { clientId, ...periodPayload });
           }
         }
       }

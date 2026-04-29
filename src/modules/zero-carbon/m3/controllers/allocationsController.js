@@ -97,6 +97,16 @@ exports.approveAllocation = async (req, res) => {
   } catch (e) { err(res, e); }
 };
 
+exports.approveAllAllocations = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    assertCanApprove(req);
+    const data = await allocationService.approveAllAllocations(req.params.targetId, req.user);
+    ok(res, data);
+  } catch (e) { err(res, e); }
+};
+
 exports.deleteAllocation = async (req, res) => {
   try {
     const alloc = await allocationService.getAllocationById(req.params.allocationId);

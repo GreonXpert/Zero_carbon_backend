@@ -27,6 +27,10 @@ const OrgSettingsSchema = new mongoose.Schema({
     enum: Object.values(ForecastMethod),
     default: ForecastMethod.LINEAR_EXTRAPOLATION,
   },
+  // Set to true after the client's first manual forecast compute.
+  // Once locked, auto-recompute always uses forecast_method_default.
+  // Manual computes with a different method are saved as comparison (is_primary: false).
+  forecast_method_locked: { type: Boolean, default: false },
   // 12 monthly weights that must sum to 1.0 (used when seasonality_default_method = CUSTOM_CURVE)
   custom_seasonality_curve: {
     type: [Number],

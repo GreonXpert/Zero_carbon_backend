@@ -38,6 +38,8 @@ yarn-error.*
 claude/
 Documents/
 Document/
+
+src/migrations/
 # typescript
 *.tsbuildinfo
 

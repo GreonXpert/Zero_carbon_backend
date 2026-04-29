@@ -13,6 +13,7 @@ const DataQualityFlag      = require('../models/DataQualityFlag');
 const PathwayAnnual            = require('../models/PathwayAnnual');
 const UserLayoutPreference     = require('../models/UserLayoutPreference');
 const { assertWriteAccess, assertCanApprove, resolveClientId } = require('../utils/m3Permission');
+const OrgSettings = require('../models/OrgSettings');
 
 const respond = (res, data, status = 200) => res.status(status).json({ success: true, data });
 const err = (res, e) => res.status(e.status || 500).json({ success: false, message: e.message });
@@ -140,7 +141,10 @@ exports.getProgress = async (req, res) => {
 
 exports.getForecast = async (req, res) => {
   try {
-    const data = await forecastService.getForecast(req.params.targetId);
+    const { snapshotType, isPrimary } = req.query;
+    // Default: return primary (live tracking) snapshots only
+    const isPrimaryBool = isPrimary === 'false' ? false : isPrimary === 'null' ? null : true;
+    const data = await forecastService.getForecast(req.params.targetId, snapshotType || 'ANNUAL', isPrimaryBool);
     respond(res, data);
   } catch (e) { err(res, e); }
 };
@@ -275,23 +279,52 @@ exports.computeForecast = async (req, res) => {
     const target = await targetService.getTargetById(req.params.targetId);
     await assertWriteAccess(req, target.clientId);
 
-    const { calendarYear, forecastMethod } = req.body;
+    const { calendarYear, forecastMethod, snapshotType } = req.body;
     if (!calendarYear) {
       return res.status(422).json({ success: false, message: 'calendarYear is required.' });
     }
 
-    const snapshot = await forecastService.computeForecastByMethod({
+    // ── Method lock logic ──────────────────────────────────────────────────────
+    // First time a client computes a forecast → lock their chosen method as the
+    // active tracking method. All subsequent auto-recomputes use this method.
+    // If they compute again with a DIFFERENT method, that is a comparison compute
+    // (is_primary: false) and does not affect the live tracking forecast.
+    let settings = await OrgSettings.findOne({ clientId: target.clientId });
+    let isPrimary = true;
+
+    if (!settings?.forecast_method_locked) {
+      // First compute — lock the method (or default to LINEAR_EXTRAPOLATION)
+      const methodToLock = forecastMethod || settings?.forecast_method_default || 'LINEAR_EXTRAPOLATION';
+      settings = await OrgSettings.findOneAndUpdate(
+        { clientId: target.clientId },
+        { $set: { forecast_method_default: methodToLock, forecast_method_locked: true } },
+        { upsert: true, new: true }
+      );
+    } else {
+      // Method already locked — if using a different method, this is comparison only
+      const activeMethod = settings.forecast_method_default;
+      if (forecastMethod && forecastMethod !== activeMethod) {
+        isPrimary = false;
+      }
+    }
+
+    const result = await forecastService.computeForecastByMethod({
       targetId:      target._id,
       clientId:      target.clientId,
       calendarYear:  Number(calendarYear),
       forecastMethod,
+      snapshotType:  snapshotType || 'ANNUAL',
+      isPrimary,
     });
 
-    if (!snapshot) {
+    // Annual returns single snapshot; sub-period returns array — always reply with the latest
+    if (!result || (Array.isArray(result) && result.length === 0)) {
       return res.status(404).json({ success: false, message: `No pathway found for year ${calendarYear}.` });
     }
 
-    respond(res, snapshot, 201);
+    const snapshot = Array.isArray(result) ? result[result.length - 1] : result;
+    // Include metadata so frontend knows if this was primary or comparison
+    respond(res, { snapshot, isPrimary, activeMethod: settings.forecast_method_default }, 201);
   } catch (e) { err(res, e); }
 };
 

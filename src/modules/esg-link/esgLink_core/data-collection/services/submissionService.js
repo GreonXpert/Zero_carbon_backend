@@ -7,7 +7,7 @@ const EsgSubmissionThread = require('../models/EsgSubmissionThread');
 const EsgLinkBoundary  = require('../../boundary/models/EsgLinkBoundary');
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
 const { canSubmit }    = require('../utils/submissionPermissions');
-const { triggerSummaryRefresh } = require('../../summary/services/summaryService');
+const { triggerAllPeriodSummaryRefresh, resolvePeriodFromEntry } = require('../../summary/services/summaryService');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -238,9 +238,14 @@ async function create(payload, actor, options = {}) {
   // ── 11. Trigger draft summary refresh ────────────────────────────────────
   setImmediate(() => {
     try {
-      triggerSummaryRefresh(clientId, boundary._id, periodData.year);
+      const periodDef = resolvePeriodFromEntry(periodData);
+      triggerAllPeriodSummaryRefresh(clientId, boundary._id, periodData);
       if (global.broadcastEsgSummaryUpdate) {
-        global.broadcastEsgSummaryUpdate(clientId, boundary._id.toString(), 'reviewer_pending_refresh', { periodYear: periodData.year });
+        global.broadcastEsgSummaryUpdate(clientId, boundary._id.toString(), 'reviewer_pending_refresh', {
+          periodKey:  periodDef.periodKey,
+          periodType: periodDef.periodType,
+          periodYear: periodDef.periodYear,
+        });
       }
     } catch (_) {}
   });

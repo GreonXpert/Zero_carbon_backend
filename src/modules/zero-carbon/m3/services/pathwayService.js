@@ -224,11 +224,16 @@ async function generatePathway(target) {
   }
 
   // ── Upsert pathway rows ────────────────────────────────────────────────────
-  for (const row of rows) {
-    await PathwayAnnual.findOneAndUpdate(
-      { target_id: row.target_id, calendar_year: row.calendar_year },
-      { $set: row },
-      { upsert: true, new: true }
+  if (rows.length) {
+    await PathwayAnnual.bulkWrite(
+      rows.map(row => ({
+        updateOne: {
+          filter: { target_id: row.target_id, calendar_year: row.calendar_year },
+          update: { $set: row },
+          upsert: true,
+        },
+      })),
+      { ordered: false }
     );
   }
 
@@ -282,63 +287,117 @@ async function resolveMonthlyWeights(method, settings, clientId, year) {
 
 // ── Operational Budget Derivation (emission-unit methods only) ───────────────
 async function deriveOperationalBudgets(targetId, clientId, pathwayRows) {
-  const settings = await OrgSettings.findOne({ clientId });
+  if (!pathwayRows.length) return;
+
+  const settings = await OrgSettings.findOne({ clientId }).lean();
   const method   = settings?.seasonality_default_method || SeasonalityMethod.EQUAL;
 
-  for (const row of pathwayRows) {
-    const pathwayDoc = await PathwayAnnual.findOne({
+  // Batch-fetch PathwayAnnual docs for rows that don't already carry _id
+  // (rows from getPathway() are full Mongoose docs; rows from generatePathway() are plain objects)
+  const yearsNeedingLookup = pathwayRows.filter(r => !r._id).map(r => r.calendar_year);
+  let pathwayDocMap = {};
+  if (yearsNeedingLookup.length) {
+    const docs = await PathwayAnnual.find({
       target_id: targetId,
-      calendar_year: row.calendar_year,
-    });
+      calendar_year: { $in: yearsNeedingLookup },
+    }).lean();
+    for (const d of docs) pathwayDocMap[d.calendar_year] = d;
+  }
+
+  // Pre-fetch all required historical emission summaries in a single query
+  let historicalSummaries = {};
+  if (method === SeasonalityMethod.M1_HISTORICAL) {
+    const priorYears = pathwayRows.map(r => r.calendar_year - 1);
+    const docs = await EmissionSummary.find({
+      clientId,
+      'period.type': 'monthly',
+      'period.year': { $in: priorYears },
+    }).sort({ 'period.year': 1, 'period.month': 1 }).lean();
+    for (const doc of docs) {
+      const y = doc.period.year;
+      if (!historicalSummaries[y]) historicalSummaries[y] = [];
+      historicalSummaries[y].push(doc);
+    }
+  }
+
+  const ops = [];
+
+  for (const row of pathwayRows) {
+    const pathwayDoc = row._id ? row : pathwayDocMap[row.calendar_year];
     if (!pathwayDoc) continue;
 
-    const annual = row.allowed_emissions;
-    const year   = row.calendar_year;
+    const annual  = row.allowed_emissions;
+    const year    = row.calendar_year;
     const baseSet = { clientId, parent_pathway_id: pathwayDoc._id, is_system_derived: true };
 
-    await OperationalBudget.findOneAndUpdate(
-      { target_id: targetId, granularity: BudgetGranularity.ANNUAL, period_key: String(year) },
-      { $set: { ...baseSet, budget_emissions: annual } },
-      { upsert: true }
-    );
+    ops.push({
+      updateOne: {
+        filter: { target_id: targetId, granularity: BudgetGranularity.ANNUAL, period_key: String(year) },
+        update: { $set: { ...baseSet, budget_emissions: annual } },
+        upsert: true,
+      },
+    });
 
-    const weights = await resolveMonthlyWeights(method, settings, clientId, year);
+    // Resolve weights from pre-fetched data — no extra DB call
+    let weights;
+    if (method === SeasonalityMethod.M1_HISTORICAL) {
+      const priorDocs = historicalSummaries[year - 1] || [];
+      if (priorDocs.length === 12) {
+        const totals = priorDocs.map(d => d.emissionSummary?.totalEmissions?.CO2e || 0);
+        const sum    = totals.reduce((a, b) => a + b, 0);
+        if (sum > 0) weights = totals.map(t => t / sum);
+      }
+      if (!weights) { console.warn(WARNINGS.SEASONALITY_FALLBACK); }
+    } else if (method === SeasonalityMethod.CUSTOM_CURVE) {
+      const curve = settings?.custom_seasonality_curve;
+      if (Array.isArray(curve) && curve.length === 12) {
+        const sum = curve.reduce((a, b) => a + b, 0);
+        if (sum > 0) weights = curve.map(w => w / sum);
+      }
+    }
+    if (!weights) weights = Array(12).fill(1 / 12);
 
-    const monthlyBudgets = [];
+    const monthlyBudgets = weights.map(w => annual * w);
+
     for (let m = 1; m <= 12; m++) {
-      const budget    = annual * weights[m - 1];
-      const periodKey = `${year}-${String(m).padStart(2, '0')}`;
-      monthlyBudgets.push(budget);
-      await OperationalBudget.findOneAndUpdate(
-        { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: periodKey },
-        { $set: { ...baseSet, budget_emissions: budget } },
-        { upsert: true }
-      );
+      ops.push({
+        updateOne: {
+          filter: { target_id: targetId, granularity: BudgetGranularity.MONTHLY, period_key: `${year}-${String(m).padStart(2, '0')}` },
+          update: { $set: { ...baseSet, budget_emissions: monthlyBudgets[m - 1] } },
+          upsert: true,
+        },
+      });
     }
 
     const quarterMonths = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
-    for (let q = 1; q <= 4; q++) {
-      const qBudget   = quarterMonths[q - 1].reduce((s, m) => s + monthlyBudgets[m - 1], 0);
-      const periodKey = `${year}-Q${q}`;
-      await OperationalBudget.findOneAndUpdate(
-        { target_id: targetId, granularity: BudgetGranularity.QUARTERLY, period_key: periodKey },
-        { $set: { ...baseSet, budget_emissions: qBudget } },
-        { upsert: true }
-      );
+    for (let q = 0; q < 4; q++) {
+      const qBudget = quarterMonths[q].reduce((s, m) => s + monthlyBudgets[m - 1], 0);
+      ops.push({
+        updateOne: {
+          filter: { target_id: targetId, granularity: BudgetGranularity.QUARTERLY, period_key: `${year}-Q${q + 1}` },
+          update: { $set: { ...baseSet, budget_emissions: qBudget } },
+          upsert: true,
+        },
+      });
     }
 
     for (let m = 1; m <= 12; m++) {
       const days        = daysInMonth(year, m);
       const dailyBudget = monthlyBudgets[m - 1] / days;
       for (let d = 1; d <= days; d++) {
-        const periodKey = `${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        await OperationalBudget.findOneAndUpdate(
-          { target_id: targetId, granularity: BudgetGranularity.DAILY, period_key: periodKey },
-          { $set: { ...baseSet, budget_emissions: dailyBudget } },
-          { upsert: true }
-        );
+        ops.push({
+          updateOne: {
+            filter: { target_id: targetId, granularity: BudgetGranularity.DAILY, period_key: `${year}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}` },
+            update: { $set: { ...baseSet, budget_emissions: dailyBudget } },
+            upsert: true,
+          },
+        });
       }
     }
+  }
+
+  if (ops.length) {
+    await OperationalBudget.bulkWrite(ops, { ordered: false });
   }
 }
 
