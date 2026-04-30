@@ -2273,74 +2273,104 @@ const hardDeleteProcessScopeDetail = async (req, res) => {
     const { clientId, nodeId, scopeIdentifier } = req.params;
     const { scopeUid } = req.query || {};
 
-    // Permission check (your canManageProcessFlowchart seems to return an object in other places)
+    // Permission check
     const can = await canManageProcessFlowchart(req.user, clientId);
     const allowed = typeof can === "boolean" ? can : !!can?.allowed;
-    if (!allowed) return res.status(403).json({ message: "Permission denied" });
 
-    // Load ONLY the node we care about (lean)
-    const pf = await ProcessFlowchart.findOne(
-      { clientId, isDeleted: false, "nodes.id": nodeId },
-      { nodes: { $elemMatch: { id: nodeId } } }
-    ).lean();
+    if (!allowed) {
+      return res.status(403).json({ message: "Permission denied" });
+    }
 
-    if (!pf) return res.status(404).json({ message: "Process flowchart / node not found" });
+    // IMPORTANT:
+    // nodes is encrypted, so do NOT query using "nodes.id"
+    // and do NOT use .lean() because we need a mongoose document to save().
+    const pf = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false,
+    });
 
-    const node = pf.nodes?.[0];
-    if (!node) return res.status(404).json({ message: "Node not found" });
-
-    const scopes = node?.details?.scopeDetails || [];
-    const idx = findScopeIndex(scopes, { scopeUid, scopeIdentifier });
-    if (idx === -1) return res.status(404).json({ message: "Scope detail not found" });
-
-    const removed = scopes[idx];
-
-    // Build a precise pull condition (prefer _id if present)
-    const pullCondition = removed?._id
-      ? { _id: removed._id }
-      : scopeUid
-        ? { $or: [{ scopeUid: String(scopeUid) }] }
-        : { scopeIdentifier };
-
-    const modifierUserId = req.user?._id || req.user?.id || null;
-
-    // Atomic update: $pull the scopeDetail from that node
-    const result = await ProcessFlowchart.updateOne(
-      { clientId, isDeleted: false, "nodes.id": nodeId },
-      {
-        $pull: { "nodes.$[n].details.scopeDetails": pullCondition },
-        $set: { lastModifiedBy: modifierUserId, updatedAt: new Date() },
-        $inc: { version: 1 }
-      },
-      { arrayFilters: [{ "n.id": nodeId }] }
-    );
-
-    if (!result.modifiedCount) {
-      return res.status(409).json({
-        message: "Scope detail could not be deleted (no changes applied).",
-        nodeId,
-        scopeIdentifier
+    if (!pf) {
+      return res.status(404).json({
+        message: "Process flowchart not found",
       });
     }
 
-    // Audit log — scope permanently deleted from a process node
+    // Find node in decrypted JS object
+    const nodeIndex = (pf.nodes || []).findIndex(
+      (n) => String(n?.id) === String(nodeId)
+    );
+
+    if (nodeIndex === -1) {
+      return res.status(404).json({
+        message: "Node not found in process flowchart",
+        nodeId,
+      });
+    }
+
+    const node = pf.nodes[nodeIndex];
+
+    if (!node.details) {
+      node.details = {};
+    }
+
+    if (!Array.isArray(node.details.scopeDetails)) {
+      node.details.scopeDetails = [];
+    }
+
+    const scopes = node.details.scopeDetails;
+
+    const idx = findScopeIndex(scopes, {
+      scopeUid,
+      scopeIdentifier,
+    });
+
+    if (idx === -1) {
+      return res.status(404).json({
+        message: "Scope detail not found",
+        nodeId,
+        scopeIdentifier,
+        scopeUid,
+      });
+    }
+
+    const removed = scopes[idx];
+
+    // Remove from decrypted JS array
+    scopes.splice(idx, 1);
+
+    pf.nodes[nodeIndex].details.scopeDetails = scopes;
+    pf.lastModifiedBy = req.user?._id || req.user?.id || null;
+    pf.version = (pf.version || 0) + 1;
+
+    // Required because nodes is Mixed/encrypted
+    pf.markModified("nodes");
+
+    await pf.save();
+
+    // Audit log
     await logProcessFlowUpdate(
       req,
       { _id: pf._id, clientId, nodes: pf.nodes ?? [] },
-      `Process scope detail permanently deleted — nodeId: ${nodeId}, scope: ${removed?.scopeIdentifier || scopeIdentifier}, client: ${clientId}`
+      `Process scope detail permanently deleted — nodeId: ${nodeId}, scope: ${
+        removed?.scopeIdentifier || scopeIdentifier
+      }, client: ${clientId}`
     );
 
     return res.status(200).json({
       message: "Scope detail permanently deleted (process)",
+      clientId,
       nodeId,
       scope: {
         scopeIdentifier: removed?.scopeIdentifier,
-        scopeUid: removed?.scopeUid || removed?._id
-      }
+        scopeUid: removed?.scopeUid || removed?._id || scopeUid || null,
+      },
     });
   } catch (err) {
     console.error("hardDeleteProcessScopeDetail error:", err);
-    return res.status(500).json({ message: "Failed to delete scope detail", error: err.message });
+    return res.status(500).json({
+      message: "Failed to delete scope detail",
+      error: err.message,
+    });
   }
 };
 
