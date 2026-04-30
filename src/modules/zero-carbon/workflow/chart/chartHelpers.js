@@ -669,11 +669,23 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
     );
   };
 
+  const levels = (Array.isArray(assessmentLevel) ? assessmentLevel : [assessmentLevel])
+    .map(v => String(v || '').trim().toLowerCase())
+    .flatMap(v => {
+      if (v === 'both') return ['organization', 'process']; // legacy safety
+      if (v === 'organisation') return ['organization'];
+      return [v];
+    });
+
+  const hasOrg = levels.includes('organization');
+  const hasProc = levels.includes('process');
+
   return nodes.map(node => {
     const d = node.details || {};
-    
-    // For processFlowchart with assessmentLevel 'both', only return basic details
-    if (chartType === 'processFlowchart' && assessmentLevel === 'both') {
+
+    // For processFlowchart when both organization + process are enabled,
+    // keep only basic scope details. Do not run full scope validation here.
+    if (chartType === 'processFlowchart' && hasOrg && hasProc) {
       return {
         id:         node.id,
         label:      node.label,
@@ -690,24 +702,23 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
           scopeDetails: Array.isArray(d.scopeDetails)
             ? d.scopeDetails.map(scope => cleanObject({
                 scopeIdentifier: scope.scopeIdentifier,
-                scopeType: scope.scopeType,
-                categoryName: scope.categoryName,
-                activity: scope.activity,
-
-               
+                scopeType:       scope.scopeType,
+                categoryName:    scope.categoryName,
+                activity:        scope.activity,
               }))
-            : [],// Empty scopeDetails for basic view
-          additionalDetails: d.additionalDetails || {}
+            : [],
+          additionalDetails: d.additionalDetails || {},
+          fromOtherChart:    d.fromOtherChart    || false,
         }
       };
     }
-    
-    // For all other cases, process scopeDetails if present
+
+    // For process-only or normal flowchart cases, keep full validation/normalization.
     if (Array.isArray(d.scopeDetails) && d.scopeDetails.length) {
       validateScopeDetails(d.scopeDetails, node.id);
       d.scopeDetails = d.scopeDetails.map(scope => normalizeScopeDetail(scope));
     }
-    
+
     return {
       id:         node.id,
       label:      node.label,

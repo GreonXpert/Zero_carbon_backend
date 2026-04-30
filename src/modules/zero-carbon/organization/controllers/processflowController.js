@@ -1543,7 +1543,8 @@ const updateProcessFlowchartNode = async (req, res) => {
     // ============================================================================
     
     // Update the node in the array first (so validation sees the updated state)
-    processFlowchart.nodes[nodeIndex] = mergedNode;
+    processFlowchart.nodes.set(nodeIndex, mergedNode);
+      processFlowchart.markModified('nodes');
     
     const allocationValidation = validateAllocations(processFlowchart.nodes, {
       includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
