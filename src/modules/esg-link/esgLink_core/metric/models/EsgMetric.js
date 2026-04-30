@@ -137,23 +137,82 @@ const esgMetricSchema = new mongoose.Schema(
       default: null,
     },
 
+    // ── Measurement & Collection ──────────────────────────────────────────────
+    frequency: {
+      type: String,
+      enum: ['daily', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual', 'as_needed', null],
+      default: null,
+      // Applicable primarily to raw metrics.
+    },
+    boundaryScope: {
+      type: String,
+      enum: ['site', 'entity', 'organization', 'value_chain', 'product', null],
+      default: null,
+    },
+    sourceType: {
+      type: String,
+      enum: ['manual_entry', 'iot_sensor', 'financial_system', 'survey', 'calculated', 'third_party', null],
+      default: null,
+    },
+    rollUpBehaviour: {
+      type: String,
+      trim: true,
+      default: null,
+      // Code referencing an EsgRollUpBehavior document (e.g. 'sum', 'average', 'last').
+    },
+
+    // ── Reporting ─────────────────────────────────────────────────────────────
+    reportingUnitNote: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    reportingLevelNote: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    // ── Data Collection / Integration ─────────────────────────────────────────
+    zeroCarbonReference: {
+      type: String,
+      trim: true,
+      default: null,
+      // Reference field path in the zero_carbon module (e.g. 'scope1.fuelCombustion').
+    },
+    ingestionInstruction: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    // ── Validation & Evidence ─────────────────────────────────────────────────
+    validationRule: {
+      type: String,
+      trim: true,
+      default: null,
+      // Human-readable validation description (e.g. 'Must be > 0', 'Range: 0–100%').
+    },
+    evidenceRequirement: {
+      type: String,
+      enum: ['none', 'optional', 'required', 'mandatory', null],
+      default: null,
+    },
+
     // ── Admin / governance metadata (§2.10) ───────────────────────────────────
     isBrsrCore: {
       type: Boolean,
       default: false,
-      // Flags metrics that are core BRSR disclosures (admin-only field).
     },
     regulatorySourceRef: {
       type: String,
       trim: true,
       default: null,
-      // e.g. 'BRSR-C-P6-E-001' (admin-only).
     },
     notesForUi: {
       type: String,
       trim: true,
       default: null,
-      // Internal hint for frontend rendering (admin-only).
     },
 
     // ── Framework mapping cache (auto-maintained by metricFrameworkSyncService) ──

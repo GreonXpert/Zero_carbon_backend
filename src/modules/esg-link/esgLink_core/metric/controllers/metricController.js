@@ -89,9 +89,15 @@ const createGlobalMetric = async (req, res) => {
     const perm = canManageGlobalMetric(req.user);
     if (_guardPermission(perm, res)) return;
 
-    const { metricName, metricDescription, esgCategory, subcategoryCode, metricType,
-            primaryUnit, allowedUnits, dataType, formulaId,
-            isBrsrCore, regulatorySourceRef, notesForUi } = req.body;
+    const {
+      metricName, metricDescription, esgCategory, subcategoryCode, metricType,
+      primaryUnit, allowedUnits, dataType, formulaId,
+      frequency, boundaryScope, sourceType, rollUpBehaviour,
+      reportingUnitNote, reportingLevelNote,
+      zeroCarbonReference, ingestionInstruction,
+      validationRule, evidenceRequirement,
+      isBrsrCore, regulatorySourceRef,
+    } = req.body;
 
     // Required field validation
     if (!metricName || !esgCategory || !subcategoryCode || !metricType) {
@@ -128,7 +134,11 @@ const createGlobalMetric = async (req, res) => {
         proposedPayload: {
           metricName, metricDescription, esgCategory, subcategoryCode, metricType,
           primaryUnit, allowedUnits, dataType, formulaId,
-          isBrsrCore, regulatorySourceRef, notesForUi,
+          frequency, boundaryScope, sourceType, rollUpBehaviour,
+          reportingUnitNote, reportingLevelNote,
+          zeroCarbonReference, ingestionInstruction,
+          validationRule, evidenceRequirement,
+          isBrsrCore, regulatorySourceRef,
         },
         requestedBy: req.user,
       });
@@ -173,11 +183,20 @@ const createGlobalMetric = async (req, res) => {
       allowedUnits:         allowedUnits          || [],
       dataType:             dataType              || 'number',
       formulaId:            formulaId             || null,
+      frequency:            frequency             || null,
+      boundaryScope:        boundaryScope         || null,
+      sourceType:           sourceType            || null,
+      rollUpBehaviour:      rollUpBehaviour       || null,
+      reportingUnitNote:    reportingUnitNote     || null,
+      reportingLevelNote:   reportingLevelNote    || null,
+      zeroCarbonReference:  zeroCarbonReference   || null,
+      ingestionInstruction: ingestionInstruction  || null,
+      validationRule:       validationRule        || null,
+      evidenceRequirement:  evidenceRequirement   || null,
       publishedStatus:      'draft',
       version:              1,
       isBrsrCore:           isBrsrCore            || false,
       regulatorySourceRef:  regulatorySourceRef   || null,
-      notesForUi:           notesForUi            || null,
       createdBy:            req.user._id,
     });
 
@@ -350,8 +369,12 @@ const updateMetric = async (req, res) => {
     // Only these fields can be updated (metricCode, esgCategory, subcategoryCode,
     // metricType, isGlobal, clientId are immutable after creation)
     const ALLOWED_UPDATE_FIELDS = [
-      'metricName', 'metricDescription', 'primaryUnit', 'allowedUnits',
-      'dataType', 'formulaId', 'isBrsrCore', 'regulatorySourceRef', 'notesForUi',
+      'metricName', 'metricDescription', 'primaryUnit', 'allowedUnits', 'dataType', 'formulaId',
+      'frequency', 'boundaryScope', 'sourceType', 'rollUpBehaviour',
+      'reportingUnitNote', 'reportingLevelNote',
+      'zeroCarbonReference', 'ingestionInstruction',
+      'validationRule', 'evidenceRequirement',
+      'isBrsrCore', 'regulatorySourceRef',
     ];
 
     const payload = {};

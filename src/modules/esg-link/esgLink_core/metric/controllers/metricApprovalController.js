@@ -33,7 +33,13 @@ const _guardSuperAdmin = (user, res) => {
 
 const listMetricApprovals = async (req, res) => {
   try {
-    if (_guardSuperAdmin(req.user, res)) return;
+    const user = req.user;
+    const isSuperAdmin      = user.userType === 'super_admin';
+    const isConsultantAdmin = user.userType === 'consultant_admin';
+
+    if (!isSuperAdmin && !isConsultantAdmin) {
+      return res.status(403).json({ message: 'Permission denied', reason: 'Only super_admin or consultant_admin can view approval requests' });
+    }
 
     const status     = req.query.status     || 'pending';
     const actionType = req.query.actionType || undefined;
@@ -47,7 +53,10 @@ const listMetricApprovals = async (req, res) => {
       });
     }
 
-    const { total, approvals } = await getPendingApprovals({ status, actionType, page, limit });
+    // consultant_admin sees only their own requests; super_admin sees all
+    const requestedByFilter = isConsultantAdmin ? user._id : undefined;
+
+    const { total, approvals } = await getPendingApprovals({ status, actionType, page, limit, requestedByFilter });
 
     return res.status(200).json({ total, page, limit, approvals });
   } catch (err) {

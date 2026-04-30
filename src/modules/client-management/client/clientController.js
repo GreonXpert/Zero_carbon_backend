@@ -3111,6 +3111,7 @@ const getClients = async (req, res) => {
       processFlowchartStatus,
       reductionStatus,
       hasAssignedConsultant,
+      accessibleModules,
       search,
       sortBy = "createdAt",
       sortOrder = "desc",
@@ -3197,6 +3198,14 @@ const getClients = async (req, res) => {
 
     if (hasAssignedConsultant === "false")
       query["leadInfo.hasAssignedConsultant"] = false;
+
+    // Filter by accessible module (e.g. accessibleModules=esg_link)
+    if (accessibleModules) {
+      const moduleList = accessibleModules.split(",").map(m => m.trim()).filter(Boolean);
+      if (moduleList.length > 0) {
+        query.accessibleModules = { $all: moduleList };
+      }
+    }
 
     // -----------------------------------------------
     // 3. SEARCH
@@ -3301,6 +3310,8 @@ const getClients = async (req, res) => {
           assignedSupportManagerId: supportManagerId || null,       // always id
           assignedSupportManager: supportManagerObj || null         // full user object
         },
+
+        accessibleModules: client.accessibleModules || [],
 
         submissionData: client.submissionData || {},
         accountDetails: client.accountDetails || {},
@@ -4167,9 +4178,11 @@ const getPendingSubscriptionApprovals = async (req, res) => {
       });
     }
 
+    // IMPORTANT:
+    // accountDetails is encrypted as one full blob.
+    // Do not query inside accountDetails in MongoDB.
     const filter = {
       stage: "active",
-      "accountDetails.pendingSubscriptionRequest.status": "pending",
     };
 
     // Consultant admin can only see pending requests for their own clients
@@ -4177,30 +4190,57 @@ const getPendingSubscriptionApprovals = async (req, res) => {
       filter["leadInfo.consultantAdminId"] = req.user._id;
     }
 
-    const clients = await Client.find(filter)
-      .populate(
-        "accountDetails.pendingSubscriptionRequest.requestedBy",
-        "userName email userType"
-      )
-      .select(
-        "clientId stage status leadInfo.companyName accountDetails.subscriptionStatus accountDetails.subscriptionEndDate accountDetails.pendingSubscriptionRequest"
-      );
+    // IMPORTANT:
+    // Select full accountDetails, not accountDetails.subField.
+    // The plugin decrypts accountDetails after find().
+    const clients = await Client.find(filter).select(
+      "clientId stage status leadInfo.companyName accountDetails"
+    );
 
-    const requests = clients.map((c) => {
-      const reqObj = c.accountDetails.pendingSubscriptionRequest || {};
+    // Filter after decryption
+    const pendingClients = clients.filter(
+      (c) =>
+        c.accountDetails?.pendingSubscriptionRequest?.status === "pending"
+    );
+
+    // Manual requestedBy lookup because populate cannot work inside encrypted blob
+    const requestedByIds = [
+      ...new Set(
+        pendingClients
+          .map((c) => c.accountDetails?.pendingSubscriptionRequest?.requestedBy)
+          .filter(Boolean)
+          .map((id) => id.toString())
+      ),
+    ];
+
+    const requestedByUsers = requestedByIds.length
+      ? await User.find({ _id: { $in: requestedByIds } })
+          .select("userName email userType")
+          .lean()
+      : [];
+
+    const requestedByMap = new Map(
+      requestedByUsers.map((user) => [user._id.toString(), user])
+    );
+
+    const requests = pendingClients.map((c) => {
+      const reqObj = c.accountDetails?.pendingSubscriptionRequest || {};
+      const requestedById = reqObj.requestedBy?.toString();
+
       return {
         clientId: c.clientId,
         companyName: c.leadInfo?.companyName,
         stage: c.stage,
         status: c.status,
-        subscriptionStatus: c.accountDetails.subscriptionStatus,
-        subscriptionEndDate: c.accountDetails.subscriptionEndDate,
+        subscriptionStatus: c.accountDetails?.subscriptionStatus,
+        subscriptionEndDate: c.accountDetails?.subscriptionEndDate,
         pendingRequest: {
           action: reqObj.action,
           status: reqObj.status,
           reason: reqObj.reason,
           requestedAt: reqObj.requestedAt,
-          requestedBy: reqObj.requestedBy,
+          requestedBy:
+            requestedByMap.get(requestedById) || reqObj.requestedBy || null,
         },
       };
     });
@@ -4217,7 +4257,6 @@ const getPendingSubscriptionApprovals = async (req, res) => {
     });
   }
 };
-
 
 
 const getClientsExpiringSoon = async (req, res) => {
@@ -5767,49 +5806,89 @@ const getEsgLinkPendingApprovals = async (req, res) => {
   try {
     if (!["consultant_admin", "super_admin"].includes(req.user.userType)) {
       return res.status(403).json({
-        message: "Only Consultant Admin and Super Admin can view ESGLink pending approvals."
+        message:
+          "Only Consultant Admin and Super Admin can view ESGLink pending approvals.",
       });
     }
 
+    // IMPORTANT:
+    // accountDetails is encrypted as one full blob.
+    // Do not query inside accountDetails.esgLinkSubscription in MongoDB.
     const filter = {
-      "accessibleModules": "esg_link",
-      "accountDetails.esgLinkSubscription.pendingSubscriptionRequest.status": "pending",
+      stage: "active",
     };
 
     if (req.user.userType === "consultant_admin") {
       filter["leadInfo.consultantAdminId"] = req.user._id;
     }
 
-    const clients = await Client.find(filter)
-      .populate(
-        "accountDetails.esgLinkSubscription.pendingSubscriptionRequest.requestedBy",
-        "userName email userType"
-      )
-      .select(
-        "clientId stage status leadInfo.companyName accountDetails.esgLinkSubscription accessibleModules"
-      );
+    // IMPORTANT:
+    // Select full accountDetails, not accountDetails.esgLinkSubscription.
+    const clients = await Client.find(filter).select(
+      "clientId stage status leadInfo.companyName accountDetails accessibleModules"
+    );
 
-    const requests = clients.map((c) => {
+    // Filter after decryption
+    const pendingClients = clients.filter(
+      (c) =>
+        c.accountDetails?.esgLinkSubscription?.pendingSubscriptionRequest
+          ?.status === "pending"
+    );
+
+    // Manual requestedBy lookup because populate cannot work inside encrypted blob
+    const requestedByIds = [
+      ...new Set(
+        pendingClients
+          .map(
+            (c) =>
+              c.accountDetails?.esgLinkSubscription?.pendingSubscriptionRequest
+                ?.requestedBy
+          )
+          .filter(Boolean)
+          .map((id) => id.toString())
+      ),
+    ];
+
+    const requestedByUsers = requestedByIds.length
+      ? await User.find({ _id: { $in: requestedByIds } })
+          .select("userName email userType")
+          .lean()
+      : [];
+
+    const requestedByMap = new Map(
+      requestedByUsers.map((user) => [user._id.toString(), user])
+    );
+
+    const requests = pendingClients.map((c) => {
       const esl = c.accountDetails?.esgLinkSubscription || {};
       const reqObj = esl.pendingSubscriptionRequest || {};
+      const requestedById = reqObj.requestedBy?.toString();
+
       return {
         clientId: c.clientId,
         companyName: c.leadInfo?.companyName,
         stage: c.stage,
         status: c.status,
-        esgLinkSubscriptionStatus: esl.subscriptionStatus,
+
+        // Frontend expects this name
+        subscriptionStatus: esl.subscriptionStatus,
+
         esgLinkSubscriptionEndDate: esl.subscriptionEndDate,
         pendingRequest: {
           action: reqObj.action,
           status: reqObj.status,
           reason: reqObj.reason,
           requestedAt: reqObj.requestedAt,
-          requestedBy: reqObj.requestedBy,
+          requestedBy:
+            requestedByMap.get(requestedById) || reqObj.requestedBy || null,
         },
       };
     });
 
-    return res.status(200).json({ count: requests.length, requests });
+    return res.status(200).json({
+      count: requests.length,
+      requests,
+    });
   } catch (err) {
     console.error("getEsgLinkPendingApprovals error:", err);
     return res.status(500).json({
@@ -5818,7 +5897,6 @@ const getEsgLinkPendingApprovals = async (req, res) => {
     });
   }
 };
-
 
 /**
  * 🚨 HARD RESET CLIENT SYSTEM

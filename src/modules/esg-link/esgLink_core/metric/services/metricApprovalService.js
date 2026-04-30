@@ -178,9 +178,10 @@ const executeApprovedAction = async (approval, reviewer) => {
  * @param {number}  [filters.limit]
  * @returns {Promise<{ total, approvals }>}
  */
-const getPendingApprovals = async ({ status = 'pending', actionType, page = 1, limit = 20 } = {}) => {
+const getPendingApprovals = async ({ status = 'pending', actionType, page = 1, limit = 20, requestedByFilter } = {}) => {
   const filter = { status };
-  if (actionType) filter.actionType = actionType;
+  if (actionType)          filter.actionType  = actionType;
+  if (requestedByFilter)   filter.requestedBy = requestedByFilter;
 
   const skip = (page - 1) * limit;
 
