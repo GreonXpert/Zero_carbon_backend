@@ -1277,39 +1277,97 @@ const updateProcessFlowchartNode = async (req, res) => {
     const { clientId, nodeId } = req.params;
     const { nodeData } = req.body;
 
-    // Permission
-    const canManage = await canManageProcessFlowchart(req.user, clientId);
-    if (!canManage) {
-      return res.status(403).json({ message: 'You do not have permission to update this process flowchart' });
+    // ──────────────────────────────────────────────────────────────
+    // 0) Basic validation
+    // ──────────────────────────────────────────────────────────────
+    if (!clientId || !nodeId) {
+      return res.status(400).json({
+        message: 'clientId and nodeId are required'
+      });
     }
 
-    // Load the active (non-deleted) process flowchart
-    const processFlowchart = await ProcessFlowchart.findOne({ clientId, isDeleted: false });
-    if (!processFlowchart) {
-      return res.status(404).json({ message: 'Process flowchart not found' });
+    if (!nodeData || typeof nodeData !== 'object' || Array.isArray(nodeData)) {
+      return res.status(400).json({
+        message: 'nodeData must be a valid object'
+      });
     }
-
-    // Locate node
-    const nodeIndex = processFlowchart.nodes.findIndex(n => n.id === nodeId);
-    if (nodeIndex === -1) {
-      return res.status(404).json({ message: 'Node not found' });
-    }
-
-    // Plain object of existing node
-    const existingNode = (typeof processFlowchart.nodes[nodeIndex].toObject === 'function')
-      ? processFlowchart.nodes[nodeIndex].toObject()
-      : JSON.parse(JSON.stringify(processFlowchart.nodes[nodeIndex] || {}));
 
     // ──────────────────────────────────────────────────────────────
-    // Helpers
+    // 1) Permission
+    // ──────────────────────────────────────────────────────────────
+    const canManageResult = await canManageProcessFlowchart(req.user, clientId);
+
+    const allowed =
+      typeof canManageResult === 'boolean'
+        ? canManageResult
+        : !!canManageResult?.allowed;
+
+    if (!allowed) {
+      return res.status(403).json({
+        message: 'You do not have permission to update this process flowchart'
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // 2) Load active process flowchart
+    // IMPORTANT:
+    // Do NOT use .lean() here.
+    // nodes is encrypted/Mixed, and we need a mongoose document to save().
+    // ──────────────────────────────────────────────────────────────
+    const processFlowchart = await ProcessFlowchart.findOne({
+      clientId,
+      isDeleted: false
+    });
+
+    if (!processFlowchart) {
+      return res.status(404).json({
+        message: 'Process flowchart not found'
+      });
+    }
+
+    const currentNodes = Array.isArray(processFlowchart.nodes)
+      ? processFlowchart.nodes
+      : [];
+
+    // ──────────────────────────────────────────────────────────────
+    // 3) Locate node in decrypted JS array
+    // ──────────────────────────────────────────────────────────────
+    const nodeIndex = currentNodes.findIndex(
+      n => String(n?.id) === String(nodeId)
+    );
+
+    if (nodeIndex === -1) {
+      return res.status(404).json({
+        message: 'Node not found',
+        nodeId
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // 4) Convert existing node to plain object
+    // ──────────────────────────────────────────────────────────────
+    const toPlainObject = (value) => {
+      if (!value) return {};
+      if (typeof value.toObject === 'function') return value.toObject();
+      return JSON.parse(JSON.stringify(value));
+    };
+
+    const existingNode = toPlainObject(currentNodes[nodeIndex]);
+
+    // ──────────────────────────────────────────────────────────────
+    // 5) Helpers
     // ──────────────────────────────────────────────────────────────
     const shallowMerge = (base, patch) => {
-      const out = { ...base };
-      if (patch && typeof patch === 'object') {
+      const out = { ...(base || {}) };
+
+      if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
         for (const k of Object.keys(patch)) {
-          if (patch[k] !== undefined) out[k] = patch[k];
+          if (patch[k] !== undefined) {
+            out[k] = patch[k];
+          }
         }
       }
+
       return out;
     };
 
@@ -1320,114 +1378,207 @@ const updateProcessFlowchartNode = async (req, res) => {
     };
 
     const normalizeCustomEF = (cef = {}) => {
-      if (!cef || typeof cef !== 'object') return {};
+      if (!cef || typeof cef !== 'object' || Array.isArray(cef)) return {};
       return { ...cef };
     };
 
-    const mergeEFBlocks = (finalEF, existingEFVals = {}, incomingEFVals = {}, incomingTopLevel = {}) => {
+    const mergeEFBlocks = (
+      finalEF,
+      existingEFVals = {},
+      incomingEFVals = {},
+      incomingTopLevel = {}
+    ) => {
       const out = {
-        defraData: { ...(existingEFVals.defraData || {}), ...(incomingEFVals.defraData || {}) },
-        ipccData: { ...(existingEFVals.ipccData || {}), ...(incomingEFVals.ipccData || {}) },
-        epaData: { ...(existingEFVals.epaData || {}), ...(incomingEFVals.epaData || {}) },
-        countryData: { ...(existingEFVals.countryData || {}), ...(incomingEFVals.countryData || {}) },
-        emissionFactorHubData: { ...(existingEFVals.emissionFactorHubData || {}), ...(incomingEFVals.emissionFactorHubData || {}) },
+        defraData: {
+          ...(existingEFVals.defraData || {}),
+          ...(incomingEFVals.defraData || {})
+        },
+        ipccData: {
+          ...(existingEFVals.ipccData || {}),
+          ...(incomingEFVals.ipccData || {})
+        },
+        epaData: {
+          ...(existingEFVals.epaData || {}),
+          ...(incomingEFVals.epaData || {})
+        },
+        countryData: {
+          ...(existingEFVals.countryData || {}),
+          ...(incomingEFVals.countryData || {})
+        },
+        emissionFactorHubData: {
+          ...(existingEFVals.emissionFactorHubData || {}),
+          ...(incomingEFVals.emissionFactorHubData || {})
+        },
         customEmissionFactor: {
           ...(existingEFVals.customEmissionFactor || {}),
-          ...((incomingEFVals && incomingEFVals.customEmissionFactor) || (incomingTopLevel && incomingTopLevel.customEmissionFactor) || {})
+          ...(
+            incomingEFVals?.customEmissionFactor ||
+            incomingTopLevel?.customEmissionFactor ||
+            {}
+          )
         },
-        dataSource: incomingEFVals?.dataSource !== undefined ? incomingEFVals.dataSource : (existingEFVals.dataSource || undefined),
+        dataSource:
+          incomingEFVals?.dataSource !== undefined
+            ? incomingEFVals.dataSource
+            : existingEFVals.dataSource || undefined,
         lastUpdated: new Date()
       };
-      if (finalEF === 'Custom' && !out.customEmissionFactor) out.customEmissionFactor = {};
+
+      if (finalEF === 'Custom' && !out.customEmissionFactor) {
+        out.customEmissionFactor = {};
+      }
+
       return out;
     };
 
     const mergeScopeDetail = (existingScope = {}, incomingScope = {}) => {
-      // Prefer incoming EF type
-      const finalEF = incomingScope.emissionFactor ?? existingScope.emissionFactor ?? '';
+      const finalEF =
+        incomingScope.emissionFactor ??
+        existingScope.emissionFactor ??
+        '';
 
-      // Prefer incoming custom EF from nested first, then top-level
       const incomingCEF =
-        incomingScope?.emissionFactorValues?.customEmissionFactor
-        ?? incomingScope?.customEmissionFactor
-        ?? existingScope?.emissionFactorValues?.customEmissionFactor
-        ?? existingScope?.customEmissionFactor
-        ?? null;
+        incomingScope?.emissionFactorValues?.customEmissionFactor ??
+        incomingScope?.customEmissionFactor ??
+        existingScope?.emissionFactorValues?.customEmissionFactor ??
+        existingScope?.customEmissionFactor ??
+        null;
 
-      const normalizedCEF = finalEF === 'Custom' ? normalizeCustomEF(incomingCEF || {}) : null;
+      const normalizedCEF =
+        finalEF === 'Custom'
+          ? normalizeCustomEF(incomingCEF || {})
+          : null;
 
-      // Merge non-EF fields (without blowing away nested EF blocks)
+      // Merge normal fields without overwriting nested emissionFactorValues blindly
       const mergedTop = {
         ...existingScope,
         ...Object.fromEntries(
-          Object.entries(incomingScope).filter(([k, v]) => k !== 'emissionFactorValues' && v !== undefined)
+          Object.entries(incomingScope).filter(([k, v]) => {
+            return k !== 'emissionFactorValues' && v !== undefined;
+          })
         ),
         emissionFactor: finalEF
       };
 
-      // Merge EF blocks
       const existingEFVals = existingScope.emissionFactorValues || {};
       const incomingEFVals = incomingScope.emissionFactorValues || {};
-      mergedTop.emissionFactorValues = mergeEFBlocks(finalEF, existingEFVals, incomingEFVals, incomingScope);
-      if (normalizedCEF) mergedTop.emissionFactorValues.customEmissionFactor = normalizedCEF;
 
-      // Mirror custom EF at top-level for backward compatibility
+      mergedTop.emissionFactorValues = mergeEFBlocks(
+        finalEF,
+        existingEFVals,
+        incomingEFVals,
+        incomingScope
+      );
+
+      if (normalizedCEF) {
+        mergedTop.emissionFactorValues.customEmissionFactor = normalizedCEF;
+      }
+
+      // Mirror custom EF at top level for backward compatibility
       if (finalEF === 'Custom') {
-        mergedTop.customEmissionFactor = normalizedCEF;
+        mergedTop.customEmissionFactor = normalizedCEF || {};
       } else if ('customEmissionFactor' in mergedTop) {
         mergedTop.customEmissionFactor = existingScope.customEmissionFactor || null;
       }
 
-      // Ensure presence of CEF comment siblings (if you added that helper earlier)
-      if (finalEF === 'Custom') {
-        mergedTop.emissionFactorValues.customEmissionFactor =
-          ensureCEFComments(mergedTop.emissionFactorValues.customEmissionFactor || {});
-        mergedTop.customEmissionFactor =
-          ensureCEFComments(mergedTop.customEmissionFactor || {});
+      // Preserve CEF comments if helper exists
+      if (finalEF === 'Custom' && typeof ensureCEFComments === 'function') {
+        mergedTop.emissionFactorValues.customEmissionFactor = ensureCEFComments(
+          mergedTop.emissionFactorValues.customEmissionFactor || {}
+        );
+
+        mergedTop.customEmissionFactor = ensureCEFComments(
+          mergedTop.customEmissionFactor || {}
+        );
       }
 
-      // Carry UAD / UEF if present
+      // Carry UAD / UEF if explicitly sent
       if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
       if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
 
-      // ──────────────────────────────────────────────────────────────
-      // 🆕 PRESERVE ALLOCATION PERCENTAGE
-      // ──────────────────────────────────────────────────────────────
-      // If incoming has allocationPct, use it; otherwise keep existing
+      // Preserve allocationPct
       if (incomingScope.allocationPct !== undefined) {
         mergedTop.allocationPct = incomingScope.allocationPct;
       } else if (existingScope.allocationPct !== undefined) {
         mergedTop.allocationPct = existingScope.allocationPct;
+      } else {
+        mergedTop.allocationPct = 100;
       }
-      // Note: If neither has it, the schema default (100) will be used
 
-      // ── Merge customValues (optional) ─────────────────────────────
-      const incCV  = incomingScope.customValues || incomingScope.customValue || {};
+      // Merge customValues
+      const incCV = incomingScope.customValues || incomingScope.customValue || {};
       const prevCV = existingScope.customValues || {};
+
       const mergedCV = {
-        assetLifetime:        numOrNull( incCV.assetLifetime ?? incCV.AssetLifeTime ?? incCV.AssestLifeTime ?? incCV.assetLifeTime ?? prevCV.assetLifetime ?? null ),
-        TDLossFactor:         numOrNull( incCV.TDLossFactor ?? incCV['T&DLossFactor'] ?? incCV.TAndDLossFactor ?? prevCV.TDLossFactor ?? null ),
-        defaultRecyclingRate: numOrNull( incCV.defaultRecyclingRate ?? incCV.defaultRecylingRate ?? incCV.defaultRecycleRate ?? prevCV.defaultRecyclingRate ?? null ),
-        equitySharePercentage: numOrNull( incCV.equitySharePercentage ?? incCV.EquitySharePercentage ?? prevCV.equitySharePercentage ?? null ),
-        averageLifetimeEnergyConsumption: numOrNull( incCV.averageLifetimeEnergyConsumption ?? incCV.AverageLifetimeEnergyConsumption ?? prevCV.averageLifetimeEnergyConsumption ?? null ),
-        usePattern: numOrNull( incCV.usePattern ?? incCV.UsePattern ?? prevCV.usePattern ?? null ),
-        energyEfficiency: numOrNull( incCV.energyEfficiency ?? incCV.EnergyEfficiency ?? prevCV.energyEfficiency ?? null ),
-        toIncineration:    numOrNull( incCV.toIncineration ?? incCV.ToIncineration ?? prevCV.toIncineration ?? null ),
-        toLandfill:        numOrNull( incCV.toLandfill ?? incCV.ToLandfill ?? prevCV.toLandfill ?? null ),
-        toDisposal:       numOrNull( incCV.toDisposal ?? incCV.ToRecycling ?? prevCV.toDisposal ?? null ),          
+        assetLifetime: numOrNull(
+          incCV.assetLifetime ??
+          incCV.AssetLifeTime ??
+          incCV.AssestLifeTime ??
+          incCV.assetLifeTime ??
+          prevCV.assetLifetime ??
+          null
+        ),
+        TDLossFactor: numOrNull(
+          incCV.TDLossFactor ??
+          incCV['T&DLossFactor'] ??
+          incCV.TAndDLossFactor ??
+          prevCV.TDLossFactor ??
+          null
+        ),
+        defaultRecyclingRate: numOrNull(
+          incCV.defaultRecyclingRate ??
+          incCV.defaultRecylingRate ??
+          incCV.defaultRecycleRate ??
+          prevCV.defaultRecyclingRate ??
+          null
+        ),
+        equitySharePercentage: numOrNull(
+          incCV.equitySharePercentage ??
+          incCV.EquitySharePercentage ??
+          prevCV.equitySharePercentage ??
+          null
+        ),
+        averageLifetimeEnergyConsumption: numOrNull(
+          incCV.averageLifetimeEnergyConsumption ??
+          incCV.AverageLifetimeEnergyConsumption ??
+          prevCV.averageLifetimeEnergyConsumption ??
+          null
+        ),
+        usePattern: numOrNull(
+          incCV.usePattern ??
+          incCV.UsePattern ??
+          prevCV.usePattern ??
+          null
+        ),
+        energyEfficiency: numOrNull(
+          incCV.energyEfficiency ??
+          incCV.EnergyEfficiency ??
+          prevCV.energyEfficiency ??
+          null
+        ),
+        toIncineration: numOrNull(
+          incCV.toIncineration ??
+          incCV.ToIncineration ??
+          prevCV.toIncineration ??
+          null
+        ),
+        toLandfill: numOrNull(
+          incCV.toLandfill ??
+          incCV.ToLandfill ??
+          prevCV.toLandfill ??
+          null
+        ),
+        toDisposal: numOrNull(
+          incCV.toDisposal ??
+          incCV.ToRecycling ??
+          prevCV.toDisposal ??
+          null
+        )
       };
-      if (
-        mergedCV.assetLifetime != null ||
-        mergedCV.TDLossFactor != null ||
-        mergedCV.defaultRecyclingRate != null ||
-        mergedCV.equitySharePercentage != null ||
-        mergedCV.averageLifetimeEnergyConsumption != null ||
-        mergedCV.usePattern != null ||
-        mergedCV.energyEfficiency != null ||
-        mergedCV.toIncineration != null ||
-        mergedCV.toLandfill != null ||
-        mergedCV.toDisposal != null
-      ) {
+
+      const hasAnyCustomValue = Object.values(mergedCV).some(v => v !== null);
+
+      if (hasAnyCustomValue) {
         mergedTop.customValues = mergedCV;
       }
 
@@ -1435,7 +1586,7 @@ const updateProcessFlowchartNode = async (req, res) => {
     };
 
     // ──────────────────────────────────────────────────────────────
-    // Merge node shallow props
+    // 6) Merge node shallow props
     // ──────────────────────────────────────────────────────────────
     const mergedNode = {
       ...existingNode,
@@ -1443,116 +1594,170 @@ const updateProcessFlowchartNode = async (req, res) => {
       id: nodeId
     };
 
-    // Merge details shallowly
-    mergedNode.details = shallowMerge(existingNode.details || {}, (nodeData && nodeData.details) || {});
+    mergedNode.details = shallowMerge(
+      existingNode.details || {},
+      nodeData.details || {}
+    );
 
     // ──────────────────────────────────────────────────────────────
-    // ScopeDetails merge with RENAME SUPPORT
+    // 7) Merge scopeDetails with rename support
     // ──────────────────────────────────────────────────────────────
-    const incomingScopes = (nodeData && nodeData.details && Array.isArray(nodeData.details.scopeDetails))
+    const incomingScopes = Array.isArray(nodeData?.details?.scopeDetails)
       ? nodeData.details.scopeDetails
       : null;
 
     if (incomingScopes) {
-      const prevScopes = Array.isArray(existingNode.details?.scopeDetails) ? existingNode.details.scopeDetails : [];
+      const prevScopes = Array.isArray(existingNode.details?.scopeDetails)
+        ? existingNode.details.scopeDetails.map(s => ({ ...s }))
+        : [];
 
       // Ensure stable UID on existing scopes
       for (const s of prevScopes) {
-        if (!s.scopeUid) s.scopeUid = s.scopeUid || s.uid || s._id || uuidv4();
+        if (!s.scopeUid) {
+          s.scopeUid = s.uid || s._id || uuidv4();
+        }
       }
 
-      // Indexes for matching
-      const prevByUid  = new Map(prevScopes.map(s => [(s.scopeUid || s._id || s.scopeIdentifier), s]));
-      const prevByName = new Map(prevScopes.map(s => [s.scopeIdentifier, s]));
-      const consumed   = new Set();
+      const prevByUid = new Map(
+        prevScopes.map(s => [
+          String(s.scopeUid || s._id || s.scopeIdentifier),
+          s
+        ])
+      );
+
+      const prevByName = new Map(
+        prevScopes
+          .filter(s => s.scopeIdentifier)
+          .map(s => [String(s.scopeIdentifier), s])
+      );
+
+      const consumed = new Set();
 
       const pickExistingFor = (inc) => {
-        // 1) by stable UID
-        if (inc.scopeUid && prevByUid.has(inc.scopeUid)) return prevByUid.get(inc.scopeUid);
-
-        // 2) by new name (post-rename or unchanged)
-        if (inc.scopeIdentifier && prevByName.has(inc.scopeIdentifier)) return prevByName.get(inc.scopeIdentifier);
-
-        // 3) by any provided previous/old/original name
-        for (const k of ['previousScopeIdentifier', 'oldScopeIdentifier', 'originalScopeIdentifier']) {
-          const oldName = inc?.[k];
-          if (oldName && prevByName.has(oldName)) return prevByName.get(oldName);
+        // 1) Match by stable UID
+        const incomingUid = inc.scopeUid || inc.uid || inc._id;
+        if (incomingUid && prevByUid.has(String(incomingUid))) {
+          return prevByUid.get(String(incomingUid));
         }
 
-        // 4) heuristic: same type + category + activity (unconsumed)
-        const cand = prevScopes.find(s =>
-          !consumed.has(s) &&
-          (s.scopeType || '') === (inc.scopeType || '') &&
-          (s.categoryName || '') === (inc.categoryName || '') &&
-          (s.activity || '') === (inc.activity || '')
-        );
-        return cand || null;
+        // 2) Match by current/new name
+        if (inc.scopeIdentifier && prevByName.has(String(inc.scopeIdentifier))) {
+          return prevByName.get(String(inc.scopeIdentifier));
+        }
+
+        // 3) Match by old/previous/original name
+        for (const k of [
+          'previousScopeIdentifier',
+          'oldScopeIdentifier',
+          'originalScopeIdentifier'
+        ]) {
+          const oldName = inc?.[k];
+          if (oldName && prevByName.has(String(oldName))) {
+            return prevByName.get(String(oldName));
+          }
+        }
+
+        // 4) Last fallback: same type + category + activity
+        const candidate = prevScopes.find(s => {
+          return (
+            !consumed.has(s) &&
+            String(s.scopeType || '') === String(inc.scopeType || '') &&
+            String(s.categoryName || '') === String(inc.categoryName || '') &&
+            String(s.activity || '') === String(inc.activity || '')
+          );
+        });
+
+        return candidate || null;
       };
 
       const mergedScopes = [];
 
       for (const incRaw of incomingScopes) {
-        const inc = { ...incRaw };
-        // ensure a scopeUid on incoming
-        if (!inc.scopeUid) inc.scopeUid = inc.scopeUid || inc.uid || inc._id || uuidv4();
+        const inc = { ...(incRaw || {}) };
+
+        if (!inc.scopeUid) {
+          inc.scopeUid = inc.uid || inc._id || uuidv4();
+        }
 
         const prev = pickExistingFor(inc) || {};
-        if (prev && prev.scopeUid) consumed.add(prev);
+
+        if (prev && Object.keys(prev).length > 0) {
+          consumed.add(prev);
+        }
 
         const finalScope = mergeScopeDetail(prev, inc);
 
-        // Ensure stable identity & final name (new name wins on rename)
-        finalScope.scopeUid = inc.scopeUid || prev.scopeUid || uuidv4();
-        finalScope.scopeIdentifier = inc.scopeIdentifier || prev.scopeIdentifier || '';
+        // Keep stable identity
+        finalScope.scopeUid =
+          inc.scopeUid ||
+          prev.scopeUid ||
+          prev.uid ||
+          prev._id ||
+          uuidv4();
+
+        // New name wins during rename
+        finalScope.scopeIdentifier =
+          inc.scopeIdentifier ||
+          prev.scopeIdentifier ||
+          '';
 
         mergedScopes.push(finalScope);
       }
 
-      // Carry forward any untouched previous scopes
+      // Carry forward untouched previous scopes
       for (const leftover of prevScopes) {
-        if (!consumed.has(leftover) && !mergedScopes.find(s => s.scopeUid === leftover.scopeUid)) {
+        const alreadyUsed = consumed.has(leftover);
+        const alreadyInMerged = mergedScopes.some(s => {
+          return String(s.scopeUid) === String(leftover.scopeUid);
+        });
+
+        if (!alreadyUsed && !alreadyInMerged) {
           mergedScopes.push(leftover);
         }
       }
 
-      // Validate duplicate/missing names after merge
+      // Validate duplicate/missing scopeIdentifier
       const nameSeen = new Set();
+
       for (const s of mergedScopes) {
-        const name = (s.scopeIdentifier || '').trim();
+        const name = String(s.scopeIdentifier || '').trim();
+
         if (!name || nameSeen.has(name)) {
           return res.status(400).json({
             message: `Duplicate or missing scopeIdentifier "${name || '(empty)'}" after merge. Please ensure unique, non-empty names.`
           });
         }
+
         nameSeen.add(name);
       }
 
       mergedNode.details.scopeDetails = mergedScopes;
     }
 
-    // ============================================================================
-    // 🆕 VALIDATE ALLOCATION PERCENTAGES BEFORE SAVE (COMPLETE FLOWCHART STATE)
-    // ============================================================================
-    // After updating this node, we validate the COMPLETE flowchart to ensure
-    // that allocations for shared scopeIdentifiers sum to 100%.
-    // 
-    // This validation ensures:
-    // - No double-counting of emissions
-    // - Proper split of emissions across nodes sharing a scopeIdentifier
-    // - Clear error messages when allocations are invalid
-    // ============================================================================
-    
-    // Update the node in the array first (so validation sees the updated state)
-    processFlowchart.nodes.set(nodeIndex, mergedNode);
-      processFlowchart.markModified('nodes');
-    
-    const allocationValidation = validateAllocations(processFlowchart.nodes, {
-      includeFromOtherChart: false,  // Exclude scopes imported from organization flowchart
-      includeDeleted: false          // Exclude soft-deleted scopes
+    // ──────────────────────────────────────────────────────────────
+    // 8) Build updated nodes array safely
+    // IMPORTANT:
+    // nodes is encrypted/Mixed.
+    // Do NOT use processFlowchart.nodes.set(...).
+    // Do NOT use MongoDB positional update.
+    // Build a plain JS array and assign it back before save.
+    // ──────────────────────────────────────────────────────────────
+    const updatedNodes = currentNodes.map((n, index) => {
+      if (index === nodeIndex) return mergedNode;
+      return toPlainObject(n);
+    });
+
+    // ──────────────────────────────────────────────────────────────
+    // 9) Validate allocation percentages before save
+    // ──────────────────────────────────────────────────────────────
+    const allocationValidation = validateAllocations(updatedNodes, {
+      includeFromOtherChart: false,
+      includeDeleted: false
     });
 
     if (!allocationValidation.isValid) {
       const errorResponse = formatValidationError(allocationValidation);
+
       return res.status(400).json({
         message: 'Allocation validation failed',
         code: 'ALLOCATION_VALIDATION_FAILED',
@@ -1561,6 +1766,7 @@ const updateProcessFlowchartNode = async (req, res) => {
         affectedScopeIdentifiers: allocationValidation.errors.map(e => ({
           scopeIdentifier: e.scopeIdentifier,
           currentSum: e.currentSum,
+          expectedSum: 100,
           nodes: e.entries.map(en => ({
             nodeId: en.nodeId,
             nodeLabel: en.nodeLabel,
@@ -1570,49 +1776,43 @@ const updateProcessFlowchartNode = async (req, res) => {
       });
     }
 
-    // Log warnings but allow save to proceed
     if (allocationValidation.warnings.length > 0) {
-      console.warn('⚠️ Allocation warnings for client', clientId, ':', allocationValidation.warnings);
+      console.warn(
+        '⚠️ Allocation warnings for client',
+        clientId,
+        ':',
+        allocationValidation.warnings
+      );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // QUOTA CHECK — runs AFTER node merge, BEFORE DB save
-    //
-    // saveProcessFlowchart checks quota when the ENTIRE nodes array is replaced.
-    // updateProcessFlowchartNode patches a SINGLE node (including scopeDetails)
-    // and saves directly — bypassing saveProcessFlowchart and its quota check.
-    // Without this, a consultant can add unlimited scopeDetails through this
-    // endpoint even after the processScopeDetails limit is set.
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────
+    // 10) Quota check before DB save
+    // ──────────────────────────────────────────────────────────────
     if (isQuotaSubject(req.user.userType)) {
       try {
-        const _quotaConsultantId = await getAssignedConsultantId(clientId);
-        if (_quotaConsultantId) {
-          // Build the would-be full nodes array with the merged node applied.
-          const _updatedNodes = processFlowchart.nodes.map((n, i) =>
-            i === nodeIndex
-              ? mergedNode
-              : (typeof n.toObject === 'function' ? n.toObject() : n)
-          );
-          const _quotaResult = await checkFlowchartQuota({
+        const quotaConsultantId = await getAssignedConsultantId(clientId);
+
+        if (quotaConsultantId) {
+          const quotaResult = await checkFlowchartQuota({
             clientId,
-            consultantId: _quotaConsultantId,
-            nodes:        _updatedNodes,
-            chartType:    'processFlowchart',
+            consultantId: quotaConsultantId,
+            nodes: updatedNodes,
+            chartType: 'processFlowchart'
           });
-          if (!_quotaResult.allowed) {
+
+          if (!quotaResult.allowed) {
             return res.status(422).json({
-              success:     false,
-              message:     'Process flowchart quota exceeded.',
-              code:        'QUOTA_EXCEEDED',
-              quotaErrors: _quotaResult.errors.map((e) => ({
-                resource:  e.resource,
-                limit:     e.limit,
-                used:      e.used,
+              success: false,
+              message: 'Process flowchart quota exceeded.',
+              code: 'QUOTA_EXCEEDED',
+              quotaErrors: quotaResult.errors.map(e => ({
+                resource: e.resource,
+                limit: e.limit,
+                used: e.used,
                 remaining: e.remaining,
                 attempted: e.newTotal,
-                message:   e.message,
-              })),
+                message: e.message
+              }))
             });
           }
         }
@@ -1622,21 +1822,26 @@ const updateProcessFlowchartNode = async (req, res) => {
       }
     }
 
-    // ============================================================================
-    // SAVE TO DATABASE
-    // ============================================================================
-
-    // ── EC Tier 2 EF change detection ─────────────────────────────────────────
-    const _updatePFEFChanges = _pfDetectAndRecordEFChanges(
+    // ──────────────────────────────────────────────────────────────
+    // 11) EF change detection before save
+    // ──────────────────────────────────────────────────────────────
+    const updatePFEFChanges = _pfDetectAndRecordEFChanges(
       existingNode.details?.scopeDetails ?? [],
       mergedNode.details?.scopeDetails ?? [],
       req.user?._id || req.user?.id || null
     );
 
-    processFlowchart.markModified('nodes'); // ensure Mongoose tracks deep nested changes
+    // ──────────────────────────────────────────────────────────────
+    // 12) Save to database
+    // ──────────────────────────────────────────────────────────────
+    processFlowchart.nodes = updatedNodes;
+    processFlowchart.markModified('nodes');
+
     processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
+    processFlowchart.version = (processFlowchart.version || 1) + 1;
 
     await processFlowchart.save();
+
     await logProcessFlowUpdate(
       req,
       processFlowchart,
@@ -1644,17 +1849,30 @@ const updateProcessFlowchartNode = async (req, res) => {
     );
 
     // Fire per-scope EF audit logs
-    for (const c of _updatePFEFChanges) {
-      await logProcessFlowEmissionFactorUpdate(req, processFlowchart, nodeId, c.scopeIdentifier, c.previousEFs, c.newEFs);
+    for (const c of updatePFEFChanges) {
+      await logProcessFlowEmissionFactorUpdate(
+        req,
+        processFlowchart,
+        nodeId,
+        c.scopeIdentifier,
+        c.previousEFs,
+        c.newEFs
+      );
     }
 
     return res.status(200).json({
       message: 'Node updated successfully',
-      node: processFlowchart.nodes[nodeIndex]
+      node: processFlowchart.nodes[nodeIndex],
+      version: processFlowchart.version
     });
+
   } catch (error) {
     console.error('Update process flowchart node error:', error);
-    return res.status(500).json({ message: 'Failed to update node', error: error.message });
+
+    return res.status(500).json({
+      message: 'Failed to update node',
+      error: error.message
+    });
   }
 };
 
