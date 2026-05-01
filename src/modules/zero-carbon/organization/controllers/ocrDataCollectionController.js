@@ -70,12 +70,13 @@ const IMAGE_MIME = ['image/jpeg', 'image/png', 'image/tiff'];
  * Extract text from a single file buffer (image or PDF single-page).
  *
  * Engine selection strategy:
- *   1. Always try Tesseract first (free, offline, fast for clean/scanned images).
- *   2. If Tesseract confidence < threshold (default 50), fall back to AWS Textract.
- *      Textract uses the same AWS credentials already configured for S3 and handles
- *      real-world phone photos (perspective, blur, glare) far better than Tesseract.
- *      It extracts FORMS (key-value pairs) and TABLES (kWh reading rows) natively.
- *   3. If Textract also fails, return the Tesseract result as the last resort.
+ *   1. For images: AWS Textract first. It handles phone photos natively
+ *      (perspective, blur, glare, forms, tables) — no preprocessing needed.
+ *      Typical response: 1–3 s.
+ *   2. If Textract fails (no credentials, service error): fall back to Tesseract
+ *      with the usual sharp preprocessing pipeline. This is the slow path (~10–20 s)
+ *      but ensures the endpoint always returns something.
+ *   3. For PDFs: Tesseract pipeline via extractTextFromPDF (unchanged).
  *
  * Returns { text, confidence, pageCount: 1, pages: [...], ocrEngine }
  */
@@ -84,42 +85,38 @@ async function extractSingleFileText(buffer, mimetype) {
     return extractTextFromPDF(buffer);
   }
 
-  if (IMAGE_MIME.includes(mimetype)) {
-    // ── Step 1: Tesseract (preprocessed image) ──────────────────────────────
-    const processedBuffer  = await preprocessImage({ buffer });
-    const tesseractResult  = await extractTextFromImage(processedBuffer);
-
-    // ── Step 2: AWS Textract fallback when Tesseract confidence is low ───────
-    if (shouldUseTextractFallback(tesseractResult.confidence)) {
-      console.log(`[OCR] Tesseract confidence ${tesseractResult.confidence}% — switching to AWS Textract fallback`);
-      try {
-        // Send the ORIGINAL (unprocessed, colour) buffer to Textract.
-        // Textract handles raw phone photos natively — preprocessing degrades its accuracy.
-        const textractResult = await extractTextWithTextract(buffer);
-        console.log(`[OCR] AWS Textract confidence: ${textractResult.confidence}%`);
-        return {
-          text:       textractResult.text,
-          confidence: textractResult.confidence,
-          pageCount:  1,
-          ocrEngine:  'textract',
-          pages: [{ pageNumber: 1, text: textractResult.text, confidence: textractResult.confidence }]
-        };
-      } catch (textractErr) {
-        // Textract failed — fall through and return the Tesseract result anyway
-        console.warn(`[OCR] Textract fallback failed: ${textractErr.message} — using Tesseract result`);
-      }
-    }
-
-    return {
-      text:       tesseractResult.text,
-      confidence: tesseractResult.confidence,
-      pageCount:  1,
-      ocrEngine:  'tesseract',
-      pages: [{ pageNumber: 1, text: tesseractResult.text, confidence: tesseractResult.confidence }]
-    };
+  if (!IMAGE_MIME.includes(mimetype)) {
+    throw new Error(`Unsupported file type: ${mimetype}`);
   }
 
-  throw new Error(`Unsupported file type: ${mimetype}`);
+  // ── Step 1: AWS Textract (primary) ──────────────────────────────────────
+  // Send the ORIGINAL colour buffer — Textract handles raw phone photos natively.
+  // Preprocessing degrades Textract accuracy, so skip it here.
+  try {
+    const textractResult = await extractTextWithTextract(buffer);
+    console.log(`[OCR] AWS Textract success, confidence: ${textractResult.confidence}%`);
+    return {
+      text:       textractResult.text,
+      confidence: textractResult.confidence,
+      pageCount:  1,
+      ocrEngine:  'textract',
+      pages: [{ pageNumber: 1, text: textractResult.text, confidence: textractResult.confidence }]
+    };
+  } catch (textractErr) {
+    console.warn(`[OCR] Textract failed: ${textractErr.message} — falling back to Tesseract`);
+  }
+
+  // ── Step 2: Tesseract fallback (only if Textract is unavailable / errors) ─
+  const processedBuffer = await preprocessImage({ buffer });
+  const tesseractResult = await extractTextFromImage(processedBuffer);
+  console.log(`[OCR] Tesseract confidence: ${tesseractResult.confidence}%`);
+  return {
+    text:       tesseractResult.text,
+    confidence: tesseractResult.confidence,
+    pageCount:  1,
+    ocrEngine:  'tesseract',
+    pages: [{ pageNumber: 1, text: tesseractResult.text, confidence: tesseractResult.confidence }]
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
