@@ -842,6 +842,51 @@ const assignMetricToNode = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. removeEdgeFromBoundary
+//     DELETE /api/esglink/core/:clientId/boundary/edges/:edgeId
+// ─────────────────────────────────────────────────────────────────────────────
+const removeEdgeFromBoundary = async (req, res) => {
+  try {
+    const { clientId, edgeId } = req.params;
+
+    // 1) Permission check
+    const perm = await canManageBoundary(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    // 2) Find boundary
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false });
+    if (!boundary) return res.status(404).json({ message: 'Boundary not found', code: 'BOUNDARY_NOT_FOUND' });
+
+    // 3) Find edge
+    const edgeExists = boundary.edges.some(e => e.id === edgeId);
+    if (!edgeExists) return res.status(404).json({ message: `Edge "${edgeId}" not found in boundary` });
+
+    // 4) Remove edge
+    boundary.edges = boundary.edges.filter(e => e.id !== edgeId);
+
+    boundary.version        = (boundary.version || 1) + 1;
+    boundary.lastModifiedBy = req.user._id;
+    boundary.markModified('edges');
+
+    await boundary.save();
+
+    return res.status(200).json({
+      success:      true,
+      message:      `Edge "${edgeId}" removed from boundary`,
+      data: {
+        boundaryId:    boundary._id,
+        version:       boundary.version,
+        removedEdgeId: edgeId,
+      }
+    });
+
+  } catch (error) {
+    console.error('removeEdgeFromBoundary error:', error);
+    return res.status(500).json({ message: 'Server error removing edge', error: error.message });
+  }
+};
+
 module.exports = {
   importBoundaryFromZeroCarbon,
   createBoundaryManually,
@@ -850,6 +895,7 @@ module.exports = {
   addNodeToBoundary,
   appendNodeToBoundary,
   addEdgeToBoundary,
+  removeEdgeFromBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
   checkBoundaryImportAvailability,

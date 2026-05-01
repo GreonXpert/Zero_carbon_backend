@@ -323,9 +323,9 @@ const updateMapping = async (req, res) => {
 
     // Validate status transition
     const VALID_TRANSITIONS = {
-      draft:        ['under_review', 'active', 'inactive'],
+      draft:        ['under_review', 'approved', 'active', 'inactive'],
       under_review: ['approved', 'rejected', 'draft'],
-      approved:     ['active', 'inactive'],
+      approved:     ['active', 'inactive', 'draft'],
       rejected:     ['draft'],
       active:       ['inactive'],
       inactive:     ['active', 'draft'],

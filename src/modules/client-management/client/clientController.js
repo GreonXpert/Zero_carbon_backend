@@ -67,6 +67,57 @@ const { isModuleSubscriptionActive } = require('../../../common/utils/Permission
 
 
 
+// ─────────────────────────────────────────────────────────────
+// Module access helpers
+// ─────────────────────────────────────────────────────────────
+
+const VALID_CLIENT_MODULES = ['zero_carbon', 'esg_link'];
+
+const normalizeAccessibleModules = (modules) => {
+  const arr = Array.isArray(modules) && modules.length > 0
+    ? modules
+    : ['zero_carbon'];
+
+  return [...new Set(
+    arr
+      .map(m => String(m || '').trim())
+      .filter(Boolean)
+      .filter(m => VALID_CLIENT_MODULES.includes(m))
+  )];
+};
+
+/**
+ * Sync client module access to client_admin users.
+ *
+ * Why only client_admin?
+ * client_admin should inherit the full client module access.
+ * Other users like viewer/auditor/employee may have restricted module access,
+ * so blindly giving them all client modules can over-grant permissions.
+ */
+const syncClientAdminModuleAccess = async (clientId, accessibleModules) => {
+  if (!clientId) return { matched: 0, modified: 0 };
+
+  const modules = normalizeAccessibleModules(accessibleModules);
+
+  const result = await User.updateMany(
+    {
+      clientId,
+      userType: 'client_admin',
+    },
+    {
+      $set: {
+        accessibleModules: modules,
+      },
+    }
+  );
+
+  return {
+    matched: result.matchedCount ?? result.n ?? 0,
+    modified: result.modifiedCount ?? result.nModified ?? 0,
+    accessibleModules: modules,
+  };
+};
+
 // ─── ensureSupportSection ────────────────────────────────────────────────────
 // Guards against legacy encrypted-string values in client.supportSection.
 //
@@ -2231,17 +2282,24 @@ client.submissionData.dataCompleteness = dataCompleteness;
     await client.save();
 
     // 🔹 NEW STEP: create sandbox client_admin user when data submission is completed
-    try {
-      await createClientAdmin(client.clientId, {
-        consultantId: req.user.id,
-        sandbox: true, // ✅ this is a sandbox user
-      });
-    } catch (err) {
-      console.warn(
-        `createClientAdmin (sandbox, submitClientData) warning: ${err.message}`
-      );
-      // Do not block the main flow if user creation fails
-    }
+try {
+  const clientModules = normalizeAccessibleModules(client.accessibleModules);
+
+  const createdClientAdmin = await createClientAdmin(client.clientId, {
+    consultantId: req.user.id,
+    sandbox: true,
+    accessibleModules: clientModules,
+  });
+
+  // Safety sync: ensures User collection has the same modules as Client
+  await syncClientAdminModuleAccess(client.clientId, clientModules);
+
+} catch (err) {
+  console.warn(
+    `createClientAdmin (sandbox, submitClientData) warning: ${err.message}`
+  );
+  // Do not block the main flow if user creation fails
+}
 
     // 9) Generate PDF + send email per module (non-blocking for main logic)
     // ZeroCarbon PDF email (existing, unchanged)
@@ -5362,10 +5420,9 @@ const updateAssessmentLevelOnly = async (req, res) => {
   }
 };
 
-// ─── updateClientModuleAccess ─────────────────────────────────────────────────
 // PATCH /api/clients/:clientId/module-access
 // Body: { accessibleModules: ['zero_carbon', 'esg_link'] }
-// Access: super_admin (all clients) | managing consultant_admin (own clients)
+// Access: super_admin | managing consultant_admin
 const updateClientModuleAccess = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -5381,22 +5438,42 @@ const updateClientModuleAccess = async (req, res) => {
 
     // Validate input
     const ALLOWED_MODULES = ['zero_carbon', 'esg_link'];
+
     if (!Array.isArray(accessibleModules) || accessibleModules.length === 0) {
-      return res.status(400).json({ message: "accessibleModules must be a non-empty array." });
+      return res.status(400).json({
+        message: "accessibleModules must be a non-empty array."
+      });
     }
-    const invalid = accessibleModules.filter(m => !ALLOWED_MODULES.includes(m));
+
+    const normalizedModules = [...new Set(
+      accessibleModules
+        .map(m => String(m || '').trim())
+        .filter(Boolean)
+    )];
+
+    const invalid = normalizedModules.filter(m => !ALLOWED_MODULES.includes(m));
+
     if (invalid.length > 0) {
       return res.status(400).json({
         message: `Invalid module(s): ${invalid.join(', ')}. Allowed: ${ALLOWED_MODULES.join(', ')}.`
       });
     }
 
-    const client = await Client.findOne({ clientId, isDeleted: { $ne: true } });
-    if (!client) return res.status(404).json({ message: "Client not found." });
+    const client = await Client.findOne({
+      clientId,
+      isDeleted: { $ne: true }
+    });
+
+    if (!client) {
+      return res.status(404).json({
+        message: "Client not found."
+      });
+    }
 
     // Managing consultant_admin check
     if (actor.userType === 'consultant_admin') {
       const managingId = client.leadInfo?.consultantAdminId?.toString();
+
       if (managingId !== actor._id.toString()) {
         return res.status(403).json({
           message: "You are not authorized to update this client's module access."
@@ -5404,40 +5481,50 @@ const updateClientModuleAccess = async (req, res) => {
       }
     }
 
-    const previousModules = client.accessibleModules ? [...client.accessibleModules] : ['zero_carbon'];
-    const addedModules = accessibleModules.filter(m => !previousModules.includes(m));
+    const previousModules = client.accessibleModules?.length
+      ? [...client.accessibleModules]
+      : ['zero_carbon'];
 
-    client.accessibleModules = accessibleModules;
+    const addedModules = normalizedModules.filter(m => !previousModules.includes(m));
+    const removedModules = previousModules.filter(m => !normalizedModules.includes(m));
 
-    // If esg_link is newly added, initialize esgLinkSubscription with real dates.
-    // IMPORTANT: check !subscriptionEndDate (not !esgLinkSubscription or !subscriptionStatus).
-    // Mongoose virtualizes the absent subdoc with schema defaults, making
-    // !esgLinkSubscription and !subscriptionStatus both false, silently skipping this block.
-    // Checking !subscriptionEndDate works for all cases:
-    //   1. subdoc absent in DB → undefined?.subscriptionEndDate = undefined → init runs
-    //   2. subdoc exists but dates not set → null → init runs (re-sets dates)
-    //   3. subdoc exists with valid end date → truthy → init correctly skipped
-    if (addedModules.includes('esg_link') && !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate) {
+    client.accessibleModules = normalizedModules;
+
+    // If esg_link is newly added, initialize ESGLink subscription.
+    if (
+      addedModules.includes('esg_link') &&
+      !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate
+    ) {
       if (!client.accountDetails) client.accountDetails = {};
+
       const zcEnd = client.accountDetails?.subscriptionEndDate;
+
       client.set('accountDetails.esgLinkSubscription', {
         subscriptionStatus: 'active',
         isActive: true,
         subscriptionStartDate: new Date(),
         subscriptionEndDate: zcEnd || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
       });
+
       client.markModified('accountDetails.esgLinkSubscription');
     }
+
+    if (!client.timeline) client.timeline = [];
 
     client.timeline.push({
       stage: client.stage,
       status: client.status,
       action: "Module access updated",
       performedBy: actor._id,
-      notes: `accessibleModules changed from [${previousModules}] to [${accessibleModules}].`
+      notes: `accessibleModules changed from [${previousModules.join(', ')}] to [${normalizedModules.join(', ')}].`
     });
 
     await client.save();
+
+    // IMPORTANT:
+    // Sync client_admin users with the client module access.
+    // Do not blindly grant modules to viewer/auditor/employee here because those roles may be intentionally restricted.
+    const userSyncResult = await syncClientAdminModuleAccess(clientId, normalizedModules);
 
     await logEvent({
       actorId: actor._id,
@@ -5447,7 +5534,14 @@ const updateClientModuleAccess = async (req, res) => {
       entityType: 'Client',
       entityId: client._id,
       changeSummary: 'Client module access updated',
-      metadata: { previousModules, newModules: accessibleModules, addedModules, clientId },
+      metadata: {
+        previousModules,
+        newModules: normalizedModules,
+        addedModules,
+        removedModules,
+        clientId,
+        syncedClientAdminUsers: userSyncResult,
+      },
       req,
     });
 
@@ -5455,10 +5549,17 @@ const updateClientModuleAccess = async (req, res) => {
       message: "Client module access updated successfully.",
       accessibleModules: client.accessibleModules,
       addedModules,
+      removedModules,
+      syncedClientAdminUsers: userSyncResult,
     });
+
   } catch (err) {
     console.error("updateClientModuleAccess error:", err);
-    return res.status(500).json({ message: "Failed to update client module access.", error: err.message });
+
+    return res.status(500).json({
+      message: "Failed to update client module access.",
+      error: err.message
+    });
   }
 };
 
@@ -6774,15 +6875,22 @@ const moveToActive = async (req, res) => {
       // Not fatal — log and continue
     }
 
-    // 8) Create client admin user
-    try {
-      await createClientAdmin(newClientId, {
-        consultantId: req.user.id,
-        sandbox: client.sandbox,
-      });
-    } catch (err) {
-      console.warn(`createClientAdmin warning: ${err.message}`);
-    }
+    // 8) Create / sync client admin user
+try {
+  const clientModules = normalizeAccessibleModules(client.accessibleModules);
+
+  await createClientAdmin(newClientId, {
+    consultantId: req.user.id,
+    sandbox: false,
+    accessibleModules: clientModules,
+  });
+
+  // Safety sync: if client_admin already exists, update its accessibleModules too
+  await syncClientAdminModuleAccess(newClientId, clientModules);
+
+} catch (err) {
+  console.warn(`createClientAdmin warning: ${err.message}`);
+}
 
     // 9) Real-time events
     try {

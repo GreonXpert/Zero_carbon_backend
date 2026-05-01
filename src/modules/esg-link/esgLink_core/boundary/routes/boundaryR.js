@@ -19,6 +19,7 @@ const {
   addNodeToBoundary,
   appendNodeToBoundary,
   addEdgeToBoundary,
+  removeEdgeFromBoundary,
   removeNodeFromBoundary,
   deleteBoundary,
   checkBoundaryImportAvailability,
@@ -74,6 +75,9 @@ router.post('/:clientId/boundary/edges', eslGate, addEdgeToBoundary);
 
 // Remove a specific node (also removes its connected edges)
 router.delete('/:clientId/boundary/nodes/:nodeId', eslGate, removeNodeFromBoundary);
+
+// Remove a specific edge
+router.delete('/:clientId/boundary/edges/:edgeId', eslGate, removeEdgeFromBoundary);
 
 // Soft-delete entire boundary
 router.delete('/:clientId/boundary', eslGate, deleteBoundary);

@@ -421,6 +421,7 @@ const verifyLoginOTP = async (req, res) => {
       permissions: user.permissions,
       sandbox: user.sandbox === true,
       assessmentLevel: user.assessmentLevel || [],
+      accessibleModules: user.accessibleModules || ['zero_carbon'],
       sessionId
     };
 
@@ -1474,6 +1475,30 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
     const levels = getNormalizedLevels(client); // normalized assessmentLevel
 
+    // =========================================================
+    // Resolve accessibleModules for client_admin user
+    // =========================================================
+    const clientModules =
+      Array.isArray(client.accessibleModules) && client.accessibleModules.length > 0
+        ? client.accessibleModules
+        : ['zero_carbon'];
+
+    const accessibleModulesResult = resolveAccessibleModules({
+      rawModules: clientData.accessibleModules || clientModules,
+      required: false,
+      defaultModules: clientModules,
+      allowedModules: ['zero_carbon', 'esg_link'],
+    });
+
+    if (!accessibleModulesResult.ok) {
+      throw new Error(accessibleModulesResult.message);
+    }
+
+    const accessibleModules =
+      Array.isArray(accessibleModulesResult.value) && accessibleModulesResult.value.length > 0
+        ? accessibleModulesResult.value
+        : ['zero_carbon'];
+
     // =========================================================================
     // 1) Try to find an existing client_admin for THIS final clientId
     // =========================================================================
@@ -1499,12 +1524,15 @@ const createClientAdmin = async (clientId, clientData = {}) => {
           existingClientAdmin.assessmentLevel = levels;
         }
 
+        // ✅ IMPORTANT FIX: sync modules to existing client_admin
+        existingClientAdmin.accessibleModules = accessibleModules;
+
         existingClientAdmin.companyName = companyName;
 
         await existingClientAdmin.save();
       } catch (e) {
         console.warn(
-          "Skipping assessmentLevel / sandbox sync to existing client_admin:",
+          "Skipping assessmentLevel / sandbox / accessibleModules sync to existing client_admin:",
           e.message
         );
       }
@@ -1518,10 +1546,8 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
     // =========================================================================
     // 1b) If we're moving from sandbox → active, try to REUSE sandbox user
-    //     This happens when clientData.sandbox === false (live account)
     // =========================================================================
     if (clientData.sandbox === false) {
-      // Any sandbox client_admin with this email
       let sandboxAdmin = await User.findOne({
         email: email,
         userType: "client_admin",
@@ -1530,20 +1556,22 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
       if (sandboxAdmin) {
         // ✅ Upgrade sandbox user to live client admin
-        sandboxAdmin.clientId = clientId;       // <--- update clientId to ACTIVE
-        sandboxAdmin.sandbox  = false;          // leave sandbox mode
-        sandboxAdmin.isActive = true;           // now active user
+        sandboxAdmin.clientId = clientId;
+        sandboxAdmin.sandbox = false;
+        sandboxAdmin.isActive = true;
         sandboxAdmin.companyName = companyName;
 
         if (Array.isArray(levels) && levels.length) {
           sandboxAdmin.assessmentLevel = levels;
         }
 
+        // ✅ IMPORTANT FIX: sync modules when upgrading sandbox user
+        sandboxAdmin.accessibleModules = accessibleModules;
+
         await sandboxAdmin.save();
 
         if (!client.accountDetails) client.accountDetails = {};
         client.accountDetails.clientAdminId = sandboxAdmin._id;
-        // keep existing defaultPassword if already set
         await client.save();
 
         return sandboxAdmin;
@@ -1556,6 +1584,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     const cleanCompanyName = (companyName || "Client")
       .toString()
       .replace(/[^a-zA-Z0-9]/g, "");
+
     const year = new Date().getFullYear();
     const defaultPassword = `${cleanCompanyName}@${year}`;
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
@@ -1566,7 +1595,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
       email: email,
       password: hashedPassword,
       contactNumber: phone || "0000000000",
-      userName: email, // using email as username
+      userName: email,
       userType: "client_admin",
       address:
         client.submissionData?.companyInfo?.companyAddress ||
@@ -1575,12 +1604,16 @@ const createClientAdmin = async (clientId, clientData = {}) => {
       companyName: companyName,
       clientId: clientId,
       assessmentLevel: levels,
+
+      // ✅ IMPORTANT FIX: save client modules into User document
+      accessibleModules,
+
       createdBy: clientData.consultantId,
-      // 🔹 Flags:
-      //    - Sandbox user (submitted stage) => sandbox = true, isActive = false
-      //    - Live user   (active stage)     => sandbox = false, isActive = true
+
+      // Sandbox user = inactive; live user = active
       sandbox: isSandbox,
       isActive: isSandbox ? false : true,
+
       permissions: {
         canViewAllClients: false,
         canManageUsers: true,
@@ -1590,7 +1623,6 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         canSubmitData: false,
         canAudit: false,
       },
-      
     });
 
     await clientAdmin.save();
@@ -1601,7 +1633,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     client.accountDetails.defaultPassword = defaultPassword;
     await client.save();
 
-    // Send activation email (same as before)
+    // Send activation email
     const emailSubject = "Welcome to ZeroCarbon - Your Account is Active";
     const emailMessage = `
       Dear ${contactName},
@@ -1620,6 +1652,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
           : "N/A"
       }
     `;
+
     await sendMail(email, emailSubject, emailMessage);
 
     return clientAdmin;
@@ -1628,7 +1661,6 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     throw error;
   }
 };
-
 
 // ==========================================
 // HELPER FUNCTION - Extract field from error message
@@ -4337,7 +4369,11 @@ const getUsers = async (req, res) => {
           caOrClauses.push({
             clientId: { $in: caAllClientIds },
             userType: {
-              $in: ["client_admin", "client_employee_head", "employee", "auditor", "viewer"],
+              $in: [
+                "client_admin", "client_employee_head", "employee", "auditor", "viewer",
+                // ESGLink workflow roles — must be visible so consultants can assign them
+                "contributor", "reviewer", "approver",
+              ],
             },
           });
         }
