@@ -118,6 +118,47 @@ const syncClientAdminModuleAccess = async (clientId, accessibleModules) => {
   };
 };
 
+const resolveClientAccessibleModules = (rawModules, fallbackModules = ['zero_carbon']) => {
+  let modules;
+
+  if (Array.isArray(rawModules)) {
+    modules = rawModules;
+  } else if (typeof rawModules === 'string' && rawModules.trim()) {
+    try {
+      const parsed = JSON.parse(rawModules);
+      modules = Array.isArray(parsed) ? parsed : [rawModules];
+    } catch (_) {
+      modules = rawModules.includes(',')
+        ? rawModules.split(',').map(m => m.trim())
+        : [rawModules.trim()];
+    }
+  } else if (Array.isArray(fallbackModules) && fallbackModules.length > 0) {
+    modules = fallbackModules;
+  } else {
+    modules = ['zero_carbon'];
+  }
+
+  const normalized = [...new Set(
+    modules
+      .map(m => String(m || '').trim())
+      .filter(Boolean)
+  )];
+
+  const invalid = normalized.filter(m => !VALID_CLIENT_MODULES.includes(m));
+
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      message: `Invalid accessibleModules: ${invalid.join(', ')}. Allowed values: ${VALID_CLIENT_MODULES.join(', ')}`,
+    };
+  }
+
+  return {
+    ok: true,
+    value: normalized.length > 0 ? normalized : ['zero_carbon'],
+  };
+};
+
 // ─── ensureSupportSection ────────────────────────────────────────────────────
 // Guards against legacy encrypted-string values in client.supportSection.
 //
@@ -2165,9 +2206,30 @@ const submitClientData = async (req, res) => {
     }
 
     // 5) DETERMINE MODULES + VALIDATE per module
-    const modules      = client.accessibleModules || ['zero_carbon'];
-    const hasZeroCarbon = modules.includes('zero_carbon');
-    const hasEsgLink    = modules.includes('esg_link');
+// Priority:
+// 1) inbound.accessibleModules
+// 2) client.accessibleModules
+// 3) fallback ['zero_carbon']
+const submittedModulesResult = resolveClientAccessibleModules(
+  inbound.accessibleModules,
+  client.accessibleModules
+);
+
+if (!submittedModulesResult.ok) {
+  return res.status(400).json({
+    message: submittedModulesResult.message,
+    field: 'accessibleModules',
+  });
+}
+
+const submittedAccessibleModules = submittedModulesResult.value;
+
+// Keep top-level client module access as authority
+client.accessibleModules = submittedAccessibleModules;
+
+const modules = submittedAccessibleModules;
+const hasZeroCarbon = modules.includes('zero_carbon');
+const hasEsgLink = modules.includes('esg_link');
 
     // 5a) ZeroCarbon assessment level validation (unchanged — only runs for ZC clients)
     let normalizedLevels = [];
@@ -2223,13 +2285,31 @@ const submitClientData = async (req, res) => {
     //    assessmentLevel, projectProfile, companyInfo, organizationalOverview,
     //    emissionsProfile, ghgDataManagement, additionalNotes, supportingDocuments, etc.
     client.submissionData = {
-      // keep any existing internal fields if present (e.g. validationStatus, reviewNotes)
-      ...(client.submissionData?.toObject?.() || client.submissionData || {}),
-      ...inbound,
-      ...(hasZeroCarbon ? { assessmentLevel: normalizedLevels } : {}),
-      ...(hasEsgLink    ? { esgLinkAssessmentLevel: inbound.esgLinkAssessmentLevel } : {}),
-      submittedAt: new Date(),
-      submittedBy: req.user.id,
+  // keep any existing internal fields if present
+  ...(client.submissionData?.toObject?.() || client.submissionData || {}),
+
+  ...inbound,
+
+  // ✅ ADD THIS: store module access inside submissionData also
+  accessibleModules: submittedAccessibleModules,
+
+  // ZeroCarbon fields only if zero_carbon is enabled
+  ...(hasZeroCarbon
+    ? { assessmentLevel: normalizedLevels }
+    : { assessmentLevel: [] }),
+
+  // ESGLink fields only if esg_link is enabled
+  ...(hasEsgLink
+    ? { esgLinkAssessmentLevel: inbound.esgLinkAssessmentLevel }
+    : {
+        esgLinkAssessmentLevel: {
+          module: null,
+          frameworks: [],
+        },
+      }),
+
+  submittedAt: new Date(),
+  submittedBy: req.user.id,
     };
 
     // Recalculate dataCompleteness (uses submissionData.* fields)
@@ -2327,15 +2407,19 @@ try {
     }
 
     // 10) Response
-    return res.status(200).json({
-      message: "Client data submitted successfully",
-      client: {
-        clientId: client.clientId,
-        stage: client.stage,
-        status: client.status,
-        sandbox: client.sandbox,
-      },
-    });
+   return res.status(200).json({
+  message: "Client data submitted successfully",
+  client: {
+    clientId: client.clientId,
+    stage: client.stage,
+    status: client.status,
+    sandbox: client.sandbox,
+
+    // ✅ ADD THESE
+    accessibleModules: client.accessibleModules,
+    submissionAccessibleModules: client.submissionData.accessibleModules,
+  },
+});
   } catch (error) {
     console.error("Submit client data error:", error);
     return res.status(500).json({
@@ -2349,39 +2433,118 @@ try {
 
 // ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
 // ─── Update Client Submission Data (Consultant Admin only, creator-only, pre-activation) ──────────────────────────────────────────
+// ─── Update Client Submission Data
+// Allows editing during registered stage AND active stage
 const updateClientData = async (req, res) => {
   try {
     const { clientId } = req.params;
 
     // A) Find the client record
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ message: "Client not found" });
-    }
 
-    // B) Must be in "registered" stage and not yet active
-    if (client.stage !== "registered" || client.status === "active") {
-      return res.status(400).json({
-        message:
-          "Cannot update: client is either not in registration stage or is already active",
+    if (!client) {
+      return res.status(404).json({
+        message: "Client not found",
       });
     }
 
-    // C) Only the Consultant Admin who created the lead or the assigned consultant may update
-    const creatorId = client.leadInfo.createdBy?.toString();
-    const assignedConsultantId = client.leadInfo.assignedConsultantId?.toString();
-    if (req.user.id !== creatorId && req.user.id !== assignedConsultantId) {
+    // B) Allow update for registered and active clients
+    // OLD WRONG LOGIC:
+    // if (client.stage !== "registered" || client.status === "active") { ... }
+    //
+    // NEW LOGIC:
+    // - registered clients can be edited
+    // - active clients can also be edited
+    // - deleted/archived states remain blocked
+    const allowedStages = ["registered", "active"];
+    const blockedStatuses = ["submission_deleted", "proposal_deleted"];
+
+    if (!allowedStages.includes(client.stage)) {
+      return res.status(400).json({
+        message:
+          "Cannot update submission data: client must be in registered or active stage.",
+        currentStage: client.stage,
+        currentStatus: client.status,
+      });
+    }
+
+    if (blockedStatuses.includes(client.status)) {
+      return res.status(400).json({
+        message:
+          "Cannot update submission data: this client submission/proposal has been deleted.",
+        currentStage: client.stage,
+        currentStatus: client.status,
+      });
+    }
+
+    // C) Permission check
+    // Allow:
+    // - super_admin
+    // - consultant_admin who created/manages the client
+    // - assigned consultant
+    // - client_admin of the same client
+    const requesterId = String(req.user.id || req.user._id || "");
+
+    const creatorId = client.leadInfo?.createdBy
+      ? String(client.leadInfo.createdBy)
+      : null;
+
+    const consultantAdminId = client.leadInfo?.consultantAdminId
+      ? String(client.leadInfo.consultantAdminId)
+      : null;
+
+    const leadAssignedConsultantId = client.leadInfo?.assignedConsultantId
+      ? String(client.leadInfo.assignedConsultantId)
+      : null;
+
+    const workflowAssignedConsultantId = client.workflowTracking?.assignedConsultantId
+      ? String(client.workflowTracking.assignedConsultantId)
+      : null;
+
+    let canUpdate = false;
+
+    if (req.user.userType === "super_admin") {
+      canUpdate = true;
+    }
+
+    if (
+      req.user.userType === "consultant_admin" &&
+      (requesterId === creatorId || requesterId === consultantAdminId)
+    ) {
+      canUpdate = true;
+    }
+
+    if (
+      req.user.userType === "consultant" &&
+      (
+        requesterId === leadAssignedConsultantId ||
+        requesterId === workflowAssignedConsultantId
+      )
+    ) {
+      canUpdate = true;
+    }
+
+    if (
+      req.user.userType === "client_admin" &&
+      req.user.clientId &&
+      String(req.user.clientId) === String(client.clientId)
+    ) {
+      canUpdate = true;
+    }
+
+    if (!canUpdate) {
       return res.status(403).json({
         message:
-          "You can only update submission data if you created this client or are the assigned consultant",
+          "You do not have permission to update this client's submission data.",
       });
     }
 
-    // D) Extract payload (REQUIRED)
+    // D) Extract payload
     const payload = req.body?.submissionData;
-    if (!payload || typeof payload !== "object") {
+
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return res.status(400).json({
-        message: "Request must contain a 'submissionData' object",
+        message: "Request must contain a valid 'submissionData' object",
       });
     }
 
@@ -2392,7 +2555,12 @@ const updateClientData = async (req, res) => {
       "processEmissions",
       "fugitiveEmissions",
     ];
-    const SCOPE2_KEYS = ["purchasedElectricity", "purchasedSteamHeating"];
+
+    const SCOPE2_KEYS = [
+      "purchasedElectricity",
+      "purchasedSteamHeating",
+    ];
+
     const SCOPE3_KEYS = [
       "businessTravel",
       "employeeCommuting",
@@ -2415,17 +2583,31 @@ const updateClientData = async (req, res) => {
       name: incoming.name ?? existing.name ?? "",
       description: incoming.description ?? existing.description ?? "",
       otherDetails: incoming.otherDetails ?? existing.otherDetails ?? "",
+
+      // Compatibility with your schema/frontend fields
+      sourceName: incoming.sourceName ?? existing.sourceName ?? "",
+      facility: incoming.facility ?? existing.facility ?? "",
+      emissionDataTypes:
+        incoming.emissionDataTypes ?? existing.emissionDataTypes ?? "",
+      relevantDepartment:
+        incoming.relevantDepartment ?? existing.relevantDepartment ?? "",
     });
 
     const normalizeLocal = (levels) => {
       if (!levels) return [];
+
       const arr = Array.isArray(levels) ? levels : [levels];
+
       return Array.from(
         new Set(
           arr
             .map((s) => String(s || "").trim().toLowerCase())
             .filter(Boolean)
-            .map((s) => (s === "organisation" ? "organization" : s))
+            .flatMap((s) => {
+              if (s === "organisation") return ["organization"];
+              if (s === "both") return ["organization", "process"];
+              return [s];
+            })
         )
       );
     };
@@ -2435,19 +2617,37 @@ const updateClientData = async (req, res) => {
         ? validateSubmissionForLevels
         : () => ({ errors: [] });
 
-    // F) Build a "next state" (plain object) to validate before writing to the doc
+    // F) Build next plain-object state before writing to Mongoose document
     const current =
       client.submissionData?.toObject?.() ??
       JSON.parse(JSON.stringify(client.submissionData || {}));
+
     const next = { ...current };
+
+    // Store previous values BEFORE mutation
+    const prevAssessmentLevel = Array.isArray(current.assessmentLevel)
+      ? [...current.assessmentLevel]
+      : [];
+
+    const previousModules = Array.isArray(current.accessibleModules)
+      ? [...current.accessibleModules]
+      : Array.isArray(client.accessibleModules)
+        ? [...client.accessibleModules]
+        : ["zero_carbon"];
 
     // Generic shallow merge for non-emissionsProfile keys
     Object.keys(payload).forEach((key) => {
       if (key !== "emissionsProfile") {
         const prevVal =
-          next[key] && typeof next[key] === "object" ? next[key] : {};
+          next[key] && typeof next[key] === "object" && !Array.isArray(next[key])
+            ? next[key]
+            : {};
+
         const incVal =
-          payload[key] && typeof payload[key] === "object" ? payload[key] : payload[key];
+          payload[key] && typeof payload[key] === "object"
+            ? payload[key]
+            : payload[key];
+
         next[key] =
           typeof incVal === "object" && !Array.isArray(incVal)
             ? { ...prevVal, ...incVal }
@@ -2455,22 +2655,27 @@ const updateClientData = async (req, res) => {
       }
     });
 
-    // Specialized deep merge for emissionsProfile (unified details shape)
+    // G) Specialized deep merge for emissionsProfile
     if (payload.emissionsProfile) {
       next.emissionsProfile = next.emissionsProfile || {};
 
       // Scope 1
       const incS1 = payload.emissionsProfile.scope1 || {};
       next.emissionsProfile.scope1 = next.emissionsProfile.scope1 || {};
+
       SCOPE1_KEYS.forEach((k) => {
         const prev = next.emissionsProfile.scope1[k] || {
           included: false,
           details: {},
         };
+
         const inc = incS1[k] || {};
+
         next.emissionsProfile.scope1[k] = {
           included:
-            typeof inc.included === "boolean" ? inc.included : prev.included ?? false,
+            typeof inc.included === "boolean"
+              ? inc.included
+              : prev.included ?? false,
           details: mergeDetails(prev.details, inc.details),
         };
       });
@@ -2478,15 +2683,20 @@ const updateClientData = async (req, res) => {
       // Scope 2
       const incS2 = payload.emissionsProfile.scope2 || {};
       next.emissionsProfile.scope2 = next.emissionsProfile.scope2 || {};
+
       SCOPE2_KEYS.forEach((k) => {
         const prev = next.emissionsProfile.scope2[k] || {
           included: false,
           details: {},
         };
+
         const inc = incS2[k] || {};
+
         next.emissionsProfile.scope2[k] = {
           included:
-            typeof inc.included === "boolean" ? inc.included : prev.included ?? false,
+            typeof inc.included === "boolean"
+              ? inc.included
+              : prev.included ?? false,
           details: mergeDetails(prev.details, inc.details),
         };
       });
@@ -2494,113 +2704,292 @@ const updateClientData = async (req, res) => {
       // Scope 3
       const incS3 = payload.emissionsProfile.scope3 || {};
       const prevS3 = next.emissionsProfile.scope3 || {};
+
       next.emissionsProfile.scope3 = {
         includeScope3:
           typeof incS3.includeScope3 === "boolean"
             ? incS3.includeScope3
             : prevS3.includeScope3 ?? false,
+
         categories: {
           ...(prevS3.categories || {}),
           ...(incS3.categories || {}),
         },
+
         categoriesDetails: {},
+
         otherIndirectSources:
           incS3.otherIndirectSources ?? prevS3.otherIndirectSources ?? "",
       };
 
       const prevCD = prevS3.categoriesDetails || {};
       const incCD = incS3.categoriesDetails || {};
+
       SCOPE3_KEYS.forEach((k) => {
         const prev = (prevCD[k] && prevCD[k].details) || {};
         const inc = (incCD[k] && incCD[k].details) || {};
+
         next.emissionsProfile.scope3.categoriesDetails[k] = {
           details: mergeDetails(prev, inc),
         };
       });
     }
 
-    // G) Normalize & validate assessmentLevel on the next state
-    const prevAssessmentLevel = client.submissionData?.assessmentLevel || null;
-    const normalizedLevels =
-      typeof normalizeAssessmentLevels === "function"
-        ? normalizeAssessmentLevels(next.assessmentLevel)
-        : normalizeLocal(next.assessmentLevel);
+    // H) Resolve accessibleModules during update
+    // Priority:
+    // 1) req.body.accessibleModules
+    // 2) req.body.submissionData.accessibleModules / payload.accessibleModules
+    // 3) next.accessibleModules
+    // 4) client.accessibleModules
+    const rawAccessibleModules =
+      req.body.accessibleModules !== undefined
+        ? req.body.accessibleModules
+        : payload.accessibleModules !== undefined
+          ? payload.accessibleModules
+          : next.accessibleModules !== undefined
+            ? next.accessibleModules
+            : client.accessibleModules;
 
-    next.assessmentLevel = normalizedLevels.length ? normalizedLevels : [];
+    const accessibleModulesResult = resolveClientAccessibleModules(
+      rawAccessibleModules,
+      client.accessibleModules
+    );
 
-    const { errors } = validateLocal(next, normalizedLevels);
-    if (errors.length) {
-      return res.status(400).json({ message: "Validation error", errors });
-    }
-
-    // H) Write back "next" into the real document
-    client.submissionData = next; // safe: subdoc assignment; mongoose will cast
-    client.submissionData.updatedAt = new Date();
-
-    // I) Update workflow if assessmentLevel changed
-    const newAssessmentLevel = client.submissionData.assessmentLevel;
-    const changed =
-      JSON.stringify(newAssessmentLevel) !== JSON.stringify(prevAssessmentLevel);
-
-    if (changed && typeof client.updateWorkflowBasedOnAssessment === "function") {
-      client.updateWorkflowBasedOnAssessment();
-
-      client.timeline = client.timeline || [];
-      client.timeline.push({
-        stage: "registered",
-        status: "updated",
-        action: "Workflow updated based on assessment level",
-        performedBy: req.user.id,
-        notes: `Assessment level changed from '${Array.isArray(prevAssessmentLevel) ? prevAssessmentLevel.join(", ") : prevAssessmentLevel || "none"}' to '${Array.isArray(newAssessmentLevel) ? newAssessmentLevel.join(", ") : newAssessmentLevel}'. Workflow tracking updated accordingly.`,
+    if (!accessibleModulesResult.ok) {
+      return res.status(400).json({
+        message: accessibleModulesResult.message,
+        field: "accessibleModules",
       });
     }
 
+    const updatedAccessibleModules = accessibleModulesResult.value;
+
+    // Keep top-level Client field and submissionData snapshot aligned
+    client.accessibleModules = updatedAccessibleModules;
+    next.accessibleModules = updatedAccessibleModules;
+
+    const modules = updatedAccessibleModules;
+    const hasZeroCarbon = modules.includes("zero_carbon");
+    const hasEsgLink = modules.includes("esg_link");
+
+    // I) Normalize + validate assessmentLevel only when zero_carbon is enabled
+    let normalizedLevels = [];
+
+    if (hasZeroCarbon) {
+      normalizedLevels =
+        typeof normalizeAssessmentLevels === "function"
+          ? normalizeAssessmentLevels(next.assessmentLevel)
+          : normalizeLocal(next.assessmentLevel);
+
+      if (!normalizedLevels || normalizedLevels.length === 0) {
+        return res.status(400).json({
+          message: "assessmentLevel is required when zero_carbon is enabled.",
+          field: "assessmentLevel",
+        });
+      }
+
+      next.assessmentLevel = normalizedLevels;
+
+      const { errors } = validateLocal(next, normalizedLevels);
+
+      if (errors.length) {
+        return res.status(400).json({
+          message: "Validation error",
+          errors,
+        });
+      }
+    } else {
+      normalizedLevels = [];
+      next.assessmentLevel = [];
+    }
+
+    // J) Validate ESGLink only when esg_link is enabled
+    if (hasEsgLink) {
+      const esgErrors =
+        typeof validateEsgLinkAssessmentLevel === "function"
+          ? validateEsgLinkAssessmentLevel(next.esgLinkAssessmentLevel)
+          : [];
+
+      if (Array.isArray(esgErrors) && esgErrors.length > 0) {
+        return res.status(400).json({
+          message: "ESGLink validation error",
+          errors: esgErrors,
+        });
+      }
+    } else {
+      next.esgLinkAssessmentLevel = {
+        module: null,
+        frameworks: [],
+      };
+    }
+
+    // K) Write back next into the document
+    client.submissionData = {
+      ...(client.submissionData?.toObject?.() || client.submissionData || {}),
+      ...next,
+
+      accessibleModules: updatedAccessibleModules,
+
+      ...(hasZeroCarbon
+        ? { assessmentLevel: normalizedLevels }
+        : { assessmentLevel: [] }),
+
+      ...(hasEsgLink
+        ? { esgLinkAssessmentLevel: next.esgLinkAssessmentLevel }
+        : {
+            esgLinkAssessmentLevel: {
+              module: null,
+              frameworks: [],
+            },
+          }),
+
+      updatedAt: new Date(),
+      updatedBy: req.user.id,
+    };
+
+    // L) Update workflow if assessmentLevel changed
+    const newAssessmentLevel = client.submissionData.assessmentLevel || [];
+
+    const assessmentChanged =
+      JSON.stringify(newAssessmentLevel || []) !==
+      JSON.stringify(prevAssessmentLevel || []);
+
+    if (
+      assessmentChanged &&
+      typeof client.updateWorkflowBasedOnAssessment === "function"
+    ) {
+      client.updateWorkflowBasedOnAssessment();
+
+      client.timeline = client.timeline || [];
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "Workflow updated based on assessment level",
+        performedBy: req.user.id,
+        notes: `Assessment level changed from '${
+          Array.isArray(prevAssessmentLevel)
+            ? prevAssessmentLevel.join(", ")
+            : prevAssessmentLevel || "none"
+        }' to '${
+          Array.isArray(newAssessmentLevel)
+            ? newAssessmentLevel.join(", ")
+            : newAssessmentLevel || "none"
+        }'. Workflow tracking updated accordingly.`,
+      });
+    }
+
+    // M) Add timeline entry for module access change if changed
+    const moduleChanged =
+      JSON.stringify(previousModules || []) !==
+      JSON.stringify(updatedAccessibleModules || []);
+
+    if (moduleChanged) {
+      client.timeline = client.timeline || [];
+
+      client.timeline.push({
+        stage: client.stage,
+        status: client.status,
+        action: "Accessible modules updated during submission update",
+        performedBy: req.user.id,
+        notes: `Accessible modules changed from [${previousModules.join(
+          ", "
+        )}] to [${updatedAccessibleModules.join(", ")}].`,
+      });
+    }
+
+    // N) General timeline entry
+    client.timeline = client.timeline || [];
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action:
+        client.stage === "active"
+          ? "Active client submission data updated"
+          : "Client submission data updated",
+      performedBy: req.user.id,
+      notes:
+        client.stage === "active"
+          ? "Submission data was updated after client activation."
+          : "Submission data was updated during registration stage.",
+    });
+
     await client.save();
 
-    // J) Emits
+    // O) Sync existing client_admin user after submission update
+    try {
+      await syncClientAdminModuleAccess(
+        client.clientId,
+        client.accessibleModules
+      );
+    } catch (syncErr) {
+      console.warn(
+        `syncClientAdminModuleAccess warning in updateClientData: ${syncErr.message}`
+      );
+    }
+
+    // P) Emits
     await emitClientListUpdate(client, "updated", req.user.id);
 
-    if (client.stage === "registered") {
-      await emitTargetedClientUpdate(client, "data_submission_updated", req.user.id, {
-        stage: "registered",
+    await emitTargetedClientUpdate(
+      client,
+      client.stage === "active"
+        ? "active_submission_data_updated"
+        : "data_submission_updated",
+      req.user.id,
+      {
+        stage: client.stage,
+        status: client.status,
         hasDataSubmission: true,
         dataCompleteness:
           typeof client.calculateDataCompleteness === "function"
             ? client.calculateDataCompleteness()
             : undefined,
-      });
-    }
+      }
+    );
 
-    // K) Email / PDF (best-effort)
+    // Q) Email / PDF best-effort
     try {
       const html = renderClientDataHTML(client);
+
       const pdf = await htmlToPdfBuffer(
         html,
         `ZeroCarbon_ClientData_${client.clientId}.pdf`
       );
+
       await sendClientDataUpdatedEmail(client, [pdf]);
+
       console.log("✉️ Client data updated email sent with PDF.");
     } catch (e) {
       console.error("Email/PDF (updateClientData) error:", e.message);
     }
 
     return res.status(200).json({
-      message: "Client submission data updated successfully",
+      message:
+        client.stage === "active"
+          ? "Active client submission data updated successfully"
+          : "Client submission data updated successfully",
       client: {
         clientId: client.clientId,
         stage: client.stage,
         status: client.status,
+
+        accessibleModules: client.accessibleModules,
+        submissionAccessibleModules: client.submissionData.accessibleModules,
+
+        assessmentLevel: client.submissionData.assessmentLevel,
+        esgLinkAssessmentLevel: client.submissionData.esgLinkAssessmentLevel,
       },
     });
   } catch (error) {
     console.error("Update client data error:", error);
+
     return res.status(500).json({
       message: "Failed to update client data",
       error: error.message,
     });
   }
 };
-
 
 
 

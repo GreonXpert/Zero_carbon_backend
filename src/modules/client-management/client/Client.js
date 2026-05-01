@@ -353,6 +353,14 @@ const clientSchema = new mongoose.Schema(
         enum: ['reduction', 'decarbonization', 'organization', 'process'],
         default: []
       },
+       // 🆕 MODULE ACCESS — which product modules this client subscribes to.
+    // Default: ['zero_carbon'] — all existing clients keep ZeroCarbon access.
+    // Updated by consultant_admin (own clients) or super_admin only.
+    accessibleModules: {
+      type: [String],
+      enum: ['zero_carbon', 'esg_link'],
+      default: ['zero_carbon'],
+    },
       // ESGLink-specific assessment level (independent of ZeroCarbon assessmentLevel)
       esgLinkAssessmentLevel: {
         module: {
@@ -659,14 +667,7 @@ accountDetails: {
 },
 
 
-    // 🆕 MODULE ACCESS — which product modules this client subscribes to.
-    // Default: ['zero_carbon'] — all existing clients keep ZeroCarbon access.
-    // Updated by consultant_admin (own clients) or super_admin only.
-    accessibleModules: {
-      type: [String],
-      enum: ['zero_carbon', 'esg_link'],
-      default: ['zero_carbon'],
-    },
+   
 
     // Timeline tracking
     timeline: [{
