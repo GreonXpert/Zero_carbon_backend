@@ -5706,15 +5706,14 @@ const removeConsultant = async (req, res) => {
   }
 };
 
-// ─── Update assessmentLevel only (post-onboarding) ─────────────────────────────
-// ─── Update assessmentLevel only (post-onboarding, no submission checks) ─────
+// ─── Update assessmentLevel only (post-onboarding, encrypted submissionData-safe) ─────
 const updateAssessmentLevelOnly = async (req, res) => {
   try {
     const { clientId } = req.params;
     const rawLevels = req.body?.assessmentLevel;
     const actor = req.user;
 
-    // Role guard: only super_admin or managing consultant_admin
+    // 1) Role guard
     if (!['super_admin', 'consultant_admin'].includes(actor.userType)) {
       return res.status(403).json({
         message: "Only Super Admin or Consultant Admin can update assessment levels."
@@ -5722,15 +5721,28 @@ const updateAssessmentLevelOnly = async (req, res) => {
     }
 
     if (!rawLevels) {
-      return res.status(400).json({ message: "assessmentLevel is required in body" });
+      return res.status(400).json({
+        message: "assessmentLevel is required in body"
+      });
     }
 
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ message: "Client not found" });
+    // IMPORTANT:
+    // Do not use .lean() because submissionData is encrypted and must be decrypted.
+    const client = await Client.findOne({
+      clientId,
+      isDeleted: { $ne: true }
+    });
 
-    // For consultant_admin: must be the managing consultant_admin for this client
+    if (!client) {
+      return res.status(404).json({
+        message: "Client not found"
+      });
+    }
+
+    // 2) Managing consultant_admin check
     if (actor.userType === 'consultant_admin') {
       const managingId = client.leadInfo?.consultantAdminId?.toString();
+
       if (managingId !== actor._id.toString()) {
         return res.status(403).json({
           message: "You are not authorized to update this client's assessment level."
@@ -5738,51 +5750,88 @@ const updateAssessmentLevelOnly = async (req, res) => {
       }
     }
 
-    // Only after onboarding
+    // 3) Only after onboarding
     if (client.stage !== 'active') {
       return res.status(400).json({
         message: "assessmentLevel can be changed only after onboarding (stage === 'active')."
       });
     }
 
-    // Normalize allowed values (accepts string or array; maps 'organisation' → 'organization')
+    // 4) Normalize allowed values
     const nextLevels = normalizeAssessmentLevels(rawLevels);
-    if (nextLevels.length === 0) {
+
+    if (!nextLevels || nextLevels.length === 0) {
       return res.status(400).json({
-        message: "assessmentLevel must contain at least one allowed value (reduction, decarbonization, organization, process)"
+        message: "assessmentLevel must contain at least one allowed value: reduction, decarbonization, organization, process"
       });
     }
 
-    // Ensure submissionData exists, but DO NOT overwrite subdocs
-    if (!client.submissionData || typeof client.submissionData !== 'object') {
-      client.submissionData = {}; // create container only
+    // 5) Handle encrypted submissionData safely
+    let submissionDataPlain = {};
+
+    if (!client.submissionData) {
+      submissionDataPlain = {};
+    } else if (
+      typeof client.submissionData === 'object' &&
+      !Array.isArray(client.submissionData)
+    ) {
+      submissionDataPlain =
+        client.submissionData?.toObject?.() ||
+        client.submissionData;
+    } else if (
+      typeof client.submissionData === 'string' &&
+      client.submissionData.startsWith('v1:')
+    ) {
+      // This means encrypted data was not decrypted.
+      // Do NOT overwrite it with {}.
+      return res.status(500).json({
+        message: "submissionData is still encrypted and was not decrypted. Refusing to overwrite existing submission data.",
+      });
+    } else {
+      return res.status(500).json({
+        message: "submissionData is in an invalid format. Refusing to update assessmentLevel.",
+      });
     }
 
-    // Update only the specific nested paths to avoid casting entire object
-    client.set('submissionData.assessmentLevel', nextLevels);
-    client.set('submissionData.updatedAt', new Date());
+    // 6) Capture previous BEFORE mutation
+    const previousLevels = Array.isArray(submissionDataPlain.assessmentLevel)
+      ? [...submissionDataPlain.assessmentLevel]
+      : [];
 
-    // Keep your existing workflow alignment
+    // 7) Replace only the assessmentLevel inside the decrypted object
+    client.submissionData = {
+      ...submissionDataPlain,
+      assessmentLevel: nextLevels,
+      updatedAt: new Date(),
+      updatedBy: actor._id,
+    };
+
+    // Required because submissionData is encrypted / treated as a full object blob
+    client.markModified('submissionData');
+
+    // 8) Keep workflow alignment
     if (typeof client.updateWorkflowBasedOnAssessment === 'function') {
       client.updateWorkflowBasedOnAssessment();
+      client.markModified('workflowTracking');
     }
 
-    const previous = Array.isArray(client.submissionData?.assessmentLevel)
-      ? client.submissionData.assessmentLevel
-      : [];
+    // 9) Timeline
+    if (!client.timeline) client.timeline = [];
 
     client.timeline.push({
       stage: client.stage,
       status: client.status,
       action: "Assessment level updated (post-onboarding)",
       performedBy: actor._id,
-      notes: `Changed from [${previous}] to [${nextLevels}].`
+      notes: `Changed from [${previousLevels.join(', ')}] to [${nextLevels.join(', ')}].`
     });
 
-    // Save without running unrelated validators on submission subdocs
+    // 10) Save
+    // validateBeforeSave:false is okay here because this endpoint updates only assessmentLevel.
+    // We already normalized the values manually.
     await client.save({ validateBeforeSave: false });
 
-    // Audit log
+    // 11) Audit log
     await logEvent({
       actorId: actor._id,
       actorModel: 'User',
@@ -5791,24 +5840,29 @@ const updateAssessmentLevelOnly = async (req, res) => {
       entityType: 'Client',
       entityId: client._id,
       changeSummary: 'Assessment level updated',
-      metadata: { previousLevels: previous, newLevels: nextLevels, clientId },
+      metadata: {
+        previousLevels,
+        newLevels: nextLevels,
+        clientId
+      },
       req,
     });
 
     return res.status(200).json({
       message: "assessmentLevel updated successfully",
-      assessmentLevel: nextLevels
+      assessmentLevel: nextLevels,
+      previousAssessmentLevel: previousLevels
     });
 
   } catch (err) {
     console.error("Update assessmentLevel error:", err);
+
     return res.status(500).json({
       message: "Failed to update assessmentLevel",
       error: err.message
     });
   }
 };
-
 // PATCH /api/clients/:clientId/module-access
 // Body: { accessibleModules: ['zero_carbon', 'esg_link'] }
 // Access: super_admin | managing consultant_admin
@@ -5818,14 +5872,18 @@ const updateClientModuleAccess = async (req, res) => {
     const { accessibleModules } = req.body;
     const actor = req.user;
 
-    // Role check
+    // ─────────────────────────────────────────────
+    // 1) Role check
+    // ─────────────────────────────────────────────
     if (!['super_admin', 'consultant_admin'].includes(actor.userType)) {
       return res.status(403).json({
         message: "Only Super Admin or Consultant Admin can update client module access."
       });
     }
 
-    // Validate input
+    // ─────────────────────────────────────────────
+    // 2) Validate input
+    // ─────────────────────────────────────────────
     const ALLOWED_MODULES = ['zero_carbon', 'esg_link'];
 
     if (!Array.isArray(accessibleModules) || accessibleModules.length === 0) {
@@ -5848,6 +5906,12 @@ const updateClientModuleAccess = async (req, res) => {
       });
     }
 
+    // ─────────────────────────────────────────────
+    // 3) Find client
+    // IMPORTANT:
+    // Do not use .lean() because submissionData/accountDetails are encrypted
+    // and we need a Mongoose document to save decrypted changes.
+    // ─────────────────────────────────────────────
     const client = await Client.findOne({
       clientId,
       isDeleted: { $ne: true }
@@ -5859,7 +5923,9 @@ const updateClientModuleAccess = async (req, res) => {
       });
     }
 
-    // Managing consultant_admin check
+    // ─────────────────────────────────────────────
+    // 4) Managing consultant_admin check
+    // ─────────────────────────────────────────────
     if (actor.userType === 'consultant_admin') {
       const managingId = client.leadInfo?.consultantAdminId?.toString();
 
@@ -5870,34 +5936,98 @@ const updateClientModuleAccess = async (req, res) => {
       }
     }
 
-    const previousModules = client.accessibleModules?.length
-      ? [...client.accessibleModules]
-      : ['zero_carbon'];
+    // ─────────────────────────────────────────────
+    // 5) Get previous modules
+    // Priority:
+    // 1) submissionData.accessibleModules — new authority
+    // 2) client.accessibleModules — backward compatibility
+    // 3) ['zero_carbon']
+    // ─────────────────────────────────────────────
+    const submissionDataPlain =
+      client.submissionData?.toObject?.() ||
+      (
+        client.submissionData &&
+        typeof client.submissionData === 'object' &&
+        !Array.isArray(client.submissionData)
+          ? client.submissionData
+          : {}
+      );
 
-    const addedModules = normalizedModules.filter(m => !previousModules.includes(m));
-    const removedModules = previousModules.filter(m => !normalizedModules.includes(m));
+    const previousModules =
+      Array.isArray(submissionDataPlain.accessibleModules) &&
+      submissionDataPlain.accessibleModules.length > 0
+        ? [...submissionDataPlain.accessibleModules]
+        : Array.isArray(client.accessibleModules) &&
+          client.accessibleModules.length > 0
+          ? [...client.accessibleModules]
+          : ['zero_carbon'];
 
+    const addedModules = normalizedModules.filter(
+      m => !previousModules.includes(m)
+    );
+
+    const removedModules = previousModules.filter(
+      m => !normalizedModules.includes(m)
+    );
+
+    // ─────────────────────────────────────────────
+    // 6) Update module access in BOTH places
+    // ─────────────────────────────────────────────
+
+    // New location — submissionData.accessibleModules
+    client.submissionData = {
+      ...submissionDataPlain,
+      accessibleModules: normalizedModules,
+      updatedAt: new Date(),
+      updatedBy: actor._id,
+    };
+
+    client.markModified('submissionData');
+
+    // Backward compatibility:
+    // Keep top-level client.accessibleModules updated if your schema still uses it.
+    // If top-level accessibleModules is no longer in your schema, this may not persist,
+    // but it will not break the request.
     client.accessibleModules = normalizedModules;
 
-    // If esg_link is newly added, initialize ESGLink subscription.
+    // ─────────────────────────────────────────────
+    // 7) If esg_link is newly added, initialize ESGLink subscription
+    // accountDetails is encrypted, so markModified('accountDetails') after update.
+    // ─────────────────────────────────────────────
     if (
       addedModules.includes('esg_link') &&
       !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate
     ) {
-      if (!client.accountDetails) client.accountDetails = {};
+      const accountDetailsPlain =
+        client.accountDetails?.toObject?.() ||
+        (
+          client.accountDetails &&
+          typeof client.accountDetails === 'object' &&
+          !Array.isArray(client.accountDetails)
+            ? client.accountDetails
+            : {}
+        );
 
-      const zcEnd = client.accountDetails?.subscriptionEndDate;
+      const zcEnd = accountDetailsPlain.subscriptionEndDate;
 
-      client.set('accountDetails.esgLinkSubscription', {
-        subscriptionStatus: 'active',
-        isActive: true,
-        subscriptionStartDate: new Date(),
-        subscriptionEndDate: zcEnd || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      });
+      client.accountDetails = {
+        ...accountDetailsPlain,
+        esgLinkSubscription: {
+          ...(accountDetailsPlain.esgLinkSubscription || {}),
+          subscriptionStatus: 'active',
+          isActive: true,
+          subscriptionStartDate: new Date(),
+          subscriptionEndDate:
+            zcEnd || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        },
+      };
 
-      client.markModified('accountDetails.esgLinkSubscription');
+      client.markModified('accountDetails');
     }
 
+    // ─────────────────────────────────────────────
+    // 8) Timeline
+    // ─────────────────────────────────────────────
     if (!client.timeline) client.timeline = [];
 
     client.timeline.push({
@@ -5908,13 +6038,22 @@ const updateClientModuleAccess = async (req, res) => {
       notes: `accessibleModules changed from [${previousModules.join(', ')}] to [${normalizedModules.join(', ')}].`
     });
 
+    // ─────────────────────────────────────────────
+    // 9) Save client
+    // ─────────────────────────────────────────────
     await client.save();
 
-    // IMPORTANT:
-    // Sync client_admin users with the client module access.
-    // Do not blindly grant modules to viewer/auditor/employee here because those roles may be intentionally restricted.
-    const userSyncResult = await syncClientAdminModuleAccess(clientId, normalizedModules);
+    // ─────────────────────────────────────────────
+    // 10) Sync client_admin users
+    // ─────────────────────────────────────────────
+    const userSyncResult = await syncClientAdminModuleAccess(
+      clientId,
+      normalizedModules
+    );
 
+    // ─────────────────────────────────────────────
+    // 11) Audit log
+    // ─────────────────────────────────────────────
     await logEvent({
       actorId: actor._id,
       actorModel: 'User',
@@ -5934,9 +6073,13 @@ const updateClientModuleAccess = async (req, res) => {
       req,
     });
 
+    // ─────────────────────────────────────────────
+    // 12) Response
+    // ─────────────────────────────────────────────
     return res.status(200).json({
       message: "Client module access updated successfully.",
-      accessibleModules: client.accessibleModules,
+      accessibleModules: normalizedModules,
+      submissionAccessibleModules: client.submissionData.accessibleModules,
       addedModules,
       removedModules,
       syncedClientAdminUsers: userSyncResult,

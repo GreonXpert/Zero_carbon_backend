@@ -1272,29 +1272,34 @@ const getAllProcessFlowcharts = async (req, res) => {
 
 // Update process flowchart node
 // controllers/processflowController.js – PATCH /:clientId/node/:nodeId
+// PATCH /api/processflow/:clientId/node/:nodeId
+// Updates one process flowchart node safely when nodes are encrypted/Mixed.
 const updateProcessFlowchartNode = async (req, res) => {
   try {
     const { clientId, nodeId } = req.params;
     const { nodeData } = req.body;
 
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     // 0) Basic validation
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
     if (!clientId || !nodeId) {
       return res.status(400).json({
-        message: 'clientId and nodeId are required'
+        success: false,
+        message: 'clientId and nodeId are required.',
       });
     }
 
     if (!nodeData || typeof nodeData !== 'object' || Array.isArray(nodeData)) {
       return res.status(400).json({
-        message: 'nodeData must be a valid object'
+        success: false,
+        message: 'nodeData must be a valid object.',
       });
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 1) Permission
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 1) Permission check
+    // Route middleware already checks this, but keeping this guard is safe.
+    // ─────────────────────────────────────────────────────────────
     const canManageResult = await canManageProcessFlowchart(req.user, clientId);
 
     const allowed =
@@ -1304,24 +1309,26 @@ const updateProcessFlowchartNode = async (req, res) => {
 
     if (!allowed) {
       return res.status(403).json({
-        message: 'You do not have permission to update this process flowchart'
+        success: false,
+        message: 'You do not have permission to update this process flowchart.',
       });
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 2) Load active process flowchart
+    // ─────────────────────────────────────────────────────────────
+    // 2) Load process flowchart
     // IMPORTANT:
-    // Do NOT use .lean() here.
-    // nodes is encrypted/Mixed, and we need a mongoose document to save().
-    // ──────────────────────────────────────────────────────────────
+    // Do NOT use .lean().
+    // We need a Mongoose document because we will assign and save().
+    // ─────────────────────────────────────────────────────────────
     const processFlowchart = await ProcessFlowchart.findOne({
       clientId,
-      isDeleted: false
+      isDeleted: false,
     });
 
     if (!processFlowchart) {
       return res.status(404).json({
-        message: 'Process flowchart not found'
+        success: false,
+        message: 'Process flowchart not found.',
       });
     }
 
@@ -1329,516 +1336,353 @@ const updateProcessFlowchartNode = async (req, res) => {
       ? processFlowchart.nodes
       : [];
 
-    // ──────────────────────────────────────────────────────────────
-    // 3) Locate node in decrypted JS array
-    // ──────────────────────────────────────────────────────────────
     const nodeIndex = currentNodes.findIndex(
-      n => String(n?.id) === String(nodeId)
+      (node) => String(node?.id) === String(nodeId)
     );
 
     if (nodeIndex === -1) {
       return res.status(404).json({
-        message: 'Node not found',
-        nodeId
+        success: false,
+        message: 'Node not found.',
+        nodeId,
       });
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 4) Convert existing node to plain object
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 3) Helpers
+    // ─────────────────────────────────────────────────────────────
     const toPlainObject = (value) => {
       if (!value) return {};
       if (typeof value.toObject === 'function') return value.toObject();
       return JSON.parse(JSON.stringify(value));
     };
 
-    const existingNode = toPlainObject(currentNodes[nodeIndex]);
+    const isPlainObject = (value) =>
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !(value instanceof Date);
 
-    // ──────────────────────────────────────────────────────────────
-    // 5) Helpers
-    // ──────────────────────────────────────────────────────────────
-    const shallowMerge = (base, patch) => {
-      const out = { ...(base || {}) };
+    const deepMergeSkipUndefined = (base = {}, patch = {}) => {
+      const output = { ...(base || {}) };
 
-      if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
-        for (const k of Object.keys(patch)) {
-          if (patch[k] !== undefined) {
-            out[k] = patch[k];
-          }
+      if (!isPlainObject(patch)) return output;
+
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+
+        if (isPlainObject(value) && isPlainObject(output[key])) {
+          output[key] = deepMergeSkipUndefined(output[key], value);
+        } else {
+          output[key] = value;
         }
       }
 
-      return out;
+      return output;
     };
 
-    const numOrNull = (v) => {
-      if (v === undefined || v === null || v === '') return null;
-      const n = Number(v);
-      return Number.isNaN(n) ? null : n;
+    const normalizeObjectIdLike = (value) => {
+      if (value === undefined) return undefined;
+      if (value === null || value === '') return null;
+      return value;
     };
 
-    const normalizeCustomEF = (cef = {}) => {
-      if (!cef || typeof cef !== 'object' || Array.isArray(cef)) return {};
-      return { ...cef };
-    };
-
-    const mergeEFBlocks = (
-      finalEF,
-      existingEFVals = {},
-      incomingEFVals = {},
-      incomingTopLevel = {}
-    ) => {
-      const out = {
-        defraData: {
-          ...(existingEFVals.defraData || {}),
-          ...(incomingEFVals.defraData || {})
-        },
-        ipccData: {
-          ...(existingEFVals.ipccData || {}),
-          ...(incomingEFVals.ipccData || {})
-        },
-        epaData: {
-          ...(existingEFVals.epaData || {}),
-          ...(incomingEFVals.epaData || {})
-        },
-        countryData: {
-          ...(existingEFVals.countryData || {}),
-          ...(incomingEFVals.countryData || {})
-        },
-        emissionFactorHubData: {
-          ...(existingEFVals.emissionFactorHubData || {}),
-          ...(incomingEFVals.emissionFactorHubData || {})
-        },
-        customEmissionFactor: {
-          ...(existingEFVals.customEmissionFactor || {}),
-          ...(
-            incomingEFVals?.customEmissionFactor ||
-            incomingTopLevel?.customEmissionFactor ||
-            {}
-          )
-        },
-        dataSource:
-          incomingEFVals?.dataSource !== undefined
-            ? incomingEFVals.dataSource
-            : existingEFVals.dataSource || undefined,
-        lastUpdated: new Date()
-      };
-
-      if (finalEF === 'Custom' && !out.customEmissionFactor) {
-        out.customEmissionFactor = {};
-      }
-
-      return out;
-    };
-
-    const mergeScopeDetail = (existingScope = {}, incomingScope = {}) => {
-      const finalEF =
-        incomingScope.emissionFactor ??
-        existingScope.emissionFactor ??
-        '';
-
-      const incomingCEF =
-        incomingScope?.emissionFactorValues?.customEmissionFactor ??
-        incomingScope?.customEmissionFactor ??
-        existingScope?.emissionFactorValues?.customEmissionFactor ??
-        existingScope?.customEmissionFactor ??
-        null;
-
-      const normalizedCEF =
-        finalEF === 'Custom'
-          ? normalizeCustomEF(incomingCEF || {})
-          : null;
-
-      // Merge normal fields without overwriting nested emissionFactorValues blindly
-      const mergedTop = {
-        ...existingScope,
-        ...Object.fromEntries(
-          Object.entries(incomingScope).filter(([k, v]) => {
-            return k !== 'emissionFactorValues' && v !== undefined;
-          })
-        ),
-        emissionFactor: finalEF
-      };
-
-      const existingEFVals = existingScope.emissionFactorValues || {};
-      const incomingEFVals = incomingScope.emissionFactorValues || {};
-
-      mergedTop.emissionFactorValues = mergeEFBlocks(
-        finalEF,
-        existingEFVals,
-        incomingEFVals,
-        incomingScope
+    const buildScopeKey = (scope = {}) => {
+      return String(
+        scope.scopeUid ||
+        scope.uid ||
+        scope._id ||
+        scope.scopeIdentifier ||
+        ''
       );
-
-      if (normalizedCEF) {
-        mergedTop.emissionFactorValues.customEmissionFactor = normalizedCEF;
-      }
-
-      // Mirror custom EF at top level for backward compatibility
-      if (finalEF === 'Custom') {
-        mergedTop.customEmissionFactor = normalizedCEF || {};
-      } else if ('customEmissionFactor' in mergedTop) {
-        mergedTop.customEmissionFactor = existingScope.customEmissionFactor || null;
-      }
-
-      // Preserve CEF comments if helper exists
-      if (finalEF === 'Custom' && typeof ensureCEFComments === 'function') {
-        mergedTop.emissionFactorValues.customEmissionFactor = ensureCEFComments(
-          mergedTop.emissionFactorValues.customEmissionFactor || {}
-        );
-
-        mergedTop.customEmissionFactor = ensureCEFComments(
-          mergedTop.customEmissionFactor || {}
-        );
-      }
-
-      // Carry UAD / UEF if explicitly sent
-      if (incomingScope.UAD !== undefined) mergedTop.UAD = incomingScope.UAD;
-      if (incomingScope.UEF !== undefined) mergedTop.UEF = incomingScope.UEF;
-
-      // Preserve allocationPct
-      if (incomingScope.allocationPct !== undefined) {
-        mergedTop.allocationPct = incomingScope.allocationPct;
-      } else if (existingScope.allocationPct !== undefined) {
-        mergedTop.allocationPct = existingScope.allocationPct;
-      } else {
-        mergedTop.allocationPct = 100;
-      }
-
-      // Merge customValues
-      const incCV = incomingScope.customValues || incomingScope.customValue || {};
-      const prevCV = existingScope.customValues || {};
-
-      const mergedCV = {
-        assetLifetime: numOrNull(
-          incCV.assetLifetime ??
-          incCV.AssetLifeTime ??
-          incCV.AssestLifeTime ??
-          incCV.assetLifeTime ??
-          prevCV.assetLifetime ??
-          null
-        ),
-        TDLossFactor: numOrNull(
-          incCV.TDLossFactor ??
-          incCV['T&DLossFactor'] ??
-          incCV.TAndDLossFactor ??
-          prevCV.TDLossFactor ??
-          null
-        ),
-        defaultRecyclingRate: numOrNull(
-          incCV.defaultRecyclingRate ??
-          incCV.defaultRecylingRate ??
-          incCV.defaultRecycleRate ??
-          prevCV.defaultRecyclingRate ??
-          null
-        ),
-        equitySharePercentage: numOrNull(
-          incCV.equitySharePercentage ??
-          incCV.EquitySharePercentage ??
-          prevCV.equitySharePercentage ??
-          null
-        ),
-        averageLifetimeEnergyConsumption: numOrNull(
-          incCV.averageLifetimeEnergyConsumption ??
-          incCV.AverageLifetimeEnergyConsumption ??
-          prevCV.averageLifetimeEnergyConsumption ??
-          null
-        ),
-        usePattern: numOrNull(
-          incCV.usePattern ??
-          incCV.UsePattern ??
-          prevCV.usePattern ??
-          null
-        ),
-        energyEfficiency: numOrNull(
-          incCV.energyEfficiency ??
-          incCV.EnergyEfficiency ??
-          prevCV.energyEfficiency ??
-          null
-        ),
-        toIncineration: numOrNull(
-          incCV.toIncineration ??
-          incCV.ToIncineration ??
-          prevCV.toIncineration ??
-          null
-        ),
-        toLandfill: numOrNull(
-          incCV.toLandfill ??
-          incCV.ToLandfill ??
-          prevCV.toLandfill ??
-          null
-        ),
-        toDisposal: numOrNull(
-          incCV.toDisposal ??
-          incCV.ToRecycling ??
-          prevCV.toDisposal ??
-          null
-        )
-      };
-
-      const hasAnyCustomValue = Object.values(mergedCV).some(v => v !== null);
-
-      if (hasAnyCustomValue) {
-        mergedTop.customValues = mergedCV;
-      }
-
-      return mergedTop;
     };
 
-    // ──────────────────────────────────────────────────────────────
-    // 6) Merge node shallow props
-    // ──────────────────────────────────────────────────────────────
-    const mergedNode = {
-      ...existingNode,
-      ...(nodeData && typeof nodeData === 'object' ? nodeData : {}),
-      id: nodeId
-    };
-
-    mergedNode.details = shallowMerge(
-      existingNode.details || {},
-      nodeData.details || {}
-    );
-
-    // ──────────────────────────────────────────────────────────────
-    // 7) Merge scopeDetails with rename support
-    // ──────────────────────────────────────────────────────────────
-    const incomingScopes = Array.isArray(nodeData?.details?.scopeDetails)
-      ? nodeData.details.scopeDetails
-      : null;
-
-    if (incomingScopes) {
-      const prevScopes = Array.isArray(existingNode.details?.scopeDetails)
-        ? existingNode.details.scopeDetails.map(s => ({ ...s }))
+    const mergeScopeDetails = (existingScopes = [], incomingScopes = []) => {
+      const previousScopes = Array.isArray(existingScopes)
+        ? existingScopes.map(toPlainObject)
         : [];
 
-      // Ensure stable UID on existing scopes
-      for (const s of prevScopes) {
-        if (!s.scopeUid) {
-          s.scopeUid = s.uid || s._id || uuidv4();
+      const newScopes = Array.isArray(incomingScopes)
+        ? incomingScopes.map(toPlainObject)
+        : [];
+
+      const previousByKey = new Map();
+      const previousByIdentifier = new Map();
+
+      for (const scope of previousScopes) {
+        const key = buildScopeKey(scope);
+        if (key) previousByKey.set(key, scope);
+
+        if (scope.scopeIdentifier) {
+          previousByIdentifier.set(String(scope.scopeIdentifier), scope);
         }
       }
-
-      const prevByUid = new Map(
-        prevScopes.map(s => [
-          String(s.scopeUid || s._id || s.scopeIdentifier),
-          s
-        ])
-      );
-
-      const prevByName = new Map(
-        prevScopes
-          .filter(s => s.scopeIdentifier)
-          .map(s => [String(s.scopeIdentifier), s])
-      );
 
       const consumed = new Set();
-
-      const pickExistingFor = (inc) => {
-        // 1) Match by stable UID
-        const incomingUid = inc.scopeUid || inc.uid || inc._id;
-        if (incomingUid && prevByUid.has(String(incomingUid))) {
-          return prevByUid.get(String(incomingUid));
-        }
-
-        // 2) Match by current/new name
-        if (inc.scopeIdentifier && prevByName.has(String(inc.scopeIdentifier))) {
-          return prevByName.get(String(inc.scopeIdentifier));
-        }
-
-        // 3) Match by old/previous/original name
-        for (const k of [
-          'previousScopeIdentifier',
-          'oldScopeIdentifier',
-          'originalScopeIdentifier'
-        ]) {
-          const oldName = inc?.[k];
-          if (oldName && prevByName.has(String(oldName))) {
-            return prevByName.get(String(oldName));
-          }
-        }
-
-        // 4) Last fallback: same type + category + activity
-        const candidate = prevScopes.find(s => {
-          return (
-            !consumed.has(s) &&
-            String(s.scopeType || '') === String(inc.scopeType || '') &&
-            String(s.categoryName || '') === String(inc.categoryName || '') &&
-            String(s.activity || '') === String(inc.activity || '')
-          );
-        });
-
-        return candidate || null;
-      };
-
       const mergedScopes = [];
 
-      for (const incRaw of incomingScopes) {
-        const inc = { ...(incRaw || {}) };
+      for (const incomingScope of newScopes) {
+        const incomingKey = buildScopeKey(incomingScope);
 
-        if (!inc.scopeUid) {
-          inc.scopeUid = inc.uid || inc._id || uuidv4();
+        let previous =
+          (incomingKey && previousByKey.get(incomingKey)) ||
+          (incomingScope.scopeIdentifier &&
+            previousByIdentifier.get(String(incomingScope.scopeIdentifier))) ||
+          null;
+
+        if (!previous && incomingScope.previousScopeIdentifier) {
+          previous = previousByIdentifier.get(
+            String(incomingScope.previousScopeIdentifier)
+          );
         }
 
-        const prev = pickExistingFor(inc) || {};
-
-        if (prev && Object.keys(prev).length > 0) {
-          consumed.add(prev);
+        if (!previous && incomingScope.oldScopeIdentifier) {
+          previous = previousByIdentifier.get(
+            String(incomingScope.oldScopeIdentifier)
+          );
         }
 
-        const finalScope = mergeScopeDetail(prev, inc);
+        if (!previous && incomingScope.originalScopeIdentifier) {
+          previous = previousByIdentifier.get(
+            String(incomingScope.originalScopeIdentifier)
+          );
+        }
 
-        // Keep stable identity
-        finalScope.scopeUid =
-          inc.scopeUid ||
-          prev.scopeUid ||
-          prev.uid ||
-          prev._id ||
+        const mergedScope = deepMergeSkipUndefined(previous || {}, incomingScope);
+
+        // Keep stable internal identity.
+        mergedScope.scopeUid =
+          incomingScope.scopeUid ||
+          incomingScope.uid ||
+          previous?.scopeUid ||
+          previous?.uid ||
+          previous?._id ||
           uuidv4();
 
-        // New name wins during rename
-        finalScope.scopeIdentifier =
-          inc.scopeIdentifier ||
-          prev.scopeIdentifier ||
+        // New name wins during rename.
+        mergedScope.scopeIdentifier =
+          incomingScope.scopeIdentifier ||
+          previous?.scopeIdentifier ||
           '';
 
-        mergedScopes.push(finalScope);
-      }
-
-      // Carry forward untouched previous scopes
-      for (const leftover of prevScopes) {
-        const alreadyUsed = consumed.has(leftover);
-        const alreadyInMerged = mergedScopes.some(s => {
-          return String(s.scopeUid) === String(leftover.scopeUid);
-        });
-
-        if (!alreadyUsed && !alreadyInMerged) {
-          mergedScopes.push(leftover);
+        // Preserve allocationPct if frontend did not send it.
+        if (
+          incomingScope.allocationPct === undefined &&
+          previous?.allocationPct !== undefined
+        ) {
+          mergedScope.allocationPct = previous.allocationPct;
         }
+
+        // Default allocation for a new scope.
+        if (mergedScope.allocationPct === undefined) {
+          mergedScope.allocationPct = 100;
+        }
+
+        consumed.add(previous);
+        mergedScopes.push(mergedScope);
       }
 
-      // Validate duplicate/missing scopeIdentifier
-      const nameSeen = new Set();
-
-      for (const s of mergedScopes) {
-        const name = String(s.scopeIdentifier || '').trim();
-
-        if (!name || nameSeen.has(name)) {
-          return res.status(400).json({
-            message: `Duplicate or missing scopeIdentifier "${name || '(empty)'}" after merge. Please ensure unique, non-empty names.`
+      // Keep existing scopes that were not included in this update.
+      // This prevents accidental deletion when frontend sends partial nodeData.
+      for (const previous of previousScopes) {
+        if (!consumed.has(previous)) {
+          const alreadyExists = mergedScopes.some((scope) => {
+            return (
+              String(scope.scopeUid || '') === String(previous.scopeUid || '') ||
+              String(scope.scopeIdentifier || '') ===
+                String(previous.scopeIdentifier || '')
+            );
           });
-        }
 
-        nameSeen.add(name);
+          if (!alreadyExists) {
+            mergedScopes.push(previous);
+          }
+        }
       }
 
-      mergedNode.details.scopeDetails = mergedScopes;
+      // Validate duplicate or missing scopeIdentifier.
+      const seen = new Set();
+
+      for (const scope of mergedScopes) {
+        if (scope.isDeleted) continue;
+
+        const name = String(scope.scopeIdentifier || '').trim();
+
+        if (!name) {
+          throw new Error('Each active scope detail must have a scopeIdentifier.');
+        }
+
+        if (seen.has(name)) {
+          throw new Error(
+            `Duplicate scopeIdentifier "${name}" found after node update.`
+          );
+        }
+
+        seen.add(name);
+      }
+
+      return mergedScopes;
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // 4) Build merged node
+    // ─────────────────────────────────────────────────────────────
+    const existingNode = toPlainObject(currentNodes[nodeIndex]);
+    const incomingNode = toPlainObject(nodeData);
+
+    const mergedNode = deepMergeSkipUndefined(existingNode, incomingNode);
+
+    // Do not allow route node id to be changed accidentally.
+    mergedNode.id = existingNode.id || nodeId;
+
+    // Merge details safely.
+    mergedNode.details = deepMergeSkipUndefined(
+      existingNode.details || {},
+      incomingNode.details || {}
+    );
+
+    if (Object.prototype.hasOwnProperty.call(incomingNode, 'label')) {
+      mergedNode.label = incomingNode.label;
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 8) Build updated nodes array safely
-    // IMPORTANT:
-    // nodes is encrypted/Mixed.
-    // Do NOT use processFlowchart.nodes.set(...).
-    // Do NOT use MongoDB positional update.
-    // Build a plain JS array and assign it back before save.
-    // ──────────────────────────────────────────────────────────────
-    const updatedNodes = currentNodes.map((n, index) => {
-      if (index === nodeIndex) return mergedNode;
-      return toPlainObject(n);
+    if (incomingNode.position !== undefined) {
+      mergedNode.position = incomingNode.position;
+    }
+
+    if (incomingNode.type !== undefined) {
+      mergedNode.type = incomingNode.type;
+    }
+
+    if (incomingNode.data !== undefined) {
+      mergedNode.data = deepMergeSkipUndefined(existingNode.data || {}, incomingNode.data);
+    }
+
+    if (incomingNode.details?.employeeHeadId !== undefined) {
+      mergedNode.details.employeeHeadId = normalizeObjectIdLike(
+        incomingNode.details.employeeHeadId
+      );
+    }
+
+    if (Array.isArray(incomingNode.details?.scopeDetails)) {
+      mergedNode.details.scopeDetails = mergeScopeDetails(
+        existingNode.details?.scopeDetails || [],
+        incomingNode.details.scopeDetails
+      );
+    }
+
+    // Preserve/add CEF comments if your helper is available.
+    let finalMergedNode = mergedNode;
+
+    if (typeof addCEFCommentsToNodes === 'function') {
+      const withComments = addCEFCommentsToNodes([mergedNode]);
+      finalMergedNode = withComments?.[0] || mergedNode;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 5) Build updated plain JS nodes array
+    // CRITICAL FIX:
+    // Do NOT use processFlowchart.nodes.set(...)
+    // because nodes is encrypted/Mixed.
+    // ─────────────────────────────────────────────────────────────
+    const updatedNodes = currentNodes.map((node, index) => {
+      if (index === nodeIndex) return finalMergedNode;
+      return toPlainObject(node);
     });
 
-    // ──────────────────────────────────────────────────────────────
-    // 9) Validate allocation percentages before save
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 6) Validate allocations before save
+    // ─────────────────────────────────────────────────────────────
     const allocationValidation = validateAllocations(updatedNodes, {
       includeFromOtherChart: false,
-      includeDeleted: false
+      includeDeleted: false,
     });
 
     if (!allocationValidation.isValid) {
       const errorResponse = formatValidationError(allocationValidation);
 
       return res.status(400).json({
-        message: 'Allocation validation failed',
+        success: false,
+        message: 'Allocation validation failed.',
         code: 'ALLOCATION_VALIDATION_FAILED',
         details: errorResponse,
-        hint: 'When a scopeIdentifier appears in multiple nodes, the sum of allocationPct across all nodes must equal 100%',
-        affectedScopeIdentifiers: allocationValidation.errors.map(e => ({
-          scopeIdentifier: e.scopeIdentifier,
-          currentSum: e.currentSum,
+        hint:
+          'When a scopeIdentifier appears in multiple nodes, the sum of allocationPct across all nodes must equal 100%.',
+        affectedScopeIdentifiers: allocationValidation.errors.map((error) => ({
+          scopeIdentifier: error.scopeIdentifier,
+          currentSum: error.currentSum,
           expectedSum: 100,
-          nodes: e.entries.map(en => ({
-            nodeId: en.nodeId,
-            nodeLabel: en.nodeLabel,
-            allocationPct: en.allocationPct
-          }))
-        }))
+          nodes: error.entries.map((entry) => ({
+            nodeId: entry.nodeId,
+            nodeLabel: entry.nodeLabel,
+            allocationPct: entry.allocationPct,
+          })),
+        })),
       });
     }
 
-    if (allocationValidation.warnings.length > 0) {
+    if (allocationValidation.warnings?.length > 0) {
       console.warn(
-        '⚠️ Allocation warnings for client',
+        '⚠️ Allocation warnings for process flowchart client',
         clientId,
         ':',
         allocationValidation.warnings
       );
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 10) Quota check before DB save
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 7) Quota check
+    // ─────────────────────────────────────────────────────────────
     if (isQuotaSubject(req.user.userType)) {
-      try {
-        const quotaConsultantId = await getAssignedConsultantId(clientId);
+      const quotaConsultantId = await getAssignedConsultantId(clientId);
 
-        if (quotaConsultantId) {
-          const quotaResult = await checkFlowchartQuota({
-            clientId,
-            consultantId: quotaConsultantId,
-            nodes: updatedNodes,
-            chartType: 'processFlowchart'
+      if (quotaConsultantId) {
+        const quotaResult = await checkFlowchartQuota({
+          clientId,
+          consultantId: quotaConsultantId,
+          nodes: updatedNodes,
+          chartType: 'processFlowchart',
+        });
+
+        if (!quotaResult.allowed) {
+          return res.status(422).json({
+            success: false,
+            message: 'Process flowchart quota exceeded.',
+            code: 'QUOTA_EXCEEDED',
+            quotaErrors: quotaResult.errors.map((error) => ({
+              resource: error.resource,
+              limit: error.limit,
+              used: error.used,
+              remaining: error.remaining,
+              attempted: error.newTotal,
+              message: error.message,
+            })),
           });
-
-          if (!quotaResult.allowed) {
-            return res.status(422).json({
-              success: false,
-              message: 'Process flowchart quota exceeded.',
-              code: 'QUOTA_EXCEEDED',
-              quotaErrors: quotaResult.errors.map(e => ({
-                resource: e.resource,
-                limit: e.limit,
-                used: e.used,
-                remaining: e.remaining,
-                attempted: e.newTotal,
-                message: e.message
-              }))
-            });
-          }
         }
-      } catch (qErr) {
-        console.error('❌ Quota check error in updateProcessFlowchartNode:', qErr);
-        throw qErr;
       }
     }
 
-    // ──────────────────────────────────────────────────────────────
-    // 11) EF change detection before save
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 8) Detect Employee Commuting Tier 2 EF changes before save
+    // ─────────────────────────────────────────────────────────────
     const updatePFEFChanges = _pfDetectAndRecordEFChanges(
-      existingNode.details?.scopeDetails ?? [],
-      mergedNode.details?.scopeDetails ?? [],
+      existingNode.details?.scopeDetails || [],
+      finalMergedNode.details?.scopeDetails || [],
       req.user?._id || req.user?.id || null
     );
 
-    // ──────────────────────────────────────────────────────────────
-    // 12) Save to database
-    // ──────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // 9) Save
+    // ─────────────────────────────────────────────────────────────
     processFlowchart.nodes = updatedNodes;
     processFlowchart.markModified('nodes');
 
     processFlowchart.lastModifiedBy = req.user?._id || req.user?.id || null;
     processFlowchart.version = (processFlowchart.version || 1) + 1;
+
+    // This endpoint updates node content only, not edge connectivity.
+    // Prevent unrelated existing edge-validation issues from blocking a node edit.
+    processFlowchart.$locals = processFlowchart.$locals || {};
+    processFlowchart.$locals.skipEdgeValidation = true;
 
     await processFlowchart.save();
 
@@ -1848,30 +1692,30 @@ const updateProcessFlowchartNode = async (req, res) => {
       `Process node updated — nodeId: ${nodeId}, client: ${clientId}, version: ${processFlowchart.version}`
     );
 
-    // Fire per-scope EF audit logs
-    for (const c of updatePFEFChanges) {
+    for (const change of updatePFEFChanges) {
       await logProcessFlowEmissionFactorUpdate(
         req,
         processFlowchart,
         nodeId,
-        c.scopeIdentifier,
-        c.previousEFs,
-        c.newEFs
+        change.scopeIdentifier,
+        change.previousEFs,
+        change.newEFs
       );
     }
 
     return res.status(200).json({
-      message: 'Node updated successfully',
-      node: processFlowchart.nodes[nodeIndex],
-      version: processFlowchart.version
+      success: true,
+      message: 'Node updated successfully.',
+      node: updatedNodes[nodeIndex],
+      version: processFlowchart.version,
     });
-
   } catch (error) {
     console.error('Update process flowchart node error:', error);
 
     return res.status(500).json({
-      message: 'Failed to update node',
-      error: error.message
+      success: false,
+      message: 'Failed to update node.',
+      error: error.message,
     });
   }
 };
