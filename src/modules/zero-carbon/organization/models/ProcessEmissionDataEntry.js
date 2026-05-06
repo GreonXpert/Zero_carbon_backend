@@ -170,5 +170,7 @@ const ProcessEmissionDataEntrySchema = new mongoose.Schema(
 ProcessEmissionDataEntrySchema.index({ clientId: 1, nodeId: 1, scopeIdentifier: 1, timestamp: -1 });
 ProcessEmissionDataEntrySchema.index({ clientId: 1, scopeIdentifier: 1, timestamp: -1 });
 ProcessEmissionDataEntrySchema.index({ sourceDataEntryId: 1 });
+// Supports the summary aggregation query: { clientId, emissionCalculationStatus, timestamp range }
+ProcessEmissionDataEntrySchema.index({ clientId: 1, emissionCalculationStatus: 1, timestamp: -1 });
 
 module.exports = mongoose.model('ProcessEmissionDataEntry', ProcessEmissionDataEntrySchema);

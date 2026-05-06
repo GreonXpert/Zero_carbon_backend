@@ -13,6 +13,7 @@ const { saveUserProfileImage } = require('../../utils/uploads/userImageUploadS3'
 const mongoose = require('mongoose');
 
 const { getNormalizedLevels } = require("../../utils/Permissions/permissions");
+const { normalizeAssessmentLevels } = require('../../../modules/zero-carbon/workflow/assessmentLevel');
 
 // Import OTP Helper for 2FA
 const {
@@ -1665,6 +1666,43 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 };
 
 // ==========================================
+// HELPER FUNCTION - Resolve assessmentLevel for a new user
+// Validates that requested levels are a subset of the client's configured levels.
+// If none requested, defaults to the full set of client levels.
+// ==========================================
+function resolveUserAssessmentLevels(requested, clientDoc) {
+  const clientLevels = normalizeAssessmentLevels(
+    clientDoc?.submissionData?.assessmentLevel ?? []
+  );
+
+  // If caller didn't specify, inherit whatever the client has (may be empty)
+  if (requested === undefined || requested === null) {
+    return { ok: true, value: clientLevels };
+  }
+
+  const requestedNorm = normalizeAssessmentLevels(
+    Array.isArray(requested) ? requested : [requested]
+  );
+
+  // If client has no levels configured yet, allow any valid level through
+  if (clientLevels.length === 0) {
+    return { ok: true, value: requestedNorm };
+  }
+
+  // Requested levels must be a subset of the client's configured levels
+  const invalid = requestedNorm.filter(l => !clientLevels.includes(l));
+  if (invalid.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      message: `assessmentLevel contains values not available for this client: [${invalid.join(', ')}]. Allowed: [${clientLevels.join(', ')}]`,
+    };
+  }
+
+  return { ok: true, value: requestedNorm };
+}
+
+// ==========================================
 // HELPER FUNCTION - Extract field from error message
 // ==========================================
 function extractFieldFromError(errorMessage) {
@@ -1708,8 +1746,8 @@ const createEmployeeHead = async (req, res) => {
 
     console.log(`📊 Processing ${payloads.length} Employee Head(s)`);
 
-    const results = { 
-      created: [], 
+    const results = {
+      created: [],
       errors: [],
       summary: {
         total: payloads.length,
@@ -1717,6 +1755,12 @@ const createEmployeeHead = async (req, res) => {
         failed: 0
       }
     };
+
+    // Fetch client doc once for assessmentLevel enforcement
+    const clientDocForEH = await Client.findOne(
+      { clientId: req.user.clientId },
+      { 'submissionData.assessmentLevel': 1 }
+    ).lean();
 
     // ==========================================
     // 3. PROCESS EACH EMPLOYEE HEAD
@@ -1825,6 +1869,10 @@ const createEmployeeHead = async (req, res) => {
           throw new Error(conflictMessage);
         }
 
+        // ── Resolve assessmentLevel ──────────────────────────────────
+        const ehAlResult = resolveUserAssessmentLevels(data.assessmentLevel, clientDocForEH);
+        if (!ehAlResult.ok) throw new Error(ehAlResult.message);
+
         // ==========================================
         // 7. CREATE EMPLOYEE HEAD
         // ==========================================
@@ -1846,6 +1894,7 @@ const createEmployeeHead = async (req, res) => {
           createdBy: req.user.id,
           parentUser: req.user.id,
           accessibleModules: ['zero_carbon'],
+          assessmentLevel: ehAlResult.value,
           permissions: {
             canViewAllClients: false,
             canManageUsers: true,
@@ -2124,6 +2173,14 @@ const createEmployee = async (req, res) => {
         const exists = await User.findOne({ $or: [{ email }, { userName }] });
         if (exists) throw new Error('Email or Username already exists');
 
+        // ── Resolve assessmentLevel ────────────────────────────────
+        const empClientDoc = await Client.findOne(
+          { clientId: req.user.clientId },
+          { 'submissionData.assessmentLevel': 1 }
+        ).lean();
+        const empAlResult = resolveUserAssessmentLevels(data.assessmentLevel, empClientDoc);
+        if (!empAlResult.ok) throw new Error(empAlResult.message);
+
         const hashed = bcrypt.hashSync(password, 10);
         const employeeHeadId = req.user.userType === 'client_employee_head' ? req.user.id : null;
         const emp = new User({
@@ -2142,6 +2199,7 @@ const createEmployee = async (req, res) => {
           createdBy: req.user.id,
           parentUser: req.user.id,
           accessibleModules: ['zero_carbon'],
+          assessmentLevel: empAlResult.value,
           permissions: {
             canViewAllClients: false,
             canManageUsers: false,
@@ -2284,6 +2342,12 @@ const createAuditor = async (req, res) => {
 
     const resolvedModules = accessibleModulesResult.value;
 
+    // ── Resolve assessmentLevel ──────────────────────────────────────────────
+    const auditorAlResult = resolveUserAssessmentLevels(req.body.assessmentLevel, clientDoc);
+    if (!auditorAlResult.ok) {
+      return res.status(auditorAlResult.status).json({ message: auditorAlResult.message });
+    }
+
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
@@ -2316,6 +2380,7 @@ const createAuditor = async (req, res) => {
       createdBy: actor.id,
       isActive: true,
       accessibleModules: resolvedModules,
+      assessmentLevel: auditorAlResult.value,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -2447,6 +2512,13 @@ const createViewer = async (req, res) => {
     }
 
     const resolvedModulesV = accessibleModulesResult.value;
+
+    // ── Resolve assessmentLevel ──────────────────────────────────────────────
+    const viewerAlResult = resolveUserAssessmentLevels(req.body.assessmentLevel, clientDocV);
+    if (!viewerAlResult.ok) {
+      return res.status(viewerAlResult.status).json({ message: viewerAlResult.message });
+    }
+
     // ── Parse + validate accessControls ─────────────────────────────────────
     let resolvedAccessControls;
     const acParsed = parseAccessControls(accessControls);
@@ -2479,6 +2551,7 @@ const createViewer = async (req, res) => {
       createdBy: actor.id,
       isActive: true,
       accessibleModules: resolvedModulesV,
+      assessmentLevel: viewerAlResult.value,
       permissions: {
         canViewAllClients: false,
         canManageUsers: false,
@@ -6880,6 +6953,12 @@ const createContributor = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
+    // ── Resolve assessmentLevel ────────────────────────────────────────────
+    const contribAlResult = resolveUserAssessmentLevels(req.body.assessmentLevel, clientDoc);
+    if (!contribAlResult.ok) {
+      return res.status(contribAlResult.status).json({ message: contribAlResult.message });
+    }
+
     const slot = await reserveUserTypeSlot(resolvedClientId, 'contributor');
     if (!slot.allowed) {
       return res.status(429).json({
@@ -6900,6 +6979,7 @@ const createContributor = async (req, res) => {
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
+      assessmentLevel: contribAlResult.value,
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: false, canEditBoundaries: false, canSubmitData: true, canAudit: false },
     });
 
@@ -6947,6 +7027,12 @@ const createReviewer = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
+    // ── Resolve assessmentLevel ────────────────────────────────────────────
+    const reviewerAlResult = resolveUserAssessmentLevels(req.body.assessmentLevel, clientDoc);
+    if (!reviewerAlResult.ok) {
+      return res.status(reviewerAlResult.status).json({ message: reviewerAlResult.message });
+    }
+
     const slot = await reserveUserTypeSlot(resolvedClientId, 'reviewer');
     if (!slot.allowed) {
       return res.status(429).json({
@@ -6967,6 +7053,7 @@ const createReviewer = async (req, res) => {
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
+      assessmentLevel: reviewerAlResult.value,
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
 
@@ -7014,6 +7101,12 @@ const createApprover = async (req, res) => {
     const existing = await User.findOne({ $or: [{ email }, { userName }] });
     if (existing) return res.status(409).json({ message: 'Email or Username already exists' });
 
+    // ── Resolve assessmentLevel ────────────────────────────────────────────
+    const approverAlResult = resolveUserAssessmentLevels(req.body.assessmentLevel, clientDoc);
+    if (!approverAlResult.ok) {
+      return res.status(approverAlResult.status).json({ message: approverAlResult.message });
+    }
+
     const slot = await reserveUserTypeSlot(resolvedClientId, 'approver');
     if (!slot.allowed) {
       return res.status(429).json({
@@ -7034,6 +7127,7 @@ const createApprover = async (req, res) => {
       createdBy: req.user.id,
       isActive: true,
       accessibleModules: ['esg_link'],
+      assessmentLevel: approverAlResult.value,
       permissions: { canViewAllClients: false, canManageUsers: false, canManageClients: false, canViewReports: true, canEditBoundaries: false, canSubmitData: false, canAudit: false },
     });
 

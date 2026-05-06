@@ -2,6 +2,7 @@
 
 const EmissionSummary = require('./EmissionSummary');
 const DataEntry = require('../organization/models/DataEntry');
+const redisCache = require('../../../common/utils/redisCache');
 
 // ProcessEmissionDataEntry: separate collection for process-flowchart emission entries.
 // Each record stores original + allocated values per processFlowchart node.
@@ -253,7 +254,22 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       timestamp: { $gte: from, $lte: to }
     };
 
-    const dataEntries = await DataEntry.find(query).lean();
+    // Run independent queries in parallel (Change 2: projections, Change 3: parallel)
+    const DATA_ENTRY_PROJECTION = 'calculatedEmissions nodeId scopeIdentifier categoryName activity scopeType inputType emissionFactor timestamp _id';
+    const PROCESS_ENTRY_PROJECTION = 'calculatedEmissions nodeId scopeIdentifier scopeType inputType emissionFactor categoryName activity timestamp _id';
+
+    const [dataEntries, activeChart, fetchedProcessEntries] = await Promise.all([
+      DataEntry.find(query).select(DATA_ENTRY_PROJECTION).lean(),
+      getActiveFlowchart(clientId),
+      ProcessEmissionDataEntry.find({
+        clientId,
+        emissionCalculationStatus: 'completed',
+        timestamp: { $gte: from, $lte: to }
+      }).select(PROCESS_ENTRY_PROJECTION).lean().catch(e => {
+        console.warn('[ProcessEmissionSummary] Parallel fetch error:', e.message);
+        return [];
+      })
+    ]);
 
     // ============================================================
     // CASE 1: NO DATA FOUND
@@ -319,7 +335,6 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     // ============================================================
     console.log(`Found ${dataEntries.length} data entries.`);
 
-    const activeChart = await getActiveFlowchart(clientId);
     if (!activeChart || !activeChart.chart) {
       console.error(`No active flowchart found for ${clientId}`);
       return null;
@@ -539,29 +554,12 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       s3: emissionSummary.byScope["Scope 3"].CO2e
     });
 
-    // ============================================================
-    // FETCH PROCESS EMISSION DATA ENTRIES
-    // ProcessEmissionDataEntry is a dedicated collection that stores
-    // pre-computed allocated emissions per ProcessFlowchart node.
-    // Schema: calculatedEmissions.incoming.{ allocationPct, original{Map}, allocated{Map} }
-    // We query by clientId + timestamp range — same period window as main entries.
-    // ============================================================
-    let fetchedProcessEntries = [];
-    try {
-      fetchedProcessEntries = await ProcessEmissionDataEntry.find({
-        clientId,
-        emissionCalculationStatus: 'completed',
-        timestamp: { $gte: from, $lte: to }
-      }).lean();
-
-      console.log(
-        `[ProcessEmissionSummary] Fetched ${fetchedProcessEntries.length} ` +
-        `ProcessEmissionDataEntry record(s) for client ${clientId} ` +
-        `in period [${from.toISOString()} – ${to.toISOString()}]`
-      );
-    } catch (fetchErr) {
-      console.warn('[ProcessEmissionSummary] Failed to fetch ProcessEmissionDataEntry:', fetchErr.message);
-    }
+    // fetchedProcessEntries was already fetched in the parallel Promise.all above.
+    console.log(
+      `[ProcessEmissionSummary] Fetched ${fetchedProcessEntries.length} ` +
+      `ProcessEmissionDataEntry record(s) for client ${clientId} ` +
+      `in period [${from.toISOString()} – ${to.toISOString()}]`
+    );
 
     // ============================================================
     // BUILD PROCESS EMISSION SUMMARY
@@ -1369,6 +1367,20 @@ async function buildProcessEmissionSummary(
     let   anyPreAllocated    = false;
 
     // ══════════════════════════════════════════════════════════════════════════
+    // Change 4: Build O(1) scopeIdentifier → processNode lookup to avoid O(n²)
+    // inner-loop scan during the entry processing below.
+    // ══════════════════════════════════════════════════════════════════════════
+    const scopeIdentifierToNodeMap = new Map();
+    for (const [, nodeData] of processNodeMap) {
+      for (const sd of (nodeData.scopeDetails || [])) {
+        const key = (sd.scopeIdentifier || '').toLowerCase();
+        if (key && !scopeIdentifierToNodeMap.has(key)) {
+          scopeIdentifierToNodeMap.set(key, nodeData);
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     // STEP 4 — Process each entry
     //
     // For STRATEGY A entries (process DataEntries):
@@ -1420,19 +1432,9 @@ async function buildProcessEmissionSummary(
         // whose scopeDetails contains the matching scopeIdentifier.
         let procNode = processNodeMap.get(entry.nodeId);
 
-        // Fallback: search by scopeIdentifier when nodeId doesn't match
-        // (Strategy B: org-chart DataEntry nodeId ≠ process-chart nodeId)
+        // Fallback: O(1) lookup via pre-built scopeIdentifierToNodeMap (Change 4)
         if (!procNode && entry.scopeIdentifier) {
-          for (const [, nodeData] of processNodeMap) {
-            const scopeMatch = (nodeData.scopeDetails || []).some(
-              sd => (sd.scopeIdentifier || '').toLowerCase() ===
-                    (entry.scopeIdentifier || '').toLowerCase()
-            );
-            if (scopeMatch) {
-              procNode = nodeData;
-              break;
-            }
-          }
+          procNode = scopeIdentifierToNodeMap.get((entry.scopeIdentifier || '').toLowerCase()) || null;
         }
 
         const orgNode  = orgNodeMap ? orgNodeMap.get(entry.nodeId) : null;
@@ -2051,14 +2053,27 @@ const getEmissionSummary = async (req, res) => {
     const noParts = !year && !month && !week && !day;
     const baseQuery = { clientId, "period.type": periodType };
 
+    // Change 5: Redis cache key + TTL
+    const redisCacheKey = redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d);
+    const redisTTL      = redisCache.emissionSummaryTTL(y);
+
     let summary;
+    let dataFreshness = 'fresh'; // exposed in response so frontend can show "refreshing…"
 
     // ----------------------------------------------------
     // 1) Load or recalculate summary
     // ----------------------------------------------------
     if (recalculate === "true") {
+      // Explicit recalculate: bust Redis + DB, then recompute synchronously
+      await redisCache.del(redisCacheKey);
       summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
     } else {
+      // Change 5: Try Redis first — fastest path (<1 ms)
+      const cached = await redisCache.get(redisCacheKey);
+      if (cached) {
+        return res.status(200).json(cached);
+      }
+
       if (noParts) {
         summary = await EmissionSummary.findOne(baseQuery)
           .sort({ "period.to": -1, updatedAt: -1 })
@@ -2077,7 +2092,8 @@ const getEmissionSummary = async (req, res) => {
           summary.metadata &&
           (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
 
-        if (!summary || stale) {
+        if (!summary) {
+          // No cached document at all — must calculate synchronously (first-ever request)
           const recomputed = await recalculateAndSaveSummary(
             clientId, periodType, y, m, w, d, req.user?._id
           );
@@ -2088,6 +2104,14 @@ const getEmissionSummary = async (req, res) => {
               .sort({ "period.to": -1, updatedAt: -1 })
               .lean();
           }
+        } else if (stale) {
+          // Change 1: Stale cache — return immediately, recalculate in background
+          dataFreshness = 'stale';
+          setImmediate(() => {
+            recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id)
+              .then(() => redisCache.del(redisCacheKey))
+              .catch(err => console.error('[BgRecalc] Error:', err.message));
+          });
         }
       }
     }
@@ -2141,14 +2165,17 @@ const getEmissionSummary = async (req, res) => {
       emissionSummary,
       reductionSummary,
       processEmissionSummary,          // ← always attached at root
-      metadata: summary.metadata || {}
+      metadata: summary.metadata || {},
+      data_freshness: dataFreshness    // 'fresh' | 'stale' — frontend can show "refreshing…"
     };
 
     // ----------------------------------------------------
-    // 3) type-based responses
+    // 3) type-based responses + Change 5: write to Redis
     // ----------------------------------------------------
+    let responsePayload;
+
     if (type === "emission") {
-      return res.status(200).json({
+      responsePayload = {
         success: true,
         type: "emission",
         data: {
@@ -2156,43 +2183,50 @@ const getEmissionSummary = async (req, res) => {
           period: baseResponse.period,
           emissionSummary: baseResponse.emissionSummary,
           processEmissionSummary: baseResponse.processEmissionSummary,
-          metadata: baseResponse.metadata
+          metadata: baseResponse.metadata,
+          data_freshness: dataFreshness
         }
-      });
-    }
-
-    if (type === "reduction") {
-      return res.status(200).json({
+      };
+    } else if (type === "reduction") {
+      responsePayload = {
         success: true,
         type: "reduction",
         data: {
           clientId: baseResponse.clientId,
           period: baseResponse.period,
           reductionSummary: baseResponse.reductionSummary,
-          metadata: baseResponse.metadata
+          metadata: baseResponse.metadata,
+          data_freshness: dataFreshness
         }
-      });
-    }
-
-    if (type === "process") {
-      return res.status(200).json({
+      };
+    } else if (type === "process") {
+      responsePayload = {
         success: true,
         type: "process",
         data: {
           clientId: baseResponse.clientId,
           period: baseResponse.period,
           processEmissionSummary: baseResponse.processEmissionSummary,
-          metadata: baseResponse.metadata
+          metadata: baseResponse.metadata,
+          data_freshness: dataFreshness
         }
-      });
+      };
+    } else {
+      // both (default)
+      responsePayload = {
+        success: true,
+        type: "both",
+        data: baseResponse
+      };
     }
 
-    // both (default)
-    return res.status(200).json({
-      success: true,
-      type: "both",
-      data: baseResponse
-    });
+    // Write to Redis only for fresh/non-stale data so stale responses
+    // don't overwrite a potentially newer background calculation result.
+    if (dataFreshness === 'fresh') {
+      redisCache.set(redisCacheKey, responsePayload, redisTTL).catch(() => {});
+    }
+
+    return res.status(200).json(responsePayload);
 
   } catch (error) {
     console.error("❌ Error getting emission summary:", error);
