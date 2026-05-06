@@ -616,9 +616,9 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
     scopeIdentifier: this.scopeIdentifier,
     inputType: this.inputType,
     _id: { $ne: this._id },
-    timestamp: { $lt: this.timestamp },
+    timestamp: { $lte: this.timestamp },
     isSummary: false // Don't consider summary entries for cumulative calculation
-  }).sort({ timestamp: -1 });
+  }).sort({ timestamp: -1, _id: -1 });
   
   // Initialize tracking objects
   const cumulativeValues = {};

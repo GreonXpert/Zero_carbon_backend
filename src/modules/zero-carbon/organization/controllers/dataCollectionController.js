@@ -5384,7 +5384,7 @@ const streamDataValuesAndCumulative = async (req, res) => {
       {
         $match: changeStreamMatch
       }
-    ]);
+    ], { fullDocument: 'updateLookup' });
 
     changeStream.on('change', (change) => {
       const entry = change.fullDocument;
