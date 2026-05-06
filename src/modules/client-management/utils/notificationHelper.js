@@ -453,6 +453,95 @@ const createSubscriptionPendingNotification = async (client, requestedBy) => {
   }
 };
 
+/**
+ * Create a notification for ESG API key lifecycle events.
+ * @param {String} event - 'revoked' | 'renewed' | 'expiring_30' | 'expiring_7' | 'expiring_3'
+ * @param {Object} keyInfo - { keyPrefix, expiresAt, keyType, nodeId, mappingId, _id }
+ * @param {Object} client  - full Client mongoose document
+ */
+const createEsgApiKeyNotification = async (event, keyInfo, client) => {
+  try {
+    const clientAdmin  = await User.findById(client.accountDetails?.clientAdminId);
+    const consultantId = client.leadInfo?.assignedConsultantId;
+    const consultant   = consultantId ? await User.findById(consultantId) : null;
+
+    const expiryDate   = keyInfo.expiresAt
+      ? new Date(keyInfo.expiresAt).toLocaleDateString('en-GB')
+      : 'N/A';
+    const keyRef       = `${keyInfo.keyPrefix}... (${keyInfo.keyType})`;
+    const scopeRef     = `Node: ${keyInfo.nodeId} / Mapping: ${keyInfo.mappingId}`;
+
+    let title, message, priority, targetUsers;
+
+    switch (event) {
+      case 'revoked':
+        title       = `ESG API Key Revoked – ${keyInfo.keyPrefix}...`;
+        message     = `An ESG API key has been revoked for client ${client.clientId}.\n\nKey: ${keyRef}\n${scopeRef}\n\nPlease generate a new key if data ingestion needs to continue.`;
+        priority    = 'high';
+        targetUsers = [clientAdmin?._id].filter(Boolean);
+        break;
+
+      case 'renewed':
+        title       = `ESG API Key Renewed – ${keyInfo.keyPrefix}...`;
+        message     = `An ESG API key has been renewed for client ${client.clientId}.\n\nKey: ${keyRef}\n${scopeRef}\nNew expiry: ${expiryDate}`;
+        priority    = 'medium';
+        targetUsers = [clientAdmin?._id].filter(Boolean);
+        break;
+
+      case 'expiring_30':
+        title       = `ESG API Key Expiring in 30 Days – ${keyInfo.keyPrefix}...`;
+        message     = `An ESG API key for client ${client.clientId} will expire in 30 days.\n\nKey: ${keyRef}\n${scopeRef}\nExpiry date: ${expiryDate}\n\nPlease plan a renewal to avoid data ingestion interruption.`;
+        priority    = 'medium';
+        targetUsers = [clientAdmin?._id].filter(Boolean);
+        break;
+
+      case 'expiring_7':
+        title       = `ESG API Key Expiring in 7 Days – ${keyInfo.keyPrefix}...`;
+        message     = `An ESG API key for client ${client.clientId} expires in 7 days.\n\nKey: ${keyRef}\n${scopeRef}\nExpiry date: ${expiryDate}\n\nRenew the key immediately to prevent data ingestion failure.`;
+        priority    = 'high';
+        targetUsers = [clientAdmin?._id, consultant?._id].filter(Boolean);
+        break;
+
+      case 'expiring_3':
+        title       = `ESG API Key Expiring Soon (3 Days) – ${keyInfo.keyPrefix}...`;
+        message     = `URGENT: An ESG API key for client ${client.clientId} expires in 3 days.\n\nKey: ${keyRef}\n${scopeRef}\nExpiry date: ${expiryDate}\n\nRenew immediately to avoid data ingestion downtime.`;
+        priority    = 'urgent';
+        targetUsers = [clientAdmin?._id, consultant?._id].filter(Boolean);
+        break;
+
+      default:
+        return;
+    }
+
+    if (!targetUsers.length) return;
+
+    const notification = new Notification({
+      title,
+      message,
+      priority,
+      createdBy:           null,
+      creatorType:         'super_admin',
+      targetUsers,
+      status:              'published',
+      publishedAt:         new Date(),
+      isSystemNotification: true,
+      systemAction:        `esg_api_key_${event}`,
+      relatedEntity: {
+        type: 'esg_api_key',
+        id:   keyInfo._id,
+      },
+    });
+
+    await notification.save();
+
+    if (global.broadcastNotification) {
+      await global.broadcastNotification(notification);
+    }
+  } catch (error) {
+    console.error(`Failed to create ESG API key ${event} notification:`, error);
+  }
+};
+
 module.exports = {
   createLeadActionNotification,
   createDataSubmissionNotification,
@@ -460,4 +549,5 @@ module.exports = {
   createConsultantAssignmentNotification,
   createSubscriptionNotification,
   createSubscriptionPendingNotification,
+  createEsgApiKeyNotification,
 };

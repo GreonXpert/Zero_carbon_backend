@@ -5364,37 +5364,43 @@ const streamDataValuesAndCumulative = async (req, res) => {
 
     res.write(`data: ${JSON.stringify({ type: 'initial', data: serialized })}\n\n`);
 
-    // Build the change stream $match with role-based constraints
-    const changeStreamMatch = {
-      'fullDocument.clientId': clientId,
-      ...(nodeId && { 'fullDocument.nodeId': nodeId }),
-      ...(scopeIdentifier && { 'fullDocument.scopeIdentifier': scopeIdentifier }),
-      operationType: { $in: ['insert', 'update'] },
-      // Apply role-based constraints to the change stream as well
-      ...(accessConstraint?.nodeId && {
-        'fullDocument.nodeId': { $in: accessConstraint.nodeId.$in }
-      }),
-      ...(accessConstraint?.scopeIdentifier && {
-        'fullDocument.scopeIdentifier': { $in: accessConstraint.scopeIdentifier.$in }
-      }),
-    };
+    // Heartbeat every 25s to keep the SSE connection alive through proxies/nginx
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': ping\n\n');
+    }, 25000);
 
-    // Set up change stream for real-time updates
+    // fullDocument.* $match filters don't work for UPDATE events — the lookup
+    // resolves AFTER the pipeline stage runs, so those events are silently dropped.
+    // Use a minimal pipeline and filter in the handler instead.
     const changeStream = DataEntry.watch([
-      {
-        $match: changeStreamMatch
-      }
+      { $match: { operationType: { $in: ['insert', 'update', 'replace'] } } }
     ], { fullDocument: 'updateLookup' });
 
     changeStream.on('change', (change) => {
       const entry = change.fullDocument;
       if (!entry) return;
 
+      // Filter in code — safe for both insert and update events
+      if (String(entry.clientId) !== String(clientId)) return;
+      if (nodeId && String(entry.nodeId) !== String(nodeId)) return;
+      if (scopeIdentifier && String(entry.scopeIdentifier) !== String(scopeIdentifier)) return;
+
+      // Role-based access constraints
+      if (accessConstraint?.nodeId?.$in) {
+        const allowed = accessConstraint.nodeId.$in.map(String);
+        if (!allowed.includes(String(entry.nodeId))) return;
+      }
+      if (accessConstraint?.scopeIdentifier?.$in) {
+        const allowed = accessConstraint.scopeIdentifier.$in.map(String);
+        if (!allowed.includes(String(entry.scopeIdentifier))) return;
+      }
+
       const data = {
         _id: entry._id,
         clientId: entry.clientId,
         nodeId: entry.nodeId,
         scopeIdentifier: entry.scopeIdentifier,
+        inputType: entry.inputType || 'MANUAL',
         timestamp: entry.timestamp,
         dataValues: entry.dataValues instanceof Map
           ? Object.fromEntries(entry.dataValues)
@@ -5413,6 +5419,7 @@ const streamDataValuesAndCumulative = async (req, res) => {
 
     // Handle client disconnect
     req.on('close', () => {
+      clearInterval(heartbeat);
       changeStream.close();
       res.end();
     });

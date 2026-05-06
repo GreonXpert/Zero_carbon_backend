@@ -886,7 +886,9 @@ function resolveAccessibleModules({
 
   if (clientDoc && enforceClientModuleCheck) {
     const clientModules =
-      Array.isArray(clientDoc.accessibleModules) && clientDoc.accessibleModules.length
+      Array.isArray(clientDoc.submissionData?.accessibleModules) && clientDoc.submissionData.accessibleModules.length
+        ? clientDoc.submissionData.accessibleModules
+        : Array.isArray(clientDoc.accessibleModules) && clientDoc.accessibleModules.length
         ? clientDoc.accessibleModules
         : ['zero_carbon'];
 
@@ -2259,7 +2261,11 @@ const createAuditor = async (req, res) => {
     // ── Resolve and validate accessibleModules ───────────────────────────────
     const rawModulesForAuditor =
       actor.userType === 'client_admin' && (accessibleModules === undefined || accessibleModules === null)
-        ? (clientDoc.accessibleModules?.length ? clientDoc.accessibleModules : ['zero_carbon'])
+        ? (clientDoc.submissionData?.accessibleModules?.length
+            ? clientDoc.submissionData.accessibleModules
+            : clientDoc.accessibleModules?.length
+            ? clientDoc.accessibleModules
+            : ['zero_carbon'])
         : accessibleModules;
 
     const accessibleModulesResult = resolveAccessibleModules({
@@ -6846,7 +6852,7 @@ async function _validateEsgLinkAccess(req, res) {
     resolvedClientId = clientId;
   }
 
-  if (!clientDoc.accessibleModules?.includes('esg_link')) {
+  if (!(clientDoc.submissionData?.accessibleModules ?? clientDoc.accessibleModules ?? []).includes('esg_link')) {
     res.status(403).json({ message: 'This client does not have access to the ESGLink module' });
     return { ok: false };
   }
@@ -7091,8 +7097,12 @@ const updateUserModuleAccess = async (req, res) => {
         return res.status(403).json({ message: 'You can only update module access for users in clients you manage' });
       }
       // Validate client has those modules
+      const _resolvedClientMods =
+        clientDoc.submissionData?.accessibleModules?.length
+          ? clientDoc.submissionData.accessibleModules
+          : (clientDoc.accessibleModules ?? []);
       for (const mod of accessibleModules) {
-        if (!clientDoc.accessibleModules?.includes(mod)) {
+        if (!_resolvedClientMods.includes(mod)) {
           return res.status(403).json({ message: `Client ${targetUser.clientId} does not have access to module: ${mod}` });
         }
       }

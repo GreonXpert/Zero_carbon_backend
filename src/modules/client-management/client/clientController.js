@@ -3965,6 +3965,62 @@ const syncConsultantToClientUsers = async (clientId, consultant) => {
   );
 };
 
+const normalizeAssignedClients = (assignedClients) => {
+  if (Array.isArray(assignedClients)) {
+    return assignedClients.filter(Boolean).map(String);
+  }
+
+  if (typeof assignedClients === "string" && assignedClients.trim()) {
+    const value = assignedClients.trim();
+
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(Boolean).map(String);
+      }
+    } catch (_) {}
+
+    return value.includes(",")
+      ? value.split(",").map(v => v.trim()).filter(Boolean)
+      : [value];
+  }
+
+  return [];
+};
+
+const addClientToConsultant = async (consultantId, clientId) => {
+  const consultantUser = await User.findById(consultantId);
+
+  if (!consultantUser) return null;
+
+  const assignedClients = normalizeAssignedClients(consultantUser.assignedClients);
+
+  if (!assignedClients.includes(clientId)) {
+    assignedClients.push(clientId);
+  }
+
+  consultantUser.assignedClients = assignedClients;
+  consultantUser.hasAssignedClients = assignedClients.length > 0;
+
+  await consultantUser.save();
+  return consultantUser;
+};
+
+const removeClientFromConsultant = async (consultantId, clientId) => {
+  const consultantUser = await User.findById(consultantId);
+
+  if (!consultantUser) return null;
+
+  const assignedClients = normalizeAssignedClients(consultantUser.assignedClients)
+    .filter(id => id !== clientId);
+
+  consultantUser.assignedClients = assignedClients;
+  consultantUser.hasAssignedClients = assignedClients.length > 0;
+
+  await consultantUser.save();
+  return consultantUser;
+};
+
 // Update client assignment
 const assignConsultant = async (req, res) => {
   try {
@@ -4020,16 +4076,7 @@ const assignConsultant = async (req, res) => {
     // Handle previous consultant unassignment
     if (previousConsultantId) {
       // Remove client from previous consultant's assignedClients array
-      await User.findByIdAndUpdate(previousConsultantId, {
-        $pull: { assignedClients: clientId }
-      });
-      // Set hasAssignedClients correctly based on remaining assignments
-      const prevRemaining = await User.findById(previousConsultantId).select('assignedClients');
-      if (prevRemaining) {
-        await User.findByIdAndUpdate(previousConsultantId, {
-          $set: { hasAssignedClients: prevRemaining.assignedClients.length > 0 }
-        });
-      }
+     await removeClientFromConsultant(previousConsultantId, clientId);
       
       // Update consultant history - mark previous assignment as inactive
       const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
@@ -4092,81 +4139,130 @@ client.workflowTracking.assignedConsultantId = consultantId;
     };
     
     await client.save();
-    
-    // Update new consultant's assignedClients array and hasAssignedClients flag
-    await User.findByIdAndUpdate(
-      consultantId,
-      {
-        $addToSet: { assignedClients: clientId },
-        $set: { hasAssignedClients: true }
-      },
-      { new: true }
-    );
 
-    // Sync consultantId to all client-side users
-    await syncConsultantToClientUsers(clientId, consultant);
+    // =========================================================
+    // POST-SAVE SIDE EFFECTS
+    // Important:
+    // client.save() is the primary DB operation.
+    // If anything below fails, do NOT return 500 because the
+    // assignment has already been committed.
+    // =========================================================
 
-    // ADD THIS: Emit real-time updates (keep existing real-time functionality)
-    if (typeof emitClientListUpdate === 'function') {
-      await emitClientListUpdate(client, 'updated', req.user.id);
+    const postSaveWarnings = [];
+
+    // 1) Sync consultant assignment to User + client-side users
+    try {
+      await addClientToConsultant(consultantId, clientId);
+
+      if (typeof syncConsultantToClientUsers === 'function') {
+        await syncConsultantToClientUsers(clientId, consultant);
+      }
+    } catch (syncErr) {
+      console.warn(
+        `[assignConsultant] Post-save sync warning for client ${clientId}:`,
+        syncErr.message
+      );
+
+      postSaveWarnings.push({
+        area: 'sync',
+        message: syncErr.message
+      });
     }
-    
-    // ADD THIS: Targeted updates for specific consultant views
-    // Notify users viewing the previous consultant's clients
-    if (previousConsultantId && typeof emitTargetedClientUpdate === 'function') {
+
+    // 2) Real-time emits / socket notifications
+    try {
+      // Emit real-time updates for dashboard
+      if (typeof emitClientListUpdate === 'function') {
+        await emitClientListUpdate(client, 'updated', req.user.id);
+      }
+
+      // Notify users viewing the previous consultant's clients
+      if (previousConsultantId && typeof emitTargetedClientUpdate === 'function') {
         await emitTargetedClientUpdate(
-            client,
-            'consultant_unassigned',
-            req.user.id,
-            {
-                consultantId: previousConsultantId.toString(),
-                action: 'removed'
-            }
+          client,
+          'consultant_unassigned',
+          req.user.id,
+          {
+            consultantId: previousConsultantId.toString(),
+            action: 'removed'
+          }
         );
-    }
-    
-    // Notify users viewing the new consultant's clients
-    if (typeof emitTargetedClientUpdate === 'function') {
-        await emitTargetedClientUpdate(
-            client,
-            'consultant_assigned',
-            req.user.id,
-            {
-                consultantId: consultantId,
-                action: 'added'
-            }
-        );
-    }
+      }
 
-    // Notify the newly assigned consultant
-    if (global.io) {
+      // Notify users viewing the new consultant's clients
+      if (typeof emitTargetedClientUpdate === 'function') {
+        await emitTargetedClientUpdate(
+          client,
+          'consultant_assigned',
+          req.user.id,
+          {
+            consultantId: consultantId,
+            action: 'added'
+          }
+        );
+      }
+
+      // Notify the newly assigned consultant directly
+      if (global.io) {
         global.io.to(`user_${consultantId}`).emit('new_client_assignment', {
-            clientId: client.clientId,
-            companyName: client.leadInfo.companyName,
-            timestamp: new Date().toISOString()
+          clientId: client.clientId,
+          companyName: client.leadInfo?.companyName,
+          timestamp: new Date().toISOString()
         });
+      }
+    } catch (emitErr) {
+      console.warn(
+        `[assignConsultant] Post-save emit warning for client ${clientId}:`,
+        emitErr.message
+      );
+
+      postSaveWarnings.push({
+        area: 'emit',
+        message: emitErr.message
+      });
     }
-    
-    // Notify the assigned consultant via email
-    const emailSubject = wasAlreadyAssigned ? "Client Reassignment" : "New Client Assignment";
-    const emailMessage = `
-      You have been ${wasAlreadyAssigned ? 'reassigned' : 'assigned'} to a client:
-      
-      Client ID: ${clientId}
-      Company: ${client.leadInfo.companyName}
-      Current Stage: ${client.stage}
-      ${reasonForChange ? `Reason: ${reasonForChange}` : ''}
-      
-      Please review the client details and take appropriate action.
-    `;
-    
-    if (typeof sendMail === 'function') {
-      await sendMail(consultant.email, emailSubject, emailMessage);
+
+    // 3) Email notification
+    try {
+      const emailSubject = wasAlreadyAssigned
+        ? "Client Reassignment"
+        : "New Client Assignment";
+
+      const emailMessage = `
+        You have been ${wasAlreadyAssigned ? 'reassigned' : 'assigned'} to a client:
+
+        Client ID: ${clientId}
+        Company: ${client.leadInfo?.companyName || ''}
+        Current Stage: ${client.stage}
+        ${reasonForChange ? `Reason: ${reasonForChange}` : ''}
+
+        Please review the client details and take appropriate action.
+      `;
+
+      if (typeof sendMail === 'function' && consultant?.email) {
+        await sendMail(consultant.email, emailSubject, emailMessage);
+      }
+    } catch (emailErr) {
+      console.warn(
+        `[assignConsultant] Post-save email warning for client ${clientId}:`,
+        emailErr.message
+      );
+
+      postSaveWarnings.push({
+        area: 'email',
+        message: emailErr.message
+      });
     }
-    
-    res.status(200).json({
-      message: wasAlreadyAssigned ? "Consultant reassigned successfully" : "Consultant assigned successfully",
+
+    return res.status(200).json({
+      message: wasAlreadyAssigned
+        ? "Consultant reassigned successfully"
+        : "Consultant assigned successfully",
       alreadyAssigned: wasAlreadyAssigned,
+
+      // Useful for debugging. Remove this from response if you do not want frontend to see warnings.
+      postSaveWarnings,
+
       client: {
         clientId: client.clientId,
         hasAssignedConsultant: client.leadInfo.hasAssignedConsultant,
