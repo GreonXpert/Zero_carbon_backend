@@ -68,11 +68,29 @@ function clientScopeFilter(moduleKey, clientIdOrIds) {
 // ─── CREATE ───────────────────────────────────────────────────────────────────
 
 /**
- * Create a new formula.
+ * Normalise scope fields coming from a request body.
  *
- * zero_carbon params: moduleKey, scopeType='client', clientIds=[...]
- * esg_link    params: moduleKey, scopeType='client'|'global', clientId
+ * - Converts the string literal "null" to actual null for clientId.
+ * - Defaults scopeType:
+ *     zero_carbon → always 'client'
+ *     esg_link    → 'client' when clientId is present, else 'global'
  */
+function resolveScope(moduleKey, { scopeType, clientId, clientIds }) {
+  const normalClientId =
+    clientId === 'null' || clientId === '' ? null : (clientId || null);
+
+  const normalClientIds = Array.isArray(clientIds) ? clientIds : [];
+
+  let resolvedScopeType;
+  if (moduleKey === 'zero_carbon') {
+    resolvedScopeType = 'client';
+  } else {
+    resolvedScopeType = scopeType || (normalClientId ? 'client' : 'global');
+  }
+
+  return { scopeType: resolvedScopeType, clientId: normalClientId, clientIds: normalClientIds };
+}
+
 async function createFormula({
   name, label, description, link, unit,
   expression, variables, version,
@@ -86,15 +104,19 @@ async function createFormula({
   const mkErr = validateModuleKey(moduleKey);
   if (mkErr) return { doc: null, error: mkErr };
 
-  const scopeErr = validateScope(moduleKey, scopeType, { clientId, clientIds });
+  const resolved = resolveScope(moduleKey, { scopeType, clientId, clientIds });
+
+  const scopeErr = validateScope(moduleKey, resolved.scopeType, {
+    clientId:  resolved.clientId,
+    clientIds: resolved.clientIds
+  });
   if (scopeErr) return { doc: null, error: scopeErr };
 
   const exprResult = validateExpression(expression);
   if (!exprResult.valid) return { doc: null, error: exprResult.error };
 
   const resolvedLabel = coerceEsgLinkLabel(moduleKey, name, label);
-
-  const isZeroCarbon = moduleKey === 'zero_carbon';
+  const isZeroCarbon  = moduleKey === 'zero_carbon';
 
   const doc = await Formula.create({
     name,
@@ -106,9 +128,9 @@ async function createFormula({
     variables:     variables || [],
     version:       version || 1,
     moduleKey,
-    scopeType,
-    clientIds:     isZeroCarbon ? (clientIds || []) : [],
-    clientId:      isZeroCarbon ? null : (clientId || null),
+    scopeType:     resolved.scopeType,
+    clientIds:     isZeroCarbon ? resolved.clientIds : [],
+    clientId:      isZeroCarbon ? null : resolved.clientId,
     createdBy:     actor._id || actor.id,
     createdByRole: actor.userType || ''
   });
@@ -276,14 +298,18 @@ async function updateFormula(formulaId, updates, actor) {
     if (mkErr) return { doc: null, error: mkErr };
   }
 
-  const effectiveModuleKey  = moduleKey   || doc.moduleKey;
-  const effectiveScopeType  = scopeType   || doc.scopeType;
-  const effectiveClientId   = clientId    !== undefined ? clientId   : doc.clientId;
-  const effectiveClientIds  = Array.isArray(clientIds) ? clientIds   : doc.clientIds;
+  const effectiveModuleKey = moduleKey || doc.moduleKey;
 
-  const scopeErr = validateScope(effectiveModuleKey, effectiveScopeType, {
-    clientId:  effectiveClientId,
-    clientIds: effectiveClientIds
+  // Use existing doc values as fallback so partial updates work
+  const resolved = resolveScope(effectiveModuleKey, {
+    scopeType: scopeType   || doc.scopeType,
+    clientId:  clientId    !== undefined ? clientId  : doc.clientId,
+    clientIds: Array.isArray(clientIds)  ? clientIds : doc.clientIds
+  });
+
+  const scopeErr = validateScope(effectiveModuleKey, resolved.scopeType, {
+    clientId:  resolved.clientId,
+    clientIds: resolved.clientIds
   });
   if (scopeErr) return { doc: null, error: scopeErr };
 
@@ -294,13 +320,13 @@ async function updateFormula(formulaId, updates, actor) {
   if (unit        != null) doc.unit        = unit;
   if (version     != null) doc.version     = version;
   if (moduleKey   != null) doc.moduleKey   = moduleKey;
-  if (scopeType   != null) doc.scopeType   = scopeType;
+  doc.scopeType = resolved.scopeType;
 
   if (effectiveModuleKey === 'zero_carbon') {
-    if (Array.isArray(clientIds)) doc.clientIds = clientIds;
-    doc.clientId = null;
+    doc.clientIds = resolved.clientIds;
+    doc.clientId  = null;
   } else {
-    if (clientId !== undefined) doc.clientId = clientId;
+    doc.clientId  = resolved.clientId;
     doc.clientIds = [];
   }
 

@@ -104,11 +104,13 @@ exports.updateFormula = async (req, res) => {
     if (roleErr) return res.status(roleErr.status).json({ success: false, message: roleErr.message });
 
     const { formulaId } = req.params;
-    const moduleKey = req.body.moduleKey;
 
-    // zero_carbon → clientIds (array); esg_link → clientId (string)
-    const { clientId, clientIds } = resolveClientFields(req.body, moduleKey);
-    const updates = { ...req.body, clientId, clientIds };
+    // Pass both clientId and clientIds raw — service resolves by the doc's moduleKey
+    const updates = {
+      ...req.body,
+      clientId:  req.body.clientId,
+      clientIds: Array.isArray(req.body.clientIds) ? req.body.clientIds : undefined
+    };
 
     const { doc, error } = await service.updateFormula(formulaId, updates, req.user);
 
