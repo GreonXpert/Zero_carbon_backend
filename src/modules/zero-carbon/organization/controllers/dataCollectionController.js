@@ -1070,6 +1070,7 @@ const saveAPIData = async (req, res) => {
       timestamp,
       dataValues: dataMap,
       emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
+      calculationModel: scopeConfig.calculationModel || 'tier 1',
       sourceDetails: {
         apiEndpoint: scopeConfig.apiEndpoint,
         uploadedBy: req.user?._id, // Set to optional chaining
@@ -1354,6 +1355,7 @@ const saveIoTData = async (req, res) => {
       timestamp,
       dataValues: dataMap,
       emissionFactor: emissionFactor || scopeConfig.emissionFactor || '',
+      calculationModel: scopeConfig.calculationModel || 'tier 1',
       sourceDetails: {
         iotDeviceId: scopeConfig.iotDeviceId,
         uploadedBy: req.user?._id, // optional chaining
@@ -1908,6 +1910,7 @@ async function saveOneEntry({
     processingStatus: 'pending',
     emissionCalculationStatus: 'pending',
     emissionFactor: resolveEmissionFactor(rawRow?.emissionFactor, scope?.emissionFactor),
+    calculationModel: scope?.calculationModel || 'tier 1',
   });
 
  await entry.save();

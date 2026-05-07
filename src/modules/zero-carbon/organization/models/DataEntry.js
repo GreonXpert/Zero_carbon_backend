@@ -166,6 +166,11 @@ const DataEntrySchema = new mongoose.Schema({
     enum: ['IPCC', 'DEFRA', 'EPA', 'Custom', 'Country', 'EmissionFactorHub'],
     default: ''
   },
+  calculationModel: {
+    type: String,
+    enum: ['tier 1', 'tier 2', 'tier 3'],
+    default: 'tier 1'
+  },
   nodeType: {
     type: String,
     enum: ['Emission Source', 'Reduction'],
