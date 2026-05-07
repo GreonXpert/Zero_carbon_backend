@@ -538,10 +538,35 @@ const filterProcessEmissionSummary = (processSummary, context) => {
 };
 
 /**
+ * filterCalcSummary — filters all projectId-keyed arrays inside calculationSummary.
+ * Non-project fields (ghgMechanismSplit, topSources, categoryPriorities, meta) pass through.
+ */
+const filterCalcSummary = (calc, allowedIds) => {
+  if (!calc) return calc;
+  const f = (arr) => (arr || []).filter(item => allowedIds.has(item.projectId));
+  return {
+    ...calc,
+    trendChart: calc.trendChart
+      ? {
+          monthly:   f(calc.trendChart.monthly),
+          quarterly: f(calc.trendChart.quarterly),
+          yearly:    f(calc.trendChart.yearly),
+        }
+      : calc.trendChart,
+    processProductAnalysis:    f(calc.processProductAnalysis),
+    periodComparison:          f(calc.periodComparison),
+    dataCompletenessByProject: f(calc.dataCompletenessByProject),
+  };
+};
+
+/**
  * filterReductionSummary
  *
- * Filters reductionSummary.byProject to allowed project IDs.
- * Recomputes totalNetReduction from filtered projects.
+ * Filters reductionSummary to only data for allowed project IDs.
+ * - byProject: filtered directly
+ * - calculationSummary: per-project arrays filtered by projectId
+ * - m3Summary: recomputed from filtered byProject (using per-project BE/PE/LE stored there)
+ * - byScope/byCategory/byLocation/byProjectActivity/byMethodology: recomputed from filtered byProject
  */
 const filterReductionSummary = (reductionSummary, context) => {
   if (!reductionSummary || context.isFullAccess) return reductionSummary;
@@ -582,6 +607,28 @@ const filterReductionSummary = (reductionSummary, context) => {
     bump(byMethodology,    p.methodology);
   }
 
+  // Recompute m3Summary from per-project BE/PE/LE stored in byProject entries.
+  // Only M3 projects carry these values (others default to 0).
+  const m3Projects = byProject.filter(p => p.methodology === 'methodology3');
+  const m3ByCategory = {};
+  for (const p of m3Projects) {
+    const k = p.category || 'Unknown';
+    if (!m3ByCategory[k]) m3ByCategory[k] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
+    m3ByCategory[k].totalBE       += safeN(p.totalBE);
+    m3ByCategory[k].totalPE       += safeN(p.totalPE);
+    m3ByCategory[k].totalLE       += safeN(p.totalLE);
+    m3ByCategory[k].entriesCount  += safeN(p.entriesCount);
+  }
+  const m3Summary = {
+    totalBE:                    m3Projects.reduce((s, p) => s + safeN(p.totalBE), 0),
+    totalPE:                    m3Projects.reduce((s, p) => s + safeN(p.totalPE), 0),
+    totalLE:                    m3Projects.reduce((s, p) => s + safeN(p.totalLE), 0),
+    totalNetWithoutUncertainty: 0,
+    totalNetWithUncertainty:    0,
+    entriesCount:               m3Projects.reduce((s, p) => s + safeN(p.entriesCount), 0),
+    byCategory:                 m3ByCategory,
+  };
+
   return {
     ...reductionSummary,
     totalNetReduction,
@@ -592,6 +639,8 @@ const filterReductionSummary = (reductionSummary, context) => {
     byLocation,
     byProjectActivity,
     byMethodology,
+    m3Summary,
+    calculationSummary: filterCalcSummary(reductionSummary.calculationSummary, allowedReductionProjectIds),
     metadata: {
       ...(reductionSummary.metadata || {}),
       filteredByRole: context.role,

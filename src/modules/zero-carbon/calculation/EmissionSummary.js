@@ -745,7 +745,10 @@ const emissionSummarySchema = new mongoose.Schema(
         location: { type: String },   // formatted label, e.g. "Mumbai, India"
         methodology: { type: String },   // methodology1 / methodology2 / unknown
         totalNetReduction: { type: Number, default: 0 },
-        entriesCount: { type: Number, default: 0 }
+        entriesCount: { type: Number, default: 0 },
+        totalBE: { type: Number, default: 0 },
+        totalPE: { type: Number, default: 0 },
+        totalLE: { type: Number, default: 0 },
       }],
 
       // Simple objects keyed by name, e.g. "Scope 1", "Energy Efficiency"

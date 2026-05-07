@@ -963,7 +963,7 @@ const getFlowchart = async (req, res) => {
     ).lean();
 
     const normalizeLevels = (raw) => {
-      const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+      const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process', 'net_zero'];
 
       let arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
 
@@ -2265,7 +2265,7 @@ const getFlowchartBoundary = async (req, res) => {
     }
 
     // 3) Normalize assessmentLevel and verify 'organization' is present
-    const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+    const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process', 'net_zero'];
     const raw = client?.submissionData?.assessmentLevel;
     let levels = Array.isArray(raw) ? raw : (raw ? [raw] : []);
     levels = levels

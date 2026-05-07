@@ -130,6 +130,9 @@ function computeSummary(entries, projectMeta) {
         methodology,
         totalNetReduction: 0,
         entriesCount: 0,
+        totalBE: 0,
+        totalPE: 0,
+        totalLE: 0,
       });
     }
     const row = projectMap.get(projectId);
@@ -186,6 +189,14 @@ function computeSummary(entries, projectMeta) {
       summary.m3Summary.totalNetWithoutUncertainty = round6(summary.m3Summary.totalNetWithoutUncertainty + nwou);
       summary.m3Summary.totalNetWithUncertainty = round6(summary.m3Summary.totalNetWithUncertainty + nwu);
       summary.m3Summary.entriesCount++;
+
+      // Accumulate per-project BE/PE/LE so filterReductionSummary can recompute m3Summary
+      if (projectMap.has(projectId)) {
+        const pRow = projectMap.get(projectId);
+        pRow.totalBE = round6(pRow.totalBE + be);
+        pRow.totalPE = round6(pRow.totalPE + pe);
+        pRow.totalLE = round6(pRow.totalLE + le);
+      }
 
       if (!summary.m3Summary.byCategory[category]) {
         summary.m3Summary.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
