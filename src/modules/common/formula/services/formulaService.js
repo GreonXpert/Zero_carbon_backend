@@ -3,11 +3,10 @@
 /**
  * formulaService.js — Common Formula Business Logic
  *
- * All database operations for the Formula domain live here.
- * Functions receive plain parameters (not req/res), keeping them
- * testable in isolation and reusable across modules.
- *
- * Modules supported: zero_carbon, esg_link (future: any moduleKey)
+ * CLIENT SCOPE RULES
+ * ------------------
+ * zero_carbon  →  clientIds: [String]   one formula, many clients
+ * esg_link     →  clientId:  String     single client (or null if scopeType='global')
  */
 
 const Formula       = require('../models/Formula');
@@ -16,7 +15,7 @@ const User          = require('../../../../common/models/User');
 
 const {
   validateModuleKey,
-  validateScopeType,
+  validateScope,
   validateExpression,
   coerceEsgLinkLabel
 } = require('../utils/formulaValidation');
@@ -29,16 +28,10 @@ const {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Fetch full user document (auth middleware only attaches a partial object).
- */
 async function getFullUser(userId) {
   return User.findById(userId).lean();
 }
 
-/**
- * Get all user _ids in a consultant_admin's team (includes the admin themselves).
- */
 async function getTeamIds(consultantAdminId) {
   const team = await User.find({
     $or: [
@@ -49,33 +42,43 @@ async function getTeamIds(consultantAdminId) {
   return team.map(t => String(t._id));
 }
 
+/**
+ * Build the client-scope fragment of a Mongo query, split by moduleKey.
+ *
+ * zero_carbon : { clientIds: clientId }      — checks array membership
+ * esg_link    : { $or: [{ clientId }, { scopeType:'global' }] }
+ *
+ * When clientId is an array (consultant's assignedClients) use $in.
+ */
+function clientScopeFilter(moduleKey, clientIdOrIds) {
+  if (moduleKey === 'zero_carbon') {
+    const ids = Array.isArray(clientIdOrIds) ? clientIdOrIds : [clientIdOrIds];
+    return { clientIds: { $in: ids } };
+  }
+  // esg_link
+  const ids = Array.isArray(clientIdOrIds) ? clientIdOrIds : [clientIdOrIds];
+  return {
+    $or: [
+      { clientId: { $in: ids } },
+      { scopeType: 'global' }
+    ]
+  };
+}
+
 // ─── CREATE ───────────────────────────────────────────────────────────────────
 
 /**
  * Create a new formula.
  *
- * @param {object} params
- * @param {string} params.name
- * @param {string} [params.label]
- * @param {string} [params.description]
- * @param {string} [params.link]
- * @param {string} [params.unit]
- * @param {string} params.expression
- * @param {Array}  [params.variables]
- * @param {number} [params.version]
- * @param {string} params.moduleKey   - 'zero_carbon' | 'esg_link'
- * @param {string} params.scopeType   - 'client' | 'team' | 'global'
- * @param {string} [params.clientId]  - required when scopeType='client'
- * @param {object} params.actor       - req.user
- * @returns {{ doc: object|null, error: string|null }}
+ * zero_carbon params: moduleKey, scopeType='client', clientIds=[...]
+ * esg_link    params: moduleKey, scopeType='client'|'global', clientId
  */
 async function createFormula({
   name, label, description, link, unit,
   expression, variables, version,
-  moduleKey, scopeType, clientId,
+  moduleKey, scopeType, clientId, clientIds,
   actor
 }) {
-  // Field-level validation
   if (!name || !expression) {
     return { doc: null, error: 'name and expression are required' };
   }
@@ -83,14 +86,15 @@ async function createFormula({
   const mkErr = validateModuleKey(moduleKey);
   if (mkErr) return { doc: null, error: mkErr };
 
-  const stErr = validateScopeType(scopeType, clientId);
-  if (stErr) return { doc: null, error: stErr };
+  const scopeErr = validateScope(moduleKey, scopeType, { clientId, clientIds });
+  if (scopeErr) return { doc: null, error: scopeErr };
 
   const exprResult = validateExpression(expression);
   if (!exprResult.valid) return { doc: null, error: exprResult.error };
 
-  // ESGLink: enforce label = name
   const resolvedLabel = coerceEsgLinkLabel(moduleKey, name, label);
+
+  const isZeroCarbon = moduleKey === 'zero_carbon';
 
   const doc = await Formula.create({
     name,
@@ -103,7 +107,8 @@ async function createFormula({
     version:       version || 1,
     moduleKey,
     scopeType,
-    clientId:      clientId || null,
+    clientIds:     isZeroCarbon ? (clientIds || []) : [],
+    clientId:      isZeroCarbon ? null : (clientId || null),
     createdBy:     actor._id || actor.id,
     createdByRole: actor.userType || ''
   });
@@ -114,48 +119,80 @@ async function createFormula({
 // ─── LIST ─────────────────────────────────────────────────────────────────────
 
 /**
- * List formulas based on role and optional filters.
+ * List formulas by role, with optional moduleKey and clientId filters.
  *
- * @param {object} user        - req.user (partial — may not have assignedClients)
- * @param {string} [moduleKey] - optional filter by module
- * @param {string} [clientId]  - optional filter by clientId (super_admin / consultant_admin only)
- * @returns {Array}
+ * When moduleKey is not passed, both zero_carbon and esg_link are returned
+ * using a combined scope filter.
  */
 async function listFormulas(user, { moduleKey, clientId } = {}) {
   const base = { isDeleted: false };
   if (moduleKey) base.moduleKey = moduleKey;
-  if (clientId)  base.clientId  = clientId;
 
-  // SUPER ADMIN → all formulas (optionally filtered)
+  // ── SUPER ADMIN ────────────────────────────────────────────────────────────
   if (user.userType === 'super_admin') {
+    if (clientId) {
+      // Filter by client across both field conventions
+      const scopeQ = moduleKey
+        ? clientScopeFilter(moduleKey, clientId)
+        : { $or: [{ clientIds: clientId }, { clientId }, { scopeType: 'global' }] };
+      return Formula.find({ ...base, ...scopeQ }).lean();
+    }
     return Formula.find(base).lean();
   }
 
-  // CONSULTANT_ADMIN → formulas created by their team
+  // ── CONSULTANT_ADMIN ───────────────────────────────────────────────────────
   if (user.userType === 'consultant_admin') {
     const teamIds = await getTeamIds(user.id || user._id);
     return Formula.find({ ...base, createdBy: { $in: teamIds } }).lean();
   }
 
-  // CONSULTANT → formulas for assigned clients OR created by team
+  // ── CONSULTANT ─────────────────────────────────────────────────────────────
   if (user.userType === 'consultant') {
-    const fullUser = await getFullUser(user.id || user._id);
+    const fullUser      = await getFullUser(user.id || user._id);
     if (!fullUser) return [];
 
     const assignedClients = fullUser.assignedClients || [];
-    const teamIds = await getTeamIds(fullUser.consultantAdminId);
+    const teamIds         = await getTeamIds(fullUser.consultantAdminId);
 
     const orConditions = [{ createdBy: { $in: teamIds } }];
+
     if (assignedClients.length > 0) {
-      orConditions.push({ clientId: { $in: assignedClients } });
+      if (!moduleKey || moduleKey === 'zero_carbon') {
+        orConditions.push({ clientIds: { $in: assignedClients } });
+      }
+      if (!moduleKey || moduleKey === 'esg_link') {
+        orConditions.push({ clientId: { $in: assignedClients } });
+        orConditions.push({ scopeType: 'global' });
+      }
+    } else if (!moduleKey || moduleKey === 'esg_link') {
+      orConditions.push({ scopeType: 'global' });
     }
 
     return Formula.find({ ...base, $or: orConditions }).lean();
   }
 
-  // CLIENT_ADMIN / AUDITOR → read-only, own client only
+  // ── CLIENT_ADMIN / AUDITOR ─────────────────────────────────────────────────
   if (user.userType === 'client_admin' || user.userType === 'auditor') {
-    return Formula.find({ ...base, clientId: user.clientId }).lean();
+    const userClientId = user.clientId;
+
+    if (moduleKey === 'zero_carbon') {
+      return Formula.find({ ...base, clientIds: userClientId }).lean();
+    }
+    if (moduleKey === 'esg_link') {
+      return Formula.find({
+        ...base,
+        $or: [{ clientId: userClientId }, { scopeType: 'global' }]
+      }).lean();
+    }
+    // No moduleKey — return both
+    return Formula.find({
+      ...base,
+      $or: [
+        { clientIds: userClientId },
+        { clientId: userClientId },
+        { scopeType: 'global' }
+      ]
+    }).lean();
   }
 
   return [];
@@ -163,13 +200,6 @@ async function listFormulas(user, { moduleKey, clientId } = {}) {
 
 // ─── GET BY ID ────────────────────────────────────────────────────────────────
 
-/**
- * Fetch a single formula by ID, with role-based access check.
- *
- * @param {string} formulaId
- * @param {object} user - req.user
- * @returns {{ doc: object|null, error: string|null, status: number }}
- */
 async function getFormulaById(formulaId, user) {
   const formula = await Formula.findById(formulaId).lean();
   if (!formula || formula.isDeleted) {
@@ -189,23 +219,33 @@ async function getFormulaById(formulaId, user) {
   }
 
   if (user.userType === 'consultant') {
-    const fullUser = await getFullUser(user.id || user._id);
+    const fullUser      = await getFullUser(user.id || user._id);
     if (!fullUser) return { doc: null, error: 'User not found', status: 404 };
 
     const assignedClients = fullUser.assignedClients || [];
-    const teamIds = await getTeamIds(fullUser.consultantAdminId);
+    const teamIds         = await getTeamIds(fullUser.consultantAdminId);
 
-    const inTeam    = teamIds.includes(String(formula.createdBy));
-    const inClients = assignedClients.includes(formula.clientId);
+    const inTeam = teamIds.includes(String(formula.createdBy));
 
-    if (!inTeam && !inClients) {
+    // zero_carbon: check clientIds array; esg_link: check clientId or global
+    const inScope = formula.moduleKey === 'zero_carbon'
+      ? (formula.clientIds || []).some(id => assignedClients.includes(id))
+      : (assignedClients.includes(formula.clientId) || formula.scopeType === 'global');
+
+    if (!inTeam && !inScope) {
       return { doc: null, error: 'Access denied: formula not in your scope.', status: 403 };
     }
     return { doc: formula, error: null, status: 200 };
   }
 
   if (user.userType === 'client_admin' || user.userType === 'auditor') {
-    if (formula.clientId !== user.clientId) {
+    const userClientId = user.clientId;
+
+    const hasAccess = formula.moduleKey === 'zero_carbon'
+      ? (formula.clientIds || []).includes(userClientId)
+      : (formula.clientId === userClientId || formula.scopeType === 'global');
+
+    if (!hasAccess) {
       return { doc: null, error: 'This formula does not belong to your client.', status: 403 };
     }
     return { doc: formula, error: null, status: 200 };
@@ -216,17 +256,6 @@ async function getFormulaById(formulaId, user) {
 
 // ─── UPDATE ───────────────────────────────────────────────────────────────────
 
-/**
- * Update an existing formula.
- *
- * Note: clientId is now a single string — no addClientIds/removeClientIds.
- * Passing a new clientId replaces the existing one.
- *
- * @param {string} formulaId
- * @param {object} updates  - body fields
- * @param {object} actor    - req.user
- * @returns {{ doc: object|null, error: string|null }}
- */
 async function updateFormula(formulaId, updates, actor) {
   const doc = await Formula.findById(formulaId);
   if (!doc || doc.isDeleted) return { doc: null, error: 'Formula not found' };
@@ -234,28 +263,30 @@ async function updateFormula(formulaId, updates, actor) {
   const {
     name, label, description, link, unit,
     expression, variables, version,
-    moduleKey, scopeType, clientId
+    moduleKey, scopeType, clientId, clientIds
   } = updates;
 
-  // Validate expression if provided
   if (expression) {
     const exprResult = validateExpression(expression);
     if (!exprResult.valid) return { doc: null, error: exprResult.error };
   }
 
-  // Validate moduleKey change if provided
   if (moduleKey) {
     const mkErr = validateModuleKey(moduleKey);
     if (mkErr) return { doc: null, error: mkErr };
   }
 
-  // Validate scopeType/clientId change if provided
-  const newScopeType = scopeType || doc.scopeType;
-  const newClientId  = clientId !== undefined ? clientId : doc.clientId;
-  const stErr = validateScopeType(newScopeType, newClientId);
-  if (stErr) return { doc: null, error: stErr };
+  const effectiveModuleKey  = moduleKey   || doc.moduleKey;
+  const effectiveScopeType  = scopeType   || doc.scopeType;
+  const effectiveClientId   = clientId    !== undefined ? clientId   : doc.clientId;
+  const effectiveClientIds  = Array.isArray(clientIds) ? clientIds   : doc.clientIds;
 
-  // Apply updates
+  const scopeErr = validateScope(effectiveModuleKey, effectiveScopeType, {
+    clientId:  effectiveClientId,
+    clientIds: effectiveClientIds
+  });
+  if (scopeErr) return { doc: null, error: scopeErr };
+
   if (name        != null) doc.name        = name;
   if (description != null) doc.description = description;
   if (expression  != null) doc.expression  = expression;
@@ -264,14 +295,20 @@ async function updateFormula(formulaId, updates, actor) {
   if (version     != null) doc.version     = version;
   if (moduleKey   != null) doc.moduleKey   = moduleKey;
   if (scopeType   != null) doc.scopeType   = scopeType;
-  if (clientId    !== undefined) doc.clientId = clientId;
+
+  if (effectiveModuleKey === 'zero_carbon') {
+    if (Array.isArray(clientIds)) doc.clientIds = clientIds;
+    doc.clientId = null;
+  } else {
+    if (clientId !== undefined) doc.clientId = clientId;
+    doc.clientIds = [];
+  }
+
   if (Array.isArray(variables)) doc.variables = variables;
 
-  // Resolve label — enforce esg_link rule after all fields are applied
-  const effectiveName      = doc.name;
-  const effectiveModuleKey = doc.moduleKey;
-  const incomingLabel      = label !== undefined ? label : doc.label;
-  doc.label = coerceEsgLinkLabel(effectiveModuleKey, effectiveName, incomingLabel);
+  const effectiveName = doc.name;
+  const incomingLabel = label !== undefined ? label : doc.label;
+  doc.label = coerceEsgLinkLabel(doc.moduleKey, effectiveName, incomingLabel);
 
   await doc.save();
   return { doc, error: null };
@@ -279,10 +316,6 @@ async function updateFormula(formulaId, updates, actor) {
 
 // ─── DELETE ───────────────────────────────────────────────────────────────────
 
-/**
- * Consultant submits a delete request.
- * @returns {{ result: object|null, error: string|null, alreadyPending: boolean }}
- */
 async function requestFormulaDelete(formulaId, actor) {
   const existing = await DeleteRequest.findOne({
     formulaId,
@@ -290,9 +323,7 @@ async function requestFormulaDelete(formulaId, actor) {
     status: 'pending'
   });
 
-  if (existing) {
-    return { result: existing, error: null, alreadyPending: true };
-  }
+  if (existing) return { result: existing, error: null, alreadyPending: true };
 
   const reqDoc = await DeleteRequest.create({
     formulaId,
@@ -300,7 +331,6 @@ async function requestFormulaDelete(formulaId, actor) {
     reason:      actor._reason || ''
   });
 
-  // Notify all approvers
   const formula   = await Formula.findById(formulaId).lean();
   const approvers = await User.find({
     userType: { $in: ['super_admin', 'consultant_admin'] },
@@ -316,10 +346,6 @@ async function requestFormulaDelete(formulaId, actor) {
   return { result: reqDoc, error: null, alreadyPending: false };
 }
 
-/**
- * Admin soft-deletes a formula directly (no approval needed).
- * Auto-approves all pending delete requests for this formula.
- */
 async function softDeleteFormula(formulaId, actor) {
   const formula = await Formula.findById(formulaId);
   if (!formula) return { error: 'Formula not found' };
@@ -327,7 +353,6 @@ async function softDeleteFormula(formulaId, actor) {
   formula.isDeleted = true;
   await formula.save();
 
-  // Auto-approve pending requests
   const requests = await DeleteRequest.find({ formulaId, status: 'pending' });
   await DeleteRequest.updateMany(
     { formulaId, status: 'pending' },
@@ -341,12 +366,7 @@ async function softDeleteFormula(formulaId, actor) {
   return { error: null };
 }
 
-/**
- * Admin hard-deletes a formula (permanent).
- * Blocked if formula is attached to any active Reduction project.
- */
 async function hardDeleteFormula(formulaId, actor) {
-  // Dynamic require to avoid circular deps — Reduction is a zero-carbon model
   const Reduction = require('../../../zero-carbon/reduction/models/Reduction');
 
   const formula = await Formula.findById(formulaId);
@@ -363,7 +383,6 @@ async function hardDeleteFormula(formulaId, actor) {
 
   await Formula.deleteOne({ _id: formulaId });
 
-  // Auto-approve pending requests
   const requests = await DeleteRequest.find({ formulaId, status: 'pending' });
   await DeleteRequest.updateMany(
     { formulaId, status: 'pending' },
@@ -377,11 +396,8 @@ async function hardDeleteFormula(formulaId, actor) {
   return { error: null };
 }
 
-// ─── DELETE REQUESTS ─────────────────────────────────────────────────────────
+// ─── DELETE REQUESTS ──────────────────────────────────────────────────────────
 
-/**
- * Approve a pending delete request (soft-deletes the formula).
- */
 async function approveDeleteRequest(requestId, actor) {
   const request = await DeleteRequest.findById(requestId);
   if (!request || request.status !== 'pending') {
@@ -400,13 +416,9 @@ async function approveDeleteRequest(requestId, actor) {
   await request.save();
 
   await notifyFormulaDeleteApproved({ actor, formula, request });
-
   return { error: null };
 }
 
-/**
- * Reject a pending delete request.
- */
 async function rejectDeleteRequest(requestId, actor) {
   const request = await DeleteRequest.findById(requestId)
     .populate('requestedBy', 'userName email');
@@ -423,26 +435,19 @@ async function rejectDeleteRequest(requestId, actor) {
   await request.save();
 
   await notifyFormulaDeleteRejected({ actor, formula, request });
-
   return { error: null };
 }
 
-/**
- * List delete requests, filtered by role.
- */
 async function listDeleteRequests(user, filters = {}) {
   let query = {};
 
-  // Scope by role
   if (user.userType === 'consultant_admin') {
     const teamIds = await getTeamIds(user.id || user._id);
     query.requestedBy = { $in: teamIds };
   } else if (user.userType === 'consultant') {
     query.requestedBy = user.id || user._id;
   }
-  // super_admin: no restriction
 
-  // Apply optional filters
   const { status, formulaId, requestedBy, clientId, fromDate, toDate } = filters;
 
   if (status)      query.status    = status;
@@ -455,18 +460,16 @@ async function listDeleteRequests(user, filters = {}) {
     if (toDate)   query.createdAt.$lte = new Date(toDate);
   }
 
-  // Filter by clientId: find formula _ids for this client first
   if (clientId) {
-    const formulas = await Formula.find({ clientId }).select('_id');
+    const formulas = await Formula.find({
+      $or: [{ clientIds: clientId }, { clientId }]
+    }).select('_id');
     query.formulaId = { $in: formulas.map(f => f._id.toString()) };
   }
 
   return DeleteRequest.find(query).populate('requestedBy', 'userName email').lean();
 }
 
-/**
- * Get a single delete request with role-based access check.
- */
 async function getDeleteRequestById(requestId, user) {
   const request = await DeleteRequest.findById(requestId)
     .populate('requestedBy', 'userName email')

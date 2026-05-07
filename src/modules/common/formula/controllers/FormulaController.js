@@ -11,7 +11,7 @@
  */
 
 const service = require('../services/formulaService');
-const { resolveClientId } = require('../utils/formulaValidation');
+const { resolveClientFields } = require('../utils/formulaValidation');
 
 // Roles that can write (create / update / delete)
 const WRITE_ROLES = new Set(['super_admin', 'consultant_admin', 'consultant']);
@@ -43,16 +43,13 @@ exports.createFormula = async (req, res) => {
       moduleKey, scopeType
     } = req.body;
 
-    // Transitional: accept clientIds[] if clientId not provided
-    const { clientId, deprecated } = resolveClientId(req.body);
-    if (deprecated) {
-      console.warn(`[DEPRECATION] /api/formulas POST: clientIds[] used by user ${req.user.id}. Please switch to clientId (string).`);
-    }
+    // zero_carbon → clientIds (array); esg_link → clientId (string)
+    const { clientId, clientIds } = resolveClientFields(req.body, moduleKey);
 
     const { doc, error } = await service.createFormula({
       name, label, description, link, unit,
       expression, variables, version,
-      moduleKey, scopeType, clientId,
+      moduleKey, scopeType, clientId, clientIds,
       actor: req.user
     });
 
@@ -107,10 +104,11 @@ exports.updateFormula = async (req, res) => {
     if (roleErr) return res.status(roleErr.status).json({ success: false, message: roleErr.message });
 
     const { formulaId } = req.params;
+    const moduleKey = req.body.moduleKey;
 
-    // Transitional: map clientIds[0] → clientId if needed
-    const { clientId } = resolveClientId(req.body);
-    const updates = { ...req.body, clientId };
+    // zero_carbon → clientIds (array); esg_link → clientId (string)
+    const { clientId, clientIds } = resolveClientFields(req.body, moduleKey);
+    const updates = { ...req.body, clientId, clientIds };
 
     const { doc, error } = await service.updateFormula(formulaId, updates, req.user);
 

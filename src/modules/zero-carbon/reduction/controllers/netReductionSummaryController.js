@@ -388,7 +388,62 @@ async function recomputeClientNetReductionSummary(clientId, opts = {}) {
   return true;
 }
 
+// ===================================================================
+//   BACKFILL: Recalculate ALL historical periods for a client
+//   Call once after schema change to populate totalBE/PE/LE in byProject
+// ===================================================================
+async function backfillAllReductionPeriods(clientId) {
+  if (!clientId) throw new Error('clientId required');
+
+  // Find every distinct year that has NetReductionEntry data for this client
+  const yearDocs = await NetReductionEntry.aggregate([
+    { $match: { clientId } },
+    { $group: { _id: { $year: '$timestamp' } } },
+    { $sort: { _id: 1 } },
+  ]);
+
+  if (!yearDocs.length) {
+    console.log(`[backfill] No reduction entries found for client ${clientId}`);
+    return { recalculated: [] };
+  }
+
+  const years = yearDocs.map(d => d._id);
+  console.log(`[backfill] client=${clientId} years=${years.join(', ')}`);
+
+  const recalculated = [];
+
+  for (const year of years) {
+    // Recalculate yearly period
+    const yearlySummary = await calculatePeriodSummary(clientId, 'yearly', year);
+    await saveIntoEmissionSummary(clientId, 'yearly', { year }, yearlySummary.reductionSummary);
+    recalculated.push(`yearly-${year}`);
+
+    // Recalculate each month within this year that has data
+    const monthDocs = await NetReductionEntry.aggregate([
+      { $match: { clientId, $expr: { $eq: [{ $year: '$timestamp' }, year] } } },
+      { $group: { _id: { $month: '$timestamp' } } },
+      { $sort: { _id: 1 } },
+    ]);
+
+    for (const md of monthDocs) {
+      const month = md._id;
+      const monthlySummary = await calculatePeriodSummary(clientId, 'monthly', year, month);
+      await saveIntoEmissionSummary(clientId, 'monthly', { year, month }, monthlySummary.reductionSummary);
+      recalculated.push(`monthly-${year}-${month}`);
+    }
+  }
+
+  // Always refresh all-time
+  const allTimeSummary = await calculatePeriodSummary(clientId, 'all-time');
+  await saveIntoEmissionSummary(clientId, 'all-time', {}, allTimeSummary.reductionSummary);
+  recalculated.push('all-time');
+
+  console.log(`[backfill] Done for client=${clientId}. Periods updated: ${recalculated.length}`);
+  return { recalculated };
+}
+
 // EXPORT
 module.exports = {
   recomputeClientNetReductionSummary,
+  backfillAllReductionPeriods,
 };

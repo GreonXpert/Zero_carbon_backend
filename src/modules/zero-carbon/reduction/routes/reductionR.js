@@ -5,6 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../../../../common/middleware/auth');
+const { backfillAllReductionPeriods } = require('../controllers/netReductionSummaryController');
 const {
   createReduction,
   getReduction,
@@ -55,6 +56,23 @@ router.post('/sync/:clientId', zcGate, syncReductionProjects);
 
 // Get projects summary for a client
 router.get('/summary/:clientId', zcGate, getReductionProjectsSummary);
+
+// Backfill m3Summary BE/PE/LE for all historical periods of a client.
+// Restricted to consultant_admin and super_admin only.
+// POST /api/reductions/backfill-m3/:clientId
+router.post('/backfill-m3/:clientId', zcGate, async (req, res) => {
+  const ALLOWED = ['super_admin', 'consultant_admin'];
+  if (!ALLOWED.includes(req.user?.userType)) {
+    return res.status(403).json({ success: false, message: 'Not authorized.' });
+  }
+  try {
+    const result = await backfillAllReductionPeriods(req.params.clientId);
+    return res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    console.error('[backfill-m3] Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // ==========================================
 // 🔹 PARAMETRIC ROUTES (with params like :clientId, :projectId)

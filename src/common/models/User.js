@@ -245,7 +245,7 @@ const userSchema = new mongoose.Schema(
     
     assessmentLevel: {
       type: [String],
-      enum: ['reduction', 'decarbonization', 'organization', 'process', 'both'],
+      enum: ['reduction', 'decarbonization', 'organization', 'process', 'both', 'net_zero'],
       default: []
     },
 

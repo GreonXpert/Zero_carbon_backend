@@ -13,10 +13,9 @@
  *   - Model name changed: 'ReductionFormula' → 'Formula'
  *     Old references in Reduction.js and NetReductionEntry.js have been updated accordingly.
  *
- * MIGRATION NOTE:
- *   Old documents may still have 'clientIds' (array). The migration script at
- *   src/modules/common/formula/migrations/migrateFormulas.js populates 'clientId' (string)
- *   from 'clientIds[0]' for each document, and creates clones for additional clients.
+ * CLIENT SCOPE DESIGN:
+ *   zero_carbon — clientIds: [String]  (array; one formula shared across many clients)
+ *   esg_link    — clientId:  String    (single; null when scopeType='global')
  */
 
 const mongoose = require('mongoose');
@@ -41,7 +40,7 @@ const VariableSchema = new mongoose.Schema({
 
 const FormulaSchema = new mongoose.Schema({
 
-  // ── Core formula fields (same as before) ──────────────────────────────────
+  // ── Core formula fields ───────────────────────────────────────────────────
   name:        { type: String, required: true, index: true },
   label:       { type: String, default: '' },
   // NOTE: For moduleKey='esg_link', label is enforced = name in the service layer.
@@ -51,7 +50,6 @@ const FormulaSchema = new mongoose.Schema({
   unit:        { type: String, default: '' },
 
   // Math expression; variable names must match VariableSchema.name values
-  // e.g. "(A * B) - sqrt(C) / D"
   expression:  { type: String, required: true },
 
   variables:   [VariableSchema],
@@ -59,15 +57,13 @@ const FormulaSchema = new mongoose.Schema({
   // Manual versioning support
   version:     { type: Number, default: 1 },
 
-  // ── Module-awareness (NEW) ─────────────────────────────────────────────────
+  // ── Module-awareness ──────────────────────────────────────────────────────
   moduleKey: {
     type: String,
     enum: ['zero_carbon', 'esg_link'],
     required: true
-    // Add new module keys here as future modules are onboarded.
   },
 
-  // Scope type (schema-ready for all values; only 'client' is active in business logic now)
   scopeType: {
     type: String,
     enum: ['client', 'team', 'global'],
@@ -75,35 +71,33 @@ const FormulaSchema = new mongoose.Schema({
     default: 'client'
   },
 
-  // Single clientId (replaces old clientIds[] array)
-  // Required when scopeType = 'client'; enforced in service layer, not schema,
-  // to allow graceful validation error messages.
+  // zero_carbon: array of client IDs — one formula can serve many clients.
+  // esg_link:    always [] (esg_link uses clientId below).
+  clientIds: { type: [String], default: [] },
+
+  // esg_link: single client ID, or null when scopeType='global'.
+  // zero_carbon: always null (zero_carbon uses clientIds above).
   clientId: { type: String, default: null },
 
-  // ── Traceability (NEW) ────────────────────────────────────────────────────
-  createdByRole: { type: String, default: '' },
-  // sourceFormulaId: set on cloned records created during migration.
-  // Points to the original formula that was split.
+  // ── Traceability ──────────────────────────────────────────────────────────
+  createdByRole:   { type: String, default: '' },
   sourceFormulaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Formula', default: null },
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
   // ── Soft delete ───────────────────────────────────────────────────────────
-  isDeleted:   { type: Boolean, default: false }
+  isDeleted: { type: Boolean, default: false }
 
 }, {
   timestamps: true,
   collection: 'reduction_formulas'
-  // NOTE: Collection name is kept as 'reduction_formulas' for zero-risk backward compatibility.
-  // Rename to 'common_formulas' in a future dedicated DB migration once all consumers are confirmed stable.
 });
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 FormulaSchema.index({ name: 1, version: -1 });
-FormulaSchema.index({ moduleKey: 1, clientId: 1, isDeleted: 1 });
+FormulaSchema.index({ moduleKey: 1, clientIds: 1, isDeleted: 1 }); // zero_carbon
+FormulaSchema.index({ moduleKey: 1, clientId: 1, isDeleted: 1 });  // esg_link
 
 // ─── Model Registration ───────────────────────────────────────────────────────
-// Model name changed from 'ReductionFormula' to 'Formula'.
-// All schema refs in Reduction.js and NetReductionEntry.js have been updated to ref: 'Formula'.
 module.exports = mongoose.model('Formula', FormulaSchema);

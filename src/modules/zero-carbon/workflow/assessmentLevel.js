@@ -1,4 +1,4 @@
-const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process'];
+const ALLOWED = ['reduction', 'decarbonization', 'organization', 'process', 'net_zero'];
 
 function normalizeAssessmentLevels(levels) {
   const arr = Array.isArray(levels) ? levels : (levels ? [levels] : []);

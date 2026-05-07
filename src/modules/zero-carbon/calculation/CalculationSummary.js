@@ -2123,6 +2123,30 @@ const getEmissionSummary = async (req, res) => {
       });
     }
 
+    // ── Lazy recalculation for old docs missing per-project BE/PE/LE ─────────
+    // Pre-schema-change documents have m3Summary.entriesCount > 0 but all
+    // byProject M3 entries have totalBE/PE/LE = 0.  Trigger a background
+    // recompute for this specific period so the next request gets correct data.
+    const _rs = summary?.reductionSummary;
+    const _m3Projects = (_rs?.byProject || []).filter(p => p.methodology === 'methodology3');
+    const hasStaleM3 = (_rs?.m3Summary?.entriesCount || 0) > 0
+      && _m3Projects.length > 0
+      && _m3Projects.every(p => !p.totalBE && !p.totalPE && !p.totalLE);
+
+    if (hasStaleM3 && dataFreshness !== 'stale') {
+      dataFreshness = 'stale';
+      setImmediate(() => {
+        // Build a timestamp that falls inside the requested period so
+        // recomputeClientNetReductionSummary targets the right yearly/monthly bucket.
+        const targetTs = periodType === 'all-time'
+          ? []
+          : [moment.utc({ year: y, month: Math.max((m || 7) - 1, 0), day: d || 15 }).toDate()];
+        netReductionSummaryController
+          .recomputeClientNetReductionSummary(clientId, { timestamps: targetTs })
+          .then(() => redisCache.del(redisCacheKey))
+          .catch(err => console.error('[BgM3Recalc]', err.message));
+      });
+    }
     // ── ★ ADDED: Role-based data filtering ────────────────────────────────────
     const accessCtx = req.summaryAccessContext    // attached by checkSummaryPermission
       || await getSummaryAccessContext(req.user, clientId); // fallback if middleware skipped
