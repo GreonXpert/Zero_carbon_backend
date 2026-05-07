@@ -423,25 +423,10 @@ const asObject = (val, fieldName) => {
 const getLoggedInUserId = (req) =>
   String(req.user?.id || req.user?._id || req.user?.userId || "");
 
-const applyTeamVisibilityToListFilter = (filters, role, userId) => {
-  if (!userId) return;
-
-  // Employee Head sees ONLY projects where they are the assigned head
-  if (role === "client_employee_head") {
-    filters["assignedTeam.employeeHeadId"] = userId;
-    return;
-  }
-
-  // Employee sees ONLY projects where they are assigned (or defensive: also if they are head)
-  if (role === "employee") {
-    filters.$and = filters.$and || [];
-    filters.$and.push({
-      $or: [
-        { "assignedTeam.employeeIds": userId },
-        { "assignedTeam.employeeHeadId": userId },
-      ],
-    });
-  }
+const applyTeamVisibilityToListFilter = (_filters, _role, _userId) => {
+  // assignedTeam is field-encrypted at rest — MongoDB stores it as an opaque
+  // encrypted string. Dot-notation filters on it always return 0 results.
+  // Team visibility is enforced in JS after post('find') decryption below.
 };
 
 const hasAssignedAccessToSingleProject = (doc, role, userId) => {
@@ -934,17 +919,38 @@ exports.getAllReductions = async (req, res) => {
     const pageNum = Math.max(1, Number(page));
     const limitNum = Math.min(100, Math.max(1, Number(limit)));
 
-    const query = Reduction.find(filter)
-      .sort(sort)
-      .skip((pageNum - 1) * limitNum)
-      .limit(limitNum)
-      .populate("createdBy", "userName userType email")
-      .lean();
+    const needsTeamFilter = role === "client_employee_head" || role === "employee";
 
-    const [items, total] = await Promise.all([
-      query,
-      Reduction.countDocuments(filter),
-    ]);
+    let items, total;
+
+    if (needsTeamFilter) {
+      // assignedTeam is field-encrypted — DB-level dot-notation filters on it
+      // never match. Fetch all client docs, let post('find') decrypt them, then
+      // filter in JS and paginate the filtered result.
+      const allDocs = await Reduction.find(filter)
+        .sort(sort)
+        .populate("createdBy", "userName userType email")
+        .lean();
+
+      const filtered = allDocs.filter((doc) =>
+        hasAssignedAccessToSingleProject(doc, role, userId)
+      );
+
+      total = filtered.length;
+      items = filtered.slice((pageNum - 1) * limitNum, pageNum * limitNum);
+    } else {
+      const [rawItems, rawTotal] = await Promise.all([
+        Reduction.find(filter)
+          .sort(sort)
+          .skip((pageNum - 1) * limitNum)
+          .limit(limitNum)
+          .populate("createdBy", "userName userType email")
+          .lean(),
+        Reduction.countDocuments(filter),
+      ]);
+      items = rawItems;
+      total = rawTotal;
+    }
 
     // =====================================================
     // CLEAN + IMAGE SAFE NORMALIZATION
