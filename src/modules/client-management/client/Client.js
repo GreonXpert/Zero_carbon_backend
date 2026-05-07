@@ -350,7 +350,7 @@ const clientSchema = new mongoose.Schema(
   // ✅ In your SubmissionData schema, add/modify these fields:
       assessmentLevel: {
         type: [String],
-        enum: ['reduction', 'decarbonization', 'organization', 'process'],
+        enum: ['reduction', 'decarbonization', 'organization', 'process', 'net_zero'],
         default: []
       },
        // 🆕 MODULE ACCESS — which product modules this client subscribes to.
@@ -716,7 +716,7 @@ clientSchema.pre('save', function(next) {
 
 
 // --- Normalize assessmentLevel on every save (handles legacy values) ---
-const ALLOWED_LEVELS = ['reduction', 'decarbonization', 'organization', 'process'];
+const ALLOWED_LEVELS = ['reduction', 'decarbonization', 'organization', 'process', 'net_zero'];
 
 
 

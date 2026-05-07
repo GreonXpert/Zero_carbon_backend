@@ -1370,8 +1370,8 @@ async function calculateScope3Emissions(
       case 'EmissionFactorHub':
         return scopeConfig.emissionFactorValues.emissionFactorHubData.value || 0;
       case 'Country': {
-        const yearVals = scopeConfig.emissionFactorValues.countryData.yearlyValues;
-        return (yearVals.length && yearVals[yearVals.length - 1].value) || 0;
+        const yearVals = scopeConfig.emissionFactorValues?.countryData?.yearlyValues;
+        return (yearVals?.length && yearVals[yearVals.length - 1].value) || 0;
       }
       case 'DEFRA': {
         const units = scopeConfig.emissionFactorValues.defraData.ghgUnits || [];

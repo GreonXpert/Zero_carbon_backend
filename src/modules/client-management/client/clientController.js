@@ -2239,7 +2239,7 @@ const hasEsgLink = modules.includes('esg_link');
       if (!normalizedLevels || normalizedLevels.length === 0) {
         return res.status(400).json({
           message:
-            "assessmentLevel is required (allowed: reduction, decarbonization, organization, process)",
+            "assessmentLevel is required (allowed: reduction, decarbonization, organization, process, net_zero)",
         });
       }
 
