@@ -663,8 +663,9 @@ function asFraction01(v) {
 function getEOLDisposalFractionFromScope(scope) {
   try {
     const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const cv = scope?.customValues || scope?.customValue || ai?.customValue || {};
     const candidates = [
+      cv?.percentageToDisposal,
       scope?.toDisposal, ai?.toDisposal, cv?.toDisposal,
       scope?.disposalShare, ai?.disposalShare, cv?.disposalShare,
       scope?.disposalFraction, ai?.disposalFraction, cv?.disposalFraction,
@@ -680,8 +681,9 @@ function getEOLDisposalFractionFromScope(scope) {
 function getEOLLandfillFractionFromScope(scope) {
   try {
     const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const cv = scope?.customValues || scope?.customValue || ai?.customValue || {};
     const candidates = [
+      cv?.percentageToLandfill,
       scope?.toLandfill, ai?.toLandfill, cv?.toLandfill,
       scope?.landfillShare, ai?.landfillShare, cv?.landfillShare,
       scope?.landfillFraction, ai?.landfillFraction, cv?.landfillFraction,
@@ -697,8 +699,9 @@ function getEOLLandfillFractionFromScope(scope) {
 function getEOLIncinerationFractionFromScope(scope) {
   try {
     const ai = scope?.additionalInfo || {};
-    const cv = scope?.customValue || ai?.customValue || {};
+    const cv = scope?.customValues || scope?.customValue || ai?.customValue || {};
     const candidates = [
+      cv?.percentageToIncineration,
       scope?.toIncineration, ai?.toIncineration, cv?.toIncineration,
       scope?.incinerationShare, ai?.incinerationShare, cv?.incinerationShare,
       scope?.incinerationFraction, ai?.incinerationFraction, cv?.incinerationFraction,
