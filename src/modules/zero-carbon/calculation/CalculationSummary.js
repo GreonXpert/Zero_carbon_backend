@@ -3271,8 +3271,12 @@ const getLatestScope12Total = async (req, res) => {
     }
 
     // ── Role-based access filter ─────────────────────────────────────────
-    const _ctx1 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
-    const filteredLatest = applyAccessContextToSummary(latest, _ctx1);
+    // Skip access filtering when no user is present (public endpoint).
+    let filteredLatest = latest;
+    if (req.user) {
+      const _ctx1 = req.summaryAccessContext || await getSummaryAccessContext(req.user, clientId);
+      filteredLatest = applyAccessContextToSummary(latest, _ctx1);
+    }
 
     // =====================================================
     // 2) Handle EMISSION SUMMARY mode
