@@ -2001,62 +2001,37 @@ case 'Use of Sold Products': {
 //─────────End-of-Life Treatment of Sold Products (12) ─────────
 case 'End-of-Life Treatment of Sold Products': {
   if (tier === 'tier 1') {
-    const mass  = dataValues.massEol        ?? 0;
+    const mass    = dataValues.massEol ?? 0;
+    const cumMass = cumulativeVals.massEol ?? 0;
+    const act     = normActivity(scopeConfig.activity); // 'disposal' | 'landfill' | 'incineration'
 
-    // Prefer scope-level fractions, else fall back to payload values (and cumulative for cum path)
-    const dCfg = getEOLDisposalFractionFromScope(scopeConfig);
-    const lCfg = getEOLLandfillFractionFromScope(scopeConfig);
-    const iCfg = getEOLIncinerationFractionFromScope(scopeConfig);
+    if (act === 'disposal') {
+      const fraction    = getEOLDisposalFractionFromScope(scopeConfig) ?? 0;
+      emissions.incoming['eol_disposal']    = { CO2e: mass    * fraction * ef };
+      emissions.cumulative['eol_disposal']  = { CO2e: cumMass * fraction * ef };
 
-    const dIn   = (dCfg != null) ? dCfg : (asFraction01(dataValues.toDisposal)     ?? 0);
-    const lIn   = (lCfg != null) ? lCfg : (asFraction01(dataValues.toLandfill)     ?? 0);
-    const iIn   = (iCfg != null) ? iCfg : (asFraction01(dataValues.toIncineration) ?? 0);
+    } else if (act === 'landfill') {
+      const fraction    = getEOLLandfillFractionFromScope(scopeConfig) ?? 0;
+      emissions.incoming['eol_landfill']    = { CO2e: mass    * fraction * ef };
+      emissions.cumulative['eol_landfill']  = { CO2e: cumMass * fraction * ef };
 
-    const dCum  = (dCfg != null) ? dCfg : (asFraction01(cumulativeVals.toDisposal)     ?? 0);
-    const lCum  = (lCfg != null) ? lCfg : (asFraction01(cumulativeVals.toLandfill)     ?? 0);
-    const iCum  = (iCfg != null) ? iCfg : (asFraction01(cumulativeVals.toIncineration) ?? 0);
+    } else if (act === 'incineration') {
+      const fraction    = getEOLIncinerationFractionFromScope(scopeConfig) ?? 0;
+      emissions.incoming['eol_incineration']   = { CO2e: mass    * fraction * ef };
+      emissions.cumulative['eol_incineration'] = { CO2e: cumMass * fraction * ef };
 
-    // pull three EF values in order [disposal, landfill, incineration]
-    let efDisp = ef, efLand = ef, efInc = ef;
-    const hub   = scopeConfig?.emissionFactorValues?.emissionFactorHubData;
-    if (Array.isArray(hub)) {
-      efDisp = hub[0]?.value ?? ef;
-      efLand = hub[1]?.value ?? ef;
-      efInc  = hub[2]?.value ?? ef;
+    } else {
+      // No specific activity — calculate all three pathways from customValues
+      const dFrac = getEOLDisposalFractionFromScope(scopeConfig) ?? 0;
+      const lFrac = getEOLLandfillFractionFromScope(scopeConfig) ?? 0;
+      const iFrac = getEOLIncinerationFractionFromScope(scopeConfig) ?? 0;
+      emissions.incoming['eol_disposal']       = { CO2e: mass    * dFrac * ef };
+      emissions.cumulative['eol_disposal']     = { CO2e: cumMass * dFrac * ef };
+      emissions.incoming['eol_landfill']       = { CO2e: mass    * lFrac * ef };
+      emissions.cumulative['eol_landfill']     = { CO2e: cumMass * lFrac * ef };
+      emissions.incoming['eol_incineration']   = { CO2e: mass    * iFrac * ef };
+      emissions.cumulative['eol_incineration'] = { CO2e: cumMass * iFrac * ef };
     }
-
-    // 1️⃣ Disposal
-    const incDisp = mass * dIn * efDisp;
-    const cumDisp = (cumulativeVals.massEol ?? 0) * dCum * efDisp;
-
-    emissions.incoming['eol_disposal'] = {
-      CO2e: incDisp,
-    };
-    emissions.cumulative['eol_disposal'] = {
-      CO2e: cumDisp,
-    };
-
-    // 2️⃣ Landfill
-    const incLand = mass * lIn * efLand;
-    const cumLand = (cumulativeVals.massEol ?? 0) * lCum * efLand;
-
-    emissions.incoming['eol_landfill'] = {
-      CO2e: incLand,
-    };
-    emissions.cumulative['eol_landfill'] = {
-      CO2e: cumLand,
-    };
-
-    // 3️⃣ Incineration
-    const incInc = mass * iIn * efInc;
-    const cumInc = (cumulativeVals.massEol ?? 0) * iCum * efInc;
-
-    emissions.incoming['eol_incineration'] = {
-      CO2e: incInc,
-    };
-    emissions.cumulative['eol_incineration'] = {
-      CO2e: cumInc,
-    };
   }
   break;
 }
