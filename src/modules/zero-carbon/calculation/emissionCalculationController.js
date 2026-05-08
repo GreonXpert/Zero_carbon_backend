@@ -238,6 +238,17 @@ function buildCalculationBreakdown(scopeConfig, dataValues, cumulativeValues, ef
         calculation: `${inputVal} × ${co2eEF} = ${result}`,
         result
       };
+
+      // For Use of Sold Products, override inputValues with resolved flowchart config values
+      // so the breakdown reflects what was actually used in the calculation.
+      if (categoryName === 'Use of Sold Products') {
+        const resolvedPattern = getUsePatternFromScope(scopeConfig);
+        const resolvedEff     = getEnergyEfficiencyFromScope(scopeConfig);
+        const resolvedAvgLife = getAverageLifetimeEnergyConsumptionFromScope(scopeConfig);
+        if (resolvedPattern !== null) breakdown.inputValues.usePattern = resolvedPattern;
+        if (resolvedEff     !== null) breakdown.inputValues.energyEfficiency = resolvedEff;
+        if (resolvedAvgLife !== null) breakdown.inputValues.averageLifetimeEnergyConsumption = resolvedAvgLife;
+      }
     }
 
     // ─── STEP 3: UNCERTAINTY (always included) ────────────────────────────

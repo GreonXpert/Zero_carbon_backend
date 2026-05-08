@@ -276,7 +276,7 @@ case 'Downstream Leased Assets': {
         // Tier 1
         pd.averageLifetimeEnergyConsumption = getValue(['averageLifetimeEnergyConsumption', 'average_lifetime_energy_consumption']);
         // Tier 2
-        pd.usePattern = getValue(['usePattern', 'use_pattern'], 1); // Default to 1
+        pd.usePattern = getValue(['usePattern', 'use_pattern'], null); // Read from flowchart config
         pd.energyEfficiency = getValue(['energyEfficiency', 'energy_efficiency']);
         break;
 
