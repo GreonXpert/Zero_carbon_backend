@@ -6,7 +6,7 @@ const ProcessFlowchart = require('../models/ProcessFlowchart');
 const { getNormalizedAssessmentLevels } = require('../../data-collection/utils/dataCollection');
 const { canManageFlowchart, canViewFlowchart } = require('../../../../common/utils/Permissions/permissions');
 const { normalizeEdges } = require('../../workflow/chart/chartHelpers');
-
+const Client = require('../../../client-management/client/Client');
 // Audit log helpers for the transport_flowchart module
 const {
   logTransportFlowUpdate,

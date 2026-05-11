@@ -1,15 +1,13 @@
 const Flowchart = require('../../organization/models/Flowchart');
 const ProcessFlowchart =require('../../organization/models/ProcessFlowchart');
 const Client = require('../../../client-management/client/Client');
+const User = require('../../../../common/models/User');
 
-/**
- * Return the assessmentLevel as a normalized lowercase array.
- * Falls back to [] when missing.
- */
 /**
  * Normalize assessmentLevel into a lowercase array.
  * Accepts: 'both', 'organization', 'process', 'reduction' etc., or an array.
  * Expands 'both' => ['organization','process'] and aliases 'organisation' => 'organization'.
+ * Falls back to the client_admin User document when Client.submissionData.assessmentLevel is unset.
  */
 async function getNormalizedAssessmentLevels(clientId) {
   const client = await Client.findOne(
@@ -19,6 +17,17 @@ async function getNormalizedAssessmentLevels(clientId) {
 
   const raw = client?.submissionData?.assessmentLevel;
   const arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
+  if (arr.length === 0) {
+    const adminUser = await User.findOne(
+      { clientId, userType: 'client_admin' },
+      { assessmentLevel: 1, _id: 0 }
+    ).lean();
+    const fallback = adminUser?.assessmentLevel;
+    if (Array.isArray(fallback) && fallback.length > 0) {
+      arr.push(...fallback);
+    }
+  }
 
   const norm = arr
     .map(v => String(v || '').trim().toLowerCase())
