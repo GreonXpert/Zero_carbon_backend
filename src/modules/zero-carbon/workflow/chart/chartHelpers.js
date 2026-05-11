@@ -79,7 +79,7 @@ const normalizeScopeDetail = (scope) => {
     inputType:            scope.inputType          || 'manual',
     
     apiStatus:            scope.apiStatus          || false,
-    fromOtherChart:       scope.fromOtherChart     || false,
+    fromOtherChart:       scope.fromOtherChart === true,
     apiEndpoint:          scope.apiEndpoint        || '',
     iotStatus:            scope.iotStatus          || false,
     iotDeviceId:          scope.iotDeviceId        || '',
@@ -705,10 +705,11 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
                 scopeType:       scope.scopeType,
                 categoryName:    scope.categoryName,
                 activity:        scope.activity,
+                fromOtherChart:  scope.fromOtherChart === true,
               }))
             : [],
           additionalDetails: d.additionalDetails || {},
-          fromOtherChart:    d.fromOtherChart    || false,
+          fromOtherChart:    d.fromOtherChart    === true,
         }
       };
     }
@@ -734,7 +735,7 @@ const normalizeNodes = (nodes, assessmentLevel, chartType) => {
         employeeHeadId:    d.employeeHeadId    || null,
         scopeDetails:      d.scopeDetails      || [],
         additionalDetails: d.additionalDetails || {},
-        fromOtherChart:    d.fromOtherChart    || false,
+        fromOtherChart:    d.fromOtherChart    === true,
       }
     };
   });
