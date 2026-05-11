@@ -676,6 +676,8 @@ const NodeSchema = new mongoose.Schema({
     // Node metadata
     additionalDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
 
+    fromOtherChart: { type: Boolean, default: false },
+
     // --- in NodeSchema.details
 
 
