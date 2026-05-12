@@ -13,6 +13,8 @@ const {
   addNodeToFlowchart,
   hardDeleteScopeDetail,
   getFlowchartBoundary,
+  assignScopeToFlowchartNode,
+  removeAssignmentFlowchart,
 } = require('../controllers/flowchartController');
 
 const {
@@ -27,7 +29,7 @@ const { requireActiveModuleSubscription } = require('../../../../common/utils/Pe
 // Shorthand for ZeroCarbon-specific route protection.
 const zcGate = requireActiveModuleSubscription('zero_carbon');
 
-const { auth } = require('../../../../common/middleware/auth');
+const { auth, checkRole } = require('../../../../common/middleware/auth');
 
 const router = express.Router();
 
@@ -99,6 +101,26 @@ router.post(
   zcGate ,
   requireOrgFlowchartAssign(),
   assignOrUnassignEmployeeHeadToNode
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flowchart — Scope Assignment (Employee Head only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Assign employees to a scope in a flowchart node
+router.post(
+  '/:clientId/nodes/:nodeId/assign-scope',
+  zcGate,
+  checkRole('employee_head', 'client_employee_head'),
+  assignScopeToFlowchartNode
+);
+
+// Remove employees from a scope in a flowchart node
+router.delete(
+  '/:clientId/nodes/:nodeId/remove-scope-assignment',
+  zcGate,
+  checkRole('employee_head', 'client_employee_head'),
+  removeAssignmentFlowchart
 );
 
 module.exports = router;

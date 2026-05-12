@@ -2337,6 +2337,188 @@ const getFlowchartBoundary = async (req, res) => {
 };
 
 
+// Assign employees to a scopeDetail in a Flowchart node (Employee Head only)
+const assignScopeToFlowchartNode = async (req, res) => {
+  try {
+    if (req.user.userType !== 'client_employee_head') {
+      return res.status(403).json({ message: 'Only Employee Heads can assign employees to scopes' });
+    }
+
+    const { clientId, nodeId } = req.params;
+    const { scopeIdentifier, employeeIds } = req.body;
+
+    if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
+      return res.status(400).json({ message: 'clientId, nodeId, scopeIdentifier and employeeIds[] are required' });
+    }
+    if (employeeIds.length === 0) {
+      return res.status(400).json({ message: 'At least one employee must be assigned' });
+    }
+    if (String(req.user.clientId) !== String(clientId)) {
+      return res.status(403).json({ message: 'You can only assign within your organization' });
+    }
+
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Active flowchart not found for this client' });
+    }
+
+    const nodeIndex = (flowchart.nodes || []).findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found in flowchart' });
+    }
+
+    const node = flowchart.nodes[nodeIndex];
+
+    const assignedHeadId = node?.details?.employeeHeadId ? String(node.details.employeeHeadId) : null;
+    const currentUserId  = req.user.id ? String(req.user.id) : (req.user._id ? String(req.user._id) : null);
+
+    if (!assignedHeadId || assignedHeadId !== currentUserId) {
+      return res.status(403).json({
+        message: 'You are not authorized to manage this node. Only the assigned Employee Head can assign scopes.'
+      });
+    }
+
+    const scopeIndex = (node.details?.scopeDetails || []).findIndex(s => s.scopeIdentifier === scopeIdentifier);
+    if (scopeIndex === -1) {
+      return res.status(404).json({ message: `Scope detail '${scopeIdentifier}' not found in this node` });
+    }
+    const scope = flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex];
+
+    const employees = await User.find({ _id: { $in: employeeIds }, userType: 'employee', clientId, isActive: true });
+    if (employees.length !== employeeIds.length) {
+      return res.status(400).json({ message: 'One or more employees not found or not in your organization' });
+    }
+
+    const existing = (scope.assignedEmployees || []).map(e => String(e));
+    const merged = [...new Set([
+      ...existing.filter(e => !employeeIds.map(String).includes(e)),
+      ...employeeIds.map(String)
+    ])];
+    flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedEmployees = merged;
+    flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex].lastAssignedAt = new Date();
+    flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedBy = req.user._id;
+
+    flowchart.markModified('nodes');
+    await flowchart.save();
+
+    await logFlowchartScopeAssign(req, { _id: flowchart._id, clientId }, nodeId, scopeIdentifier, employeeIds);
+
+    const scopeAssignment = {
+      nodeId,
+      nodeLabel:  node.label,
+      nodeType:   node.details?.nodeType || 'unknown',
+      department: node.details?.department || 'unknown',
+      location:   node.details?.location || 'unknown',
+      scopeIdentifier,
+      scopeType:  scope.scopeType,
+      inputType:  scope.inputType,
+      assignedAt: new Date(),
+      assignedBy: req.user._id
+    };
+
+    await User.updateMany(
+      { _id: { $in: employeeIds } },
+      {
+        $set: { employeeHeadId: req.user._id },
+        $addToSet: { assignedModules: JSON.stringify(scopeAssignment) }
+      }
+    );
+
+    return res.status(200).json({
+      message: 'Employees successfully assigned to scope',
+      assignment: {
+        scope:     { identifier: scopeIdentifier, type: scope.scopeType, inputType: scope.inputType },
+        node:      { id: nodeId, label: node.label, department: node.details?.department, location: node.details?.location },
+        employees: employees.map(e => ({ id: e._id, name: e.userName, email: e.email })),
+        assignedBy: req.user.userName,
+        assignedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error in assignScopeToFlowchartNode:', error);
+    return res.status(500).json({ message: 'Error assigning employees to scope (flowchart)', error: error.message });
+  }
+};
+
+// Remove employees from a scopeDetail in a Flowchart node (Employee Head only)
+const removeAssignmentFlowchart = async (req, res) => {
+  try {
+    if (req.user.userType !== 'client_employee_head') {
+      return res.status(403).json({ message: 'Only Employee Heads can remove employees from scopes' });
+    }
+
+    const { clientId, nodeId } = req.params;
+    const { scopeIdentifier, employeeIds } = req.body;
+
+    if (!clientId || !nodeId || !scopeIdentifier || !Array.isArray(employeeIds)) {
+      return res.status(400).json({ message: 'clientId, nodeId, scopeIdentifier and employeeIds[] are required' });
+    }
+    if (employeeIds.length === 0) {
+      return res.status(400).json({ message: 'At least one employee must be provided to remove' });
+    }
+    if (String(req.user.clientId) !== String(clientId)) {
+      return res.status(403).json({ message: 'You can only manage assignments within your organization' });
+    }
+
+    const flowchart = await Flowchart.findOne({ clientId, isActive: true });
+    if (!flowchart) {
+      return res.status(404).json({ message: 'Active flowchart not found for this client' });
+    }
+
+    const nodeIndex = (flowchart.nodes || []).findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      return res.status(404).json({ message: 'Node not found in flowchart' });
+    }
+
+    const node = flowchart.nodes[nodeIndex];
+
+    const assignedHeadId = node?.details?.employeeHeadId ? String(node.details.employeeHeadId) : null;
+    const currentUserId  = req.user.id ? String(req.user.id) : (req.user._id ? String(req.user._id) : null);
+
+    if (!assignedHeadId || assignedHeadId !== currentUserId) {
+      return res.status(403).json({
+        message: 'You are not authorized to manage this node. Only the assigned Employee Head can remove scope assignments.'
+      });
+    }
+
+    const scopeIndex = (node.details?.scopeDetails || []).findIndex(s => s.scopeIdentifier === scopeIdentifier);
+    if (scopeIndex === -1) {
+      return res.status(404).json({ message: `Scope detail '${scopeIdentifier}' not found in this node` });
+    }
+    const scope = flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex];
+
+    const employeeIdStrings = employeeIds.map(String);
+    flowchart.nodes[nodeIndex].details.scopeDetails[scopeIndex].assignedEmployees =
+      (scope.assignedEmployees || []).filter(e => !employeeIdStrings.includes(String(e)));
+
+    flowchart.markModified('nodes');
+    await flowchart.save();
+
+    await logFlowchartScopeUnassign(req, { _id: flowchart._id, clientId }, nodeId, scopeIdentifier, employeeIds);
+
+    await User.updateMany(
+      { _id: { $in: employeeIds } },
+      {
+        $pull: {
+          assignedModules: {
+            $regex: `.*"nodeId":"${nodeId}".*"scopeIdentifier":"${scopeIdentifier}".*`
+          }
+        }
+      }
+    );
+
+    return res.status(200).json({
+      message: 'Employees removed from scope successfully',
+      node:  { id: nodeId, label: node.label, department: node.details?.department, location: node.details?.location },
+      scope: { scopeIdentifier, scopeType: scope.scopeType, inputType: scope.inputType },
+      removedEmployees: employeeIds
+    });
+  } catch (error) {
+    console.error('❌ Error in removeAssignmentFlowchart:', error);
+    return res.status(500).json({ message: 'Error removing employees from scope (flowchart)', error: error.message });
+  }
+};
+
 module.exports = {
   saveFlowchart,
   addNodeToFlowchart,
@@ -2350,5 +2532,7 @@ module.exports = {
   updateFlowchartNode,
   assignOrUnassignEmployeeHeadToNode,
   hardDeleteScopeDetail,
-  getFlowchartBoundary
+  getFlowchartBoundary,
+  assignScopeToFlowchartNode,
+  removeAssignmentFlowchart,
 };
