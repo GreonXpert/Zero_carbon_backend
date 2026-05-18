@@ -80,7 +80,7 @@ exports.saveTicketAttachments = async function saveTicketAttachments(req, contex
     throw new Error('Missing required context: clientId, ticketId, userId');
   }
 
-  const bucketName = process.env.S3_UPLOADS_BUCKET || 'zerocarbon-uploads-prod';
+  const bucketName = process.env.TICKET_ATTACHMENTS_BUCKET || 'zerocarbon-ticket-attachments-prod';
   const results = [];
 
   try {

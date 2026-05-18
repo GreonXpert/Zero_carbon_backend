@@ -189,7 +189,7 @@ router.patch("/:clientId/change-support-manager", changeSupportManager);
  * Get Support Manager for Client
  * GET /api/clients/:clientId/support-manager
  */
-router.get("/support-manager", getSupportManagerForClient);
+router.get("/:clientId/support-manager", getSupportManagerForClient);
 
 // ===================================================================
 // QUOTA STAGE (Stage 3.5 — between proposal and active)

@@ -422,6 +422,7 @@ const verifyLoginOTP = async (req, res) => {
       permissions: user.permissions,
       sandbox: user.sandbox === true,
       assessmentLevel: user.assessmentLevel || [],
+      esgLinkAssessmentLevel: user.esgLinkAssessmentLevel || { module: null, frameworks: [] },
       accessibleModules: user.accessibleModules || ['zero_carbon'],
       sessionId
     };
@@ -447,6 +448,7 @@ const verifyLoginOTP = async (req, res) => {
       profileImage: user.profileImage || null,
       sandbox: user.sandbox === true,
       assessmentLevel: user.assessmentLevel || [],
+      esgLinkAssessmentLevel: user.esgLinkAssessmentLevel || { module: null, frameworks: [] },
       accessibleModules: user.accessibleModules || ['zero_carbon'],
     };
 
@@ -1478,6 +1480,9 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
     const levels = getNormalizedLevels(client); // normalized assessmentLevel
 
+    // Resolve esgLinkAssessmentLevel from client submissionData
+    const clientEsgLevel = client.submissionData?.esgLinkAssessmentLevel || { module: null, frameworks: [] };
+
     // =========================================================
     // Resolve accessibleModules for client_admin user
     // =========================================================
@@ -1530,6 +1535,9 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         // ✅ IMPORTANT FIX: sync modules to existing client_admin
         existingClientAdmin.accessibleModules = accessibleModules;
 
+        // Sync esgLinkAssessmentLevel from client submissionData
+        existingClientAdmin.esgLinkAssessmentLevel = clientEsgLevel;
+
         existingClientAdmin.companyName = companyName;
 
         await existingClientAdmin.save();
@@ -1571,6 +1579,9 @@ const createClientAdmin = async (clientId, clientData = {}) => {
         // ✅ IMPORTANT FIX: sync modules when upgrading sandbox user
         sandboxAdmin.accessibleModules = accessibleModules;
 
+        // Sync esgLinkAssessmentLevel from client submissionData
+        sandboxAdmin.esgLinkAssessmentLevel = clientEsgLevel;
+
         await sandboxAdmin.save();
 
         if (!client.accountDetails) client.accountDetails = {};
@@ -1610,6 +1621,9 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
       // ✅ IMPORTANT FIX: save client modules into User document
       accessibleModules,
+
+      // Save ESGLink assessment level from client submissionData
+      esgLinkAssessmentLevel: clientEsgLevel,
 
       createdBy: clientData.consultantId,
 

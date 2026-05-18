@@ -12,6 +12,7 @@ const { startEsgLinkExpiryChecker }     = require('../../modules/zero-carbon/wor
 const { startSummaryMaintenanceJob }    = require('../../modules/zero-carbon/workflow/jobs/summaryMaintenanceJob');
 const { startSLAChecker }               = require('../../common/utils/jobs/ticketSlaChecker');
 const { startEsgDataFrequencyChecker }  = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgDataFrequencyChecker');
+const { startEsgApiKeyExpiryChecker }   = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgApiKeyExpiryChecker');
 const { publishScheduledNotifications } = require('../../common/controllers/notification/notificationControllers');
 const { startGreOnIQWeeklyReset }       = require('../../modules/greon-iq/jobs/greonIQWeeklyReset');
 const { startGreOnIQMonthlyReset }      = require('../../modules/greon-iq/jobs/greonIQMonthlyReset');
@@ -66,6 +67,7 @@ function registerJobs() {
   // ── Subscription expiry checkers (ZeroCarbon + ESGLink) ──────────────────
   startEsgLinkExpiryChecker();      // daily at 02:00 UTC
   startZeroCarbonExpiryChecker();   // daily at 02:05 UTC
+  startEsgApiKeyExpiryChecker();    // daily at 03:00 UTC — ESG API key expiry warnings
 
   // ── Summary maintenance job (hourly recalc + daily cleanup) ──────────────
   startSummaryMaintenanceJob();

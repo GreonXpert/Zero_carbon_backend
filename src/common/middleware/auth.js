@@ -145,6 +145,7 @@ const auth = async (req, res, next) => {
         companyName: user.companyName,
         sandbox: user.sandbox === true,
         assessmentLevel: user.assessmentLevel || [],
+        esgLinkAssessmentLevel: user.esgLinkAssessmentLevel || { module: null, frameworks: [] },
         department: user.department,
         location: user.location,
         accessControls: user.accessControls,

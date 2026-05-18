@@ -42,8 +42,8 @@ const canAccessTicketChat = async (user, ticket) => {
     return { allowed: true };
   }
 
-  // Client-side users: check clientId match
-  if (['client', 'client_admin', 'employee', 'auditor'].includes(userType)) {
+  // Client-side users (including ESGLink roles): check clientId match
+  if (['client', 'client_admin', 'employee', 'auditor', 'contributor', 'reviewer', 'approver'].includes(userType)) {
     if (ticket.clientId !== user.clientId) {
       return { allowed: false, reason: 'Cannot access ticket from different client' };
     }
@@ -99,7 +99,8 @@ const canAccessTicketChat = async (user, ticket) => {
  * Comments are from: client, consultant, consultant_admin
  */
 const canPostComment = (userType) => {
-  return ['client', 'client_admin', 'employee', 'auditor', 'consultant', 'consultant_admin', 'super_admin'].includes(userType);
+  return ['client', 'client_admin', 'employee', 'auditor', 'consultant', 'consultant_admin', 'super_admin',
+          'contributor', 'reviewer', 'approver'].includes(userType);
 };
 
 /**

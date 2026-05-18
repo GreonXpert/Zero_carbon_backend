@@ -6,6 +6,8 @@
 
 const userR                      = require('../../common/routes/userR');
 const clientR                    = require('../../modules/client-management/client/clientR');
+const { getClients }             = require('../../modules/client-management/client/clientController');
+const { auth }                   = require('../../common/middleware/auth');
 const sandboxRoutes              = require('../../modules/client-management/sandbox/sandboxRoutes');
 const quotaRoutes                = require('../../modules/client-management/quota/quotaRoutes');
 const cctsRoutes                 = require('../../modules/client-management/ccts/cctsRoutes');
@@ -57,6 +59,9 @@ const { submissionR: esgDataR,
 const esgRollUpR                 = require('../../modules/esg-link/esgLink_core/rollup/routes/rollUpR');
 const esgSummaryR                = require('../../modules/esg-link/esgLink_core/summary/routes/summaryR');
 
+// ── ESGLink Support (tickets for ESGLink users) ───────────────────────────────
+const esgLinkSupportR            = require('../../modules/esg-link/support/routes/esgTicketR');
+
 // ── ESGLink Framework (BRSR + future frameworks) ──────────────────────────────
 const esgFrameworkR              = require('../../modules/esg-link/framework/routes/framework.routes');
 const esgBrsrQuestionR           = require('../../modules/esg-link/framework/routes/brsrQuestion.routes');
@@ -77,6 +82,10 @@ function registerRoutes(app) {
   // ── User & client management ──────────────────────────────────────────────
   app.use('/api/users',   userR);
   app.use('/api/clients', clientR);   // includes subscription management — NO gate
+
+  // Alias routes: frontend was calling these non-existent paths for the client list
+  app.get('/api/consultant-admin/:consultantAdminId/clients', auth, getClients);
+  app.get('/api/consultantadmin/clients/:consultantAdminId',  auth, getClients);
   app.use('/api/sandbox', sandboxRoutes);
   app.use('/api/quota',   quotaRoutes);
   app.use('/api/ccts',    cctsRoutes);
@@ -126,13 +135,16 @@ function registerRoutes(app) {
   app.use('/api/esglink/core', esgLinkMetricR);
   app.use('/api/esglink/core', esgLinkMappingR);
   app.use('/api/esglink/core', esgRollUpR);
+  app.use('/api/esglink/core', esgSummaryR);
 
   // ── ESGLink Data Collection (JWT-protected) ───────────────────────────────
   app.use('/api/esglink/data', esgDataR);
-  app.use('/api/esglink/data', esgSummaryR);
 
   // ── ESGLink IoT / API Ingestion (API-key protected — no JWT) ─────────────
   app.use('/api/esg-ingest', esgIngestR);
+
+  // ── ESGLink Support (tickets for ESGLink users) ───────────────────────────
+  app.use('/api/esglink/support', esgLinkSupportR);
 
   // ── ESGLink Framework (BRSR + future frameworks) ─────────────────────────
   app.use('/api/esg-link', esgFrameworkR);

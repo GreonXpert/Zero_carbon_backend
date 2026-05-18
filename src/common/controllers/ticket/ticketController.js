@@ -204,8 +204,9 @@ async function checkTicketAccess(user, ticket) {
     return false;
   }
 
-  // Client-side users
-  if (["client_admin", "client_employee_head", "employee", "auditor", "viewer"].includes(userType)) {
+  // Client-side users (including ESGLink roles)
+  if (["client_admin", "client_employee_head", "employee", "auditor", "viewer",
+       "contributor", "reviewer", "approver"].includes(userType)) {
     if (user.clientId && ticket.clientId === user.clientId) return true;
 
     if (
@@ -494,6 +495,12 @@ async function canCreateTicket(user, clientId) {
     return { allowed: true };
   }
 
+  // ESGLink roles can create tickets for their own client
+  const esgLinkRoles = ['contributor', 'reviewer', 'approver'];
+  if (esgLinkRoles.includes(user.userType) && user.clientId === clientId) {
+    return { allowed: true };
+  }
+
   return { allowed: false, reason: 'Cannot create tickets for this client' };
 }
 /**
@@ -581,6 +588,15 @@ async function canModifyTicket(user, ticket) {
         return { allowed: true };
       }
     }
+  }
+
+  // ESGLink roles can modify their own tickets (limited fields)
+  const esgLinkRoles = ['contributor', 'reviewer', 'approver'];
+  if (esgLinkRoles.includes(user.userType) &&
+      ticket.clientId !== INTERNAL_SUPPORT_CLIENT_ID &&
+      user.clientId === ticket.clientId &&
+      ticket.createdBy.toString() === userId) {
+    return { allowed: true, limited: true };
   }
 
   // Creator can modify their own ticket (limited fields)
@@ -2858,11 +2874,14 @@ exports.uploadAttachment = async (req, res) => {
     ticket.attachments = [...(ticket.attachments || []), ...attachments];
     await ticket.save();
 
+    // Get saved attachments with their _id values assigned by MongoDB
+    const savedAttachments = ticket.attachments.slice(-attachments.length);
+
     // Log activity
     await logActivity(
       ticket._id,
       'attachment',
-      { attachments },
+      { attachments: savedAttachments },
       userId,
       req.user.userType
     );
@@ -2871,13 +2890,13 @@ exports.uploadAttachment = async (req, res) => {
     emitTicketEvent('ticket-attachment-added', {
       clientId: ticket.clientId,
       ticketId: ticket._id,
-      attachments
+      attachments: savedAttachments
     });
 
     res.json({
       success: true,
       message: 'Attachments uploaded successfully',
-      attachments
+      attachments: savedAttachments
     });
 
   } catch (error) {
@@ -2927,7 +2946,7 @@ exports.deleteAttachment = async (req, res) => {
 
     // Delete from S3
     try {
-      await deleteTicketAttachment(attachment);
+      await deleteTicketAttachment(attachment.bucket, attachment.s3Key);
     } catch (s3Error) {
       console.error('Error deleting from S3:', s3Error);
       // Continue with removal from database even if S3 deletion fails
@@ -3098,6 +3117,250 @@ exports.removeWatcher = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to remove watcher',
+      error: error.message
+    });
+  }
+};
+
+exports.getSupportOverview = async (req, res) => {
+  try {
+    if (!['supportManager', 'super_admin'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'This endpoint is only for support managers and admins'
+      });
+    }
+
+    // Build base query — general_support sees everything, others see their own queue
+    let baseQuery = { status: { $nin: ['cancelled'] } };
+    if (req.user.userType === 'supportManager' && req.user.supportManagerType !== 'general_support') {
+      baseQuery.supportManagerId = req.user._id;
+    }
+
+    const now = new Date();
+
+    const allTickets = await Ticket.find(baseQuery)
+      .populate('assignedTo', 'userName email supportSpecialization supportJobRole')
+      .lean();
+
+    // Queue summary
+    const summary = {
+      total: allTickets.length,
+      byStatus: {},
+      byPriority: {},
+      overdue: 0,
+      dueSoon: 0,
+      unassigned: 0
+    };
+
+    const teamWorkload = {};
+    const unassigned = [];
+    const clientBreakdown = {};
+
+    for (const ticket of allTickets) {
+      // Status counts
+      summary.byStatus[ticket.status] = (summary.byStatus[ticket.status] || 0) + 1;
+
+      // Priority counts
+      summary.byPriority[ticket.priority] = (summary.byPriority[ticket.priority] || 0) + 1;
+
+      // SLA tracking
+      if (ticket.dueDate) {
+        const dueMs = new Date(ticket.dueDate) - now;
+        const totalMs = new Date(ticket.dueDate) - new Date(ticket.createdAt);
+        const elapsed = totalMs > 0 ? 1 - dueMs / totalMs : 1;
+        if (dueMs < 0) {
+          summary.overdue++;
+        } else if (elapsed >= 0.8) {
+          summary.dueSoon++;
+        }
+      }
+
+      // Unassigned tickets
+      if (!ticket.assignedTo) {
+        summary.unassigned++;
+        if (unassigned.length < 20) {
+          unassigned.push({
+            _id: ticket._id,
+            ticketId: ticket.ticketId,
+            subject: ticket.subject,
+            priority: ticket.priority,
+            status: ticket.status,
+            clientId: ticket.clientId,
+            createdAt: ticket.createdAt,
+            dueDate: ticket.dueDate
+          });
+        }
+      }
+
+      // Team workload per support member
+      if (ticket.assignedTo) {
+        const uid = ticket.assignedTo._id.toString();
+        if (!teamWorkload[uid]) {
+          teamWorkload[uid] = {
+            user: {
+              _id: ticket.assignedTo._id,
+              userName: ticket.assignedTo.userName,
+              email: ticket.assignedTo.email,
+              specialization: ticket.assignedTo.supportSpecialization,
+              jobRole: ticket.assignedTo.supportJobRole
+            },
+            total: 0,
+            open: 0,
+            inProgress: 0,
+            resolved: 0,
+            overdue: 0
+          };
+        }
+        teamWorkload[uid].total++;
+        if (ticket.status === 'in_progress') teamWorkload[uid].inProgress++;
+        else if (['open', 'assigned'].includes(ticket.status)) teamWorkload[uid].open++;
+        else if (ticket.status === 'resolved') teamWorkload[uid].resolved++;
+        if (ticket.dueDate && new Date(ticket.dueDate) < now) teamWorkload[uid].overdue++;
+      }
+
+      // Client breakdown
+      if (ticket.clientId && ticket.clientId !== INTERNAL_SUPPORT_CLIENT_ID) {
+        if (!clientBreakdown[ticket.clientId]) {
+          clientBreakdown[ticket.clientId] = { clientId: ticket.clientId, total: 0, open: 0, overdue: 0 };
+        }
+        clientBreakdown[ticket.clientId].total++;
+        if (['open', 'assigned', 'in_progress'].includes(ticket.status)) clientBreakdown[ticket.clientId].open++;
+        if (ticket.dueDate && new Date(ticket.dueDate) < now) clientBreakdown[ticket.clientId].overdue++;
+      }
+    }
+
+    // Enrich client breakdown with company names
+    const clientIds = Object.keys(clientBreakdown);
+    if (clientIds.length > 0) {
+      const clients = await Client.find({ clientId: { $in: clientIds } })
+        .select('clientId leadInfo.companyName').lean();
+      const clientMap = {};
+      clients.forEach(c => { clientMap[c.clientId] = c.leadInfo?.companyName || c.clientId; });
+      Object.values(clientBreakdown).forEach(c => {
+        c.companyName = clientMap[c.clientId] || c.clientId;
+      });
+    }
+
+    // Recent activity (last 15 tickets updated)
+    const recentActivity = allTickets
+      .filter(t => t.updatedAt)
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      .slice(0, 15)
+      .map(t => ({
+        ticketId: t.ticketId,
+        subject: t.subject,
+        status: t.status,
+        priority: t.priority,
+        clientId: t.clientId,
+        updatedAt: t.updatedAt,
+        assignedTo: t.assignedTo ? { userName: t.assignedTo.userName } : null
+      }));
+
+    res.json({
+      success: true,
+      overview: {
+        summary,
+        teamWorkload: Object.values(teamWorkload).sort((a, b) => b.total - a.total),
+        unassignedTickets: unassigned,
+        clientBreakdown: Object.values(clientBreakdown).sort((a, b) => b.total - a.total),
+        recentActivity
+      },
+      userType: req.user.userType,
+      supportManagerType: req.user.supportManagerType
+    });
+
+  } catch (error) {
+    console.error('Error getting support overview:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get support overview',
+      error: error.message
+    });
+  }
+};
+
+exports.getMyQueue = async (req, res) => {
+  try {
+    if (!['support', 'supportManager'].includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        message: 'This endpoint is only for support staff'
+      });
+    }
+
+    const now = new Date();
+
+    const tickets = await Ticket.find({
+      assignedTo: req.user._id,
+      status: { $nin: ['resolved', 'closed', 'cancelled'] }
+    })
+      .populate('createdBy', 'userName email')
+      .sort({ priority: 1, dueDate: 1 })
+      .lean();
+
+    const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+
+    const enriched = tickets.map(ticket => {
+      let slaPercent = null;
+      let isOverdue = false;
+      let isDueSoon = false;
+
+      if (ticket.dueDate) {
+        const totalMs = new Date(ticket.dueDate) - new Date(ticket.createdAt);
+        const elapsedMs = now - new Date(ticket.createdAt);
+        slaPercent = totalMs > 0 ? Math.min(100, Math.round((elapsedMs / totalMs) * 100)) : 100;
+        isOverdue = new Date(ticket.dueDate) < now;
+        isDueSoon = !isOverdue && slaPercent >= 80;
+      }
+
+      return {
+        _id: ticket._id,
+        ticketId: ticket.ticketId,
+        subject: ticket.subject,
+        status: ticket.status,
+        priority: ticket.priority,
+        clientId: ticket.clientId,
+        category: ticket.category,
+        createdAt: ticket.createdAt,
+        dueDate: ticket.dueDate,
+        slaPercent,
+        isOverdue,
+        isDueSoon,
+        createdBy: ticket.createdBy ? {
+          userName: ticket.createdBy.userName,
+          email: ticket.createdBy.email
+        } : null
+      };
+    });
+
+    const overdue = enriched
+      .filter(t => t.isOverdue)
+      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+
+    const dueSoon = enriched
+      .filter(t => t.isDueSoon)
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    const onTrack = enriched
+      .filter(t => !t.isOverdue && !t.isDueSoon)
+      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+
+    res.json({
+      success: true,
+      queue: {
+        overdue,
+        dueSoon,
+        onTrack,
+        total: enriched.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting my queue:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get queue',
       error: error.message
     });
   }

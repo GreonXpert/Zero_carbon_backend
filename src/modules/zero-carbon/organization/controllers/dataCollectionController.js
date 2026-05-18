@@ -5420,6 +5420,16 @@ const streamDataValuesAndCumulative = async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'update', data })}\n\n`);
     });
 
+    changeStream.on('error', (err) => {
+      console.error('ChangeStream error:', err.message);
+      changeStream.close().catch(() => {});
+      clearInterval(heartbeat);
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: 'Stream disconnected. Please reconnect.' })}\n\n`);
+        res.end();
+      }
+    });
+
     // Handle client disconnect
     req.on('close', () => {
       clearInterval(heartbeat);

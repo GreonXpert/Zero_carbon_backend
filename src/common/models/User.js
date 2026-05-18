@@ -249,6 +249,20 @@ const userSchema = new mongoose.Schema(
       default: []
     },
 
+    // ESGLink-specific assessment level — mirrors Client.submissionData.esgLinkAssessmentLevel
+    esgLinkAssessmentLevel: {
+      module: {
+        type: String,
+        enum: ['esg_link_core', null],
+        default: null
+      },
+      frameworks: {
+        type: [String],
+        enum: ['BRSR', 'GRI', 'TCFD', 'CDP', 'SASB', 'UNGC', 'ISO_26000', 'SDG'],
+        default: []
+      }
+    },
+
     // ╔══════════════════════════════════════════════════════════╗
     // ║  ACCESS CONTROLS CHECKLIST (viewer / auditor only)       ║
     // ║  Assigned by client_admin at create / edit time.         ║
@@ -419,6 +433,18 @@ const userSchema = new mongoose.Schema(
             UNGC:      { type: Boolean, default: false },
             ISO_26000: { type: Boolean, default: false },
             SDG:       { type: Boolean, default: false },
+          },
+        },
+        // ── ESG Summary access (viewer / auditor only) ──────────────────────
+        // client_admin must explicitly enable this for each viewer/auditor.
+        // Default: false (fail-closed). Mirrors emission_summary in accessControls.
+        esg_summary: {
+          enabled: { type: Boolean, default: false },
+          sections: {
+            dashboard:   { type: Boolean, default: false }, // org-wide approved totals
+            boundary:    { type: Boolean, default: false }, // per-boundary summary + hierarchy
+            scorecard:   { type: Boolean, default: false }, // E/S/G scorecard
+            periods:     { type: Boolean, default: false }, // list of saved periods
           },
         },
       },

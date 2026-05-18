@@ -146,6 +146,10 @@ function registerSockets(io) {
   cctsController.setSocketIO(io);
   setTicketChatSocketIO(io);
 
+  // -- ESG Summary socket helper
+  const esgSummarySocket = require('../../modules/esg-link/esgLink_core/summary/utils/esgSummarySocket');
+  esgSummarySocket.setSocketIO(io);
+
   // -- Authentication middleware ----------------------------------------------
   io.use(async (socket, next) => {
     try {
@@ -969,6 +973,70 @@ function registerSockets(io) {
       if (!clientId) return;
       socket.leave(`esg-summary-${clientId}`);
       socket.emit('esg-summary-unsubscribed', { clientId });
+    });
+
+    // ── ESG role-specific queue subscriptions ──────────────────────────────
+
+    socket.on('subscribe-esg-reviewer-queue', ({ clientId } = {}) => {
+      try {
+        socket.join(`user_${socket.userId}`); // already joined on connect, but explicit
+        if (clientId) socket.join(`esg-summary-${clientId}`);
+        socket.emit('esg-reviewer-queue-subscribed', { userId: socket.userId, clientId, timestamp: new Date().toISOString() });
+        console.log(`🔍 ESG reviewer queue subscription: user ${socket.userId}`);
+      } catch (err) {
+        console.error('Error in subscribe-esg-reviewer-queue:', err.message);
+      }
+    });
+
+    socket.on('unsubscribe-esg-reviewer-queue', ({ clientId } = {}) => {
+      if (clientId) socket.leave(`esg-summary-${clientId}`);
+      socket.emit('esg-reviewer-queue-unsubscribed', { userId: socket.userId });
+    });
+
+    socket.on('subscribe-esg-approver-queue', ({ clientId } = {}) => {
+      try {
+        socket.join(`user_${socket.userId}`);
+        if (clientId) socket.join(`esg-summary-${clientId}`);
+        socket.emit('esg-approver-queue-subscribed', { userId: socket.userId, clientId, timestamp: new Date().toISOString() });
+        console.log(`✅ ESG approver queue subscription: user ${socket.userId}`);
+      } catch (err) {
+        console.error('Error in subscribe-esg-approver-queue:', err.message);
+      }
+    });
+
+    socket.on('unsubscribe-esg-approver-queue', ({ clientId } = {}) => {
+      if (clientId) socket.leave(`esg-summary-${clientId}`);
+      socket.emit('esg-approver-queue-unsubscribed', { userId: socket.userId });
+    });
+
+    socket.on('subscribe-esg-contributor', ({ clientId } = {}) => {
+      try {
+        socket.join(`user_${socket.userId}`);
+        socket.emit('esg-contributor-subscribed', { userId: socket.userId, clientId, timestamp: new Date().toISOString() });
+        console.log(`📝 ESG contributor subscription: user ${socket.userId}`);
+      } catch (err) {
+        console.error('Error in subscribe-esg-contributor:', err.message);
+      }
+    });
+
+    socket.on('unsubscribe-esg-contributor', () => {
+      socket.emit('esg-contributor-unsubscribed', { userId: socket.userId });
+    });
+
+    socket.on('subscribe-esg-workflow', ({ clientId } = {}) => {
+      try {
+        if (!clientId) return;
+        socket.join(`esg-summary-${clientId}`);
+        socket.emit('esg-workflow-subscribed', { clientId, timestamp: new Date().toISOString() });
+        console.log(`⚙️  ESG workflow subscription: client ${clientId}, user ${socket.userId}`);
+      } catch (err) {
+        console.error('Error in subscribe-esg-workflow:', err.message);
+      }
+    });
+
+    socket.on('unsubscribe-esg-workflow', ({ clientId } = {}) => {
+      if (clientId) socket.leave(`esg-summary-${clientId}`);
+      socket.emit('esg-workflow-unsubscribed', { clientId });
     });
 
     // ── M3 Net Zero trajectory handlers ───────────────────────────────────

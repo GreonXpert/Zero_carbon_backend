@@ -89,6 +89,28 @@ router.get(
 );
 
 /**
+ * Support manager dashboard overview
+ * GET /api/tickets/support-overview
+ * Queue summary, team workload, unassigned tickets, client breakdown
+ * Access: supportManager, super_admin
+ */
+router.get(
+  '/support-overview',
+  ticketController.getSupportOverview
+);
+
+/**
+ * Support staff personal queue
+ * GET /api/tickets/my-queue
+ * Returns tickets assigned to caller grouped as overdue / dueSoon / onTrack
+ * Access: support, supportManager
+ */
+router.get(
+  '/my-queue',
+  ticketController.getMyQueue
+);
+
+/**
  * Get ticket details
  * GET /api/tickets/:id
  * Includes ticket info, activities, and SLA info

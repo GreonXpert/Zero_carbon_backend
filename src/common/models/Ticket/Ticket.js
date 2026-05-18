@@ -37,12 +37,19 @@ const attachmentSchema = new Schema(
  */
 const relatedEntitiesSchema = new Schema(
   {
+    // ZeroCarbon resources
     flowchartId: { type: String },
     nodeId: { type: String },
     scopeIdentifier: { type: String },
     dataEntryId: { type: Schema.Types.ObjectId, ref: "DataEntry" },
     summaryId: { type: Schema.Types.ObjectId, ref: "EmissionSummary" },
     processFlowId: { type: String },
+    // ESGLink resources
+    esgBoundaryId:          { type: Schema.Types.ObjectId, ref: "EsgLinkBoundary" },
+    esgMappingId:           { type: Schema.Types.ObjectId, ref: "EsgMetricNodeMapping" },
+    esgSubmissionId:        { type: Schema.Types.ObjectId, ref: "EsgDataEntry" },
+    esgFrameworkInstanceId: { type: Schema.Types.ObjectId, ref: "ClientFrameworkInstance" },
+    esgQuestionId:          { type: Schema.Types.ObjectId, ref: "FrameworkQuestion" },
   },
   { _id: false }
 );
@@ -136,7 +143,8 @@ const actionHistorySchema = new Schema(
       enum: [
         'super_admin', 'consultant_admin', 'consultant',
         'client_admin', 'client_employee_head', 'employee',
-        'viewer', 'auditor', 'system', 'supportManager', 'support'
+        'viewer', 'auditor', 'system', 'supportManager', 'support',
+        'contributor', 'reviewer', 'approver'
       ]
     },
     timestamp: {
@@ -197,6 +205,9 @@ const ticketSchema = new Schema(
         "viewer",
         "supportManager",
         "support",
+        "contributor",
+        "reviewer",
+        "approver",
       ],
       index: true,
     },
@@ -230,6 +241,9 @@ const ticketSchema = new Schema(
         "auditor",
         "supportManager",
         "support",
+        "contributor",
+        "reviewer",
+        "approver",
       ],
       default: null, // allow unassigned tickets
     },
@@ -249,8 +263,14 @@ const ticketSchema = new Schema(
         "Technical Support",
         "Compliance & Audit",
         "Billing & Subscription",
-        "Consultant Support", // 🆕 New category for consultant-specific issues
-        "Client Management", // 🆕 New category for client management issues
+        "Consultant Support",
+      "Client Management",
+      // ESGLink-specific categories
+      "ESGLink - Boundary Issues",
+      "ESGLink - Metric Issues",
+      "ESGLink - Data Submission Issues",
+      "ESGLink - Framework Issues",
+      "ESGLink - Data Collection Issues",
       ],
       index: true,
     },
