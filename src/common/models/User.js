@@ -150,11 +150,16 @@ const userSchema = new mongoose.Schema(
       // e.g., ["Greon001", "Greon002", "Greon005"]
     }],
     
-    assignedConsultants: [{ 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "User" 
-      // Array of consultant/consultant_admin IDs this support manager supports
-      // These consultants can raise tickets that come to this support manager
+    assignedConsultants: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+      // Array of consultant (only) IDs this support manager supports
+    }],
+
+    assignedConsultantAdmins: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+      // Array of consultant_admin IDs this support manager supports
     }],
     
     supportManagerType: {
@@ -584,6 +589,7 @@ userSchema.index({ supportManagerId: 1, isActive: 1 });
 userSchema.index({ userType: 1, isActive: 1 });
 userSchema.index({ assignedSupportClients: 1 });
 userSchema.index({ assignedConsultants: 1 });
+userSchema.index({ assignedConsultantAdmins: 1 });
 userSchema.index({ supportSpecialization: 1 });
 
 // ─── Field-level encryption ──────────────────────────────────────────────────

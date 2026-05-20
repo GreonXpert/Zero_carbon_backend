@@ -3585,18 +3585,25 @@ const getClients = async (req, res) => {
 
         query.$or = [
           { "leadInfo.consultantAdminId": req.user.id },
+          { "leadInfo.createdBy": req.user.id },
           { "leadInfo.assignedConsultantId": { $in: consultantIds } },
           { "workflowTracking.assignedConsultantId": { $in: consultantIds } }
         ];
         break;
       }
 
-      case "consultant":
-        query.$or = [
+      case "consultant": {
+        const consultantUser = await User.findById(req.user.id).select("assignedClients").lean();
+        const directClientIds = (consultantUser?.assignedClients || []).filter(Boolean);
+
+        const orClauses = [
           { "leadInfo.assignedConsultantId": req.user.id },
-          { "workflowTracking.assignedConsultantId": req.user.id }
+          { "workflowTracking.assignedConsultantId": req.user.id },
         ];
+        if (directClientIds.length > 0) orClauses.push({ clientId: { $in: directClientIds } });
+        query.$or = orClauses;
         break;
+      }
 
       case "client_admin":
       case "client_employee_head":
@@ -3813,13 +3820,10 @@ const getClientById = async (req, res) => {
       .populate("leadInfo.assignedConsultantId", "userName email profileImage")
       .populate("workflowTracking.assignedConsultantId", "userName email profileImage")
       .populate("timeline.performedBy", "userName email profileImage")
-
-      // ✅ ADD: support manager populate
-      .populate(
-        "supportSection.assignedSupportManagerId",
-        "userName email profileImage supportTeamName supportManagerType contactNumber isActive"
-      )
-
+      // NOTE: supportSection is encrypted as a whole block — do NOT populate nested
+      // fields inside it. Populate runs before post('findOne') decryption, so it
+      // sees an encrypted string and silently returns null. We fetch the support
+      // manager manually below after decryption.
       .lean();
 
     if (!client) {
@@ -3916,21 +3920,22 @@ const getClientById = async (req, res) => {
     // ------------------------------------------------
     if (!client.supportSection) client.supportSection = {};
 
-    const rawSupport = client.supportSection.assignedSupportManagerId;
+    // supportSection is decrypted by the post('findOne') hook.
+    // We now manually fetch the support manager (populate doesn't work on encrypted blocks).
+    const rawSupportId = client.supportSection.assignedSupportManagerId;
+    let supportManagerObj = null;
 
-    const supportManagerObj =
-      rawSupport && typeof rawSupport === "object" && rawSupport._id
-        ? normalizeUser(rawSupport)
-        : null;
-
-    const supportManagerId =
-      supportManagerObj?._id ||
-      (rawSupport && typeof rawSupport !== "object" ? rawSupport : null);
+    if (rawSupportId) {
+      const smDoc = await User.findById(rawSupportId)
+        .select("_id userName email profileImage supportTeamName supportManagerType contactNumber isActive")
+        .lean();
+      if (smDoc) supportManagerObj = normalizeUser(smDoc);
+    }
 
     client.supportSection = {
       ...client.supportSection,
-      assignedSupportManagerId: supportManagerId || null,  // always id
-      assignedSupportManager: supportManagerObj || null    // full object
+      assignedSupportManagerId: rawSupportId || null,
+      assignedSupportManager: supportManagerObj || null,
     };
 
     // ------------------------------------------------
@@ -6757,63 +6762,53 @@ const isClientSideUser = (userType) => {
   ].includes(userType);
 };
 
-/**
- * Build a "client access" query based on role rules:
- * - super_admin: any client
- * - consultant_admin: only their created clients (createdBy OR consultantAdminId)
- * - consultant: only assigned clients (assignedConsultantId)
- * - client-side users: only their own clientId
- */
-const buildClientAccessQuery = (req, clientId) => {
+const getClientOr403 = async (req, clientId) => {
   const userType = req.user?.userType;
   const uid = getCurrentUserId(req);
 
-  if (!userType) return null;
+  if (!userType || !uid) return { client: null, status: 403, message: "Insufficient permissions" };
 
-  // Super admin can access any client
-  if (userType === "super_admin") return { clientId };
+  if (userType === "super_admin") {
+    const client = await Client.findOne({ clientId });
+    if (!client) return { client: null, status: 404, message: "Client not found" };
+    return { client, status: 200 };
+  }
 
-  // Consultant Admin: must be "their client"
-  // Client schema has leadInfo.createdBy and leadInfo.consultantAdminId. 
   if (userType === "consultant_admin") {
-    if (!uid) return null;
-    return {
+    // Full authority: created by, consultantAdminId, or any consultant under this admin assigned to the client
+    const myConsultants = await User.find({ consultantAdminId: uid, userType: "consultant" }).select("_id").lean();
+    const myConsultantIds = myConsultants.map(c => c._id);
+
+    const client = await Client.findOne({
       clientId,
       $or: [
         { "leadInfo.createdBy": uid },
         { "leadInfo.consultantAdminId": uid },
+        ...(myConsultantIds.length ? [
+          { "leadInfo.assignedConsultantId": { $in: myConsultantIds } },
+          { "workflowTracking.assignedConsultantId": { $in: myConsultantIds } },
+          { "leadInfo.consultantHistory": { $elemMatch: { consultantId: { $in: myConsultantIds }, isActive: true } } },
+        ] : []),
       ],
-    };
+    });
+    if (!client) return { client: null, status: 403, message: "Access denied or client not found" };
+    return { client, status: 200 };
   }
 
-  // Consultant: only assigned clients
   if (userType === "consultant") {
-    if (!uid) return null;
-    return {
-      clientId,
-      "leadInfo.assignedConsultantId": uid,
-    };
+    const client = await Client.findOne({ clientId, "leadInfo.assignedConsultantId": uid });
+    if (!client) return { client: null, status: 403, message: "Access denied or client not found" };
+    return { client, status: 200 };
   }
 
-  // Client users: only their own org
   if (isClientSideUser(userType)) {
-    if (!req.user?.clientId) return null;
-    return { clientId: req.user.clientId };
+    if (!req.user?.clientId) return { client: null, status: 403, message: "Insufficient permissions" };
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) return { client: null, status: 404, message: "Client not found" };
+    return { client, status: 200 };
   }
 
-  return null;
-};
-
-const getClientOr403 = async (req, clientId) => {
-  const q = buildClientAccessQuery(req, clientId);
-  if (!q) return { client: null, status: 403, message: "Insufficient permissions" };
-
-  const client = await Client.findOne(q);
-  if (!client) {
-    // could be not found OR not authorized (we don’t reveal which)
-    return { client: null, status: 404, message: "Client not found" };
-  }
-  return { client, status: 200 };
+  return { client: null, status: 403, message: "Insufficient permissions" };
 };
 
 const getActiveSupportManagerOr404 = async (supportManagerId) => {
@@ -6924,11 +6919,14 @@ const assignSupportManager = async (req, res) => {
 
     await client.save();
 
-    // Sync to support manager doc
-    await User.updateOne(
-      { _id: supportManager._id },
-      { $addToSet: { assignedSupportClients: clientId } }
-    );
+    // Sync to support manager doc (use in-memory save — assignedSupportClients is encrypted)
+    if (!Array.isArray(supportManager.assignedSupportClients)) {
+      supportManager.assignedSupportClients = [];
+    }
+    if (!supportManager.assignedSupportClients.includes(clientId)) {
+      supportManager.assignedSupportClients.push(clientId);
+    }
+    await supportManager.save();
 
     // ✅ Sync to client users (your requirement)
     await syncSupportManagerToClientUsers(clientId, supportManager);
@@ -7078,9 +7076,22 @@ const changeSupportManager = async (req, res) => {
 
     await client.save();
 
-    // Update support managers’ assigned client lists
-    await User.updateOne({ _id: oldId }, { $pull: { assignedSupportClients: clientId } });
-    await User.updateOne({ _id: newManager._id }, { $addToSet: { assignedSupportClients: clientId } });
+    // Update support managers’ assigned client lists (use in-memory save — field is encrypted)
+    const oldManagerDoc = await User.findById(oldId);
+    if (oldManagerDoc) {
+      oldManagerDoc.assignedSupportClients = (oldManagerDoc.assignedSupportClients || []).filter(
+        c => c !== clientId
+      );
+      await oldManagerDoc.save();
+    }
+
+    if (!Array.isArray(newManager.assignedSupportClients)) {
+      newManager.assignedSupportClients = [];
+    }
+    if (!newManager.assignedSupportClients.includes(clientId)) {
+      newManager.assignedSupportClients.push(clientId);
+    }
+    await newManager.save();
 
     // ✅ Sync to client users
     await syncSupportManagerToClientUsers(clientId, newManager);
@@ -7146,13 +7157,22 @@ const getSupportManagerForClient = async (req, res) => {
     const userType = req.user?.userType;
     const uid = getCurrentUserId(req);
 
-    // If clientId provided => single
-    const clientId = req.params?.clientId;
+    // clientId can come from route param OR query param
+    const clientId = req.params?.clientId || req.query?.clientId;
 
-    const populateSupport = {
-      path: "supportSection.assignedSupportManagerId",
-      select: "userName email contactNumber supportTeamName supportManagerType specialization isActive",
-    };
+    const formatSM = (smDoc) =>
+      smDoc
+        ? {
+            _id: smDoc._id,
+            userName: smDoc.userName,
+            email: smDoc.email,
+            contactNumber: smDoc.contactNumber || null,
+            supportTeamName: smDoc.supportTeamName || null,
+            supportManagerType: smDoc.supportManagerType || null,
+            specialization: smDoc.specialization || [],
+            isActive: smDoc.isActive,
+          }
+        : null;
 
     // -------------------------
     // SINGLE CLIENT MODE
@@ -7161,31 +7181,28 @@ const getSupportManagerForClient = async (req, res) => {
       const { client, status, message } = await getClientOr403(req, clientId);
       if (!client) return res.status(status).json({ success: false, message });
 
-      const populated = await Client.findOne({ clientId: client.clientId }).populate(populateSupport);
+      // Fetch fresh so encryption hooks fire (no .lean())
+      const clientDoc = await Client.findOne({ clientId: client.clientId });
 
-      const sm = populated?.supportSection?.assignedSupportManagerId || null;
+      // supportSection is encrypted — read assignedSupportManagerId after decryption
+      const rawSmId = clientDoc?.supportSection?.assignedSupportManagerId;
+      let smDoc = null;
+      if (rawSmId) {
+        smDoc = await User.findById(rawSmId)
+          .select("_id userName email contactNumber supportTeamName supportManagerType specialization isActive")
+          .lean();
+      }
 
       return res.status(200).json({
         success: true,
         mode: "single",
-        clientId: populated.clientId,
-        companyName: populated.leadInfo?.companyName || null,
-        supportManager: sm
-          ? {
-              _id: sm._id,
-              userName: sm.userName,
-              email: sm.email,
-              contactNumber: sm.contactNumber,
-              supportTeamName: sm.supportTeamName,
-              supportManagerType: sm.supportManagerType,
-              specialization: sm.specialization || [],
-              isActive: sm.isActive,
-            }
-          : null,
+        clientId: clientDoc.clientId,
+        companyName: clientDoc.leadInfo?.companyName || null,
+        supportManager: formatSM(smDoc),
         supportSection: {
-          supportPriority: populated.supportSection?.supportPriority || "normal",
-          supportNotes: populated.supportSection?.supportNotes || null,
-          supportAssignedAt: populated.supportSection?.supportAssignedAt || null,
+          supportPriority: clientDoc.supportSection?.supportPriority || "normal",
+          supportNotes: clientDoc.supportSection?.supportNotes || null,
+          supportAssignedAt: clientDoc.supportSection?.supportAssignedAt || null,
         },
       });
     }
@@ -7199,9 +7216,7 @@ const getSupportManagerForClient = async (req, res) => {
       query = {};
     } else if (userType === "consultant_admin") {
       if (!uid) return res.status(401).json({ success: false, message: "Unauthorized (missing user id in token)" });
-      query = {
-        $or: [{ "leadInfo.createdBy": uid }, { "leadInfo.consultantAdminId": uid }],
-      };
+      query = { $or: [{ "leadInfo.createdBy": uid }, { "leadInfo.consultantAdminId": uid }] };
     } else if (userType === "consultant") {
       if (!uid) return res.status(401).json({ success: false, message: "Unauthorized (missing user id in token)" });
       query = { "leadInfo.assignedConsultantId": uid };
@@ -7212,28 +7227,31 @@ const getSupportManagerForClient = async (req, res) => {
       return res.status(403).json({ success: false, message: "Insufficient permissions" });
     }
 
-    const clients = await Client.find(query)
-      .select("clientId leadInfo.companyName supportSection")
-      .populate(populateSupport)
-      .lean();
+    // Fetch without .lean() so the encryption post-hook decrypts supportSection
+    const clientDocs = await Client.find(query).select("clientId leadInfo.companyName supportSection");
 
-    const data = clients.map((c) => {
-      const sm = c?.supportSection?.assignedSupportManagerId || null;
+    // Collect all unique SM ids, then batch-fetch them
+    const smIdSet = new Set();
+    for (const c of clientDocs) {
+      const id = c.supportSection?.assignedSupportManagerId;
+      if (id) smIdSet.add(String(id));
+    }
+
+    const smMap = {};
+    if (smIdSet.size > 0) {
+      const smDocs = await User.find({ _id: { $in: [...smIdSet] } })
+        .select("_id userName email contactNumber supportTeamName supportManagerType specialization isActive")
+        .lean();
+      for (const sm of smDocs) smMap[String(sm._id)] = sm;
+    }
+
+    const data = clientDocs.map((c) => {
+      const rawSmId = c.supportSection?.assignedSupportManagerId;
+      const smDoc = rawSmId ? smMap[String(rawSmId)] || null : null;
       return {
         clientId: c.clientId,
         companyName: c.leadInfo?.companyName || null,
-        supportManager: sm
-          ? {
-              _id: sm._id,
-              userName: sm.userName,
-              email: sm.email,
-              contactNumber: sm.contactNumber,
-              supportTeamName: sm.supportTeamName,
-              supportManagerType: sm.supportManagerType,
-              specialization: sm.specialization || [],
-              isActive: sm.isActive,
-            }
-          : null,
+        supportManager: formatSM(smDoc),
         supportPriority: c.supportSection?.supportPriority || "normal",
         supportAssignedAt: c.supportSection?.supportAssignedAt || null,
       };
@@ -7557,6 +7575,218 @@ try {
 };
 
 
+// ============================================================================
+// MIGRATION: Sync supportManagerId from Client DB → User DB
+// POST /api/clients/migrate-support-manager-sync
+// Auth: super_admin only
+// ============================================================================
+const migrateSupportManagerSync = async (req, res) => {
+  try {
+    if (req.user?.userType !== "super_admin") {
+      return res.status(403).json({ success: false, message: "Only super_admin can run migrations" });
+    }
+
+    // 1. Find all clients that have a support manager assigned
+    const allClients = await Client.find({}).lean();
+
+    const results = {
+      clientsScanned: allClients.length,
+      clientsWithSupportManager: 0,
+      usersUpdated: 0,
+      supportManagersUpdated: 0,
+      errors: [],
+    };
+
+    for (const client of allClients) {
+      const smId = client.supportSection?.assignedSupportManagerId;
+      if (!smId) continue;
+
+      results.clientsWithSupportManager++;
+      const clientId = client.clientId;
+
+      try {
+        // 2. Fetch the support manager doc to get team info
+        const supportManager = await User.findById(smId).lean();
+        if (!supportManager) {
+          results.errors.push({ clientId, error: `SupportManager ${smId} not found` });
+          continue;
+        }
+
+        // 3. Set supportManagerId on ALL users of this client
+        const userUpdate = await User.updateMany(
+          { clientId },
+          {
+            $set: {
+              supportManagerId: smId,
+              "supportInfo.supportManagerId": smId,
+              "supportInfo.supportTeamName": supportManager.supportTeamName || null,
+              "supportInfo.supportManagerType": supportManager.supportManagerType || null,
+            },
+          }
+        );
+        results.usersUpdated += userUpdate.modifiedCount ?? 0;
+
+        // 4. Ensure clientId is in the supportManager's assignedSupportClients (encrypted — load & save)
+        const smDoc = await User.findById(smId);
+        if (smDoc) {
+          if (!Array.isArray(smDoc.assignedSupportClients)) smDoc.assignedSupportClients = [];
+          if (!smDoc.assignedSupportClients.includes(clientId)) {
+            smDoc.assignedSupportClients.push(clientId);
+            await smDoc.save();
+            results.supportManagersUpdated++;
+          }
+        }
+      } catch (err) {
+        results.errors.push({ clientId, error: err.message });
+      }
+    }
+
+    // ── Phase 2: Fix dirty assignedConsultants on all supportManagers ──────────
+    // Before the split-array fix, both consultant and consultant_admin IDs were
+    // stored in assignedConsultants. This moves any consultant_admin IDs to
+    // assignedConsultantAdmins and removes them from assignedConsultants.
+    const allSupportManagers = await User.find({ userType: "supportManager", isActive: true });
+
+    results.supportManagerArraysFixed = 0;
+
+    for (const sm of allSupportManagers) {
+      try {
+        const consultantIds     = sm.assignedConsultants      || [];
+        const consultantAdminIds = sm.assignedConsultantAdmins || [];
+
+        if (consultantIds.length === 0) continue;
+
+        // Fetch all users currently in assignedConsultants to check their userType
+        const users = await User.find({ _id: { $in: consultantIds } })
+          .select("_id userType")
+          .lean();
+
+        const trueConsultantIds    = users.filter(u => u.userType === "consultant").map(u => String(u._id));
+        const migratedAdminIds     = users.filter(u => u.userType === "consultant_admin").map(u => String(u._id));
+
+        if (migratedAdminIds.length === 0) continue; // nothing to fix
+
+        // Merge into assignedConsultantAdmins (deduplicate)
+        const existingAdminIdStrs = consultantAdminIds.map(id => String(id));
+        const newAdminIds = [
+          ...existingAdminIdStrs,
+          ...migratedAdminIds.filter(id => !existingAdminIdStrs.includes(id)),
+        ];
+
+        sm.assignedConsultants      = trueConsultantIds;
+        sm.assignedConsultantAdmins = newAdminIds;
+        await sm.save();
+
+        results.supportManagerArraysFixed++;
+      } catch (err) {
+        results.errors.push({ supportManagerId: sm._id, error: err.message });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Migration complete",
+      results,
+    });
+  } catch (error) {
+    console.error("[MIGRATION] migrateSupportManagerSync error:", error);
+    return res.status(500).json({ success: false, message: "Migration failed", error: error.message });
+  }
+};
+
+
+// ============================================================================
+// REMOVE SUPPORT MANAGER FROM CLIENT
+// PATCH /api/clients/:clientId/remove-support-manager
+// Auth: super_admin (any client) | consultant_admin (only their client)
+// ============================================================================
+const removeSupportManager = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const actorType = req.user?.userType;
+    const actorId   = getCurrentUserId(req);
+
+    if (!["super_admin", "consultant_admin"].includes(actorType)) {
+      return res.status(403).json({ success: false, message: "Only super_admin or consultant_admin can remove a support manager" });
+    }
+
+    // Load client (full authority check for consultant_admin)
+    const { client, status, message } = await getClientOr403(req, clientId);
+    if (!client) return res.status(status).json({ success: false, message });
+
+    // consultant_admin extra guard: only the one who created this client
+    if (actorType === "consultant_admin") {
+      const createdBy = client.leadInfo?.createdBy?.toString() || client.leadInfo?.consultantAdminId?.toString();
+      if (createdBy !== String(actorId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Only the consultant_admin who created this client can remove their support manager",
+        });
+      }
+    }
+
+    ensureSupportSection(client);
+
+    const currentSmId = client.supportSection.assignedSupportManagerId;
+    if (!currentSmId) {
+      return res.status(400).json({ success: false, message: "No support manager is currently assigned to this client" });
+    }
+
+    // ── 1. Update client doc ──────────────────────────────────────────────────
+    // Mark current history entry as inactive
+    if (Array.isArray(client.supportSection.supportManagerHistory)) {
+      client.supportSection.supportManagerHistory = client.supportSection.supportManagerHistory.map(entry => {
+        if (entry.isActive && idsEqual(entry.supportManagerId, currentSmId)) {
+          return { ...entry, isActive: false, unassignedAt: new Date(), reasonForChange: "Support manager removed" };
+        }
+        return entry;
+      });
+    }
+
+    client.supportSection.assignedSupportManagerId = null;
+    client.supportSection.supportManagerType        = null;
+    client.supportSection.supportAssignedAt         = null;
+    client.supportSection.supportAssignedBy         = null;
+    client.supportSection.supportPriority           = null;
+    client.supportSection.supportNotes              = null;
+    await client.save();
+
+    // ── 2. Remove clientId from supportManager's assignedSupportClients ───────
+    const smDoc = await User.findById(currentSmId);
+    if (smDoc) {
+      smDoc.assignedSupportClients = (smDoc.assignedSupportClients || []).filter(c => c !== clientId);
+      await smDoc.save();
+    }
+
+    // ── 3. Clear supportManagerId from all client users ───────────────────────
+    await User.updateMany(
+      { clientId },
+      {
+        $set: {
+          supportManagerId: null,
+          "supportInfo.supportManagerId": null,
+          "supportInfo.supportTeamName": null,
+          "supportInfo.supportManagerType": null,
+        },
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Support manager removed successfully",
+      data: {
+        clientId,
+        removedSupportManagerId: currentSmId,
+        removedBy: req.user.userName,
+      },
+    });
+  } catch (error) {
+    console.error("[CLIENT CONTROLLER] removeSupportManager error:", error);
+    return res.status(500).json({ success: false, message: "Error removing support manager", error: error.message });
+  }
+};
+
+
 module.exports = {
   createLead,
   updateLead,
@@ -7599,6 +7829,8 @@ module.exports = {
   assignSupportManager,
   changeSupportManager,
   getSupportManagerForClient,
+  removeSupportManager,
+  migrateSupportManagerSync,
   markQuotaCreated,
   moveToActive,
 };

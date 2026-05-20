@@ -42,6 +42,8 @@ const {
   assignSupportManager,
   changeSupportManager,
   getSupportManagerForClient,
+  removeSupportManager,
+  migrateSupportManagerSync,
   // 🆕 QUOTA STAGE FUNCTIONS
   markQuotaCreated,
   moveToActive,
@@ -186,10 +188,31 @@ router.patch("/:clientId/assign-support-manager", assignSupportManager);
 router.patch("/:clientId/change-support-manager", changeSupportManager);
 
 /**
+ * Get Support Manager for all clients (no clientId)
+ * GET /api/clients/support-manager
+ * Must be BEFORE /:clientId to avoid route shadowing
+ */
+router.get("/support-manager", getSupportManagerForClient);
+
+/**
  * Get Support Manager for Client
  * GET /api/clients/:clientId/support-manager
  */
 router.get("/:clientId/support-manager", getSupportManagerForClient);
+
+/**
+ * Remove Support Manager from Client
+ * PATCH /api/clients/:clientId/remove-support-manager
+ * Auth: super_admin (any client) | consultant_admin (only their created client)
+ */
+router.patch("/:clientId/remove-support-manager", removeSupportManager);
+
+/**
+ * Migration: sync supportManagerId from Client DB to User DB
+ * POST /api/clients/migrate-support-manager-sync
+ * Auth: super_admin only
+ */
+router.post("/migrate-support-manager-sync", checkRole("super_admin"), migrateSupportManagerSync);
 
 // ===================================================================
 // QUOTA STAGE (Stage 3.5 — between proposal and active)

@@ -240,7 +240,7 @@ router.delete(
  */
 router.patch(
   "/:userId/assign-support-manager",
-  checkRole("super_admin"),
+  checkRole("super_admin", "consultant_admin"),
   assignSupportManagerToConsultant
 );
 

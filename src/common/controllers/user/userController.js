@@ -2708,6 +2708,7 @@ const createSupportManager = async (req, res) => {
       // ✅ optional assignments
       assignedSupportClients,
       assignedConsultants,
+      assignedConsultantAdmins,
       concurrentLoginLimit,
     } = req.body;
 
@@ -2719,19 +2720,18 @@ const createSupportManager = async (req, res) => {
     }
 
     // ✅ parse (multipart/form-data can send arrays as strings)
-    const clientIds = uniqStrings(parseArrayField(assignedSupportClients));
-    const consultantIds = uniqObjectIds(parseArrayField(assignedConsultants));
+    const clientIds          = uniqStrings(parseArrayField(assignedSupportClients));
+    const consultantIds      = uniqObjectIds(parseArrayField(assignedConsultants));
+    const consultantAdminIds = uniqObjectIds(parseArrayField(assignedConsultantAdmins));
 
-    // ✅ Validate consultant ids format
-    const invalidConsultantIds = consultantIds.filter(
-      (id) => !mongoose.Types.ObjectId.isValid(id)
-    );
+    // ✅ Validate id formats
+    const invalidConsultantIds = consultantIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
     if (invalidConsultantIds.length) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid consultant ids in assignedConsultants",
-        meta: { invalidConsultantIds },
-      });
+      return res.status(400).json({ success: false, message: "Invalid ids in assignedConsultants", meta: { invalidConsultantIds } });
+    }
+    const invalidConsultantAdminIds = consultantAdminIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidConsultantAdminIds.length) {
+      return res.status(400).json({ success: false, message: "Invalid ids in assignedConsultantAdmins", meta: { invalidConsultantAdminIds } });
     }
 
     const existingUser = await User.findOne({ $or: [{ email }, { userName }] });
@@ -2756,34 +2756,38 @@ const createSupportManager = async (req, res) => {
       if (missingClientIds.length) {
         return res.status(404).json({
           success: false,
-          message:
-            "Some clientIds in assignedSupportClients were not found in Client collection",
+          message: "Some clientIds in assignedSupportClients were not found in Client collection",
           meta: { missingClientIds },
         });
       }
     }
 
-    let foundConsultants = [];
     if (consultantIds.length) {
-      foundConsultants = await User.find({
-        _id: { $in: consultantIds },
-        isActive: true,
-        userType: { $in: ["consultant", "consultant_admin"] },
-      })
-        .select("_id userType userName email")
+      const found = await User.find({ _id: { $in: consultantIds }, isActive: true, userType: "consultant" })
+        .select("_id")
         .lean();
-
-      const foundSet = new Set(foundConsultants.map((u) => String(u._id)));
-      const missingConsultantIds = consultantIds.filter(
-        (id) => !foundSet.has(String(id))
-      );
-
-      if (missingConsultantIds.length) {
+      const foundSet = new Set(found.map(u => String(u._id)));
+      const missing = consultantIds.filter(id => !foundSet.has(String(id)));
+      if (missing.length) {
         return res.status(404).json({
           success: false,
-          message:
-            "Some ids in assignedConsultants were not found (or not active consultant/consultant_admin)",
-          meta: { missingConsultantIds },
+          message: "Some ids in assignedConsultants were not found (or not active consultants)",
+          meta: { missingConsultantIds: missing },
+        });
+      }
+    }
+
+    if (consultantAdminIds.length) {
+      const found = await User.find({ _id: { $in: consultantAdminIds }, isActive: true, userType: "consultant_admin" })
+        .select("_id")
+        .lean();
+      const foundSet = new Set(found.map(u => String(u._id)));
+      const missing = consultantAdminIds.filter(id => !foundSet.has(String(id)));
+      if (missing.length) {
+        return res.status(404).json({
+          success: false,
+          message: "Some ids in assignedConsultantAdmins were not found (or not active consultant_admins)",
+          meta: { missingConsultantAdminIds: missing },
         });
       }
     }
@@ -2801,17 +2805,11 @@ const createSupportManager = async (req, res) => {
         .select("_id userName userType assignedSupportClients")
         .lean();
 
-      const conflicts = findConflictsForArray(
-        holders,
-        "assignedSupportClients",
-        clientIds
-      );
-
+      const conflicts = findConflictsForArray(holders, "assignedSupportClients", clientIds);
       if (conflicts.length) {
         return res.status(409).json({
           success: false,
-          message:
-            "Some clients are already assigned to another support manager/support user",
+          message: "Some clients are already assigned to another support manager/support user",
           meta: { conflicts },
         });
       }
@@ -2826,17 +2824,30 @@ const createSupportManager = async (req, res) => {
         .select("_id userName userType assignedConsultants")
         .lean();
 
-      const conflicts = findConflictsForArray(
-        holders,
-        "assignedConsultants",
-        consultantIds
-      );
-
+      const conflicts = findConflictsForArray(holders, "assignedConsultants", consultantIds);
       if (conflicts.length) {
         return res.status(409).json({
           success: false,
-          message:
-            "Some consultants are already assigned to another support manager/support user",
+          message: "Some consultants are already assigned to another support manager/support user",
+          meta: { conflicts },
+        });
+      }
+    }
+
+    if (consultantAdminIds.length) {
+      const holders = await User.find({
+        isActive: true,
+        userType: { $in: ["supportManager", "support"] },
+        assignedConsultantAdmins: { $in: consultantAdminIds },
+      })
+        .select("_id userName userType assignedConsultantAdmins")
+        .lean();
+
+      const conflicts = findConflictsForArray(holders, "assignedConsultantAdmins", consultantAdminIds);
+      if (conflicts.length) {
+        return res.status(409).json({
+          success: false,
+          message: "Some consultant_admins are already assigned to another support manager/support user",
           meta: { conflicts },
         });
       }
@@ -2858,9 +2869,10 @@ const createSupportManager = async (req, res) => {
       supportManagerType,
       supportTeamName,
 
-      // ✅ store assignments
+      // ✅ store assignments in separate typed arrays
       assignedSupportClients: clientIds,
       assignedConsultants: consultantIds,
+      assignedConsultantAdmins: consultantAdminIds,
       concurrentLoginLimit,
 
       createdBy: req.user?._id || req.user?.id || req.user?.userId,
@@ -2896,6 +2908,8 @@ const createSupportManager = async (req, res) => {
       clientsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
     }
 
+    let consultantAdminsUpdated = 0;
+
     if (consultantIds.length) {
       const up = await User.updateMany(
         { _id: { $in: consultantIds } },
@@ -2910,14 +2924,28 @@ const createSupportManager = async (req, res) => {
       consultantsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
     }
 
+    if (consultantAdminIds.length) {
+      const up = await User.updateMany(
+        { _id: { $in: consultantAdminIds } },
+        {
+          $set: {
+            supportManagerId: supportManager._id,
+            "supportInfo.supportManagerId": supportManager._id,
+            "supportInfo.supportTeamName": supportManager.supportTeamName || "",
+          },
+        }
+      );
+      consultantAdminsUpdated = up?.modifiedCount ?? up?.nModified ?? 0;
+    }
+
     // ✅ 4A) Assignments notification (only if any assignments were provided)
-    if (clientIds.length || consultantIds.length) {
+    if (clientIds.length || consultantIds.length || consultantAdminIds.length) {
       try {
         await notifySupportManagerAssignmentsUpdated({
           actor: req.user,
           supportManager,
           clientsAdded: clientIds,
-          consultantsAdded: consultantIds,
+          consultantsAdded: [...consultantIds, ...consultantAdminIds],
         });
       } catch (e) {
         console.error("[USER CONTROLLER] assignment notif failed:", e.message);
@@ -2946,12 +2974,14 @@ const createSupportManager = async (req, res) => {
         supportTeamName: supportManager.supportTeamName || null,
         assignedSupportClients: supportManager.assignedSupportClients || [],
         assignedConsultants: supportManager.assignedConsultants || [],
+        assignedConsultantAdmins: supportManager.assignedConsultantAdmins || [],
         profileImage: supportManager.profileImage || null,
         concurrentLoginLimit: supportManager.concurrentLoginLimit || null,
       },
       sync: {
         clientsUpdated,
         consultantsUpdated,
+        consultantAdminsUpdated,
       },
       imageUpload: imageUploadResult,
     });
@@ -3767,150 +3797,163 @@ const deleteSupportManager = async (req, res) => {
       });
     }
 
-    // Count active team members
-    const teamCount = await User.countDocuments({
-      userType: "support",
-      isActive: true,
-      supportManagerId: manager._id,
-    });
+    // ── Gather all assignments ────────────────────────────────────────────────
+    const [supportTeamMembers, assignedConsultantDocs, assignedConsultantAdminDocs] =
+      await Promise.all([
+        User.find({ userType: "support", isActive: true, supportManagerId: manager._id })
+          .select("_id userName email").lean(),
+        User.find({ _id: { $in: manager.assignedConsultants || [] }, isActive: true })
+          .select("_id userName email userType").lean(),
+        User.find({ _id: { $in: manager.assignedConsultantAdmins || [] }, isActive: true })
+          .select("_id userName email userType").lean(),
+      ]);
 
-    // ✅ Mandatory transfer if there are team members
-    if (teamCount > 0 && !transferToSupportManagerId) {
+    const assignedClientIds  = Array.isArray(manager.assignedSupportClients) ? manager.assignedSupportClients : [];
+
+    // Fetch client_admin users who have this supportManagerId set
+    const clientAdminUsers = await User.find({
+      supportManagerId: manager._id,
+      userType: "client_admin",
+      isActive: true,
+    }).select("_id userName email clientId").lean();
+
+    const hasAssignments =
+      supportTeamMembers.length > 0 ||
+      assignedConsultantDocs.length > 0 ||
+      assignedConsultantAdminDocs.length > 0 ||
+      assignedClientIds.length > 0 ||
+      clientAdminUsers.length > 0;
+
+    // ── Block deletion if assignments exist and no transfer target provided ───
+    if (hasAssignments && !transferToSupportManagerId) {
       return res.status(400).json({
         success: false,
         message:
-          "transferToSupportManagerId is required because this support manager has active support users",
-        meta: { teamCount },
+          "This support manager has active assignments. Provide 'transferToSupportManagerId' to re-assign all of them before deletion.",
+        meta: {
+          requiresReassignment: true,
+          assignments: {
+            supportTeamMembers:    supportTeamMembers.map(u => ({ _id: u._id, userName: u.userName, email: u.email })),
+            consultants:           assignedConsultantDocs.map(u => ({ _id: u._id, userName: u.userName, email: u.email })),
+            consultantAdmins:      assignedConsultantAdminDocs.map(u => ({ _id: u._id, userName: u.userName, email: u.email })),
+            assignedClients:       assignedClientIds,
+            clientAdmins:          clientAdminUsers.map(u => ({ _id: u._id, userName: u.userName, email: u.email, clientId: u.clientId })),
+          },
+        },
       });
     }
 
-    // ✅ NEW: strict validation when transferToSupportManagerId is provided (or required)
+    // ── Validate transfer target ──────────────────────────────────────────────
     let newManager = null;
-    const needsTransfer = teamCount > 0;
-
     if (transferToSupportManagerId) {
       if (!mongoose.Types.ObjectId.isValid(transferToSupportManagerId)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid transferToSupportManagerId",
-        });
+        return res.status(400).json({ success: false, message: "Invalid transferToSupportManagerId" });
       }
-
       if (String(transferToSupportManagerId) === String(manager._id)) {
-        return res.status(400).json({
-          success: false,
-          message: "transferToSupportManagerId cannot be the same as the deleted manager",
-        });
+        return res.status(400).json({ success: false, message: "transferToSupportManagerId cannot be the same as the deleted manager" });
       }
-
-      // ✅ MUST check DB presence
-      newManager = await User.findOne({
-        _id: transferToSupportManagerId,
-        userType: "supportManager",
-        isActive: true,
-      });
-
+      newManager = await User.findOne({ _id: transferToSupportManagerId, userType: "supportManager", isActive: true });
       if (!newManager) {
         return res.status(404).json({
           success: false,
-          message: "Transfer support manager not found or inactive",
+          message: "Transfer target support manager not found or inactive",
           meta: { transferToSupportManagerId },
         });
       }
-    } else if (needsTransfer) {
-      // ✅ defensive: if transfer is needed but id missing (already checked above, but keeps it safe)
-      return res.status(400).json({
-        success: false,
-        message: "transferToSupportManagerId is required for transferring team members",
-        meta: { teamCount },
-      });
     }
 
-    // -----------------------------
-    // Capture team members BEFORE transfer (for notifications)
-    // -----------------------------
-    let movedSupportUserIds = [];
-    if (teamCount > 0) {
-      const teamUsers = await User.find({
-        userType: "support",
-        isActive: true,
-        supportManagerId: manager._id,
-      }).select("_id").lean();
-
-      movedSupportUserIds = teamUsers.map((u) => String(u._id));
-    }
-
-    // -----------------------------
-    // Transfer Team Members
-    // -----------------------------
-    let movedUsers = 0;
-
-    if (teamCount > 0 && newManager) {
-      const updateRes = await User.updateMany(
+    // ── Transfer support team members ─────────────────────────────────────────
+    let movedSupportUsers = 0;
+    if (supportTeamMembers.length > 0 && newManager) {
+      const r = await User.updateMany(
         { userType: "support", isActive: true, supportManagerId: manager._id },
-        {
-          $set: {
-            supportManagerId: newManager._id,
-            parentUser: newManager._id,
-            supportTeamName: newManager.supportTeamName || "",
-            updatedAt: new Date(),
-          },
-        }
+        { $set: { supportManagerId: newManager._id, parentUser: newManager._id, supportTeamName: newManager.supportTeamName || "" } }
       );
-
-      movedUsers = updateRes?.modifiedCount || updateRes?.nModified || 0;
+      movedSupportUsers = r?.modifiedCount ?? 0;
     }
 
-    // -----------------------------
-    // Transfer Assigned Clients/Consultants (if any)
-    // -----------------------------
-    let transferredClientCount = 0;
-    let transferredConsultantCount = 0;
-
-    if (newManager) {
-      const oldClients = Array.isArray(manager.assignedSupportClients)
-        ? manager.assignedSupportClients
-        : [];
-      const oldConsultants = Array.isArray(manager.assignedConsultants)
-        ? manager.assignedConsultants
-        : [];
-
-      if (oldClients.length || oldConsultants.length) {
-        await User.updateOne(
-          { _id: newManager._id },
-          {
-            ...(oldClients.length
-              ? { $addToSet: { assignedSupportClients: { $each: oldClients } } }
-              : {}),
-            ...(oldConsultants.length
-              ? { $addToSet: { assignedConsultants: { $each: oldConsultants } } }
-              : {}),
-          }
-        );
+    // ── Transfer consultants (update their supportManagerId + newManager's array) ──
+    let movedConsultants = 0;
+    if (assignedConsultantDocs.length > 0 && newManager) {
+      const ids = assignedConsultantDocs.map(u => u._id);
+      const r = await User.updateMany(
+        { _id: { $in: ids } },
+        { $set: { supportManagerId: newManager._id, "supportInfo.supportManagerId": newManager._id, "supportInfo.supportTeamName": newManager.supportTeamName || "" } }
+      );
+      movedConsultants = r?.modifiedCount ?? 0;
+      if (!Array.isArray(newManager.assignedConsultants)) newManager.assignedConsultants = [];
+      for (const id of ids) {
+        if (!newManager.assignedConsultants.some(x => String(x) === String(id))) {
+          newManager.assignedConsultants.push(id);
+        }
       }
-
-      transferredClientCount = oldClients.length;
-      transferredConsultantCount = oldConsultants.length;
     }
 
-    // -----------------------------
-    // Soft delete manager
-    // -----------------------------
-    manager.isActive = false;
-    manager.updatedAt = new Date();
-    // manager.deletionReason = reason;
+    // ── Transfer consultant_admins ────────────────────────────────────────────
+    let movedConsultantAdmins = 0;
+    if (assignedConsultantAdminDocs.length > 0 && newManager) {
+      const ids = assignedConsultantAdminDocs.map(u => u._id);
+      const r = await User.updateMany(
+        { _id: { $in: ids } },
+        { $set: { supportManagerId: newManager._id, "supportInfo.supportManagerId": newManager._id, "supportInfo.supportTeamName": newManager.supportTeamName || "" } }
+      );
+      movedConsultantAdmins = r?.modifiedCount ?? 0;
+      if (!Array.isArray(newManager.assignedConsultantAdmins)) newManager.assignedConsultantAdmins = [];
+      for (const id of ids) {
+        if (!newManager.assignedConsultantAdmins.some(x => String(x) === String(id))) {
+          newManager.assignedConsultantAdmins.push(id);
+        }
+      }
+    }
 
+    // ── Transfer client assignments ───────────────────────────────────────────
+    let movedClients = 0;
+    if (assignedClientIds.length > 0 && newManager) {
+      // Update client users' supportManagerId
+      await User.updateMany(
+        { clientId: { $in: assignedClientIds } },
+        { $set: { supportManagerId: newManager._id, "supportInfo.supportManagerId": newManager._id, "supportInfo.supportTeamName": newManager.supportTeamName || "" } }
+      );
+      // Update each Client document's supportSection
+      const Client = require("../../../modules/client-management/client/Client");
+      for (const clientId of assignedClientIds) {
+        try {
+          const clientDoc = await Client.findOne({ clientId });
+          if (clientDoc) {
+            if (!clientDoc.supportSection) clientDoc.supportSection = {};
+            clientDoc.supportSection.assignedSupportManagerId = newManager._id;
+            clientDoc.supportSection.supportManagerType        = newManager.supportManagerType;
+            await clientDoc.save();
+          }
+        } catch (e) {
+          console.error(`[DELETE SM] failed to update client ${clientId}:`, e.message);
+        }
+      }
+      // Add to newManager's assignedSupportClients (encrypted — in-memory save)
+      if (!Array.isArray(newManager.assignedSupportClients)) newManager.assignedSupportClients = [];
+      for (const clientId of assignedClientIds) {
+        if (!newManager.assignedSupportClients.includes(clientId)) {
+          newManager.assignedSupportClients.push(clientId);
+        }
+      }
+      movedClients = assignedClientIds.length;
+    }
+
+    // Save newManager once with all array updates
+    if (newManager) await newManager.save();
+
+    // ── Soft-delete the manager ───────────────────────────────────────────────
+    manager.isActive    = false;
+    manager.updatedAt   = new Date();
     await manager.save();
 
-    // -----------------------------
-    // ✅ Notifications (email + in-app)
-    // -----------------------------
+    // ── Notifications ─────────────────────────────────────────────────────────
     try {
       await notifySupportManagerDeleted({
         actor: { ...req.user, reason },
         deletedManager: manager,
         transferToManager: newManager,
-        movedSupportUsers: movedSupportUserIds, // ✅ real IDs (not empty)
+        movedSupportUsers: supportTeamMembers.map(u => String(u._id)),
       });
     } catch (e) {
       console.error("[USER CONTROLLER] delete manager notif failed:", e.message);
@@ -3921,12 +3964,13 @@ const deleteSupportManager = async (req, res) => {
       message: "Support manager deleted successfully",
       meta: {
         deletedSupportManagerId: manager._id,
-        teamCountBeforeDelete: teamCount,
-        movedUsers,
-        movedSupportUserIds, // ✅ useful for frontend/admin logs
-        transferToSupportManagerId: newManager ? newManager._id : null,
-        transferredClientCount,
-        transferredConsultantCount,
+        transferredTo: newManager ? { _id: newManager._id, userName: newManager.userName } : null,
+        transferred: {
+          supportTeamMembers: movedSupportUsers,
+          consultants:        movedConsultants,
+          consultantAdmins:   movedConsultantAdmins,
+          clients:            movedClients,
+        },
         reason: reason || null,
       },
     });
@@ -4373,6 +4417,24 @@ const getUserById = async (req, res) => {
     user.supportManagerId = normalizeUserProfile(user.supportManagerId);
 
     normalizeUserProfile(user);
+
+    // ── For supportManager: attach assigned consultant_admins, consultants, client_admins ──
+    if (user.userType === "supportManager") {
+      const assignedUsers = await User.find({ supportManagerId: user._id })
+        .select("_id userName email userType profileImage")
+        .lean();
+
+      const consultantAdmins = assignedUsers.filter(u => u.userType === "consultant_admin").map(normalizeUserProfile);
+      const consultants      = assignedUsers.filter(u => u.userType === "consultant").map(normalizeUserProfile);
+      const clientAdmins     = assignedUsers.filter(u => u.userType === "client_admin").map(normalizeUserProfile);
+
+      user.assignedConsultantAdmins      = consultantAdmins;
+      user.assignedConsultantAdminsCount = consultantAdmins.length;
+      user.assignedConsultantsCount      = consultants.length;
+      user.assignedConsultants           = consultants;
+      user.assignedClientAdmins          = clientAdmins;
+      user.assignedClientAdminsCount     = clientAdmins.length;
+    }
 
     return res.status(200).json({ success: true, user });
   } catch (error) {
@@ -5131,6 +5193,23 @@ const updateUser = async (req, res) => {
     }
 
     const updatedUser = await User.findById(userId).select("-password").lean();
+
+    if (updatedUser && updatedUser.userType === "supportManager") {
+      const assignedUsers = await User.find({ supportManagerId: updatedUser._id })
+        .select("_id userName email userType profileImage")
+        .lean();
+
+      const consultantAdmins = assignedUsers.filter(u => u.userType === "consultant_admin").map(normalizeUserProfile);
+      const consultants      = assignedUsers.filter(u => u.userType === "consultant").map(normalizeUserProfile);
+      const clientAdmins     = assignedUsers.filter(u => u.userType === "client_admin").map(normalizeUserProfile);
+
+      updatedUser.assignedConsultantAdmins      = consultantAdmins;
+      updatedUser.assignedConsultantAdminsCount = consultantAdmins.length;
+      updatedUser.assignedConsultants           = consultants;
+      updatedUser.assignedConsultantsCount      = consultants.length;
+      updatedUser.assignedClientAdmins          = clientAdmins;
+      updatedUser.assignedClientAdminsCount     = clientAdmins.length;
+    }
 
     return res.status(200).json({
       message: "User updated successfully",
@@ -6531,11 +6610,10 @@ const assignSupportManagerToConsultant = async (req, res) => {
     const { userId } = req.params;
     const { supportManagerId } = req.body;
 
-    // Only super_admin can assign support to consultants
-    if (req.user.userType !== 'super_admin') {
+    if (!['super_admin', 'consultant_admin'].includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
-        message: 'Only super admins can assign support to consultants'
+        message: 'Only super_admin or consultant_admin can assign support managers'
       });
     }
 
@@ -6553,6 +6631,20 @@ const assignSupportManagerToConsultant = async (req, res) => {
         success: false,
         message: 'Consultant or consultant admin not found'
       });
+    }
+
+    // consultant_admin can only assign to consultants that belong to them
+    if (req.user.userType === 'consultant_admin') {
+      const currentUserId = req.user?._id || req.user?.id || req.user?.userId;
+      const isOwned = consultant.userType === 'consultant'
+        ? String(consultant.consultantAdminId) === String(currentUserId)
+        : String(consultant._id) === String(currentUserId); // consultant_admin assigning to themselves is not valid
+      if (!isOwned) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only assign a support manager to consultants under your team'
+        });
+      }
     }
 
     // Verify support manager exists and is active
@@ -6577,27 +6669,42 @@ const assignSupportManagerToConsultant = async (req, res) => {
       });
     }
 
-    // Add consultant to support manager's assigned consultants list
-    if (!supportManager.assignedConsultants) {
-      supportManager.assignedConsultants = [];
+    // Route to the correct typed array based on userType
+    const targetArray = consultant.userType === 'consultant_admin'
+      ? 'assignedConsultantAdmins'
+      : 'assignedConsultants';
+
+    if (!supportManager[targetArray]) {
+      supportManager[targetArray] = [];
     }
-    
+
     const consultantIdStr = consultant._id.toString();
-    const alreadyAssigned = supportManager.assignedConsultants.some(
+    const alreadyAssigned = supportManager[targetArray].some(
       id => id.toString() === consultantIdStr
     );
 
     if (alreadyAssigned) {
       return res.status(400).json({
         success: false,
-        message: 'This support manager is already assigned to this consultant'
+        message: `This support manager is already assigned to this ${consultant.userType}`
       });
     }
 
-    supportManager.assignedConsultants.push(consultant._id);
+    supportManager[targetArray].push(consultant._id);
     await supportManager.save();
 
-    console.log(`[CLIENT CONTROLLER] Support manager ${supportManager.userName} assigned to consultant ${consultant.userName}`);
+    // Sync supportManagerId onto the consultant/consultant_admin user doc
+    await User.updateOne(
+      { _id: consultant._id },
+      {
+        $set: {
+          supportManagerId: supportManager._id,
+          "supportInfo.supportManagerId": supportManager._id,
+          "supportInfo.supportTeamName": supportManager.supportTeamName || null,
+          "supportInfo.supportManagerType": supportManager.supportManagerType || null,
+        },
+      }
+    );
 
     return res.status(200).json({
       success: true,
