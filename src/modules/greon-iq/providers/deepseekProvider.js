@@ -269,6 +269,83 @@ async function generateSuggestions({ lastIntent, lastProduct, lastDateRange, opt
 }
 
 /**
+ * Extract structured key-value fields from raw OCR text (utility bills, invoices, etc.).
+ *
+ * Called by the ESG Link OCR pipeline after AWS Textract produces raw text.
+ * DeepSeek parses the text intelligently and returns a flat object of numeric fields.
+ *
+ * @param {string} rawText   — raw text lines from Textract (LINE + FORMS + TABLES merged)
+ * @param {object} [options] — model/temperature overrides
+ * @returns {Promise<{fields: object, success: boolean}>}
+ *   fields — { key: number } map; empty object on failure (non-blocking)
+ */
+async function extractOcrFields(rawText, options = {}) {
+  if (!rawText || !rawText.trim()) return { success: false, fields: {} };
+
+  const PROMPT = `You are a precise data-extraction assistant for utility and ESG bills.
+
+Given the raw OCR text below (extracted from an electricity or utility bill), extract every visible numeric field.
+
+OUTPUT RULES — strictly follow these:
+1. Output ONLY key: value pairs, one per line. No markdown, no code fences, no units in values.
+2. Keys must be snake_case (e.g. energy_charges, bill_amount, unit_cons).
+3. Values must be numbers only — include decimals and negatives (e.g. -0.39).
+4. Skip fields with no clear numeric value.
+5. For KSEB-style reading tables (header: Unit Curr Prev Cons Avg), output:
+   unit_curr: <number>
+   unit_prev: <number>
+   unit_cons: <number>
+   unit_avg: <number>
+6. Known field mappings for KSEB electricity bills:
+   Fixed Charges → fixed_charges
+   Meter Rent    → meter_rent
+   GST           → gst
+   Energy Charges → energy_charges
+   Duty          → duty
+   Fuel Sur. / Fuel Surcharge → fuel_surcharge
+   Monthly Fuel Sur. → monthly_fuel_surcharge
+   Round off     → round_off  (can be negative)
+   Bill Amount   → bill_amount
+   ACD/ADJ       → acd_adj
+   Surcharge     → surcharge
+   RF            → rf
+   Payable       → payable
+   Prv Paid Amt  → prv_paid_amt
+   Load (KW)     → load_kw
+   C Demand (KVA) → demand_kva
+   Phase         → phase
+   Cons. recorded on Changes → cons_recorded_on_changes
+
+RAW OCR TEXT:
+${rawText}`;
+
+  const messages = [
+    { role: 'system', content: 'You are a precise numeric data-extraction engine. Output only key: value pairs — no prose, no markdown.' },
+    { role: 'user',   content: PROMPT },
+  ];
+
+  const result = await _callWithRetry(messages, {
+    temperature: 0,
+    maxTokens:   512,
+    ...options,
+  });
+
+  if (!result.success || !result.content) return { success: false, fields: {} };
+
+  // Parse "key: value" lines into a flat object
+  const fields = {};
+  for (const line of result.content.split('\n')) {
+    const m = line.trim().match(/^([a-z][a-z0-9_]{0,49})\s*:\s*(-?[\d,]+(?:\.\d+)?)$/i);
+    if (!m) continue;
+    const key = m[1].toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const num = parseFloat(m[2].replace(/,/g, ''));
+    if (key && Number.isFinite(num)) fields[key] = num;
+  }
+
+  return { success: true, fields };
+}
+
+/**
  * Returns the currently configured model name and provider status.
  * Safe to expose in health-check responses (no key included).
  */
@@ -287,5 +364,6 @@ module.exports = {
   generateAnswer,
   generateReport,
   generateSuggestions,
+  extractOcrFields,
   getProviderStatus,
 };

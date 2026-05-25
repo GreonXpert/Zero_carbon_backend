@@ -74,6 +74,15 @@ function renderClientDataHTML(client) {
   const docs       = data?.supportingDocuments || [];
   const submittedAt = additional?.completionDate || data?.submittedAt;
 
+  // ESGLink config
+  const accessibleModules = Array.isArray(client?.accessibleModules) ? client.accessibleModules : ['zero_carbon'];
+  const hasEsgLink = accessibleModules.includes('esg_link');
+  const esgLinkLevel = data?.esgLinkAssessmentLevel || {};
+  const esgModuleLabel = (m) => ({ esg_link_core: 'ESGLink Core', esg_link_pro: 'ESGLink Pro' }[m] || m || '—');
+  const esgFrameworks = Array.isArray(esgLinkLevel.frameworks) && esgLinkLevel.frameworks.length > 0
+    ? esgLinkLevel.frameworks.join(', ')
+    : '—';
+
   // ---- Helpers (match new details shape: { name, description, otherDetails }) ----
   const detailBlock = (d = {}) => {
     const out = [
@@ -130,9 +139,13 @@ function renderClientDataHTML(client) {
     .toUpperCase() || '—';
 
   // Build subtitle separately to avoid nested template-literal escaping issues
+  const modulesText = accessibleModules
+    .map(m => m === 'zero_carbon' ? 'ZeroCarbon' : m === 'esg_link' ? 'ESGLink' : m)
+    .join(' + ');
   const subtitle =
     `Generated on ${moment().format('DD MMM YYYY, HH:mm')} • ` +
     `Stage: ${client.stage} • Status: ${client.status} • ` +
+    `Modules: ${modulesText} • ` +
     `Assessment Level: ${assessmentLevelsText}`;
 
   return `
@@ -198,6 +211,26 @@ function renderClientDataHTML(client) {
           </div>
         </div>
       </div>
+
+      ${hasEsgLink ? `
+      <div class="card">
+        <div class="badge">ESGLink Configuration</div>
+        <div class="row">
+          <div class="col">
+            <div class="label">ESGLink Module</div>
+            <div class="value">${esgModuleLabel(esgLinkLevel.module)}</div>
+          </div>
+          <div class="col">
+            <div class="label">Reporting Frameworks</div>
+            <div class="value">${esgFrameworks}</div>
+          </div>
+          <div class="col">
+            <div class="label">Accessible Modules</div>
+            <div class="value">${modulesText}</div>
+          </div>
+        </div>
+      </div>
+      ` : ''}
 
       <div class="card">
         <div class="badge">Operational Sites (${safe(org.numberOfOperationalSites, 0)} locations)</div>

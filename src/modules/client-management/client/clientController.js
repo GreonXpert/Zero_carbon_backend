@@ -3290,34 +3290,26 @@ const moveToProposal = async (req, res) => {
     try {
       const proposalModules = client.accessibleModules || ['zero_carbon'];
 
-      // ZeroCarbon: generate PDF of full submissionData and email it (existing, unchanged)
-      if (proposalModules.includes('zero_carbon')) {
+      // Generate PDF from renderClientDataHTML (now includes ESGLink config when applicable)
+      // and send via proposal email.
+      // Covers three cases:
+      //   1) zero_carbon only      → ZeroCarbon PDF
+      //   2) zero_carbon + esg_link → combined PDF (ZC data + ESGLink config section)
+      //   3) esg_link only          → ESGLink-only PDF (no ZC emission data, but ESGLink config visible)
+      if (proposalModules.includes('zero_carbon') || proposalModules.includes('esg_link')) {
         if (!client.submissionData) {
           console.warn(`Client ${client.clientId} moved to proposal without submissionData.`);
         }
         const html = renderClientDataHTML(client);
-        const filename = `ZeroCarbon_Submission_${client.clientId}.pdf`;
+        const moduleLabel = proposalModules.includes('zero_carbon') && proposalModules.includes('esg_link')
+          ? 'ZeroCarbon_ESGLink'
+          : proposalModules.includes('esg_link')
+            ? 'ESGLink'
+            : 'ZeroCarbon';
+        const filename = `${moduleLabel}_Submission_${client.clientId}.pdf`;
         const pdf = await htmlToPdfBuffer(html, filename);
         await sendProposalCreatedEmail(client, [pdf]);
-        console.log(`✉️ ZeroCarbon proposal email with PDF sent to ${client.leadInfo.email}`);
-      }
-
-      // ESGLink: send plain email (no PDF) to confirm proposal submission
-      if (proposalModules.includes('esg_link')) {
-        const companyName = client.submissionData?.companyInfo?.companyName || client.clientId;
-        const recipientEmail = client.leadInfo?.email;
-        if (recipientEmail) {
-          await sendMail(
-            recipientEmail,
-            `ESGLink – Proposal Submitted for ${companyName}`,
-            `Dear ${client.leadInfo?.contactPersonName || 'Client'},\n\nYour ESGLink proposal has been submitted successfully. Our team will review your submission and get back to you shortly.\n\nClient ID: ${client.clientId}\n\nRegards,\nGreonXpert ESGLink Team`,
-            `<p>Dear <strong>${client.leadInfo?.contactPersonName || 'Client'}</strong>,</p>
-             <p>Your ESGLink proposal has been submitted successfully. Our team will review your submission and get back to you shortly.</p>
-             <p><strong>Client ID:</strong> ${client.clientId}</p>
-             <p>Regards,<br/>GreonXpert ESGLink Team</p>`
-          );
-          console.log(`✉️ ESGLink proposal plain email sent to ${recipientEmail}`);
-        }
+        console.log(`✉️ Proposal email with PDF (${moduleLabel}) sent to ${client.leadInfo.email}`);
       }
     } catch (e) {
       console.error('Email/PDF (moveToProposal) error:', e.message);
@@ -3653,13 +3645,13 @@ const getClients = async (req, res) => {
     if (hasAssignedConsultant === "false")
       query["leadInfo.hasAssignedConsultant"] = false;
 
-    // Filter by accessible module (e.g. accessibleModules=esg_link)
-    if (accessibleModules) {
-      const moduleList = accessibleModules.split(",").map(m => m.trim()).filter(Boolean);
-      if (moduleList.length > 0) {
-        query.accessibleModules = { $all: moduleList };
-      }
-    }
+    // NOTE: accessibleModules filter is applied in-code after the DB fetch (see step 5b below).
+    // submissionData is encrypted in full in MongoDB, so querying submissionData.accessibleModules
+    // directly never matches. The top-level accessibleModules field can drift from submissionData
+    // for some clients. Filtering post-decryption is the only reliable approach.
+    const moduleListFilter = accessibleModules
+      ? accessibleModules.split(",").map(m => m.trim()).filter(Boolean)
+      : [];
 
     // -----------------------------------------------
     // 3. SEARCH
@@ -3685,12 +3677,16 @@ const getClients = async (req, res) => {
     // -----------------------------------------------
     const sortOptions = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
     const skip = (page - 1) * limit;
-    const total = await Client.countDocuments(query);
 
     // -----------------------------------------------
     // 5. FETCH CLIENTS
     // -----------------------------------------------
-    const clients = await Client.find(query)
+    // When a module filter is requested, fetch all accessible clients without DB-level
+    // pagination so we can filter in-code after Mongoose decrypts submissionData.
+    // (submissionData is encrypted in MongoDB — nested fields inside it cannot be queried.)
+    const needsModuleFilter = moduleListFilter.length > 0;
+
+    const rawClients = await Client.find(query)
       .populate("leadInfo.consultantAdminId", "userName email profileImage")
       .populate("leadInfo.assignedConsultantId", "userName email profileImage")
       .populate("workflowTracking.assignedConsultantId", "userName email profileImage")
@@ -3702,9 +3698,26 @@ const getClients = async (req, res) => {
       )
 
       .sort(sortOptions)
-      .skip(skip)
-      .limit(parseInt(limit))
+      // Skip DB-level pagination when we need to filter in-code
+      .skip(needsModuleFilter ? 0 : skip)
+      .limit(needsModuleFilter ? 0 : parseInt(limit))
       .lean();
+
+    // 5b. In-code module filter (runs after Mongoose post('find') hook decrypts submissionData)
+    let clients = rawClients;
+    let total;
+    if (needsModuleFilter) {
+      clients = rawClients.filter(c => {
+        const mods = (Array.isArray(c.submissionData?.accessibleModules) && c.submissionData.accessibleModules.length > 0)
+          ? c.submissionData.accessibleModules
+          : (c.accessibleModules || []);
+        return moduleListFilter.every(m => mods.includes(m));
+      });
+      total = clients.length;
+      clients = clients.slice(skip, skip + parseInt(limit));
+    } else {
+      total = await Client.countDocuments(query);
+    }
 
     const BASE = process.env.SERVER_BASE_URL?.replace(/\/+$/, "");
 
@@ -3765,7 +3778,11 @@ const getClients = async (req, res) => {
           assignedSupportManager: supportManagerObj || null         // full user object
         },
 
-        accessibleModules: client.accessibleModules || [],
+        accessibleModules: (
+          Array.isArray(client.submissionData?.accessibleModules) && client.submissionData.accessibleModules.length > 0
+            ? client.submissionData.accessibleModules
+            : client.accessibleModules || []
+        ),
 
         submissionData: client.submissionData || {},
         accountDetails: client.accountDetails || {},
@@ -5807,11 +5824,12 @@ const removeConsultant = async (req, res) => {
   }
 };
 
-// ─── Update assessmentLevel only (post-onboarding, encrypted submissionData-safe) ─────
+// ─── Update assessmentLevel / esgLinkAssessmentLevel (post-onboarding, encrypted submissionData-safe) ─────
 const updateAssessmentLevelOnly = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const rawLevels = req.body?.assessmentLevel;
+    const rawLevels          = req.body?.assessmentLevel;
+    const rawEsgLinkLevel    = req.body?.esgLinkAssessmentLevel;
     const actor = req.user;
 
     // 1) Role guard
@@ -5821,9 +5839,10 @@ const updateAssessmentLevelOnly = async (req, res) => {
       });
     }
 
-    if (!rawLevels) {
+    // At least one field must be provided
+    if (!rawLevels && !rawEsgLinkLevel) {
       return res.status(400).json({
-        message: "assessmentLevel is required in body"
+        message: "Provide at least one of: assessmentLevel or esgLinkAssessmentLevel"
       });
     }
 
@@ -5858,13 +5877,53 @@ const updateAssessmentLevelOnly = async (req, res) => {
       });
     }
 
-    // 4) Normalize allowed values
-    const nextLevels = normalizeAssessmentLevels(rawLevels);
+    // 4a) Validate zero_carbon assessmentLevel if provided
+    let nextLevels = null;
+    if (rawLevels !== undefined) {
+      const hasZeroCarbon = Array.isArray(client.submissionData?.accessibleModules)
+        ? client.submissionData.accessibleModules.includes('zero_carbon')
+        : true; // default module
 
-    if (!nextLevels || nextLevels.length === 0) {
-      return res.status(400).json({
-        message: "assessmentLevel must contain at least one allowed value: reduction, decarbonization, organization, process"
-      });
+      if (!hasZeroCarbon) {
+        return res.status(400).json({
+          message: "Client does not have zero_carbon module access."
+        });
+      }
+
+      nextLevels = normalizeAssessmentLevels(rawLevels);
+
+      if (!nextLevels || nextLevels.length === 0) {
+        return res.status(400).json({
+          message: "assessmentLevel must contain at least one allowed value: reduction, decarbonization, organization, process"
+        });
+      }
+    }
+
+    // 4b) Validate esgLinkAssessmentLevel if provided
+    let nextEsgLinkLevel = null;
+    if (rawEsgLinkLevel !== undefined) {
+      const accessibleModules = Array.isArray(client.submissionData?.accessibleModules)
+        ? client.submissionData.accessibleModules
+        : [];
+
+      if (!accessibleModules.includes('esg_link')) {
+        return res.status(400).json({
+          message: "Client does not have esg_link module access. Add esg_link to accessibleModules first."
+        });
+      }
+
+      const esgErrors = validateEsgLinkAssessmentLevel(rawEsgLinkLevel);
+      if (esgErrors.length > 0) {
+        return res.status(400).json({
+          message: "Invalid esgLinkAssessmentLevel",
+          errors: esgErrors
+        });
+      }
+
+      nextEsgLinkLevel = {
+        module: rawEsgLinkLevel.module || null,
+        frameworks: Array.isArray(rawEsgLinkLevel.frameworks) ? rawEsgLinkLevel.frameworks : []
+      };
     }
 
     // 5) Handle encrypted submissionData safely
@@ -5883,8 +5942,6 @@ const updateAssessmentLevelOnly = async (req, res) => {
       typeof client.submissionData === 'string' &&
       client.submissionData.startsWith('v1:')
     ) {
-      // This means encrypted data was not decrypted.
-      // Do NOT overwrite it with {}.
       return res.status(500).json({
         message: "submissionData is still encrypted and was not decrypted. Refusing to overwrite existing submission data.",
       });
@@ -5894,24 +5951,35 @@ const updateAssessmentLevelOnly = async (req, res) => {
       });
     }
 
-    // 6) Capture previous BEFORE mutation
+    // 6) Capture previous values BEFORE mutation
     const previousLevels = Array.isArray(submissionDataPlain.assessmentLevel)
       ? [...submissionDataPlain.assessmentLevel]
       : [];
 
-    // 7) Replace only the assessmentLevel inside the decrypted object
-    client.submissionData = {
+    const previousEsgLinkLevel = submissionDataPlain.esgLinkAssessmentLevel
+      ? { ...submissionDataPlain.esgLinkAssessmentLevel }
+      : null;
+
+    // 7) Merge only the changed fields into submissionData
+    const updatedSubmissionData = {
       ...submissionDataPlain,
-      assessmentLevel: nextLevels,
       updatedAt: new Date(),
       updatedBy: actor._id,
     };
 
-    // Required because submissionData is encrypted / treated as a full object blob
+    if (nextLevels !== null) {
+      updatedSubmissionData.assessmentLevel = nextLevels;
+    }
+
+    if (nextEsgLinkLevel !== null) {
+      updatedSubmissionData.esgLinkAssessmentLevel = nextEsgLinkLevel;
+    }
+
+    client.submissionData = updatedSubmissionData;
     client.markModified('submissionData');
 
-    // 8) Keep workflow alignment
-    if (typeof client.updateWorkflowBasedOnAssessment === 'function') {
+    // 8) Keep workflow alignment (zero_carbon only)
+    if (nextLevels !== null && typeof client.updateWorkflowBasedOnAssessment === 'function') {
       client.updateWorkflowBasedOnAssessment();
       client.markModified('workflowTracking');
     }
@@ -5919,18 +5987,44 @@ const updateAssessmentLevelOnly = async (req, res) => {
     // 9) Timeline
     if (!client.timeline) client.timeline = [];
 
+    const timelineNotes = [];
+    if (nextLevels !== null) {
+      timelineNotes.push(`ZeroCarbon: [${previousLevels.join(', ')}] → [${nextLevels.join(', ')}]`);
+    }
+    if (nextEsgLinkLevel !== null) {
+      const prevEsgStr = previousEsgLinkLevel
+        ? `module=${previousEsgLinkLevel.module}, frameworks=[${(previousEsgLinkLevel.frameworks || []).join(', ')}]`
+        : 'none';
+      const nextEsgStr = `module=${nextEsgLinkLevel.module}, frameworks=[${nextEsgLinkLevel.frameworks.join(', ')}]`;
+      timelineNotes.push(`ESGLink: ${prevEsgStr} → ${nextEsgStr}`);
+    }
+
     client.timeline.push({
       stage: client.stage,
       status: client.status,
       action: "Assessment level updated (post-onboarding)",
       performedBy: actor._id,
-      notes: `Changed from [${previousLevels.join(', ')}] to [${nextLevels.join(', ')}].`
+      notes: timelineNotes.join(' | ')
     });
 
     // 10) Save
-    // validateBeforeSave:false is okay here because this endpoint updates only assessmentLevel.
-    // We already normalized the values manually.
     await client.save({ validateBeforeSave: false });
+
+    // 10a) Sync zero_carbon assessmentLevel to User records
+    if (nextLevels !== null) {
+      await User.updateMany(
+        { clientId, isDeleted: { $ne: true } },
+        { $set: { assessmentLevel: nextLevels } }
+      );
+    }
+
+    // 10b) Sync esgLinkAssessmentLevel to User records
+    if (nextEsgLinkLevel !== null) {
+      await User.updateMany(
+        { clientId, isDeleted: { $ne: true } },
+        { $set: { esgLinkAssessmentLevel: nextEsgLinkLevel } }
+      );
+    }
 
     // 11) Audit log
     await logEvent({
@@ -5942,17 +6036,23 @@ const updateAssessmentLevelOnly = async (req, res) => {
       entityId: client._id,
       changeSummary: 'Assessment level updated',
       metadata: {
-        previousLevels,
-        newLevels: nextLevels,
+        ...(nextLevels !== null && { previousLevels, newLevels: nextLevels }),
+        ...(nextEsgLinkLevel !== null && { previousEsgLinkLevel, newEsgLinkLevel: nextEsgLinkLevel }),
         clientId
       },
       req,
     });
 
     return res.status(200).json({
-      message: "assessmentLevel updated successfully",
-      assessmentLevel: nextLevels,
-      previousAssessmentLevel: previousLevels
+      message: "Assessment level updated successfully",
+      ...(nextLevels !== null && {
+        assessmentLevel: nextLevels,
+        previousAssessmentLevel: previousLevels
+      }),
+      ...(nextEsgLinkLevel !== null && {
+        esgLinkAssessmentLevel: nextEsgLinkLevel,
+        previousEsgLinkAssessmentLevel: previousEsgLinkLevel
+      })
     });
 
   } catch (err) {
