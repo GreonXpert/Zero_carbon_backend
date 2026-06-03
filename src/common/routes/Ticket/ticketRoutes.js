@@ -411,6 +411,14 @@ router.use((error, req, res, next) => {
     }
   }
 
+  // fileFilter throws a plain Error for invalid file types — return 400 not 500
+  if (error.message && error.message.startsWith('Invalid file type')) {
+    return res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+
   // Handle other errors
   res.status(error.status || 500).json({
     success: false,

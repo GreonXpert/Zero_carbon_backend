@@ -7,7 +7,8 @@ const { uploadBufferToS3, deleteFromS3 } = require('../s3Helper');
 const ALLOWED_FILE_TYPES = [
   // Images
   'image/jpeg', 'image/png', 'image/jpg', 'image/webp',
-  'image/gif', 'image/bmp', 'image/tiff', 'image/svgxml',
+  'image/gif', 'image/bmp', 'image/tiff', 'image/svg+xml',
+  'image/heic', 'image/heif', 'image/avif',
   // Documents
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
@@ -16,6 +17,8 @@ const ALLOWED_FILE_TYPES = [
   'application/vnd.ms-excel', // xls
   'text/plain', // txt
   'text/csv',
+  'text/markdown', // md
+  'text/x-markdown', // md variant
   'application/json',
   // Logs
   'application/x-log',
@@ -25,7 +28,9 @@ const ALLOWED_FILE_TYPES = [
 // Extension mapping for ambiguous mime types
 const ALLOWED_EXTENSIONS = [
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.svg',
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.json', '.log'
+  '.heic', '.heif', '.avif',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.json', '.log',
+  '.md'
 ];
 
 const storage = multer.memoryStorage();
