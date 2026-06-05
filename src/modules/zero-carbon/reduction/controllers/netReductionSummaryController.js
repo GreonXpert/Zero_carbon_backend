@@ -70,14 +70,131 @@ function buildDateRange(periodType, year, month, week, day) {
 }
 
 // ===================================================================
-//  CORE REDUCTION SUMMARIZER — SAME LOGIC AS YOUR CURRENT ALL-TIME
+//  METHODOLOGY HANDLER MAP
+//  Adding a new methodology = add one entry here. computeSummary()
+//  loop never needs touching.
 // ===================================================================
-function computeSummary(entries, projectMeta) {
-  const summary = {
-    totalNetReduction: 0,
-    entriesCount: entries.length,
+const METHODOLOGY_HANDLERS = {
+  methodology1: {
+    initSummary: () => ({
+      // project-level design values (BE/PE/LE from Reduction.m1)
+      totalBE: 0,
+      totalPE: 0,
+      totalLE: 0,
+      // entry-level actuals
+      totalInputValue: 0,
+      totalNetReduction: 0,
+      _rateSum: 0,           // internal accumulator; deleted before returning
+      avgEmissionReductionRate: 0,
+      entriesCount: 0,
+      byCategory: {},
+    }),
+    initProjectFields: () => ({
+      // project-level design values (set once from Reduction.m1 after entry loop)
+      projectBE: 0,
+      projectPE: 0,
+      projectLE: 0,
+      // entry-level accumulators
+      totalInputValue: 0,
+      totalEmissionReductionRate: 0, // sum; divide by entriesCount for avg
+    }),
+    accumulate(acc, entry, category, pRow) {
+      const iv   = Number(entry.inputValue || 0);
+      const rate = Number(entry.emissionReductionRate || 0);
+      const net  = Number(entry.netReduction || 0);
+      acc.totalInputValue  = round6(acc.totalInputValue  + iv);
+      acc.totalNetReduction = round6(acc.totalNetReduction + net);
+      acc._rateSum         += rate;
+      acc.entriesCount++;
+      if (pRow) {
+        pRow.totalInputValue           = round6(pRow.totalInputValue + iv);
+        pRow.totalEmissionReductionRate = round6(pRow.totalEmissionReductionRate + rate);
+      }
+      if (!acc.byCategory[category])
+        acc.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, totalInputValue: 0, totalNetReduction: 0, entriesCount: 0 };
+      acc.byCategory[category].totalInputValue   = round6(acc.byCategory[category].totalInputValue   + iv);
+      acc.byCategory[category].totalNetReduction = round6(acc.byCategory[category].totalNetReduction + net);
+      acc.byCategory[category].entriesCount++;
+    },
+    // Called once per project (not per entry) to add project-level BE/PE/LE
+    accumulateProjectLevel(acc, meta, pRow, category) {
+      const be = Number(meta.m1?.BE || 0);
+      const pe = Number(meta.m1?.PE || 0);
+      const le = Number(meta.m1?.LE || 0);
+      acc.totalBE = round6(acc.totalBE + be);
+      acc.totalPE = round6(acc.totalPE + pe);
+      acc.totalLE = round6(acc.totalLE + le);
+      if (pRow) { pRow.projectBE = be; pRow.projectPE = pe; pRow.projectLE = le; }
+      if (category) {
+        if (!acc.byCategory[category])
+          acc.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, totalInputValue: 0, totalNetReduction: 0, entriesCount: 0 };
+        acc.byCategory[category].totalBE = round6(acc.byCategory[category].totalBE + be);
+        acc.byCategory[category].totalPE = round6(acc.byCategory[category].totalPE + pe);
+        acc.byCategory[category].totalLE = round6(acc.byCategory[category].totalLE + le);
+      }
+    },
+    finalize(acc) {
+      acc.avgEmissionReductionRate = acc.entriesCount
+        ? round6(acc._rateSum / acc.entriesCount) : 0;
+      delete acc._rateSum;
+    },
+  },
 
-    m3Summary: {
+  methodology2: {
+    initSummary: () => ({
+      // project-level leakage (from Reduction.m2.LE)
+      totalLE: 0,
+      // entry-level actuals
+      totalNetReduction: 0,
+      totalNetReductionInFormula: 0,
+      entriesCount: 0,
+      byFormula: {},
+      byCategory: {},
+    }),
+    initProjectFields: () => ({
+      // project-level leakage (set once from Reduction.m2 after entry loop)
+      projectLE: 0,
+      // entry-level accumulators
+      totalNetReductionInFormula: 0,
+      formulaId: null, // captured from first entry for this project
+    }),
+    accumulate(acc, entry, category, pRow) {
+      const net    = Number(entry.netReduction || 0);
+      const inForm = Number(entry.netReductionInFormula || 0);
+      const fid    = String(entry.formulaId || 'unknown');
+      acc.totalNetReduction          = round6(acc.totalNetReduction          + net);
+      acc.totalNetReductionInFormula = round6(acc.totalNetReductionInFormula + inForm);
+      acc.entriesCount++;
+      if (pRow) {
+        pRow.totalNetReductionInFormula = round6(pRow.totalNetReductionInFormula + inForm);
+        if (!pRow.formulaId) pRow.formulaId = fid;
+      }
+      if (!acc.byFormula[fid])
+        acc.byFormula[fid] = { totalNetReduction: 0, totalNetReductionInFormula: 0, entriesCount: 0 };
+      acc.byFormula[fid].totalNetReduction          = round6(acc.byFormula[fid].totalNetReduction          + net);
+      acc.byFormula[fid].totalNetReductionInFormula = round6(acc.byFormula[fid].totalNetReductionInFormula + inForm);
+      acc.byFormula[fid].entriesCount++;
+      if (!acc.byCategory[category])
+        acc.byCategory[category] = { totalLE: 0, totalNetReduction: 0, entriesCount: 0 };
+      acc.byCategory[category].totalNetReduction = round6(acc.byCategory[category].totalNetReduction + net);
+      acc.byCategory[category].entriesCount++;
+    },
+    // Called once per project to add project-level LE from Reduction.m2
+    accumulateProjectLevel(acc, meta, pRow, category) {
+      const le = Number(meta.m2?.LE || 0);
+      acc.totalLE = round6(acc.totalLE + le);
+      if (pRow) pRow.projectLE = le;
+      if (category) {
+        if (!acc.byCategory[category])
+          acc.byCategory[category] = { totalLE: 0, totalNetReduction: 0, entriesCount: 0 };
+        acc.byCategory[category].totalLE = round6(acc.byCategory[category].totalLE + le);
+      }
+    },
+    finalize(_acc) {},
+  },
+
+  methodology3: {
+    initSummary: () => ({
       totalBE: 0,
       totalPE: 0,
       totalLE: 0,
@@ -85,8 +202,64 @@ function computeSummary(entries, projectMeta) {
       totalNetWithUncertainty: 0,
       entriesCount: 0,
       byCategory: {},
+    }),
+    initProjectFields: () => ({
+      totalBE: 0,
+      totalPE: 0,
+      totalLE: 0,
+    }),
+    accumulate(acc, entry, category, pRow) {
+      if (!entry.m3) return;
+      const be   = Number(entry.m3.BE_total || 0);
+      const pe   = Number(entry.m3.PE_total || 0);
+      const le   = Number(entry.m3.LE_total || 0);
+      const nwou = Number(entry.m3.netWithoutUncertainty || 0);
+      const nwu  = Number(entry.m3.netWithUncertainty    || 0);
+      acc.totalBE                    = round6(acc.totalBE + be);
+      acc.totalPE                    = round6(acc.totalPE + pe);
+      acc.totalLE                    = round6(acc.totalLE + le);
+      acc.totalNetWithoutUncertainty = round6(acc.totalNetWithoutUncertainty + nwou);
+      acc.totalNetWithUncertainty    = round6(acc.totalNetWithUncertainty    + nwu);
+      acc.entriesCount++;
+      if (pRow) {
+        pRow.totalBE = round6(pRow.totalBE + be);
+        pRow.totalPE = round6(pRow.totalPE + pe);
+        pRow.totalLE = round6(pRow.totalLE + le);
+      }
+      if (!acc.byCategory[category])
+        acc.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
+      acc.byCategory[category].totalBE = round6(acc.byCategory[category].totalBE + be);
+      acc.byCategory[category].totalPE = round6(acc.byCategory[category].totalPE + pe);
+      acc.byCategory[category].totalLE = round6(acc.byCategory[category].totalLE + le);
+      acc.byCategory[category].entriesCount++;
     },
+    finalize(_acc) {},
+  },
+};
 
+// Build the zero-state for all methodology summaries (used in empty-period defaults)
+function buildEmptyMethodologySummaries() {
+  const out = {};
+  for (const [key, h] of Object.entries(METHODOLOGY_HANDLERS)) {
+    out[key] = h.initSummary();
+    h.finalize(out[key]);
+  }
+  return out;
+}
+
+// ===================================================================
+//  CORE REDUCTION SUMMARIZER — SAME LOGIC AS YOUR CURRENT ALL-TIME
+// ===================================================================
+function computeSummary(entries, projectMeta) {
+  // Initialise per-methodology accumulators
+  const methodologySummaries = {};
+  for (const [key, h] of Object.entries(METHODOLOGY_HANDLERS)) {
+    methodologySummaries[key] = h.initSummary();
+  }
+
+  const summary = {
+    totalNetReduction: 0,
+    entriesCount: entries.length,
     byProject: [],
     byCategory: {},
     byScope: {},
@@ -103,23 +276,22 @@ function computeSummary(entries, projectMeta) {
 
     const meta = projectMeta.get(e.projectId) || {};
 
-    // for grouping:
-    const projectId = e.projectId;
-    const projectName = meta.projectName || e.projectId;
+    const projectId      = e.projectId;
+    const projectName    = meta.projectName    || e.projectId;
     const projectActivity = meta.projectActivity || "Unknown";
-    const category = meta.category || "Unknown";
-    const scope = meta.scope || "Unknown";
-    const location =
+    const category       = meta.category       || "Unknown";
+    const scope          = meta.scope          || "Unknown";
+    const location       =
       meta.location?.place ||
       meta.location?.address ||
       (meta.location?.latitude && meta.location?.longitude
         ? `${meta.location.latitude},${meta.location.longitude}`
         : "Unknown");
-
-    const methodology = meta.calculationMethodology || "unknown";
+    const methodology    = meta.calculationMethodology || "unknown";
 
     // --- byProject ---
     if (!projectMap.has(projectId)) {
+      const handler = METHODOLOGY_HANDLERS[methodology];
       projectMap.set(projectId, {
         projectId,
         projectName,
@@ -130,9 +302,8 @@ function computeSummary(entries, projectMeta) {
         methodology,
         totalNetReduction: 0,
         entriesCount: 0,
-        totalBE: 0,
-        totalPE: 0,
-        totalLE: 0,
+        // Methodology-specific per-project fields for filterReductionSummary recomputation
+        ...(handler ? handler.initProjectFields() : {}),
       });
     }
     const row = projectMap.get(projectId);
@@ -159,56 +330,52 @@ function computeSummary(entries, projectMeta) {
 
     // --- PROJECT ACTIVITY ---
     if (!summary.byProjectActivity[projectActivity])
-      summary.byProjectActivity[projectActivity] = {
-        totalNetReduction: 0,
-        entriesCount: 0,
-      };
+      summary.byProjectActivity[projectActivity] = { totalNetReduction: 0, entriesCount: 0 };
     summary.byProjectActivity[projectActivity].totalNetReduction += net;
     summary.byProjectActivity[projectActivity].entriesCount++;
 
     // --- METHODOLOGY ---
     if (!summary.byMethodology[methodology])
-      summary.byMethodology[methodology] = {
-        totalNetReduction: 0,
-        entriesCount: 0,
-      };
+      summary.byMethodology[methodology] = { totalNetReduction: 0, entriesCount: 0 };
     summary.byMethodology[methodology].totalNetReduction += net;
     summary.byMethodology[methodology].entriesCount++;
 
-    // --- M3 BE / PE / LE TOTALS ---
-    if (e.calculationMethodology === "methodology3" && e.m3) {
-      const be = Number(e.m3.BE_total || 0);
-      const pe = Number(e.m3.PE_total || 0);
-      const le = Number(e.m3.LE_total || 0);
-      const nwou = Number(e.m3.netWithoutUncertainty || 0);
-      const nwu = Number(e.m3.netWithUncertainty || 0);
-
-      summary.m3Summary.totalBE = round6(summary.m3Summary.totalBE + be);
-      summary.m3Summary.totalPE = round6(summary.m3Summary.totalPE + pe);
-      summary.m3Summary.totalLE = round6(summary.m3Summary.totalLE + le);
-      summary.m3Summary.totalNetWithoutUncertainty = round6(summary.m3Summary.totalNetWithoutUncertainty + nwou);
-      summary.m3Summary.totalNetWithUncertainty = round6(summary.m3Summary.totalNetWithUncertainty + nwu);
-      summary.m3Summary.entriesCount++;
-
-      // Accumulate per-project BE/PE/LE so filterReductionSummary can recompute m3Summary
-      if (projectMap.has(projectId)) {
-        const pRow = projectMap.get(projectId);
-        pRow.totalBE = round6(pRow.totalBE + be);
-        pRow.totalPE = round6(pRow.totalPE + pe);
-        pRow.totalLE = round6(pRow.totalLE + le);
-      }
-
-      if (!summary.m3Summary.byCategory[category]) {
-        summary.m3Summary.byCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
-      }
-      summary.m3Summary.byCategory[category].totalBE = round6(summary.m3Summary.byCategory[category].totalBE + be);
-      summary.m3Summary.byCategory[category].totalPE = round6(summary.m3Summary.byCategory[category].totalPE + pe);
-      summary.m3Summary.byCategory[category].totalLE = round6(summary.m3Summary.byCategory[category].totalLE + le);
-      summary.m3Summary.byCategory[category].entriesCount++;
+    // --- METHODOLOGY-SPECIFIC ACCUMULATION ---
+    const handler = METHODOLOGY_HANDLERS[e.calculationMethodology];
+    if (handler) {
+      handler.accumulate(
+        methodologySummaries[e.calculationMethodology],
+        e,
+        category,
+        projectMap.get(projectId)
+      );
     }
   }
 
-  summary.byProject = [...projectMap.values()];
+  // Project-level pass — add design-time BE/PE/LE from Reduction doc (m1, m2)
+  // These are defined once when the project is created, not per entry.
+  for (const [projectId, row] of projectMap) {
+    const meta    = projectMeta.get(projectId) || {};
+    const handler = METHODOLOGY_HANDLERS[row.methodology];
+    if (handler?.accumulateProjectLevel) {
+      handler.accumulateProjectLevel(
+        methodologySummaries[row.methodology],
+        meta,
+        row,
+        row.category
+      );
+    }
+  }
+
+  // Finalize each methodology summary (e.g. compute averages)
+  for (const [key, h] of Object.entries(METHODOLOGY_HANDLERS)) {
+    h.finalize(methodologySummaries[key]);
+  }
+
+  summary.byProject  = [...projectMap.values()];
+  summary.m1Summary  = methodologySummaries.methodology1;
+  summary.m2Summary  = methodologySummaries.methodology2;
+  summary.m3Summary  = methodologySummaries.methodology3; // backward-compat alias
   return summary;
 }
 
@@ -224,23 +391,17 @@ async function calculatePeriodSummary(clientId, periodType, year, month, week, d
   }).lean();
 
   if (!entries.length) {
-    // Still return calculationSummary with safe defaults
     const calculationSummary = await buildReductionCalculationSummary({
-      clientId,
-      periodType,
-      from,
-      to,
+      clientId, periodType, from, to,
     });
-
+    const empty = buildEmptyMethodologySummaries();
     return {
       reductionSummary: {
         totalNetReduction: 0,
         entriesCount: 0,
-        m3Summary: {
-          totalBE: 0, totalPE: 0, totalLE: 0,
-          totalNetWithoutUncertainty: 0, totalNetWithUncertainty: 0,
-          entriesCount: 0, byCategory: {},
-        },
+        m1Summary: empty.methodology1,
+        m2Summary: empty.methodology2,
+        m3Summary: empty.methodology3,
         calculationSummary,
         byProject: [],
         byCategory: {},
@@ -259,7 +420,7 @@ async function calculatePeriodSummary(clientId, periodType, year, month, week, d
     projectId: { $in: projectIds },
   })
     .select(
-      "projectId projectName projectActivity category scope location calculationMethodology"
+      "projectId projectName projectActivity category scope location calculationMethodology m1 m2"
     )
     .lean();
 
@@ -442,8 +603,40 @@ async function backfillAllReductionPeriods(clientId) {
   return { recalculated };
 }
 
+// ===================================================================
+//   MIGRATE ALL CLIENTS — for HTTP /backfill-all and the CLI script
+// ===================================================================
+async function recomputeAllClientsReductionSummary() {
+  const clientDocs = await NetReductionEntry.aggregate([
+    { $group: { _id: '$clientId' } },
+    { $sort:  { _id: 1 } },
+  ]);
+
+  if (!clientDocs.length) {
+    return { succeeded: 0, failed: 0, clients: [] };
+  }
+
+  const clients = clientDocs.map(d => d._id);
+  const results = { succeeded: 0, failed: 0, clients: [] };
+
+  for (const clientId of clients) {
+    try {
+      const r = await backfillAllReductionPeriods(clientId);
+      results.succeeded++;
+      results.clients.push({ clientId, status: 'ok', periodsUpdated: r.recalculated.length });
+    } catch (err) {
+      results.failed++;
+      results.clients.push({ clientId, status: 'error', message: err.message });
+      console.error(`[backfill-all] ${clientId}: ${err.message}`);
+    }
+  }
+
+  return results;
+}
+
 // EXPORT
 module.exports = {
   recomputeClientNetReductionSummary,
   backfillAllReductionPeriods,
+  recomputeAllClientsReductionSummary,
 };

@@ -5,7 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../../../../common/middleware/auth');
-const { backfillAllReductionPeriods } = require('../controllers/netReductionSummaryController');
+const { backfillAllReductionPeriods, recomputeAllClientsReductionSummary } = require('../controllers/netReductionSummaryController');
 const {
   createReduction,
   getReduction,
@@ -57,9 +57,8 @@ router.post('/sync/:clientId', zcGate, syncReductionProjects);
 // Get projects summary for a client
 router.get('/summary/:clientId', zcGate, getReductionProjectsSummary);
 
-// Backfill m3Summary BE/PE/LE for all historical periods of a client.
-// Restricted to consultant_admin and super_admin only.
-// POST /api/reductions/backfill-m3/:clientId
+// Backfill m1/m2/m3 summaries for all historical periods of one client.
+// POST /api/reductions/backfill-m3/:clientId  (name kept for backward compat)
 router.post('/backfill-m3/:clientId', zcGate, async (req, res) => {
   const ALLOWED = ['super_admin', 'consultant_admin'];
   if (!ALLOWED.includes(req.user?.userType)) {
@@ -69,7 +68,23 @@ router.post('/backfill-m3/:clientId', zcGate, async (req, res) => {
     const result = await backfillAllReductionPeriods(req.params.clientId);
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
-    console.error('[backfill-m3] Error:', err.message);
+    console.error('[backfill] Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Backfill ALL clients in one call (migration endpoint).
+// POST /api/reductions/backfill-all
+router.post('/backfill-all', zcGate, async (req, res) => {
+  const ALLOWED = ['super_admin', 'consultant_admin'];
+  if (!ALLOWED.includes(req.user?.userType)) {
+    return res.status(403).json({ success: false, message: 'Not authorized.' });
+  }
+  try {
+    const result = await recomputeAllClientsReductionSummary();
+    return res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    console.error('[backfill-all] Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
