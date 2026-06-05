@@ -5473,23 +5473,10 @@ const changeConsultant = async (req, res) => {
     const currentConsultant = await User.findById(currentConsultantId);
     
     // === STEP 1: Remove current consultant ===
-    
-    // Remove client from current consultant's assignedClients array
-    await User.findByIdAndUpdate(
-      currentConsultantId,
-      { 
-        $pull: { assignedClients: clientId }
-      }
-    );
-    
-    // Update current consultant's hasAssignedClients flag
-    const currentConsultantClients = await User.findById(currentConsultantId).select('assignedClients');
-    if (currentConsultantClients && currentConsultantClients.assignedClients.length === 0) {
-      await User.findByIdAndUpdate(
-        currentConsultantId,
-        { $set: { hasAssignedClients: false } }
-      );
-    }
+
+    // Use the helper so assignedClients is normalized before removal
+    // (avoids "$pull on non-array" error when the field is null/missing in older docs)
+    await removeClientFromConsultant(currentConsultantId, clientId);
     
     // Mark previous assignment as inactive in consultant history
     const previousHistoryIndex = client.leadInfo.consultantHistory.findIndex(
@@ -5713,22 +5700,9 @@ const removeConsultant = async (req, res) => {
     // Get current consultant details for history
     const currentConsultant = await User.findById(currentConsultantId);
     
-    // Remove client from current consultant's assignedClients array
-    await User.findByIdAndUpdate(
-      currentConsultantId,
-      { 
-        $pull: { assignedClients: clientId }
-      }
-    );
-    
-    // Update current consultant's hasAssignedClients flag
-    const currentConsultantClients = await User.findById(currentConsultantId).select('assignedClients');
-    if (currentConsultantClients && currentConsultantClients.assignedClients.length === 0) {
-      await User.findByIdAndUpdate(
-        currentConsultantId,
-        { $set: { hasAssignedClients: false } }
-      );
-    }
+    // Use the helper so assignedClients is normalized before removal
+    // (avoids "$pull on non-array" error when the field is null/missing in older docs)
+    await removeClientFromConsultant(currentConsultantId, clientId);
 
     // Clear consultantId from all client-side users
     await syncConsultantToClientUsers(clientId, null);

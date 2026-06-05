@@ -1028,7 +1028,8 @@ exports.listTickets = async (req, res) => {
       // 🆕 New filters for consultant workflows
       consultantAdminId,
       assignedConsultantId,
-      isConsultantIssue
+      isConsultantIssue,
+      categoryPrefix
     } = req.query;
 
     // Build query
@@ -1151,6 +1152,8 @@ exports.listTickets = async (req, res) => {
     // Category filter
     if (category) {
       query.category = category;
+    } else if (categoryPrefix) {
+      query.category = { $regex: new RegExp(`^${categoryPrefix}`, 'i') };
     }
 
     // Assignment filters
@@ -1263,7 +1266,7 @@ exports.listTickets = async (req, res) => {
 exports.getStats = async (req, res) => {
   try {
     const userId = getUserId(req.user);
-    const { clientId, fromDate, toDate, consultantAdminId, assignedConsultantId } = req.query;
+    const { clientId, fromDate, toDate, consultantAdminId, assignedConsultantId, categoryPrefix } = req.query;
 
     // Build base query based on user type
     const baseQuery = {};
@@ -1302,6 +1305,10 @@ exports.getStats = async (req, res) => {
     }
     if (assignedConsultantId) {
       baseQuery['consultantContext.assignedConsultantId'] = assignedConsultantId;
+    }
+
+    if (categoryPrefix) {
+      baseQuery.category = { $regex: new RegExp(`^${categoryPrefix}`, 'i') };
     }
 
     // Date range filter
@@ -1496,18 +1503,25 @@ exports.getConsultantOverview = async (req, res) => {
       recentTickets: []
     };
 
+    const isEsgLink = req.query.isEsgLink === 'true';
+    const categoryFilter = isEsgLink
+      ? { category: { $regex: /^ESGLink/i } }
+      : { category: { $not: /^ESGLink/i } };
+
     // Build query based on user type
     let myIssuesQuery, clientIssuesQuery;
 
     if (req.user.userType === 'consultant_admin') {
       // My issues - tickets I created
       myIssuesQuery = {
+        ...categoryFilter,
         createdBy: req.user._id,
         'consultantContext.isConsultantIssue': true
       };
 
       // Client issues - tickets from my clients
       clientIssuesQuery = {
+        ...categoryFilter,
         'consultantContext.consultantAdminId': req.user._id,
         'consultantContext.isConsultantIssue': { $ne: true }
       };
@@ -1515,12 +1529,14 @@ exports.getConsultantOverview = async (req, res) => {
     } else { // consultant
       // My issues
       myIssuesQuery = {
+        ...categoryFilter,
         createdBy: req.user._id,
         'consultantContext.isConsultantIssue': true
       };
 
       // Client issues
       clientIssuesQuery = {
+        ...categoryFilter,
         'consultantContext.assignedConsultantId': req.user._id,
         'consultantContext.isConsultantIssue': { $ne: true }
       };
@@ -3135,6 +3151,13 @@ exports.getSupportOverview = async (req, res) => {
     let baseQuery = { status: { $nin: ['cancelled'] } };
     if (req.user.userType === 'supportManager' && req.user.supportManagerType !== 'general_support') {
       baseQuery.supportManagerId = req.user._id;
+    }
+
+    const isEsgLink = req.query.isEsgLink === 'true';
+    if (isEsgLink) {
+      baseQuery.category = { $regex: /^ESGLink/i };
+    } else {
+      baseQuery.category = { $not: /^ESGLink/i };
     }
 
     const now = new Date();

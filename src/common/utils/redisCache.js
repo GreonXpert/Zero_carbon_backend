@@ -86,8 +86,39 @@ async function del(key) {
 }
 
 // Build a canonical cache key for an emission summary request.
+//
+// Keys are PERIOD-TYPE-AWARE: only the parts that are meaningful for a given
+// period type are included.  Irrelevant parts are normalised to 0 so that:
+//   - "GET …?periodType=yearly&year=2026" always produces the SAME key,
+//     regardless of the current month/week/day (which getEmissionSummary
+//     fills in as defaults but are irrelevant for a yearly period).
+//   - saveEmissionSummary's cache-invalidation call (Fix 1) produces the
+//     SAME key even though normalizedPeriod.month/week/day are undefined for
+//     yearly/all-time periods.
+//
+// Key format (0 = not applicable for this period type):
+//   emission_summary:<clientId>:<periodType>:<year>:<month>:<week>:<day>
 function emissionSummaryKey(clientId, periodType, y, m, w, d) {
-  return `emission_summary:${clientId}:${periodType}:${y}:${m}:${w}:${d}`;
+  switch (periodType) {
+    case 'daily':
+      // year + month + day; week is irrelevant
+      return `emission_summary:${clientId}:daily:${y}:${m}:0:${d}`;
+    case 'weekly':
+      // year + week; month and day are irrelevant
+      return `emission_summary:${clientId}:weekly:${y}:0:${w}:0`;
+    case 'monthly':
+      // year + month; week and day are irrelevant
+      return `emission_summary:${clientId}:monthly:${y}:${m}:0:0`;
+    case 'yearly':
+      // year only; month, week, and day are irrelevant
+      return `emission_summary:${clientId}:yearly:${y}:0:0:0`;
+    case 'all-time':
+      // no date parts
+      return `emission_summary:${clientId}:all-time:0:0:0:0`;
+    default:
+      // Fallback: include everything (future-proof for unknown period types)
+      return `emission_summary:${clientId}:${periodType}:${y}:${m}:${w}:${d}`;
+  }
 }
 
 // Choose TTL: 24 h for past years, 10 min for the current period.

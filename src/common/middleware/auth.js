@@ -153,6 +153,13 @@ const auth = async (req, res, next) => {
         accessibleModules: user.accessibleModules && user.accessibleModules.length > 0
           ? user.accessibleModules
           : ['zero_carbon'],
+        // Fields required by Greon IQ access-control gates
+        assignedClients:           user.assignedClients           || [],
+        esgAccessControls:         user.esgAccessControls         || {},
+        assignedNodes:             user.assignedNodes             || [],
+        assignedScopeIds:          user.assignedScopeIds          || [],
+        assignedProcessNodes:      user.assignedProcessNodes      || [],
+        assignedReductionProjects: user.assignedReductionProjects || [],
       };
 
       req.sessionId = decoded.sessionId; // ← available to logout controller

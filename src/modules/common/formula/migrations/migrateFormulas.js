@@ -41,15 +41,11 @@ const { ObjectId } = mongoose.Types;
 
 async function connectDb() {
   const MONGO_URI =
-    process.env.MONGO_URI || "mongodb+srv://ZeroCarbonTesting:ZeroCarbonTesting@cluster0.bja5b5g.mongodb.net/zeroCarbonTesting"
+    process.env.MONGO_URI ||
     process.env.DATABASE_URL ||
-    process.env.MONGODB_URI;
+    process.env.MONGODB_URI ||
+    'mongodb+srv://zerocarbon:zerocarbon@zerocarbon.ujopg7s.mongodb.net/zeroCarbon';
 
-  if (!MONGO_URI) {
-    throw new Error(
-      'No MongoDB URI found. Set MONGO_URI (or DATABASE_URL / MONGODB_URI) in environment.'
-    );
-  }
   await mongoose.connect(MONGO_URI);
   console.log('Connected to MongoDB:', mongoose.connection.host);
 }
