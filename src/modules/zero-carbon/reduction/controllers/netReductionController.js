@@ -39,6 +39,9 @@ const { notifyConsultantAdminOfAnomaly } = require('../../workflow/notifications
 let io;
 exports.setSocketIO = (socketIO) => { io = socketIO; };
 
+// In-memory store for background CSV upload jobs (keyed by jobId)
+const nrUploadJobStore = new Map();
+
 function round6(n){ return Math.round((Number(n)||0)*1e6)/1e6; }
 
 // Emit to both room styles to be backward/forward compatible
@@ -2093,9 +2096,30 @@ function parseM3CsvRow(row) {
  *
  * Always saved as MANUAL input type.
  */
-exports.uploadCsvNetReduction = async (req, res) => {
-  let tempPath = null;
+exports.getNetReductionUploadProgress = (req, res) => {
+  const { jobId } = req.params;
+  const job = nrUploadJobStore.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, message: 'Job not found or expired' });
+  }
+  return res.json({
+    success: true,
+    jobId,
+    status:              job.status,
+    total:               job.total,
+    processed:           job.processed,
+    savedCount:          job.savedCount,
+    failedCount:         job.failedCount,
+    errors:              job.errors,
+    message:             job.message,
+    fileName:            job.fileName,
+    s3:                  job.s3,
+    startTime:           job.startTime,
+    endTime:             job.endTime,
+  });
+};
 
+exports.uploadCsvNetReduction = async (req, res) => {
   try {
     const { clientId, projectId, calculationMethodology } = req.params;
 
@@ -2119,188 +2143,204 @@ exports.uploadCsvNetReduction = async (req, res) => {
     }
 
     if (!req.file?.path) {
-      return res.status(400).json({
-        success: false,
-        message: 'No CSV file uploaded'
-      });
+      return res.status(400).json({ success: false, message: 'No CSV file uploaded' });
     }
 
-    tempPath = req.file.path;
-
-    // Read file → S3
+    // Read file buffer + upload to S3 before background job starts
     const buffer = fs.readFileSync(req.file.path);
+    const fileName = req.file.originalname;
+
     const s3Upload = await uploadReductionCSVCreate({
       clientId,
       projectId,
       calculationMethodology,
-      fileName: req.file.originalname,
+      fileName,
       buffer
     });
 
-    // Parse CSV
+    // Parse CSV rows
     const rows = await csvtojson().fromFile(req.file.path);
-    if (!rows.length) {
-      return res.status(400).json({ success: false, message: 'CSV empty' });
-    }
 
-    const saved = [];
-    const errors = [];
-
-    // ============================
-    // M1
-    // ============================
-    if (ctx.mode === 'm1') {
-      for (let i = 0; i < rows.length; i++) {
-        try {
-          const r = rows[i];
-          const value = Number(r.value);
-          if (!isFinite(value)) throw new Error('value must be numeric');
-
-          const when = parseDateTimeOrNowIST(r.date, r.time);
-
-          const entry = await NetReductionEntry.create({
-            clientId,
-            projectId,
-            calculationMethodology,
-            inputType: 'CSV',
-            sourceDetails: {
-              uploadedBy: req.user._id || req.user.id,
-              dataSource: 'CSV',
-              fileName: req.file.originalname,
-              s3: s3Upload
-            },
-            date: when.date,
-            time: when.time,
-            timestamp: when.timestamp,
-            inputValue: value,
-            emissionReductionRate: ctx.rate,
-            netReduction: round6(value * ctx.rate)
-          });
-
-          saved.push(entry);
-        } catch (e) {
-          errors.push({ row: i + 1, error: e.message });
-        }
-      }
-    }
-
-    // ============================
-    // M2
-    // ============================
-    else if (ctx.mode === 'm2') {
-      const expr = new Parser().parse(ctx.formula.expression);
-      const vars = expr.variables();
-
-      for (let i = 0; i < rows.length; i++) {
-        try {
-          const r = rows[i];
-          let incoming = {};
-
-          if (r.variables) {
-            incoming = JSON.parse(r.variables);
-          }
-
-          vars.forEach(v => {
-            if (r[v] !== undefined && r[v] !== '') {
-              incoming[v] = Number(r[v]);
-            }
-          });
-
-          const when = parseDateTimeOrNowIST(r.date, r.time);
-          const { netInFormula, finalNet } = evaluateM2WithPolicy(
-            ctx.doc,
-            ctx.formula,
-            incoming,
-            when.timestamp
-          );
-
-          const entry = await NetReductionEntry.create({
-            clientId,
-            projectId,
-            calculationMethodology,
-            formulaId: ctx.formula._id,
-            variables: incoming,
-            netReductionInFormula: netInFormula,
-            netReduction: finalNet,
-            inputType: 'CSV',
-            sourceDetails: {
-              uploadedBy: req.user._id || req.user.id,
-              dataSource: 'CSV',
-              fileName: req.file.originalname,
-              s3: s3Upload
-            },
-            date: when.date,
-            time: when.time,
-            timestamp: when.timestamp
-          });
-
-          saved.push(entry);
-        } catch (e) {
-          errors.push({ row: i + 1, error: e.message });
-        }
-      }
-    }
-
-    // ============================
-    // M3
-    // ============================
-    else if (ctx.mode === 'm3') {
-      for (let i = 0; i < rows.length; i++) {
-        try {
-          const payload = parseM3CsvRow(rows[i]);
-          const when = parseDateTimeOrNowIST(rows[i].date, rows[i].time);
-
-          const result = await evaluateM3(ctx.doc, ctx.formulasById, payload);
-
-          const entry = await NetReductionEntry.create({
-            clientId,
-            projectId,
-            calculationMethodology,
-            inputType: 'CSV',
-            sourceDetails: {
-              uploadedBy: req.user._id || req.user.id,
-              dataSource: 'CSV',
-              fileName: req.file.originalname,
-              s3: s3Upload
-            },
-            date: when.date,
-            time: when.time,
-            timestamp: when.timestamp,
-            m3: result,
-            netReduction: result.netWithUncertainty
-          });
-
-          saved.push(entry);
-        } catch (e) {
-          errors.push({ row: i + 1, error: e.message });
-        }
-      }
-    }
-
-    // Cleanup
+    // Cleanup temp file
     try { fs.unlinkSync(req.file.path); } catch {}
 
-    // Recompute summaries
-    await recomputeProjectCumulative(clientId, projectId, calculationMethodology);
-    await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
-});
-
-    // Audit log — CSV batch created (non-blocking)
-    Promise.all(saved.map(e => logNetReductionCreate(req, e))).catch(() => {});
-
-    if (global.broadcastNetReductionCompletionUpdate) {
-      global.broadcastNetReductionCompletionUpdate(clientId);
+    if (!rows.length) {
+      return res.status(400).json({ success: false, message: 'CSV is empty' });
     }
 
-    return res.status(201).json({
-      success: true,
-      message: 'CSV processed',
-      saved: saved.length,
-      errors,
-      s3: s3Upload,
-      lastSaved: saved[saved.length - 1] || null
+    // For M3 pre-load formulas so the background job can use them
+    let formulasById = {};
+    if (ctx.mode === 'm3') {
+      const m3 = ctx.doc.m3 || {};
+      const allItems = [
+        ...(m3.baselineEmissions || []),
+        ...(m3.projectEmissions  || []),
+        ...(m3.leakageEmissions  || [])
+      ];
+      const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
+      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+      formulas.forEach(f => { formulasById[f._id.toString()] = f; });
+    }
+
+    // Create background job
+    const jobId = `nrcsv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const job = {
+      status:    'processing',
+      total:     rows.length,
+      processed: 0,
+      savedCount:  0,
+      failedCount: 0,
+      errors:    [],
+      message:   null,
+      fileName,
+      s3: { bucket: s3Upload.bucket, key: s3Upload.key, etag: s3Upload.etag },
+      startTime: Date.now(),
+      endTime:   null,
+    };
+    nrUploadJobStore.set(jobId, job);
+
+    // Respond immediately so frontend can start polling
+    res.status(202).json({ success: true, jobId, total: rows.length });
+
+    // Process rows in background
+    setImmediate(async () => {
+      try {
+        const savedEntries = [];
+
+        // M2: pre-parse expression variables list once
+        const m2Vars = ctx.mode === 'm2'
+          ? new Parser().parse(ctx.formula.expression).variables()
+          : [];
+
+        for (let i = 0; i < rows.length; i++) {
+          try {
+            let entry;
+
+            // ── M1 ──────────────────────────────────────────────
+            if (ctx.mode === 'm1') {
+              const value = Number(rows[i].value);
+              if (!isFinite(value)) throw new Error('value must be numeric');
+              const when = parseDateTimeOrNowIST(rows[i].date, rows[i].time);
+              entry = await NetReductionEntry.create({
+                clientId, projectId, calculationMethodology,
+                inputType: 'CSV',
+                sourceDetails: {
+                  uploadedBy: req.user._id || req.user.id,
+                  dataSource: 'CSV',
+                  fileName,
+                  s3: s3Upload
+                },
+                date: when.date, time: when.time, timestamp: when.timestamp,
+                inputValue: value,
+                emissionReductionRate: ctx.rate,
+                netReduction: round6(value * ctx.rate)
+              });
+
+            // ── M2 ──────────────────────────────────────────────
+            } else if (ctx.mode === 'm2') {
+              let incoming = {};
+              if (rows[i].variables) incoming = JSON.parse(rows[i].variables);
+              m2Vars.forEach(v => {
+                if (rows[i][v] !== undefined && rows[i][v] !== '') incoming[v] = Number(rows[i][v]);
+              });
+              const when = parseDateTimeOrNowIST(rows[i].date, rows[i].time);
+              const { netInFormula, finalNet } = evaluateM2WithPolicy(
+                ctx.doc, ctx.formula, incoming, when.timestamp
+              );
+              entry = await NetReductionEntry.create({
+                clientId, projectId, calculationMethodology,
+                formulaId: ctx.formula._id,
+                variables: incoming,
+                netReductionInFormula: netInFormula,
+                netReduction: finalNet,
+                inputType: 'CSV',
+                sourceDetails: {
+                  uploadedBy: req.user._id || req.user.id,
+                  dataSource: 'CSV',
+                  fileName,
+                  s3: s3Upload
+                },
+                date: when.date, time: when.time, timestamp: when.timestamp
+              });
+
+            // ── M3 ──────────────────────────────────────────────
+            } else if (ctx.mode === 'm3') {
+              const payload = parseM3CsvRow(rows[i]);
+              const when = parseDateTimeOrNowIST(rows[i].date, rows[i].time);
+              const result = await evaluateM3(ctx.doc, formulasById, payload);
+              entry = await NetReductionEntry.create({
+                clientId, projectId, calculationMethodology,
+                inputType: 'CSV',
+                sourceDetails: {
+                  uploadedBy: req.user._id || req.user.id,
+                  dataSource: 'CSV',
+                  fileName,
+                  s3: s3Upload
+                },
+                date: when.date, time: when.time, timestamp: when.timestamp,
+                m3: result,
+                netReduction: result.netWithUncertainty
+              });
+            } else {
+              throw new Error(`Unsupported methodology mode: ${ctx.mode}`);
+            }
+
+            savedEntries.push(entry);
+            job.savedCount++;
+
+          } catch (e) {
+            job.errors.push({ row: i + 1, error: e.message });
+            job.failedCount++;
+          }
+
+          job.processed = i + 1;
+        }
+
+        // Recompute summaries once for the whole batch
+        if (savedEntries.length > 0) {
+          try {
+            await recomputeProjectCumulative(clientId, projectId, calculationMethodology);
+          } catch {}
+          try {
+            await recomputeClientNetReductionSummary(clientId, {
+              timestamps: savedEntries.map(e => e.timestamp).filter(Boolean)
+            });
+          } catch {}
+
+          // Audit log (non-blocking)
+          Promise.all(savedEntries.map(e => logNetReductionCreate(req, e))).catch(() => {});
+
+          if (global.broadcastNetReductionCompletionUpdate) {
+            global.broadcastNetReductionCompletionUpdate(clientId);
+          }
+
+          emitNR('net-reduction:csv-upload-complete', {
+            clientId, projectId, calculationMethodology,
+            savedCount: job.savedCount,
+            failedCount: job.failedCount,
+            total: job.total
+          });
+        }
+
+        let msg = `CSV processed: ${job.savedCount} saved`;
+        if (job.failedCount > 0) msg += `, ${job.failedCount} failed`;
+
+        job.message = msg;
+        job.status  = 'done';
+        job.endTime = Date.now();
+
+        // Auto-cleanup after 30 minutes
+        setTimeout(() => nrUploadJobStore.delete(jobId), 30 * 60 * 1000);
+
+      } catch (bgErr) {
+        console.error('[uploadCsvNetReduction] background error:', bgErr);
+        job.status  = 'error';
+        job.message = bgErr.message;
+        job.endTime = Date.now();
+        setTimeout(() => nrUploadJobStore.delete(jobId), 30 * 60 * 1000);
+      }
     });
+
   } catch (err) {
     return res.status(500).json({
       success: false,

@@ -11,6 +11,7 @@ const {
   saveApiNetReduction,
   saveIotNetReduction,
   uploadCsvNetReduction,
+  getNetReductionUploadProgress,
   getNetReductionStats,
   listNetReductions,
   deleteManualNetReductionEntry,
@@ -86,8 +87,16 @@ router.post('/:clientId/:projectId/:calculationMethodology/manual', zcGate, save
 /**
  * CSV UPLOAD FOR NET REDUCTION
  * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/csv
+ * Returns 202 + jobId immediately; rows processed in background.
  */
 router.post('/:clientId/:projectId/:calculationMethodology/csv', zcGate, upload.single('file'), uploadCsvNetReduction);
+
+/**
+ * CSV UPLOAD PROGRESS POLLING
+ * GET /api/net-reduction/upload-progress/:jobId
+ * Poll this after a CSV upload to get { status, total, processed, savedCount, failedCount, errors }
+ */
+router.get('/upload-progress/:jobId', getNetReductionUploadProgress);
 
 
 
