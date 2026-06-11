@@ -95,7 +95,7 @@ const exportService = {
     // Launch Puppeteer
     let puppeteer;
     try {
-      puppeteer = require('puppeteer');
+      ({ default: puppeteer } = await import('puppeteer'));
     } catch {
       throw new Error('Puppeteer is not installed. Run: npm install puppeteer');
     }

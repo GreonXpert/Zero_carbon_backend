@@ -10,7 +10,6 @@
 // Colors: dynamic per trace.product (zero_carbon = teal, esg_link = blue)
 // ============================================================================
 
-const puppeteer = require('puppeteer');
 const fs        = require('fs');
 const path      = require('path');
 const https     = require('https');
@@ -77,6 +76,7 @@ function _getTheme(product) {
 
 // ── Shared Puppeteer launcher ─────────────────────────────────────────────────
 async function _launchAndRender(html) {
+  const { default: puppeteer } = await import('puppeteer');
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
