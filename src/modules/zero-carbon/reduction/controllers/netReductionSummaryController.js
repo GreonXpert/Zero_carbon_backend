@@ -527,26 +527,46 @@ async function recomputeClientNetReductionSummary(clientId, opts = {}) {
   periods.push({ type: "all-time" });
 
   // recompute each affected period
-  for (const p of periods) {
-    const summary = await calculatePeriodSummary(
-      clientId,
-      p.type,
-      p.year,
-      p.month,
-      p.week,
-      p.day
-    );
+  try {
+    for (const p of periods) {
+      const summary = await calculatePeriodSummary(
+        clientId,
+        p.type,
+        p.year,
+        p.month,
+        p.week,
+        p.day
+      );
 
-    await saveIntoEmissionSummary(clientId, p.type, p, summary.reductionSummary);
+      await saveIntoEmissionSummary(clientId, p.type, p, summary.reductionSummary);
 
-    emitNRS("net-reduction-summary-updated", {
-      clientId,
-      periodType: p.type,
-      summary: summary.reductionSummary,
-    });
+      emitNRS("net-reduction-summary-updated", {
+        clientId,
+        periodType: p.type,
+        summary: summary.reductionSummary,
+      });
+    }
+
+    // BUG 14 FIX: Clear retry flag on success so maintenance job won't re-run this client.
+    const SummaryNetReduction = require('../models/SummaryNetReduction');
+    await SummaryNetReduction.updateOne(
+      { clientId },
+      { $set: { needsRecalculation: false } }
+    ).catch(() => {}); // non-fatal
+
+    return true;
+  } catch (err) {
+    // BUG 14 FIX: Flag this client for retry by the hourly maintenance job.
+    try {
+      const SummaryNetReduction = require('../models/SummaryNetReduction');
+      await SummaryNetReduction.updateOne(
+        { clientId },
+        { $set: { needsRecalculation: true } },
+        { upsert: false }
+      );
+    } catch (_) { /* silent — don't mask original error */ }
+    throw err;
   }
-
-  return true;
 }
 
 // ===================================================================

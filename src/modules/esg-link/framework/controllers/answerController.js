@@ -3,10 +3,13 @@
 const DisclosureAnswer              = require('../models/DisclosureAnswer.model');
 const EsgFrameworkQuestion          = require('../models/FrameworkQuestion.model');
 const ClientFrameworkInstance       = require('../models/ClientFrameworkInstance.model');
+const ReviewComment                 = require('../models/ReviewComment.model');
+const QuestionAssignment            = require('../models/QuestionAssignment.model');
 const { canAnswerQuestion, canViewClientBrsr } = require('../services/frameworkAccessService');
 const { prefillAnswerFromCore }     = require('../services/brsrPrefillService');
 const { checkEvidenceRequirement }  = require('../services/evidenceValidationService');
 const { validateTransition }        = require('../services/workflowStateService');
+const { emitEsgClientEvent, emitEsgUserEvent } = require('../../esgLink_core/summary/utils/esgSummarySocket');
 
 const listClientQuestions = async (req, res) => {
   try {
@@ -96,12 +99,15 @@ const saveAnswer = async (req, res) => {
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
     const {
-      periodId, frameworkId, frameworkCode, questionCode, assignmentId,
+      periodId: rawPeriodId, periodType, periodKey,
+      frameworkId, frameworkCode, questionCode, assignmentId,
       answerSource, answerData, autoFilledData, sourceTrace,
       applicabilityStatus, naReason,
     } = req.body;
 
-    if (!periodId)      return res.status(400).json({ message: 'periodId is required' });
+    // Accept periodType + periodKey as an alternative period identifier (matches prefill API format)
+    const periodId = rawPeriodId || (periodType && periodKey ? periodKey : null);
+    if (!periodId) return res.status(400).json({ message: 'periodId is required (or provide both periodType and periodKey)' });
     if (!frameworkId)   return res.status(400).json({ message: 'frameworkId is required' });
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode is required' });
     if (!questionCode)  return res.status(400).json({ message: 'questionCode is required' });
@@ -132,6 +138,13 @@ const saveAnswer = async (req, res) => {
       },
       { upsert: true, new: true, runValidators: true }
     );
+
+    emitEsgClientEvent(String(clientId), 'answer:updated', {
+      clientId:   String(clientId),
+      questionId: String(questionId),
+      answerId:   String(answer._id),
+      status:     answer.status,
+    });
 
     return res.status(200).json({ success: true, message: 'Answer saved', data: answer });
   } catch (err) {
@@ -165,7 +178,7 @@ const updateAnswer = async (req, res) => {
     const perm = await canAnswerQuestion(req.user, answer.clientId);
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
-    const editable = ['not_started', 'in_progress', 'reviewer_changes_requested', 'contributor_clarification_required'];
+    const editable = ['not_started', 'in_progress', 'reviewer_changes_requested', 'contributor_clarification_required', 'approver_declined'];
     if (!editable.includes(answer.status)) {
       return res.status(400).json({ message: `Answer in status "${answer.status}" cannot be edited` });
     }
@@ -194,12 +207,39 @@ const submitAnswer = async (req, res) => {
     const perm = await canAnswerQuestion(req.user, answer.clientId);
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
-    const transition = validateTransition(answer.status, 'submitted_to_reviewer', req.user.userType);
+    // Determine the correct target status:
+    //   resubmission after changes requested → resubmitted_to_reviewer
+    //   clarification reply → contributor_clarification_submitted
+    //   first submission / after approver_declined → submitted_to_reviewer (full cycle restarts)
+    let targetStatus;
+    if (answer.status === 'reviewer_changes_requested') {
+      targetStatus = 'resubmitted_to_reviewer';
+    } else if (answer.status === 'contributor_clarification_required') {
+      targetStatus = 'contributor_clarification_submitted';
+    } else {
+      // 'in_progress', 'approver_declined', or any other editable state → submitted_to_reviewer
+      targetStatus = 'submitted_to_reviewer';
+    }
+
+    const transition = validateTransition(answer.status, targetStatus, req.user.userType);
     if (!transition.valid) return res.status(400).json({ message: transition.reason });
 
     // Check evidence requirement before allowing submission
     const evidenceCheck = await checkEvidenceRequirement(answer.questionId, answerId);
     if (!evidenceCheck.valid) return res.status(400).json({ message: evidenceCheck.reason });
+
+    // Stamp reviewerId / approverId from the linked assignment so the reviewer/approver
+    // can later query their own queue by answer.reviewerId / answer.approverId
+    if (!answer.reviewerId || !answer.approverId) {
+      const assignment = await QuestionAssignment.findOne(
+        { clientId: answer.clientId, periodId: answer.periodId, questionId: answer.questionId },
+        { reviewerId: 1, approverId: 1 }
+      ).lean();
+      if (assignment) {
+        if (!answer.reviewerId && assignment.reviewerId) answer.reviewerId = assignment.reviewerId;
+        if (!answer.approverId && assignment.approverId) answer.approverId = assignment.approverId;
+      }
+    }
 
     // Freeze the current autoFilledData as coreSnapshot at submission time
     if (answer.sourceTrace && answer.sourceTrace.length) {
@@ -212,10 +252,19 @@ const submitAnswer = async (req, res) => {
       }));
     }
 
-    answer.status      = 'submitted_to_reviewer';
+    answer.status      = targetStatus;
     answer.submittedAt = new Date();
     answer.updatedBy   = req.user._id;
     await answer.save();
+
+    emitEsgClientEvent(String(answer.clientId), 'answer:submitted', {
+      clientId:   String(answer.clientId),
+      answerId:   String(answer._id),
+      questionId: String(answer.questionId),
+      status:     answer.status,
+    });
+    if (answer.reviewerId) emitEsgUserEvent(String(answer.reviewerId), 'answer:submitted', { answerId: String(answer._id) });
+    if (answer.approverId) emitEsgUserEvent(String(answer.approverId), 'answer:submitted', { answerId: String(answer._id) });
 
     return res.status(200).json({ success: true, message: 'Answer submitted to reviewer', data: answer });
   } catch (err) {
@@ -242,7 +291,8 @@ const listAllAnswers = async (req, res) => {
     const questions = await EsgFrameworkQuestion.find(
       { frameworkCode: fc, status: 'published', isDeleted: false },
       { _id: 1, questionCode: 1, questionTitle: 1, questionText: 1, sectionCode: 1,
-        principleCode: 1, indicatorType: 1, answerMode: 1, evidenceRequirement: 1, displayOrder: 1 }
+        principleCode: 1, indicatorType: 1, answerMode: 1, answerComponentType: 1,
+        answerSchema: 1, evidenceRequirement: 1, displayOrder: 1 }
     ).sort({ sectionCode: 1, displayOrder: 1 }).lean();
 
     if (!questions.length) {
@@ -261,9 +311,35 @@ const listAllAnswers = async (req, res) => {
       answerMap[String(a.questionId)] = a;
     }
 
+    // Count open (non-resolved) comments per answer
+    const answerIds = answers.map((a) => a._id);
+    const commentCounts = answerIds.length
+      ? await ReviewComment.aggregate([
+          { $match: { answerId: { $in: answerIds }, status: { $ne: 'resolved' } } },
+          { $group: { _id: '$answerId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const commentMap = {};
+    for (const c of commentCounts) commentMap[String(c._id)] = c.count;
+
+    // Assignments — fetch contributor (and reviewer/approver) names for display
+    const assignments = await QuestionAssignment.find(
+      { clientId, periodId, questionId: { $in: questionIds } },
+      { questionId: 1, contributorId: 1, reviewerId: 1, approverId: 1 }
+    ).populate('contributorId', 'userName email')
+     .populate('reviewerId',    'userName email')
+     .populate('approverId',    'userName email')
+     .lean();
+
+    const assignmentMap = {};
+    for (const a of assignments) {
+      assignmentMap[String(a.questionId)] = a;
+    }
+
     // Merge question + answer into one record per question
     const data = questions.map((q) => {
-      const answer = answerMap[String(q._id)] || null;
+      const answer     = answerMap[String(q._id)]     || null;
+      const assignment = assignmentMap[String(q._id)] || null;
       return {
         questionId:    q._id,
         questionCode:  q.questionCode,
@@ -271,10 +347,12 @@ const listAllAnswers = async (req, res) => {
         questionText:  q.questionText,
         sectionCode:   q.sectionCode,
         principleCode: q.principleCode || null,
-        indicatorType: q.indicatorType,
-        answerMode:    q.answerMode,
+        indicatorType:       q.indicatorType,
+        answerMode:          q.answerMode,
+        answerComponentType: q.answerComponentType || null,
+        answerSchema:        q.answerSchema        || null,
         evidenceRequirement: q.evidenceRequirement,
-        displayOrder:  q.displayOrder,
+        displayOrder:        q.displayOrder,
 
         // Answer fields (null if not yet started)
         answerId:       answer ? answer._id                             : null,
@@ -287,9 +365,17 @@ const listAllAnswers = async (req, res) => {
         submittedAt:    answer ? answer.submittedAt                    : null,
         reviewedAt:     answer ? answer.reviewedAt                     : null,
         approvedAt:     answer ? answer.approvedAt                     : null,
+        updatedAt:      answer ? answer.updatedAt                      : null,
 
         // Consultant metric approval (only relevant for core_metric / hybrid answers)
         consultantMetricApproval: answer ? answer.consultantMetricApproval : null,
+
+        openCommentCount: answer ? (commentMap[String(answer._id)] || 0) : 0,
+
+        // Assignment — contributor/reviewer/approver with populated names
+        assignedContributor: assignment ? assignment.contributorId : null,
+        assignedReviewer:    assignment ? assignment.reviewerId    : null,
+        assignedApprover:    assignment ? assignment.approverId    : null,
       };
     });
 

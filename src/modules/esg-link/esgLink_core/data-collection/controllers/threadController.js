@@ -1,5 +1,6 @@
 'use strict';
 
+const EsgSubmissionThread = require('../models/EsgSubmissionThread');
 const workflowService = require('../services/workflowService');
 const { canComment, canReply } = require('../utils/submissionPermissions');
 
@@ -57,6 +58,7 @@ async function addComment(req, res) {
     const result = await workflowService.addThreadMessage(submissionId, clientId, {
       type,
       authorId:   actor._id || actor.id,
+      authorName: actor.userName || actor.email || 'Unknown',
       authorType: actor.userType,
       text,
       attachments: req.body?.attachments || [],
@@ -100,6 +102,7 @@ async function reply(req, res) {
     const result = await workflowService.addThreadMessage(submissionId, clientId, {
       type:       'contributor_reply',
       authorId:   actor._id || actor.id,
+      authorName: actor.userName || actor.email || 'Unknown',
       authorType: actor.userType,
       text,
       attachments: req.body?.attachments || [],
@@ -116,4 +119,24 @@ async function reply(req, res) {
   }
 }
 
-module.exports = { getThread, addComment, reply };
+// ── PATCH /:clientId/submissions/:submissionId/thread/read ────────────────────
+// Marks the thread as read for the current user (sets lastReadAt[userId] = now)
+async function markThreadRead(req, res) {
+  try {
+    const { submissionId } = req.params;
+    const userId = String(req.user._id || req.user.id);
+
+    await EsgSubmissionThread.findOneAndUpdate(
+      { submissionId },
+      { $set: { [`lastReadAt.${userId}`]: new Date() } },
+      { upsert: false }
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[threadController.markThreadRead]', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
+
+module.exports = { getThread, addComment, reply, markThreadRead };

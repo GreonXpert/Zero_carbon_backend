@@ -12,12 +12,13 @@ const notificationSchema = new mongoose.Schema(
     },
     
     // Creator Information
-    createdBy: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: "User", 
-      required: true 
+    // Not required for system-generated notifications (isSystemNotification: true),
+    // which have no human actor (e.g. SLA escalation, frequency reminders).
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
     },
-    creatorType: { type: String, required: true }, // Store creator's userType
+    creatorType: { type: String }, // Store creator's userType
     
     // Target Audience
     targetUserTypes: [{ 

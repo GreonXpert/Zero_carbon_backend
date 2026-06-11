@@ -92,9 +92,9 @@ const SECTION_REGISTRY = {
     consultant_admin:     'full',
     consultant:           'full',
     client_admin:         'full',
-    client_employee_head: ['list', 'summary'],
-    employee:             ['list'],
-    viewer:               ['list', 'summary'],
+    client_employee_head: ['summary', 'kpis', 'byProject'],
+    employee:             ['summary', 'kpis'],
+    viewer:               ['summary', 'kpis', 'byProject', 'breakdown'],
     auditor:              'full',
     contributor:          null,
     reviewer:             null,
@@ -170,6 +170,66 @@ const SECTION_REGISTRY = {
     contributor:          ['overview'],
     reviewer:             ['overview', 'byMetric'],
     approver:             'full',
+  },
+
+  // ── BRSR questionnaire domain ─────────────────────────────────────────────
+  brsr_summary: {
+    super_admin:          'full',
+    consultant_admin:     'full',
+    consultant:           'full',
+    client_admin:         'full',
+    client_employee_head: null,
+    employee:             null,
+    viewer:               ['overview', 'bySection'],
+    auditor:              'full',
+    contributor:          ['overview', 'bySection'],
+    reviewer:             ['overview', 'bySection', 'progress'],
+    approver:             'full',
+  },
+
+  // ── User / client / team data (management queries) ────────────────────────
+  user_data: {
+    super_admin:          'full',
+    consultant_admin:     'full',
+    consultant:           ['summary', 'clients', 'users'],
+    client_admin:         ['summary', 'users', 'modules', 'assessment'],
+    client_employee_head: null,
+    employee:             null,
+    viewer:               null,
+    auditor:              null,
+    contributor:          null,
+    reviewer:             null,
+    approver:             null,
+  },
+
+  // ── Cross-client ranking summary (multi-client roles only) ─────────────
+  cross_client_summary: {
+    super_admin:          'full',
+    consultant_admin:     'full',
+    consultant:           'full',
+    client_admin:         null,
+    client_employee_head: null,
+    employee:             null,
+    viewer:               null,
+    auditor:              null,
+    contributor:          null,
+    reviewer:             null,
+    approver:             null,
+  },
+
+  // ── Client comparison (multi-client roles only) ───────────────────────
+  client_comparison: {
+    super_admin:          'full',
+    consultant_admin:     'full',
+    consultant:           'full',
+    client_admin:         null,
+    client_employee_head: null,
+    employee:             null,
+    viewer:               null,
+    auditor:              null,
+    contributor:          null,
+    reviewer:             null,
+    approver:             null,
   },
 
   // ── Cross-module analysis ──────────────────────────────────────────────

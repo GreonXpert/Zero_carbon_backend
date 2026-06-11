@@ -79,6 +79,20 @@ const _buildListFilter = (query, baseFilter) => {
   if (query.subcategoryCode)  filter.subcategoryCode = query.subcategoryCode;
   if (query.metricType)       filter.metricType      = query.metricType;
   if (query.publishedStatus)  filter.publishedStatus = query.publishedStatus;
+
+  // Text search across metricCode, metricName, and metricDescription
+  // Accepts either ?search= or ?q= (both do the same thing)
+  const searchTerm = (query.search || query.q || '').trim();
+  if (searchTerm) {
+    const escaped = searchTerm.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    const rx = new RegExp(escaped, 'i');
+    filter.$or = [
+      { metricCode:        rx },
+      { metricName:        rx },
+      { metricDescription: rx },
+    ];
+  }
+
   return filter;
 };
 
@@ -778,11 +792,15 @@ const createClientMetric = async (req, res) => {
     if (_guardPermission(perm, res)) return;
 
     // Verify client has esg_link module access
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }, { submissionData: 1, accessibleModules: 1 }).lean();
     if (!client) {
       return res.status(404).json({ message: 'Client not found', code: 'CLIENT_NOT_FOUND' });
     }
-    if (!Array.isArray(client.accessibleModules) || !client.accessibleModules.includes('esg_link')) {
+    const _metricModules =
+      Array.isArray(client.submissionData?.accessibleModules) && client.submissionData.accessibleModules.length > 0
+        ? client.submissionData.accessibleModules
+        : (client.accessibleModules || []);
+    if (!_metricModules.includes('esg_link')) {
       return res.status(403).json({
         message: 'Client does not have esg_link module access',
         code: 'MODULE_NOT_ACCESSIBLE',
@@ -910,19 +928,18 @@ const listAvailableMetrics = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // Consultant-level access required (used for boundary mapping preparation)
-    const perm = await canManageClientMetric(req.user, clientId);
+    // View-level access: consultant roles + client_admin viewing their own client
+    const perm = await canViewClientMetrics(req.user, clientId);
     if (_guardPermission(perm, res)) return;
 
     const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
     const limit = Math.min(100, parseInt(req.query.limit, 10) || 50);
     const skip  = (page - 1) * limit;
 
-    // Build optional domain filter
-    const domainFilter = {};
-    if (req.query.esgCategory)     domainFilter.esgCategory     = req.query.esgCategory;
-    if (req.query.subcategoryCode) domainFilter.subcategoryCode = req.query.subcategoryCode;
-    if (req.query.metricType)      domainFilter.metricType      = req.query.metricType;
+    // Build optional domain + text-search filter (reuse shared helper)
+    const domainFilter = _buildListFilter(req.query, {});
+    // _buildListFilter adds isDeleted:false and optional $or search — remove keys we set ourselves
+    delete domainFilter.isDeleted; // will be set per-query below
 
     // Union: published global metrics + all client-scoped metrics for this client
     const [globalMetrics, clientMetrics] = await Promise.all([

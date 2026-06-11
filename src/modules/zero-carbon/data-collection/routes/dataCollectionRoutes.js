@@ -10,7 +10,10 @@ const {
   saveIoTData,
   saveManualData,
   uploadCSVData,
+  getUploadProgress,
   editManualData,
+  addEvidenceLink,
+  removeEvidenceLink,
   deleteManualData,
   switchInputType,
   getDataEntries,
@@ -138,9 +141,16 @@ router.post('/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/manual-dat
  */
 router.post(
   '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/upload-csv',
-    zcGate,
+  zcGate,
+  (req, res, next) => { req.setTimeout(900000); next(); },
   uploadCsv.single('csvFile'),   // ✅ MEMORY STORAGE
   uploadCSVData
+);
+
+router.get(
+  '/upload-csv/progress/:jobId',
+  zcGate,
+  getUploadProgress
 );
 
 /**
@@ -247,6 +257,18 @@ router.put('/data-entries/:dataId', zcGate, editManualData);
  * DELETE /api/data-collection/data-entries/:dataId
  */
 router.delete('/data-entries/:dataId', zcGate, deleteManualData);
+
+/**
+ * ADD EVIDENCE LINK TO A DATA ENTRY
+ * POST /api/data-collection/data-entries/:dataId/evidence-links
+ */
+router.post('/data-entries/:dataId/evidence-links', zcGate, addEvidenceLink);
+
+/**
+ * REMOVE EVIDENCE LINK FROM A DATA ENTRY
+ * DELETE /api/data-collection/data-entries/:dataId/evidence-links/:linkId
+ */
+router.delete('/data-entries/:dataId/evidence-links/:linkId', zcGate, removeEvidenceLink);
 
 /**
  * GET DATA ENTRIES (with filtering and pagination)

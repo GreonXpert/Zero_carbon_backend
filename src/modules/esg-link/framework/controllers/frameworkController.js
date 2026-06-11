@@ -8,13 +8,14 @@ const createFramework = async (req, res) => {
     const perm = canManageFrameworkLibrary(req.user);
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
-    const { frameworkCode, frameworkName, frameworkType, country, authority, description, version } = req.body;
+    const { frameworkCode, frameworkName, frameworkType, country, authority, description, version, status } = req.body;
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode is required' });
     if (!frameworkName) return res.status(400).json({ message: 'frameworkName is required' });
 
     const exists = await EsgFramework.findOne({ frameworkCode: frameworkCode.toUpperCase() }).lean();
     if (exists) return res.status(409).json({ message: `Framework with code "${frameworkCode}" already exists` });
 
+    const allowedStatuses = ['draft', 'active', 'retired'];
     const framework = await EsgFramework.create({
       frameworkCode: frameworkCode.toUpperCase(),
       frameworkName,
@@ -23,7 +24,7 @@ const createFramework = async (req, res) => {
       authority:     authority     || null,
       description:   description   || null,
       version:       version       || '1.0',
-      status:        'draft',
+      status:        allowedStatuses.includes(status) ? status : 'draft',
       createdBy:     req.user._id,
     });
 
@@ -36,9 +37,14 @@ const createFramework = async (req, res) => {
 
 const listFrameworks = async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, showDeleted } = req.query;
     const query = {};
-    if (status) query.status = status;
+    if (showDeleted === 'true') {
+      query.isDeleted = true;
+    } else {
+      query.isDeleted = { $ne: true };
+      if (status) query.status = status;
+    }
 
     const frameworks = await EsgFramework.find(query).sort({ createdAt: -1 }).lean();
     return res.status(200).json({ success: true, data: frameworks });
@@ -80,6 +86,131 @@ const updateFramework = async (req, res) => {
   }
 };
 
+const activateFramework = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const { comment } = req.body;
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({ message: 'Approval comment is required' });
+    }
+
+    const existing = await EsgFramework.findOne({ _id: req.params.frameworkId, isDeleted: { $ne: true } }).lean();
+    if (!existing) return res.status(404).json({ message: 'Framework not found' });
+
+    const historyEntry = {
+      fromStatus: existing.status,
+      toStatus:   'active',
+      changedBy:  req.user._id,
+      changedAt:  new Date(),
+      comment:    comment.trim(),
+    };
+
+    const framework = await EsgFramework.findByIdAndUpdate(
+      req.params.frameworkId,
+      {
+        $set: {
+          status:          'active',
+          approvedBy:      req.user._id,
+          approvedAt:      new Date(),
+          approvedComment: comment.trim(),
+        },
+        $push: { statusHistory: historyEntry },
+      },
+      { new: true }
+    );
+
+    return res.status(200).json({ success: true, message: 'Framework activated', data: framework });
+  } catch (err) {
+    console.error('[frameworkController] activateFramework:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+const changeFrameworkStatus = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const { status, comment } = req.body;
+    const allowed = ['draft', 'active', 'retired'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ message: `Invalid status. Allowed: ${allowed.join(', ')}` });
+    }
+
+    const existing = await EsgFramework.findOne({ _id: req.params.frameworkId, isDeleted: { $ne: true } }).lean();
+    if (!existing) return res.status(404).json({ message: 'Framework not found' });
+    if (existing.status === status) {
+      return res.status(400).json({ message: `Framework is already in "${status}" status` });
+    }
+
+    const historyEntry = {
+      fromStatus: existing.status,
+      toStatus:   status,
+      changedBy:  req.user._id,
+      changedAt:  new Date(),
+      comment:    comment ? comment.trim() : null,
+    };
+
+    const updateFields = { status };
+    if (status === 'active') {
+      updateFields.approvedBy      = req.user._id;
+      updateFields.approvedAt      = new Date();
+      updateFields.approvedComment = comment ? comment.trim() : null;
+    }
+
+    const framework = await EsgFramework.findByIdAndUpdate(
+      req.params.frameworkId,
+      { $set: updateFields, $push: { statusHistory: historyEntry } },
+      { new: true }
+    );
+
+    return res.status(200).json({ success: true, message: `Framework status changed to "${status}"`, data: framework });
+  } catch (err) {
+    console.error('[frameworkController] changeFrameworkStatus:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+const deleteFramework = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const framework = await EsgFramework.findOneAndUpdate(
+      { _id: req.params.frameworkId, isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id } },
+      { new: true }
+    );
+
+    if (!framework) return res.status(404).json({ message: 'Framework not found or already deleted' });
+    return res.status(200).json({ success: true, message: 'Framework deleted', data: framework });
+  } catch (err) {
+    console.error('[frameworkController] deleteFramework:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+const restoreFramework = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const framework = await EsgFramework.findOneAndUpdate(
+      { _id: req.params.frameworkId, isDeleted: true },
+      { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+      { new: true }
+    );
+
+    if (!framework) return res.status(404).json({ message: 'Framework not found or not deleted' });
+    return res.status(200).json({ success: true, message: 'Framework restored', data: framework });
+  } catch (err) {
+    console.error('[frameworkController] restoreFramework:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
 // Seed endpoint — creates BRSR framework if not already present
 const seedBrsrFramework = async (req, res) => {
   try {
@@ -95,4 +226,4 @@ const seedBrsrFramework = async (req, res) => {
   }
 };
 
-module.exports = { createFramework, listFrameworks, getFrameworkById, updateFramework, seedBrsrFramework };
+module.exports = { createFramework, listFrameworks, getFrameworkById, updateFramework, activateFramework, changeFrameworkStatus, deleteFramework, restoreFramework, seedBrsrFramework };

@@ -31,7 +31,8 @@ function buildWorkflowLog(target, actionCode, actor, statusBefore, statusAfter, 
 }
 
 async function getSettings(clientId) {
-  return OrgSettings.findOne({ clientId }) || { approval_depth: ApprovalDepth.SINGLE_STEP };
+  const settings = await OrgSettings.findOne({ clientId });
+  return settings || { approval_depth: ApprovalDepth.SINGLE_STEP };
 }
 
 // ── Service Methods ──────────────────────────────────────────────────────────
@@ -134,6 +135,12 @@ async function submitTarget(targetId, user) {
     const e = new Error('Only DRAFT or RETURNED targets can be submitted.'); e.status = 422; throw e;
   }
 
+  // Guard: target settings must be configured before submit
+  if (!target.target_settings?.settings_configured_at) {
+    const e = new Error('Target settings must be configured before submitting. Please set up the target settings first.');
+    e.status = 422; e.code = 'SETTINGS_NOT_CONFIGURED'; throw e;
+  }
+
   const prev = target.approval_status;
   target.approval_status = ApprovalStatus.SUBMITTED;
   target.updated_by = user._id;
@@ -149,8 +156,9 @@ async function reviewTarget(targetId, user) {
   const target = await TargetMaster.findById(targetId);
   if (!target) { const e = new Error('Target not found.'); e.status = 404; throw e; }
 
-  const settings = await getSettings(target.clientId);
-  if (settings.approval_depth === ApprovalDepth.SINGLE_STEP) {
+  const orgSettings  = await getSettings(target.clientId);
+  const approvalDepth = target.target_settings?.approval_depth ?? orgSettings.approval_depth;
+  if (approvalDepth === ApprovalDepth.SINGLE_STEP) {
     const e = new Error('Review step is skipped in single_step approval mode.'); e.status = 422; throw e;
   }
 
@@ -315,9 +323,28 @@ async function getHistory(targetId) {
   }).sort({ timestamp: -1 });
 }
 
+async function updateTargetSettings(targetId, data, user) {
+  const target = await TargetMaster.findById(targetId);
+  if (!target || target.isDeleted) { const e = new Error('Target not found.'); e.status = 404; throw e; }
+
+  const ALLOWED_KEYS = [
+    'approval_depth', 'allocation_tolerance_pct', 'seasonality_default_method',
+    'forecast_method_default', 'forecast_at_risk_threshold_pct', 'scope3_coverage_threshold_pct',
+  ];
+
+  if (!target.target_settings) target.target_settings = {};
+  ALLOWED_KEYS.forEach((k) => { if (k in data) target.target_settings[k] = data[k]; });
+  target.target_settings.settings_configured_at = new Date();
+  target.markModified('target_settings');
+  target.updated_by = user._id;
+  await target.save();
+  return target;
+}
+
 module.exports = {
   createTarget,
   updateTarget,
+  updateTargetSettings,
   submitTarget,
   reviewTarget,
   returnTarget,

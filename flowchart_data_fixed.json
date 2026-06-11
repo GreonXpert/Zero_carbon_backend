@@ -1,0 +1,646 @@
+{
+  "clientId": "{{clientId}}",
+  "flowchartData": {
+    "nodes": [
+
+      {
+        "id": "node-ahm-001",
+        "label": "Ahmedabad Manufacturing HQ",
+        "position": { "x": 300, "y": 80 },
+        "details": {
+          "TypeOfNode": "Emission Source",
+          "nodeType": "entity",
+          "department": "Manufacturing & Operations",
+          "location": "Ahmedabad, Gujarat, India",
+          "latitude": 23.0225,
+          "longitude": 72.5714,
+          "employeeHeadId": "{{preetiShahId}}",
+          "scopeDetails": [
+            {
+              "scopeIdentifier": "S1-AHM-01",
+              "scopeType": "Scope 1",
+              "category": "Stationary Combustion",
+              "projectActivityType": "Natural gas boiler — process steam. GAIL meter readings.",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "m³",
+                "description": "Volume of natural gas consumed per month from GAIL meter readings"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 2.042,
+                "unit": "kg CO2e / m³",
+                "source": "Client-specific lab analysis of GAIL natural gas composition — Ahmedabad site"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 38.5,
+                "fromUnit": "m³",
+                "toUnit": "GJ",
+                "description": "Gross calorific value of natural gas (site-specific)"
+              },
+              "uncertaintyData": {
+                "percentage": 5,
+                "method": "IPCC Tier 2 — site-specific fuel analysis",
+                "notes": "Meter calibration uncertainty ±2%; combustion efficiency variation ±3%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S1-AHM-02",
+              "scopeType": "Scope 1",
+              "category": "Mobile Combustion",
+              "projectActivityType": "Company cars + LCV fleet fuel — petrol/diesel from fuel cards (Ahmedabad site)",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "litres",
+                "description": "Total petrol and diesel consumed by company cars and LCVs per month from fuel card records"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 2.39,
+                "unit": "kg CO2e / litre",
+                "source": "Blended custom EF: weighted average of petrol (2.31 kg CO2e/L) and diesel (2.68 kg CO2e/L) based on Ahmedabad fleet fuel split"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 1,
+                "fromUnit": "litres",
+                "toUnit": "litres",
+                "description": "No unit conversion required — activity data already in litres"
+              },
+              "uncertaintyData": {
+                "percentage": 4,
+                "method": "Fuel card data — metered at pump",
+                "notes": "Fuel card rounding ±1%; fleet mix variation ±3%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S2-AHM-01",
+              "scopeType": "Scope 2",
+              "category": "Purchased Electricity",
+              "projectActivityType": "Grid electricity — DGVCL (Dakshin Gujarat Vij Company Ltd); location-based method",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "kWh",
+                "description": "Total grid electricity consumed per month as per DGVCL utility bills"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.82,
+                "unit": "kg CO2e / kWh",
+                "source": "Custom Gujarat state grid emission factor derived from CEA (Central Electricity Authority) 2023 regional data — DGVCL service area"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 0.001,
+                "fromUnit": "kWh",
+                "toUnit": "MWh",
+                "description": "kWh to MWh conversion for reporting consistency"
+              },
+              "uncertaintyData": {
+                "percentage": 6,
+                "method": "Location-based — CEA regional grid average",
+                "notes": "Grid mix variation ±4%; meter reading uncertainty ±2%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S3-AHM-01",
+              "scopeType": "Scope 3",
+              "category": "Category 6 — Business Travel",
+              "projectActivityType": "Business travel — air travel for management; hotel stays; expense report data",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "passenger-km",
+                "description": "Total air travel distance per quarter derived from flight bookings in expense reports; hotel nights separately tracked"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.133,
+                "unit": "kg CO2e / passenger-km",
+                "source": "Custom blended EF: weighted average of economy (0.115) and business class (0.287) based on Ahmedabad management travel class split — airline-specific data where available"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 1.9,
+                "fromUnit": "km (great-circle)",
+                "toUnit": "passenger-km (with RFI)",
+                "description": "Radiative Forcing Index (RFI) multiplier of 1.9 applied on top of great-circle distance for aviation warming effects"
+              },
+              "uncertaintyData": {
+                "percentage": 15,
+                "method": "Spend-based proxy — expense report completeness dependent",
+                "notes": "Missing receipts ±8%; RFI factor variability ±7%"
+              },
+              "collectionFrequency": "quarterly"
+            },
+            {
+              "scopeIdentifier": "S3-AHM-02",
+              "scopeType": "Scope 3",
+              "category": "Category 7 — Employee Commuting",
+              "projectActivityType": "Employee commuting — 900 Ahmedabad employees; annual survey",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "employee-km / year",
+                "description": "Total annual commute distance per employee derived from annual anonymous survey; modal split captured (two-wheeler, car, bus, train)"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.089,
+                "unit": "kg CO2e / employee-km",
+                "source": "Custom modal-weighted EF for Ahmedabad commute mix: two-wheeler 45%, car 25%, BRTS bus 20%, train 10% — based on 2024 survey results"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 240,
+                "fromUnit": "working days / year",
+                "toUnit": "annual multiplier",
+                "description": "240 working days used to annualise daily commute distance reported in survey"
+              },
+              "uncertaintyData": {
+                "percentage": 20,
+                "method": "Survey-based — voluntary anonymous response",
+                "notes": "Survey response rate ~65% introduces sampling uncertainty ±12%; self-reported distance accuracy ±8%"
+              },
+              "collectionFrequency": "annually",
+              "employeeCommutingConfig": {
+                "numberOfEmployees": 900,
+                "collectionFrequency": "annually",
+                "responseMode": "anonymous"
+              }
+            },
+            {
+              "scopeIdentifier": "S3-AHM-03",
+              "scopeType": "Scope 3",
+              "category": "Category 1 — Purchased Goods and Services",
+              "projectActivityType": "Purchased packaging materials — PP woven bags, corrugated cartons; spend-based method",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "INR (spend)",
+                "description": "Quarterly procurement spend on PP woven bags and corrugated cartons from purchase orders"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 3.12,
+                "unit": "kg CO2e / INR 1000 spend",
+                "source": "Custom spend-based EF for Indian packaging sector derived from EXIOBASE IO table adjusted for domestic supplier mix — PP woven bags and corrugated board sub-categories"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 0.001,
+                "fromUnit": "INR",
+                "toUnit": "INR 1000",
+                "description": "Spend normalised to per-thousand-rupee units for EF application"
+              },
+              "uncertaintyData": {
+                "percentage": 30,
+                "method": "Spend-based IO model",
+                "notes": "IO table sector aggregation ±20%; price fluctuation distortion ±10%"
+              },
+              "collectionFrequency": "quarterly"
+            }
+          ]
+        }
+      },
+
+      {
+        "id": "node-ngp-002",
+        "label": "Nagpur Processing Unit",
+        "position": { "x": 650, "y": 300 },
+        "details": {
+          "TypeOfNode": "Emission Source",
+          "nodeType": "site",
+          "department": "Oilseed Processing & Cold Storage",
+          "location": "Nagpur, Maharashtra, India",
+          "latitude": 21.1458,
+          "longitude": 79.0882,
+          "employeeHeadId": "{{rakeshJoshiId}}",
+          "scopeDetails": [
+            {
+              "scopeIdentifier": "S1-NGP-01",
+              "scopeType": "Scope 1",
+              "category": "Stationary Combustion — Biomass",
+              "projectActivityType": "Biomass boiler — agricultural husk combustion for thermal energy; fuel weight logs from plant records",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "tonnes",
+                "description": "Weight of agricultural husk combusted per month from plant weighbridge logs"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 1.547,
+                "unit": "kg CO2e / tonne husk",
+                "source": "Custom EF from third-party combustion test of Nagpur site husk blend (groundnut + mustard husk) — excludes biogenic CO2, includes CH4 and N2O on GWP-100 basis"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 14.5,
+                "fromUnit": "tonne husk",
+                "toUnit": "GJ",
+                "description": "Net calorific value of mixed agricultural husk (site-tested); used for energy balance reporting"
+              },
+              "uncertaintyData": {
+                "percentage": 12,
+                "method": "Combustion test — periodic sampling",
+                "notes": "Husk moisture variation ±8%; weighbridge calibration ±4%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S1-NGP-02",
+              "scopeType": "Scope 1",
+              "category": "Fugitive Emissions — Refrigerants",
+              "projectActivityType": "Refrigerant top-ups — R404A in cold storage HVAC; maintenance logs from service contractor",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "kg",
+                "description": "Mass of R404A refrigerant topped up annually per maintenance contractor service records"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 3922,
+                "unit": "kg CO2e / kg refrigerant",
+                "source": "Custom GWP value for R404A blend (R125/R143a/R134a) — verified against actual refrigerant batch certificate from Nagpur contractor; GWP-100 AR5 basis"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 1,
+                "fromUnit": "kg R404A",
+                "toUnit": "kg R404A",
+                "description": "No unit conversion — refrigerant mass directly applied to GWP factor"
+              },
+              "uncertaintyData": {
+                "percentage": 10,
+                "method": "Mass-balance (top-up method) — contractor reported",
+                "notes": "Top-up quantity reporting accuracy ±6%; GWP blend composition variation ±4%"
+              },
+              "collectionFrequency": "annually"
+            },
+            {
+              "scopeIdentifier": "S2-NGP-01",
+              "scopeType": "Scope 2",
+              "category": "Purchased Electricity",
+              "projectActivityType": "Grid electricity — MSEDCL (Maharashtra State); highest consumer due to continuous processing",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "kWh",
+                "description": "Total monthly grid electricity consumed per MSEDCL utility bills — highest load site due to 24×7 processing and cold storage"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.79,
+                "unit": "kg CO2e / kWh",
+                "source": "Custom Maharashtra state grid EF derived from CEA 2023 Western Region data weighted for MSEDCL supply zone coal/gas/hydro mix"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 0.001,
+                "fromUnit": "kWh",
+                "toUnit": "MWh",
+                "description": "kWh to MWh for reporting normalisation"
+              },
+              "uncertaintyData": {
+                "percentage": 6,
+                "method": "Location-based — CEA Western Region grid",
+                "notes": "Seasonal grid mix variation ±4%; MSEDCL metering accuracy ±2%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S3-NGP-01",
+              "scopeType": "Scope 3",
+              "category": "Category 1 — Purchased Goods and Services",
+              "projectActivityType": "Upstream agricultural raw materials — mustard (25,000 MT/yr), groundnut (15,000 MT/yr); spend-based / activity-based method",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "tonnes",
+                "description": "Annual weight of mustard seed and groundnut purchased; sourced from procurement records. Mustard ~25,000 MT, groundnut ~15,000 MT."
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.62,
+                "unit": "kg CO2e / kg raw material",
+                "source": "Custom blended EF: mustard seed cradle-to-gate 0.58 kg CO2e/kg (Vidarbha region farm data) + groundnut 0.68 kg CO2e/kg (Vidarbha farm survey) — weighted by annual procurement split 62.5%/37.5%"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 1000,
+                "fromUnit": "MT",
+                "toUnit": "kg",
+                "description": "Metric tonnes to kilograms for EF application"
+              },
+              "uncertaintyData": {
+                "percentage": 25,
+                "method": "Activity-based — farm-level data with regional proxy",
+                "notes": "Farm practice variation across suppliers ±15%; yield-to-emission ratio sensitivity ±10%"
+              },
+              "collectionFrequency": "annually"
+            },
+            {
+              "scopeIdentifier": "S3-NGP-02",
+              "scopeType": "Scope 3",
+              "category": "Category 5 — Waste Generated in Operations",
+              "projectActivityType": "Waste generated in operations — husk residue (not combusted), oil cake, process effluents; quarterly waste logs",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "tonnes",
+                "description": "Quarterly weight of non-combusted husk residue, oil cake and process effluent generated; from plant waste register"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.21,
+                "unit": "kg CO2e / kg waste",
+                "source": "Custom blended waste EF: landfill disposal pathway for husk residue (0.18 kg CO2e/kg) + oil cake sold as animal feed — displacement credit excluded; effluent CH4 factor 0.28 kg CO2e/kg BOD — weighted by Nagpur waste stream composition"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 1000,
+                "fromUnit": "tonnes",
+                "toUnit": "kg",
+                "description": "Tonnes to kilograms for EF application"
+              },
+              "uncertaintyData": {
+                "percentage": 22,
+                "method": "Waste composition sampling — quarterly",
+                "notes": "Disposal route split uncertainty ±12%; methane generation variability ±10%"
+              },
+              "collectionFrequency": "quarterly"
+            },
+            {
+              "scopeIdentifier": "S3-NGP-03",
+              "scopeType": "Scope 3",
+              "category": "Category 7 — Employee Commuting",
+              "projectActivityType": "Employee commuting — 650 Nagpur employees; annual survey",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "employee-km / year",
+                "description": "Total annual commute distance per employee from annual survey; modal split captured (two-wheeler, car, city bus, shared auto)"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.094,
+                "unit": "kg CO2e / employee-km",
+                "source": "Custom modal-weighted EF for Nagpur commute mix: two-wheeler 50%, car 20%, city bus 22%, shared auto 8% — based on 2024 plant survey"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 240,
+                "fromUnit": "working days / year",
+                "toUnit": "annual multiplier",
+                "description": "240 working days to annualise daily commute distance"
+              },
+              "uncertaintyData": {
+                "percentage": 20,
+                "method": "Survey-based — anonymous voluntary response",
+                "notes": "Response rate ~60% introduces sampling uncertainty ±13%; self-reported distance ±7%"
+              },
+              "collectionFrequency": "annually",
+              "employeeCommutingConfig": {
+                "numberOfEmployees": 650,
+                "collectionFrequency": "annually",
+                "responseMode": "anonymous"
+              }
+            }
+          ]
+        }
+      },
+
+      {
+        "id": "node-vjw-003",
+        "label": "Vijayawada Distribution & Cold Storage",
+        "position": { "x": 0, "y": 300 },
+        "details": {
+          "TypeOfNode": "Emission Source",
+          "nodeType": "site",
+          "department": "Distribution & Logistics",
+          "location": "Vijayawada, Andhra Pradesh, India",
+          "latitude": 16.5062,
+          "longitude": 80.6480,
+          "employeeHeadId": "{{nandiniRaoId}}",
+          "scopeDetails": [
+            {
+              "scopeIdentifier": "S1-VJW-01",
+              "scopeType": "Scope 1",
+              "category": "Mobile Combustion",
+              "projectActivityType": "Diesel consumption — 8 refrigerated trucks (company-owned fleet); diesel purchase bills from fuel station",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "litres",
+                "description": "Total diesel consumed per month across 8 company-owned refrigerated trucks from fuel station purchase bills"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 2.71,
+                "unit": "kg CO2e / litre diesel",
+                "source": "Custom EF for HSD (High Speed Diesel) — based on BIS-certified fuel quality data from Vijayawada HPCL/BPCL depots; includes CO2, CH4, N2O on GWP-100 AR5 basis"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 0.845,
+                "fromUnit": "litre diesel",
+                "toUnit": "kg diesel",
+                "description": "Diesel density at 15°C for volumetric-to-mass conversion where required"
+              },
+              "uncertaintyData": {
+                "percentage": 5,
+                "method": "Fuel purchase bill — metered at depot pump",
+                "notes": "Pump metering tolerance ±2%; fuel quality batch variation ±3%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S1-VJW-02",
+              "scopeType": "Scope 1",
+              "category": "Stationary Combustion — Diesel Generator",
+              "projectActivityType": "DG backup sets (2 × 300 kVA) for cold storage power outage protection; diesel logs from plant",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "litres",
+                "description": "Monthly diesel consumed by 2 × 300 kVA DG sets during grid outages; from plant DG run-log and dipstick fuel records"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 2.68,
+                "unit": "kg CO2e / litre diesel",
+                "source": "Custom stationary DG EF — site-specific stack test emission factors for 300 kVA gensets at Vijayawada; adjusted for part-load operation profile"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 3.6,
+                "fromUnit": "litres diesel",
+                "toUnit": "kWh electricity generated",
+                "description": "Average DG fuel efficiency ratio (litres/kWh) for 300 kVA sets at typical 70% load — used for energy reporting cross-check only"
+              },
+              "uncertaintyData": {
+                "percentage": 8,
+                "method": "Dipstick measurement — manual logging",
+                "notes": "DG run-hour logging gaps ±5%; part-load fuel rate variability ±3%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S2-VJW-01",
+              "scopeType": "Scope 2",
+              "category": "Purchased Electricity",
+              "projectActivityType": "Grid electricity — APEPDCL (Andhra Pradesh Eastern Power Distribution) for cold storage (refrigeration load)",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "kWh",
+                "description": "Monthly grid electricity consumed as per APEPDCL utility bills — primarily cold storage refrigeration load"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.86,
+                "unit": "kg CO2e / kWh",
+                "source": "Custom Andhra Pradesh Southern Region grid EF from CEA 2023 Southern Regional Load Despatch Centre data — APEPDCL zone thermal/hydro/wind mix"
+              },
+              "calculationModel": "tier 2",
+              "conversionFactor": {
+                "value": 0.001,
+                "fromUnit": "kWh",
+                "toUnit": "MWh",
+                "description": "kWh to MWh for reporting normalisation"
+              },
+              "uncertaintyData": {
+                "percentage": 7,
+                "method": "Location-based — CEA Southern Region grid",
+                "notes": "Seasonal renewable generation variation ±5%; APEPDCL metering accuracy ±2%"
+              },
+              "collectionFrequency": "monthly"
+            },
+            {
+              "scopeIdentifier": "S3-VJW-01",
+              "scopeType": "Scope 3",
+              "category": "Category 9 — Downstream Transportation and Distribution",
+              "projectActivityType": "Downstream transportation (3PL) — outsourced road logistics for finished goods delivery to distributors across South India; spend-based / tonne-km method",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "tonne-km",
+                "description": "Quarterly tonne-kilometre data from 3PL logistics provider delivery notes; weight × distance per shipment aggregated"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.098,
+                "unit": "kg CO2e / tonne-km",
+                "source": "Custom EF for 3PL road freight — based on BS VI diesel HCV (Heavy Commercial Vehicle) fleet composition of primary South India logistics partners; weighted average load factor 65%"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 1,
+                "fromUnit": "tonne-km",
+                "toUnit": "tonne-km",
+                "description": "No conversion — 3PL data reported directly in tonne-km"
+              },
+              "uncertaintyData": {
+                "percentage": 18,
+                "method": "3PL supplier reported data — tonne-km method",
+                "notes": "3PL data completeness ±10%; load factor assumption ±8%"
+              },
+              "collectionFrequency": "quarterly"
+            },
+            {
+              "scopeIdentifier": "S3-VJW-02",
+              "scopeType": "Scope 3",
+              "category": "Category 12 — End-of-Life Treatment of Sold Products",
+              "projectActivityType": "End-of-life packaging — post-consumer PP bags and carton waste (consumer disposal); waste weight estimates",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "tonnes",
+                "description": "Annual estimated weight of PP woven bags and corrugated cartons entering waste stream at consumer end; derived from packaging material purchase data"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.16,
+                "unit": "kg CO2e / kg packaging waste",
+                "source": "Custom EF for South India post-consumer packaging disposal: PP bags 55% informal recycling / 45% landfill; corrugated cartons 70% recycled / 30% landfill — based on CPCB waste composition data for AP/Telangana"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 1000,
+                "fromUnit": "tonnes",
+                "toUnit": "kg",
+                "description": "Tonnes to kilograms for EF application"
+              },
+              "uncertaintyData": {
+                "percentage": 35,
+                "method": "Waste model — consumer disposal pathway assumed",
+                "notes": "Consumer disposal behaviour variability ±20%; regional recycling rate uncertainty ±15%"
+              },
+              "collectionFrequency": "annually"
+            },
+            {
+              "scopeIdentifier": "S3-VJW-03",
+              "scopeType": "Scope 3",
+              "category": "Category 7 — Employee Commuting",
+              "projectActivityType": "Employee commuting — 450 Vijayawada employees; annual survey",
+              "inputType": "manual",
+              "activityData": {
+                "value": 0,
+                "unit": "employee-km / year",
+                "description": "Total annual commute distance per employee from annual survey; modal split captured (two-wheeler, car, city bus, auto-rickshaw)"
+              },
+              "emissionFactor": {
+                "type": "custom",
+                "value": 0.091,
+                "unit": "kg CO2e / employee-km",
+                "source": "Custom modal-weighted EF for Vijayawada commute mix: two-wheeler 48%, car 18%, APSRTC city bus 24%, auto-rickshaw 10% — based on 2024 employee survey"
+              },
+              "calculationModel": "tier 1",
+              "conversionFactor": {
+                "value": 240,
+                "fromUnit": "working days / year",
+                "toUnit": "annual multiplier",
+                "description": "240 working days to annualise daily commute distance"
+              },
+              "uncertaintyData": {
+                "percentage": 20,
+                "method": "Survey-based — anonymous voluntary response",
+                "notes": "Response rate ~68% introduces sampling uncertainty ±11%; self-reported distance ±9%"
+              },
+              "collectionFrequency": "annually",
+              "employeeCommutingConfig": {
+                "numberOfEmployees": 450,
+                "collectionFrequency": "annually",
+                "responseMode": "anonymous"
+              }
+            }
+          ]
+        }
+      }
+
+    ],
+    "edges": [
+      {
+        "id": "edge-ahm-to-ngp",
+        "source": "node-ahm-001",
+        "target": "node-ngp-002",
+        "label": "Processing Oversight"
+      },
+      {
+        "id": "edge-ahm-to-vjw",
+        "source": "node-ahm-001",
+        "target": "node-vjw-003",
+        "label": "Distribution Oversight"
+      }
+    ]
+  }
+}

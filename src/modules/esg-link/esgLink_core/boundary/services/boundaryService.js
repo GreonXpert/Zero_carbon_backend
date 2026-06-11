@@ -35,7 +35,12 @@ const checkZeroCarbonOrgAvailability = async (clientId) => {
     return { available: false, reason: 'Client not found', code: 'CLIENT_NOT_FOUND' };
   }
 
-  const hasZeroCarbon = (client.accessibleModules || []).includes('zero_carbon');
+  const modules =
+    Array.isArray(client.submissionData?.accessibleModules) && client.submissionData.accessibleModules.length > 0
+      ? client.submissionData.accessibleModules
+      : (client.accessibleModules || []);
+
+  const hasZeroCarbon = modules.includes('zero_carbon');
   if (!hasZeroCarbon) {
     return {
       available: false,

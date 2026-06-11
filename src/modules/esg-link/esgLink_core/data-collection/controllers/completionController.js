@@ -91,6 +91,23 @@ async function getCompletionStats(req, res) {
     const submitted = byMetric.filter((m) => m.currentPeriodStatus === 'in_progress').length;
     const pending   = byMetric.filter((m) => m.currentPeriodStatus === 'pending').length;
 
+    // Per-submission workflow status counts for the status cards
+    const statusCounts = {
+      total:                   submissions.length,
+      draft:                   0,
+      submitted:               0,
+      resubmitted:             0,
+      under_review:            0,
+      clarification_requested: 0,
+      approved:                0,
+      rejected:                0,
+    };
+    for (const s of submissions) {
+      if (s.workflowStatus in statusCounts) {
+        statusCounts[s.workflowStatus]++;
+      }
+    }
+
     return res.json({
       success: true,
       data: {
@@ -103,6 +120,7 @@ async function getCompletionStats(req, res) {
           pendingSubmission:  pending,
           completionPercentage: total > 0 ? Math.round((approved / total) * 100) : 0,
         },
+        statusCounts,
         byNode:   Object.values(byNode),
         byMetric,
       },
@@ -164,7 +182,13 @@ async function getWorkflowActions(req, res) {
       .populate('actorId', 'userName email userType')
       .sort({ createdAt: 1 });
 
-    return res.json({ success: true, data: { submissionId, actions } });
+    const enriched = actions.map((a) => {
+      const obj = a.toObject ? a.toObject() : a;
+      obj.actorName = a.actorId?.userName || a.actorId?.email || obj.actorType || 'System';
+      return obj;
+    });
+
+    return res.json({ success: true, data: { submissionId, actions: enriched } });
   } catch (err) {
     console.error('[completionController.getWorkflowActions]', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });

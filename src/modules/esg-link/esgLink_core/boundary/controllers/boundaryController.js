@@ -25,6 +25,7 @@ const {
   checkZeroCarbonOrgAvailability,
   extractBoundaryFromFlowchart
 } = require('../services/boundaryService');
+const { invalidateBoundarySummary } = require('../../summary/services/summaryService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: permission gate with proper 404 / 403 distinction
@@ -55,11 +56,14 @@ const importBoundaryFromZeroCarbon = async (req, res) => {
     if (_guardPermission(perm, res)) return;
 
     // 2) Check client has ESGLink module access
-    const client = await Client.findOne({ clientId }, { accessibleModules: 1 }).lean();
+    const client = await Client.findOne({ clientId }, { submissionData: 1, accessibleModules: 1 }).lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const hasEsgLink = (client.accessibleModules || []).includes('esg_link');
-    if (!hasEsgLink) {
+    const _modules1 =
+      Array.isArray(client.submissionData?.accessibleModules) && client.submissionData.accessibleModules.length > 0
+        ? client.submissionData.accessibleModules
+        : (client.accessibleModules || []);
+    if (!_modules1.includes('esg_link')) {
       return res.status(400).json({
         message: 'Client does not have the esg_link module',
         code: 'NO_ESG_LINK_MODULE'
@@ -148,11 +152,14 @@ const createBoundaryManually = async (req, res) => {
     if (_guardPermission(perm, res)) return;
 
     // 2) Check client has ESGLink module
-    const client = await Client.findOne({ clientId }, { accessibleModules: 1 }).lean();
+    const client = await Client.findOne({ clientId }, { submissionData: 1, accessibleModules: 1 }).lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const hasEsgLink = (client.accessibleModules || []).includes('esg_link');
-    if (!hasEsgLink) {
+    const _modules2 =
+      Array.isArray(client.submissionData?.accessibleModules) && client.submissionData.accessibleModules.length > 0
+        ? client.submissionData.accessibleModules
+        : (client.accessibleModules || []);
+    if (!_modules2.includes('esg_link')) {
       return res.status(400).json({ message: 'Client does not have the esg_link module', code: 'NO_ESG_LINK_MODULE' });
     }
 
@@ -262,15 +269,47 @@ const getBoundary = async (req, res) => {
       .populate('lastModifiedBy', 'userName email');
 
     if (!boundary) {
-      return res.status(404).json({
-        message: 'No active boundary found for this client',
-        code: 'BOUNDARY_NOT_FOUND'
+      return res.status(200).json({
+        success: true,
+        data: null,
+        code: 'BOUNDARY_NOT_FOUND',
+        message: 'No boundary has been set up for this client yet',
       });
+    }
+
+    // Collect all unique user IDs from metricsDetails workflow assignments
+    const allUserIds = new Set();
+    for (const node of boundary.nodes || []) {
+      for (const m of node.metricsDetails || []) {
+        for (const id of [...(m.contributors || []), ...(m.reviewers || []), ...(m.approvers || [])]) {
+          if (id) allUserIds.add(String(id));
+        }
+      }
+    }
+
+    // Batch-fetch users and build id → { userName, email } map
+    const userMap = {};
+    if (allUserIds.size > 0) {
+      const users = await User.find({ _id: { $in: [...allUserIds] } })
+        .select('_id userName email userType').lean();
+      for (const u of users) {
+        userMap[String(u._id)] = { _id: u._id, userName: u.userName, email: u.email, userType: u.userType };
+      }
+    }
+
+    // Replace ObjectId arrays with populated user objects
+    const boundaryObj = boundary.toObject ? boundary.toObject() : boundary;
+    for (const node of boundaryObj.nodes || []) {
+      for (const m of node.metricsDetails || []) {
+        m.contributors = (m.contributors || []).map((id) => userMap[String(id)] || id);
+        m.reviewers    = (m.reviewers    || []).map((id) => userMap[String(id)] || id);
+        m.approvers    = (m.approvers    || []).map((id) => userMap[String(id)] || id);
+      }
     }
 
     return res.status(200).json({
       success: true,
-      data: boundary
+      data: boundaryObj,
     });
 
   } catch (error) {
@@ -330,6 +369,80 @@ const updateBoundaryNode = async (req, res) => {
   } catch (error) {
     console.error('updateBoundaryNode error:', error);
     return res.status(500).json({ message: 'Server error updating node', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getSlaSettings
+//    GET /api/esglink/core/:clientId/boundary/sla-settings
+// ─────────────────────────────────────────────────────────────────────────────
+const getSlaSettings = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // 1) Permission check
+    const perm = await canViewBoundary(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    // 2) Find active boundary
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false })
+      .select('slaConfig');
+    if (!boundary) return res.status(404).json({ message: 'Boundary not found', code: 'BOUNDARY_NOT_FOUND' });
+
+    return res.status(200).json({
+      success: true,
+      data: boundary.slaConfig || {},
+    });
+  } catch (error) {
+    console.error('getSlaSettings error:', error);
+    return res.status(500).json({ message: 'Server error fetching SLA settings', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateSlaSettings
+//    PATCH /api/esglink/core/:clientId/boundary/sla-settings
+// ─────────────────────────────────────────────────────────────────────────────
+const updateSlaSettings = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { reviewDeadlineDays, approvalDeadlineDays, escalationEnabled } = req.body;
+
+    // 1) Permission check
+    const perm = await canManageBoundary(req.user, clientId);
+    if (_guardPermission(perm, res)) return;
+
+    // 2) Validate
+    if (reviewDeadlineDays !== undefined && !(Number.isFinite(reviewDeadlineDays) && reviewDeadlineDays > 0)) {
+      return res.status(400).json({ message: 'reviewDeadlineDays must be a positive number' });
+    }
+    if (approvalDeadlineDays !== undefined && !(Number.isFinite(approvalDeadlineDays) && approvalDeadlineDays > 0)) {
+      return res.status(400).json({ message: 'approvalDeadlineDays must be a positive number' });
+    }
+    if (escalationEnabled !== undefined && typeof escalationEnabled !== 'boolean') {
+      return res.status(400).json({ message: 'escalationEnabled must be a boolean' });
+    }
+
+    // 3) Find boundary
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false });
+    if (!boundary) return res.status(404).json({ message: 'Boundary not found', code: 'BOUNDARY_NOT_FOUND' });
+
+    boundary.slaConfig = boundary.slaConfig || {};
+    if (reviewDeadlineDays !== undefined)   boundary.slaConfig.reviewDeadlineDays = reviewDeadlineDays;
+    if (approvalDeadlineDays !== undefined) boundary.slaConfig.approvalDeadlineDays = approvalDeadlineDays;
+    if (escalationEnabled !== undefined)    boundary.slaConfig.escalationEnabled = escalationEnabled;
+    boundary.lastModifiedBy = req.user._id || req.user.id;
+
+    await boundary.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'SLA settings updated',
+      data: boundary.slaConfig,
+    });
+  } catch (error) {
+    console.error('updateSlaSettings error:', error);
+    return res.status(500).json({ message: 'Server error updating SLA settings', error: error.message });
   }
 };
 
@@ -829,6 +942,7 @@ const assignMetricToNode = async (req, res) => {
     });
 
     await mapping.save();
+    setImmediate(() => invalidateBoundarySummary(clientId, boundary._id).catch(() => {}));
 
     return res.status(201).json({
       success: true,
@@ -892,6 +1006,8 @@ module.exports = {
   createBoundaryManually,
   getBoundary,
   updateBoundaryNode,
+  getSlaSettings,
+  updateSlaSettings,
   addNodeToBoundary,
   appendNodeToBoundary,
   addEdgeToBoundary,

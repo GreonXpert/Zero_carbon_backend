@@ -157,6 +157,73 @@ async function sendFrequencyReminder(reminderType, clientId, nodeId, mappingId, 
   }
 }
 
+/**
+ * Send a reviewer/approver SLA escalation alert.
+ * Fire-and-forget — never throws. Also logs an 'escalated' EsgWorkflowAction.
+ *
+ * @param {Object} submission   - EsgDataEntry document
+ * @param {string} stage        - 'review' | 'approval'
+ * @param {string[]} recipientIds - userId strings (reviewers/approvers + consultant + client_admin)
+ * @param {Object} options      - { deadlineDays }
+ */
+async function sendEscalationAlert(submission, stage, recipientIds, options = {}) {
+  try {
+    const EsgWorkflowAction = require('../models/EsgWorkflowAction');
+
+    if (!recipientIds || !recipientIds.length) return;
+
+    const { deadlineDays } = options;
+    const stageLabel = stage === 'review' ? 'Review' : 'Approval';
+    const title   = `ESG Submission Escalated: ${stageLabel} Overdue`;
+    const message = `Submission ${submission._id} (mapping ${submission.mappingId}, period ${submission.period?.periodLabel}) ` +
+      `has exceeded its ${stageLabel.toLowerCase()} SLA of ${deadlineDays} day(s) and has been escalated.`;
+
+    const notif = new Notification({
+      title,
+      message,
+      priority:            'high',
+      targetUsers:         recipientIds,
+      targetClients:       [submission.clientId],
+      status:              'published',
+      isSystemNotification: true,
+      systemAction:        'esg_submission_escalated',
+      relatedEntity:       { type: 'EsgDataEntry', id: submission._id },
+      createdByType:       'system',
+    });
+    await notif.save().catch((e) => console.warn('[sendEscalationAlert] notif save error:', e.message));
+
+    if (global.io) {
+      for (const uid of recipientIds) {
+        global.io.to(`user_${uid}`).emit('esg_notification', {
+          eventType:    'escalated',
+          stage,
+          submissionId: submission._id,
+          clientId:     submission.clientId,
+          mappingId:    submission.mappingId,
+          title,
+        });
+      }
+    }
+
+    _sendEmailNotifications(recipientIds, 'escalated', submission, title, message).catch(
+      (e) => console.warn('[sendEscalationAlert] email error:', e.message)
+    );
+
+    await EsgWorkflowAction.create({
+      submissionId: submission._id,
+      clientId:     submission.clientId,
+      action:       'escalated',
+      actorType:    'system',
+      fromStatus:   submission.workflowStatus,
+      toStatus:     submission.workflowStatus,
+      metadata:     { stage, deadlineDays, recipientCount: recipientIds.length },
+      createdAt:    new Date(),
+    }).catch(() => {});
+  } catch (err) {
+    console.error('[esgDataNotificationService.sendEscalationAlert]', err.message);
+  }
+}
+
 // ─── Private Helpers ──────────────────────────────────────────────────────────
 
 function _defaultTitle(eventType, submission) {
@@ -185,7 +252,7 @@ async function _sendEmailNotifications(recipientIds, eventType, submission, titl
   // Uses the same email queue pattern as other modules
   // emailServiceClient is attached to global or required from a shared location
   try {
-    const User = require('../../../../common/models/User');
+    const User = require('../../../../../common/models/User');
     const users = await User.find({ _id: { $in: recipientIds } }).select('email userName');
 
     for (const user of users) {
@@ -205,4 +272,4 @@ async function _sendEmailNotifications(recipientIds, eventType, submission, titl
   }
 }
 
-module.exports = { notify, sendFrequencyReminder };
+module.exports = { notify, sendFrequencyReminder, sendEscalationAlert };

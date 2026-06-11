@@ -17,15 +17,34 @@ const ChatSession            = require('../models/ChatSession');
 const ChatMessage            = require('../models/ChatMessage');
 const GreOnIQInteractionEvent = require('../models/GreOnIQInteractionEvent');
 
+const MULTI_CLIENT_ROLES = ['super_admin', 'consultant_admin', 'consultant'];
+
 async function list(req, res) {
   try {
-    const user     = req.user;
-    const clientId = user.clientId || req.query.clientId;
-    if (!clientId) {
-      return res.status(400).json({ success: false, code: 'MISSING_CLIENT_ID', message: 'clientId is required.' });
-    }
+    const user = req.user;
 
-    const result = await listHistory(String(user._id), String(clientId), req.query);
+    // For multi-client roles (super_admin, consultant_admin, consultant), history
+    // spans ALL their sessions across every client they've queried.
+    // We do NOT require a specific clientId — passing null tells listSessions
+    // to return all sessions for this userId regardless of clientId.
+    // For single-client roles the clientId is always derived from user.clientId.
+    let clientId = null;
+
+    if (!MULTI_CLIENT_ROLES.includes(user.userType)) {
+      // Single-client roles: use their own clientId
+      const { resolveClientScope } = require('../services/clientScopeResolver');
+      const scopeResult = await resolveClientScope(user, req.query.clientId);
+      if (scopeResult.error) {
+        return res.status(400).json({ success: false, code: scopeResult.code, message: scopeResult.error });
+      }
+      clientId = scopeResult.clientId || null;
+    } else if (req.query.clientId) {
+      // Multi-client role WITH an explicit clientId — filter to that client only
+      clientId = req.query.clientId;
+    }
+    // Multi-client role WITHOUT clientId → clientId stays null → returns all sessions
+
+    const result = await listHistory(String(user._id), clientId, req.query);
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
     console.error('[GreOnIQ] history list error:', err.message);
@@ -68,9 +87,9 @@ async function togglePin(req, res) {
   try {
     const { sessionId } = req.params;
     const userId  = req.user._id;
-    const clientId = req.user.clientId || req.query.clientId;
 
     const session = await ChatSession.findOne({ _id: sessionId, userId });
+    const clientId = session?.clientId || null;
     if (!session) {
       return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Session not found.' });
     }
@@ -101,9 +120,8 @@ async function togglePin(req, res) {
 async function messageFeedback(req, res) {
   try {
     const { messageId } = req.params;
-    const { value }     = req.body;
-    const userId  = req.user._id;
-    const clientId = req.user.clientId || req.query.clientId;
+    const { value } = req.body;
+    const userId    = req.user._id;
 
     const ALLOWED = ['like', 'dislike', null];
     if (!ALLOWED.includes(value)) {
@@ -119,6 +137,8 @@ async function messageFeedback(req, res) {
       return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Message not found.' });
     }
 
+    const clientId = message.clientId || null;
+
     message.feedback = { value, updatedAt: new Date() };
     await message.save();
 
@@ -127,7 +147,7 @@ async function messageFeedback(req, res) {
     try {
       await GreOnIQInteractionEvent.create({
         userId,
-        clientId: clientId || message.clientId,
+        clientId,
         sessionId: message.sessionId,
         messageId: message._id,
         eventType,

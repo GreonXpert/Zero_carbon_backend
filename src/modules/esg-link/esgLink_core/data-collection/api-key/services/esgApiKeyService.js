@@ -2,7 +2,8 @@
 
 const bcrypt  = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
-const EsgApiKey = require('../models/EsgApiKey');
+const EsgApiKey      = require('../models/EsgApiKey');
+const EsgLinkBoundary = require('../../../boundary/models/EsgLinkBoundary');
 
 const BCRYPT_ROUNDS = 12;
 const PREFIX_LENGTH = 8;
@@ -21,6 +22,22 @@ async function generateKeyPackage(keyType) {
  * Create a new ESG API key for a specific mapping.
  */
 async function createKey({ clientId, nodeId, mappingId, metricId, keyType, description, durationDays, ipWhitelist, actor }) {
+  // Guard: only one ACTIVE non-expired key allowed per mapping+keyType
+  const existing = await EsgApiKey.findOne({
+    clientId,
+    nodeId,
+    mappingId,
+    keyType,
+    status:    'ACTIVE',
+    expiresAt: { $gt: new Date() },
+  });
+  if (existing) {
+    return {
+      error:  'An active key already exists for this metric mapping. Revoke or renew it before creating a new one.',
+      status: 409,
+    };
+  }
+
   const { plaintext, hash, prefix } = await generateKeyPackage(keyType);
 
   const days      = Math.max(1, parseInt(durationDays, 10) || 365);
@@ -80,17 +97,66 @@ async function renewKey(keyId, clientId, actor) {
 }
 
 /**
+ * Build mappingId → { metricName, metricCode, nodeName, metricId } from boundary.
+ * Uses a regular Mongoose query (no .lean()) so the encryption plugin can decrypt nodes.
+ */
+async function buildMetricMap(clientId) {
+  try {
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isDeleted: false });
+    if (!boundary || !Array.isArray(boundary.nodes)) return {};
+    const map = {};
+    for (const node of boundary.nodes) {
+      const nodeName = node.label || node.details?.name || node.id || '';
+      for (const m of (node.metricsDetails || [])) {
+        map[String(m._id)] = {
+          metricName: m.metricName || '',
+          metricCode: m.metricCode || '',
+          metricId:   m.metricId   ? String(m.metricId) : null,
+          nodeName,
+        };
+      }
+    }
+    return map;
+  } catch (err) {
+    console.error('[esgApiKeyService.buildMetricMap]', err.message);
+    return {};
+  }
+}
+
+/**
  * List keys for a client with optional filters.
+ * Enriches each key with metricName, metricCode, nodeName from the boundary.
  */
 async function listKeys(clientId, filters = {}) {
   const query = { clientId };
-  if (filters.status)    query.status    = filters.status;
-  if (filters.keyType)   query.keyType   = filters.keyType;
+
+  if (filters.status) {
+    const statuses = String(filters.status).split(',').map(s => s.trim()).filter(Boolean);
+    query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
+  }
+  if (filters.keyType) {
+    const types = String(filters.keyType).split(',').map(t => t.trim()).filter(Boolean);
+    query.keyType = types.length > 1 ? { $in: types } : types[0];
+  }
   if (filters.nodeId)    query.nodeId    = filters.nodeId;
   if (filters.mappingId) query.mappingId = filters.mappingId;
 
-  const keys  = await EsgApiKey.find(query).select('-keyHash').sort({ createdAt: -1 });
-  return { keys, total: keys.length };
+  const keys      = await EsgApiKey.find(query).select('-keyHash').sort({ createdAt: -1 });
+  const metricMap = await buildMetricMap(clientId);
+
+  const enriched = keys.map((k) => {
+    const raw  = k.toObject();
+    const info = raw.mappingId ? metricMap[String(raw.mappingId)] : null;
+    return {
+      ...raw,
+      metricName: info?.metricName || null,
+      metricCode: info?.metricCode || null,
+      nodeName:   info?.nodeName   || null,
+      metricId:   raw.metricId || info?.metricId || null,
+    };
+  });
+
+  return { keys: enriched, total: enriched.length };
 }
 
 /**

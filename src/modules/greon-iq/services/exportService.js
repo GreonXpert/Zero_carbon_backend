@@ -105,7 +105,7 @@ function _toReportDataShape(qr) {
     },
     sections: [{
       heading:   'Analysis',
-      narrative: qr.answer || '',
+      narrative: qr.content || qr.answer || '',
       tables:    qr.tables || [],
     }],
     exclusions:        qr.exclusions        || [],

@@ -16,6 +16,8 @@ const {
   createBoundaryManually,
   getBoundary,
   updateBoundaryNode,
+  getSlaSettings,
+  updateSlaSettings,
   addNodeToBoundary,
   appendNodeToBoundary,
   addEdgeToBoundary,
@@ -41,6 +43,11 @@ router.get('/:clientId/boundary/import-availability', eslGate, checkBoundaryImpo
 
 // Get the current active boundary
 router.get('/:clientId/boundary', eslGate, getBoundary);
+
+// Reviewer/Approver SLA + escalation settings
+// NOTE: must be registered BEFORE /:clientId/boundary/nodes/:nodeId to avoid route conflict
+router.get('/:clientId/boundary/sla-settings', eslGate, getSlaSettings);
+router.patch('/:clientId/boundary/sla-settings', eslGate, updateSlaSettings);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SETUP

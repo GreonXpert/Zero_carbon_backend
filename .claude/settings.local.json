@@ -1,7 +1,20 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(xargs grep -l \"Modal\\\\|csvImport\\\\|importData\\\\|columnMapping\" -i)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\" -Recurse -Filter \"*.ts\" -o Name)",
+      "Bash(Select-Object -First 30)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\\\\src\" -Recurse -Directory)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\\\\src\\\\modules\\\\esg-link\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Head -30)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_frontend\\\\src\\\\modules\\\\esg_link\" -Recurse -Directory)",
+      "Bash(node -e \"const axios = require\\('axios'\\); console.log\\('testing'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\" -Recurse -Filter \"*.js\")",
+      "Bash(Select-Object -First 20 FullName)",
+      "Bash(node -e ' *)"
     ]
   }
 }

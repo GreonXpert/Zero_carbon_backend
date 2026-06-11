@@ -1,13 +1,13 @@
 'use strict';
 
-const EsgDataEntry        = require('../models/EsgDataEntry');
-const workflowService     = require('../services/workflowService');
+const EsgDataEntry    = require('../models/EsgDataEntry');
+const EsgLinkBoundary = require('../../boundary/models/EsgLinkBoundary');
+const workflowService = require('../services/workflowService');
 
 // ── GET /:clientId/review-queue ───────────────────────────────────────────────
 async function getReviewQueue(req, res) {
   try {
     const { clientId } = req.params;
-    const actor        = req.user;
     const accessCtx    = req.submissionAccessCtx;
 
     const query = {
@@ -16,28 +16,42 @@ async function getReviewQueue(req, res) {
       workflowStatus: { $in: ['submitted', 'resubmitted'] },
     };
 
-    // Restrict to assigned mappings for reviewer role
     if (!accessCtx.isFullAccess && accessCtx.assignedMappingIds) {
       query.mappingId = { $in: Array.from(accessCtx.assignedMappingIds) };
     }
 
-    if (req.query.nodeId) query.nodeId = req.query.nodeId;
+    if (req.query.nodeId && req.query.nodeId !== 'undefined') query.nodeId = req.query.nodeId;
 
     const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const skip  = (page - 1) * limit;
 
-    const [submissions, total] = await Promise.all([
-      EsgDataEntry.find(query)
-        .populate('submittedBy', 'userName email')
-        .populate('metricId', 'metricName metricCode')
-        .sort({ submittedAt: 1 }) // oldest first — review FIFO
-        .skip(skip)
-        .limit(limit),
-      EsgDataEntry.countDocuments(query),
+    const [[submissions, total], boundary] = await Promise.all([
+      Promise.all([
+        EsgDataEntry.find(query)
+          .populate('submittedBy', 'userName email')
+          .populate('metricId', 'metricName metricCode')
+          .sort({ submittedAt: 1 })
+          .skip(skip)
+          .limit(limit),
+        EsgDataEntry.countDocuments(query),
+      ]),
+      EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false }).select('nodes').lean(),
     ]);
 
-    return res.json({ success: true, data: { submissions, total, page, limit } });
+    const nodeLabelMap = {};
+    for (const node of boundary?.nodes || []) {
+      nodeLabelMap[node.id] = node.label;
+    }
+
+    const enriched = submissions.map((s) => ({
+      ...s.toObject(),
+      metricDetails:   { metricName: s.metricId?.metricName || '', metricCode: s.metricId?.metricCode || '' },
+      nodeDetails:     { label: nodeLabelMap[s.nodeId] || s.nodeId || '' },
+      contributorName: s.submittedBy?.userName || s.submittedBy?.email || '',
+    }));
+
+    return res.json({ success: true, data: { submissions: enriched, total, page, limit } });
   } catch (err) {
     console.error('[reviewerController.getReviewQueue]', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });

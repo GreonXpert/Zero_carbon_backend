@@ -53,6 +53,8 @@ emissionReductionRate: {
 });
 
 NetReductionEntrySchema.index({ clientId:1, projectId:1, timestamp:-1 });
+// Covers queries that filter by calculationMethodology (methodology1/2/3) — avoids in-memory filter
+NetReductionEntrySchema.index({ clientId:1, projectId:1, calculationMethodology:1, timestamp:-1 });
 
 function round6(n) {
   return Math.round((Number(n) || 0) * 1e6) / 1e6;

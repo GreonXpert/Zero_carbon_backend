@@ -28,6 +28,7 @@ const EsgWorkflowActionSchema = new Schema(
         'supersede',
         'import',           // batch CSV/Excel/OCR import
         'system_reminder',  // frequency reminder notification sent
+        'escalated',        // reviewer/approver SLA deadline missed
       ],
       required: true,
     },

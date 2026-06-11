@@ -1,0 +1,2194 @@
+{
+    "success": true,
+    "message": "Users fetched successfully",
+    "data": {
+        "users": [
+            {
+                "_id": "69fd7975b58a09ef0d8db132",
+                "email": "neha.krishnan@urbanaxis.com",
+                "contactNumber": "+919000000003",
+                "userName": "Neha Krishnan",
+                "userType": "employee",
+                "address": "UrbanAxis India Limited, Kochi, Kerala, India",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": false,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69f8b3358a165144caefb139",
+                    "email": "nisha@urbanaxisindia.com",
+                    "userName": "nisha"
+                },
+                "parentUser": {
+                    "_id": "69f8b3358a165144caefb139",
+                    "email": "nisha@urbanaxisindia.com",
+                    "userName": "nisha"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "HR",
+                "employeeHeadId": {
+                    "_id": "69f8b3358a165144caefb139",
+                    "email": "nisha@urbanaxisindia.com",
+                    "userName": "nisha"
+                },
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": true,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-08T05:49:42.053Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null
+            },
+            {
+                "_id": "69fc2510bbfd179165bc2d43",
+                "email": "helloemphead@gmail.com",
+                "contactNumber": "1234567890",
+                "userName": "qwertyu",
+                "userType": "client_employee_head",
+                "address": "qwerty address",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": true,
+                "isActive": false,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "parentUser": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "hr",
+                "location": "loccc",
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": true,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-07T05:37:20.835Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 2,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69fb01a6a87761e30f0cd54f",
+                "email": "john.head@company.com",
+                "contactNumber": "9876543210",
+                "userName": "john_head",
+                "userType": "employee",
+                "address": "123 Main Street",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": true,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "parentUser": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "employeeHeadId": null,
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": true,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-06T08:53:59.245Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null
+            },
+            {
+                "_id": "69fb00aae2b05d2e670bc873",
+                "email": "head01f82@assesmentlevel.com",
+                "contactNumber": "9846543210",
+                "userName": "head018f2_assesmentlevel",
+                "userType": "client_employee_head",
+                "address": "1234 Corporate Blvd",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": true,
+                "isActive": false,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "parentUser": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "Engineering",
+                "location": "Mumbai",
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": true,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-06T08:49:53.792Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69fafaf563aea2815ea64f79",
+                "email": "okkkk@gmail.com",
+                "contactNumber": "1234567890",
+                "userName": "okkkk@gmail.com",
+                "userType": "auditor",
+                "address": "okkkk@gmail.com",
+                "companyName": "Greon073",
+                "isFirstLogin": true,
+                "isActive": false,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon",
+                    "esg_link"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "assignedModules": [],
+                "auditPeriod": {
+                    "startDate": "2026-11-11T00:00:00.000Z",
+                    "endDate": "2027-12-12T00:00:00.000Z"
+                },
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": true,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": true,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "enabled": true,
+                            "sections": {
+                                "overview": true,
+                                "byScope": true,
+                                "byNode": true,
+                                "byDepartment": true,
+                                "byLocation": true,
+                                "processEmission": true,
+                                "reductionSummary": true,
+                                "trends": true,
+                                "metadata": true
+                            }
+                        },
+                        "data_entry": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "editHistory": true,
+                                "logs": true,
+                                "cumulativeValues": true,
+                                "stats": true
+                            }
+                        },
+                        "process_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "entries": true,
+                                "processEmissionEntries": true
+                            }
+                        },
+                        "organization_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "nodes": true,
+                                "assignments": true
+                            }
+                        },
+                        "reduction": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "netReduction": true,
+                                "summary": true
+                            }
+                        },
+                        "decarbonization": {
+                            "enabled": true,
+                            "sections": {
+                                "sbti": true,
+                                "targets": true
+                            }
+                        },
+                        "reports": {
+                            "enabled": true,
+                            "sections": {
+                                "basic": true,
+                                "detailed": true,
+                                "export": true
+                            }
+                        },
+                        "tickets": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "create": true
+                            }
+                        },
+                        "audit_logs": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "export": true,
+                                "data_entry_logs": true,
+                                "flowchart_logs": true,
+                                "process_flowchart_logs": true,
+                                "transport_flowchart_logs": true,
+                                "reduction_logs": true,
+                                "net_reduction_logs": true,
+                                "sbti_logs": true,
+                                "emission_summary_logs": true,
+                                "user_management_logs": true,
+                                "system_logs": true
+                            }
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-06T08:25:26.157Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "parentUser": null,
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69fae12c2a87087bd1d2b9f0",
+                "email": "viewer.full@example.com",
+                "contactNumber": "+911234567890",
+                "userName": "viewer_full_access",
+                "userType": "viewer",
+                "address": "123 View Lane, Bangalore, KA 560001",
+                "companyName": "Greon073",
+                "isFirstLogin": true,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon",
+                    "esg_link"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "assignedModules": [],
+                "viewerPurpose": "External stakeholder ESG review and full reporting access",
+                "viewerExpiryDate": "2025-12-31T00:00:00.000Z",
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": true,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "enabled": true,
+                            "sections": {
+                                "overview": true,
+                                "byScope": true,
+                                "byNode": true,
+                                "byDepartment": true,
+                                "byLocation": true,
+                                "processEmission": true,
+                                "reductionSummary": true,
+                                "trends": true,
+                                "metadata": true
+                            }
+                        },
+                        "data_entry": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "editHistory": true,
+                                "logs": true,
+                                "cumulativeValues": true,
+                                "stats": true
+                            }
+                        },
+                        "process_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "entries": true,
+                                "processEmissionEntries": true
+                            }
+                        },
+                        "organization_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "nodes": true,
+                                "assignments": true
+                            }
+                        },
+                        "reduction": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "netReduction": true,
+                                "summary": true
+                            }
+                        },
+                        "decarbonization": {
+                            "enabled": true,
+                            "sections": {
+                                "sbti": true,
+                                "targets": true
+                            }
+                        },
+                        "reports": {
+                            "enabled": true,
+                            "sections": {
+                                "basic": true,
+                                "detailed": true,
+                                "export": true
+                            }
+                        },
+                        "tickets": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "create": true
+                            }
+                        },
+                        "audit_logs": {
+                            "enabled": false,
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            }
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-06T06:35:24.607Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "parentUser": null,
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69fae031c59c8c083ee8e2fa",
+                "email": "auditor.full2@example.com",
+                "contactNumber": "+91123427890",
+                "userName": "auditor_full2_access",
+                "userType": "auditor",
+                "address": "1234 Audit Lane, Bangalore, KA 560001",
+                "companyName": "Greon073",
+                "isFirstLogin": true,
+                "isActive": false,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon",
+                    "esg_link"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "assignedModules": [],
+                "auditPeriod": "2024-01-01 to 2024-12-31",
+                "auditScope": "Scope 1, Scope 2, and Scope 3 Emissions",
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": true,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": true,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "enabled": true,
+                            "sections": {
+                                "overview": true,
+                                "byScope": true,
+                                "byNode": true,
+                                "byDepartment": true,
+                                "byLocation": true,
+                                "processEmission": true,
+                                "reductionSummary": true,
+                                "trends": true,
+                                "metadata": true
+                            }
+                        },
+                        "data_entry": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "editHistory": true,
+                                "logs": true,
+                                "cumulativeValues": true,
+                                "stats": true
+                            }
+                        },
+                        "process_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "entries": true,
+                                "processEmissionEntries": true
+                            }
+                        },
+                        "organization_flowchart": {
+                            "enabled": true,
+                            "sections": {
+                                "view": true,
+                                "nodes": true,
+                                "assignments": true
+                            }
+                        },
+                        "reduction": {
+                            "enabled": true,
+                            "sections": {
+                                "list": true,
+                                "detail": true,
+                                "netReduction": true,
+                                "summary": true
+                            }
+                        },
+                        "decarbonization": {
+                            "enabled": true,
+                            "sections": {
+                                "sbti": true,
+                                "targets": true
+                            }
+                        },
+                        "reports": {
+                            "enabled": true,
+                            "sections": {
+                                "basic": true,
+                                "detailed": true,
+                                "export": true
+                            }
+                        },
+                        "tickets": {
+                            "enabled": false,
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            }
+                        },
+                        "audit_logs": {
+                            "enabled": false,
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            }
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-06T06:31:13.871Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "parentUser": null,
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69f8b3358a165144caefb139",
+                "email": "nisha@urbanaxisindia.com",
+                "contactNumber": "919083268700",
+                "userName": "nisha",
+                "userType": "client_employee_head",
+                "address": "A 21/411 A1, Ravuthar House, Ayyankar Road",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": false,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "parentUser": {
+                    "_id": "69e89fb2733ae310f64a4135",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "userName": "rohan.mehta@urbanaxis.com"
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "HR",
+                "location": "Banglore",
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": true,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": false,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-04T14:54:46.011Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 3,
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null,
+                "employeeHeadId": null
+            },
+            {
+                "_id": "69f8868b2a1f2a4f4866d206",
+                "email": "farhan.ali@urbanaxis.com",
+                "contactNumber": "9512348670",
+                "userName": "Farhan Ali",
+                "userType": "employee",
+                "address": "UrbanAxis Business Centre, Infopark Road, Kakkanad, Kochi, Kerala - 682030",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": true,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 1,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "parentUser": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "Operations & Facility Management",
+                "employeeHeadId": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "assignedModules": [],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": true,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-04T11:44:11.750Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 1,
+                "profileImage": {
+                    "filename": "69f8868b2a1f2a4f4866d206_Farhan_Ali_1777895051813_Farhan Ali_.jpg",
+                    "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee/Greon073/69f880482a1f2a4f4866bfbd/69f8868b2a1f2a4f4866d206_Farhan_Ali_1777895051813_Farhan Ali_.jpg",
+                    "s3Key": "profiles/employee/Greon073/69f880482a1f2a4f4866bfbd/69f8868b2a1f2a4f4866d206_Farhan_Ali_1777895051813_Farhan Ali_.jpg",
+                    "bucket": "zerocarbon-profile-images-prod",
+                    "uploadedAt": "2026-05-04T11:44:16.205Z"
+                },
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null
+            },
+            {
+                "_id": "69f884d52a1f2a4f4866c9d5",
+                "email": "devika.pillai@urbanaxis.com",
+                "contactNumber": "+919745612308",
+                "userName": "Devika Pillai",
+                "userType": "employee",
+                "address": "UrbanAxis Business Centre, Infopark Road, Kakkanad, Kochi, Kerala - 682030",
+                "companyName": "UrbanAxis India Limited",
+                "isFirstLogin": false,
+                "isActive": true,
+                "sandbox": false,
+                "accessibleModules": [
+                    "zero_carbon"
+                ],
+                "concurrentLoginLimit": 10,
+                "canLogoutAllDevices": false,
+                "permissionToEdit": true,
+                "createdBy": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "parentUser": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "clientId": "Greon073",
+                "hasAssignedClients": false,
+                "assignedConsultants": [],
+                "supportManagerType": "general_support",
+                "supportSpecialization": [],
+                "department": "Operations & Facility Management",
+                "employeeHeadId": {
+                    "_id": "69f880482a1f2a4f4866bfbd",
+                    "email": "meera.nair@urbanaxis.com",
+                    "userName": "meera nair",
+                    "profileImage": {
+                        "filename": "69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "s3Key": "profiles/employee_head/Greon073/69f880482a1f2a4f4866bfbd_1777893449275_meera nair_.jpg",
+                        "bucket": "zerocarbon-profile-images-prod",
+                        "uploadedAt": "2026-05-04T11:17:33.840Z"
+                    }
+                },
+                "assignedModules": [
+                    "{\"nodeId\":\"greon073-node-d2cd50\",\"nodeLabel\":\"Whitefield Flagship Centre\",\"nodeType\":\"Flagship Managed Workspace\",\"department\":\"Site Operations\",\"location\":\"Whitefield Flagship Centre(BGLR)\",\"scopeIdentifier\":\"UAI-BLR-S1-DG\",\"scopeType\":\"Scope 1\",\"inputType\":\"manual\",\"assignedAt\":\"2026-05-12T10:28:14.995Z\",\"assignedBy\":\"69f880482a1f2a4f4866bfbd\"}"
+                ],
+                "permissions": {
+                    "canViewAllClients": false,
+                    "canManageUsers": false,
+                    "canManageClients": false,
+                    "canViewReports": false,
+                    "canEditBoundaries": false,
+                    "canSubmitData": true,
+                    "canAudit": false,
+                    "canManageSupportTeam": false,
+                    "canViewAllTickets": false,
+                    "canAssignTickets": false
+                },
+                "assessmentLevel": [
+                    "reduction",
+                    "organization",
+                    "process",
+                    "net_zero"
+                ],
+                "accessControls": {
+                    "modules": {
+                        "emission_summary": {
+                            "sections": {
+                                "overview": false,
+                                "byScope": false,
+                                "byNode": false,
+                                "byDepartment": false,
+                                "byLocation": false,
+                                "processEmission": false,
+                                "reductionSummary": false,
+                                "trends": false,
+                                "metadata": false
+                            },
+                            "enabled": false
+                        },
+                        "data_entry": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "editHistory": false,
+                                "logs": false,
+                                "cumulativeValues": false,
+                                "stats": false
+                            },
+                            "enabled": false
+                        },
+                        "process_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "entries": false,
+                                "processEmissionEntries": false
+                            },
+                            "enabled": false
+                        },
+                        "organization_flowchart": {
+                            "sections": {
+                                "view": false,
+                                "nodes": false,
+                                "assignments": false
+                            },
+                            "enabled": false
+                        },
+                        "reduction": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "netReduction": false,
+                                "summary": false
+                            },
+                            "enabled": false
+                        },
+                        "decarbonization": {
+                            "sections": {
+                                "sbti": false,
+                                "targets": false
+                            },
+                            "enabled": false
+                        },
+                        "reports": {
+                            "sections": {
+                                "basic": false,
+                                "detailed": false,
+                                "export": false
+                            },
+                            "enabled": false
+                        },
+                        "tickets": {
+                            "sections": {
+                                "view": false,
+                                "create": false
+                            },
+                            "enabled": false
+                        },
+                        "audit_logs": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "export": false,
+                                "data_entry_logs": false,
+                                "flowchart_logs": false,
+                                "process_flowchart_logs": false,
+                                "transport_flowchart_logs": false,
+                                "reduction_logs": false,
+                                "net_reduction_logs": false,
+                                "sbti_logs": false,
+                                "emission_summary_logs": false,
+                                "user_management_logs": false,
+                                "system_logs": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "esgAccessControls": {
+                    "modules": {
+                        "dataCollectionEsgLink": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "submit": false,
+                                "editHistory": false
+                            },
+                            "enabled": false
+                        },
+                        "esgLinkBoundary": {
+                            "sections": {
+                                "view": false,
+                                "edit": false,
+                                "assign": false
+                            },
+                            "enabled": false
+                        },
+                        "metrics": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "formula": {
+                            "sections": {
+                                "list": false,
+                                "detail": false,
+                                "create": false,
+                                "edit": false
+                            },
+                            "enabled": false
+                        },
+                        "framework": {
+                            "sections": {
+                                "BRSR": false,
+                                "GRI": false,
+                                "TCFD": false,
+                                "CDP": false,
+                                "SASB": false,
+                                "UNGC": false,
+                                "ISO_26000": false,
+                                "SDG": false
+                            },
+                            "enabled": false
+                        }
+                    }
+                },
+                "createdAt": "2026-05-04T11:36:53.299Z",
+                "updatedAt": "2026-05-21T09:27:17.279Z",
+                "__v": 0,
+                "profileImage": {
+                    "filename": "69f884d52a1f2a4f4866c9d5_Devika_Pillai_1777894613356_Devika Pillai_.jpg",
+                    "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/employee/Greon073/69f880482a1f2a4f4866bfbd/69f884d52a1f2a4f4866c9d5_Devika_Pillai_1777894613356_Devika Pillai_.jpg",
+                    "s3Key": "profiles/employee/Greon073/69f880482a1f2a4f4866bfbd/69f884d52a1f2a4f4866c9d5_Devika_Pillai_1777894613356_Devika Pillai_.jpg",
+                    "bucket": "zerocarbon-profile-images-prod",
+                    "uploadedAt": "2026-05-04T11:36:57.972Z"
+                },
+                "supportManagerId": {
+                    "_id": "6a0d4decd09833e55401bdf0",
+                    "email": "nimisha@supportmanager.com",
+                    "userName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "supportManagerType": "general_support"
+                },
+                "consultantAdminId": null
+            }
+        ],
+        "pagination": {
+            "page": 1,
+            "limit": 10,
+            "total": 13,
+            "totalPages": 2,
+            "hasNextPage": true,
+            "hasPrevPage": false
+        }
+    }
+}

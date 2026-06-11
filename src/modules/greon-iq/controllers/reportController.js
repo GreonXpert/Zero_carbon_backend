@@ -29,7 +29,7 @@ async function _resolveReportContext(user, body) {
 
   // ── Case 1: sessionId provided — load context from session ──────────────
   if (sessionId) {
-    const session = await ChatSession.findOne({ _id: sessionId, isActive: true }).lean();
+    const session = await ChatSession.findOne({ _id: sessionId, userId: user._id, isActive: true }).lean();
     if (!session) {
       return { error: 'Session not found or expired.', code: 'SESSION_NOT_FOUND' };
     }
@@ -83,7 +83,7 @@ async function preview(req, res) {
     }
     const { clientId } = scopeResult;
 
-    const UNLIMITED = ['super_admin', 'consultant_admin'];
+    const UNLIMITED = ['super_admin', 'consultant_admin', 'client_admin'];
     const enabledCheck = UNLIMITED.includes(String(user.userType || ''))
       ? { enabled: true, isUnlimited: true, allocation: null, monthlyLimit: null, weeklyLimit: null, dailyLimit: null }
       : await isGreonIQEnabled(user, clientId);
@@ -178,7 +178,7 @@ async function exportReport(req, res) {
     }
     const { clientId } = scopeResult;
 
-    const UNLIMITED = ['super_admin', 'consultant_admin'];
+    const UNLIMITED = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
     const enabledCheck = UNLIMITED.includes(String(user.userType || ''))
       ? { enabled: true, isUnlimited: true, allocation: null, monthlyLimit: null, weeklyLimit: null, dailyLimit: null }
       : await isGreonIQEnabled(user, clientId);
@@ -246,18 +246,34 @@ async function exportFromResponse(req, res) {
     return res.status(400).json({ success: false, code: 'INVALID_FORMAT', message: 'format must be pdf, docx, or xlsx.' });
   }
 
-  // Resolve clientId from trace or explicit body field
-  const clientId = (queryResponse.trace && queryResponse.trace.clientId) || req.body.clientId;
+  // Resolve clientId — prefer trace, then explicit body field
+  const rawClientId = (queryResponse.trace && queryResponse.trace.clientId) || req.body.clientId;
+
+  // Sentinel values used for cross-client queries — not real client IDs
+  const SENTINELS = ['__cross_client__', '__user_scope__'];
+
+  // These roles are pre-authorised by greonIQAccessGate and manage multiple clients,
+  // so we skip strict single-client scope validation for their exports.
+  const UNLIMITED = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
+  const isUnlimited = UNLIMITED.includes(String(user.userType || ''));
+
+  let resolvedClientId = rawClientId;
 
   try {
-    const scopeResult = await resolveClientScope(user, clientId);
-    if (scopeResult.error) {
-      return res.status(400).json({ success: false, code: scopeResult.code, message: scopeResult.error });
+    if (!isUnlimited && rawClientId && !SENTINELS.includes(rawClientId)) {
+      const scopeResult = await resolveClientScope(user, rawClientId);
+      if (scopeResult.error) {
+        return res.status(400).json({ success: false, code: scopeResult.code, message: scopeResult.error });
+      }
+      resolvedClientId = scopeResult.clientId;
     }
-    const resolvedClientId = scopeResult.clientId;
 
-    const UNLIMITED = ['super_admin', 'consultant_admin'];
-    const enabledCheck = UNLIMITED.includes(String(user.userType || ''))
+    // Normalise sentinel / missing clientId to something usable for quota tracking
+    if (!resolvedClientId || SENTINELS.includes(resolvedClientId)) {
+      resolvedClientId = String(user.clientId || user._id || 'system');
+    }
+
+    const enabledCheck = isUnlimited
       ? { enabled: true, isUnlimited: true, allocation: null, monthlyLimit: null, weeklyLimit: null, dailyLimit: null }
       : await isGreonIQEnabled(user, resolvedClientId);
 

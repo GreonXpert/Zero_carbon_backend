@@ -6,11 +6,19 @@ const router   = express.Router();
 const { esgKeyMiddleware } = require('../middleware/esgApiKeyAuth');
 const ingestionCtrl        = require('../controllers/ingestionController');
 
+// Parses XML and CSV request bodies as raw text strings so ingestionController
+// can detect the format and parse accordingly. JSON is already handled globally.
+const rawTextParser = express.text({
+  type: ['text/xml', 'application/xml', 'text/csv', 'application/csv', 'text/plain'],
+  limit: '10mb',
+});
+
 // No JWT auth on these routes — protected by ESG API key in URL path
 // Rate limited inside esgApiKeyAuth middleware (100 req/min per key)
 
 router.post(
   '/:clientId/:nodeId/:mappingId/:apiKey/api-data',
+  rawTextParser,
   esgKeyMiddleware.esgAPI,
   ingestionCtrl.ingestApiData
 );

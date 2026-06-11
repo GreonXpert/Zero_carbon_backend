@@ -812,6 +812,68 @@ const emissionSummarySchema = new mongoose.Schema(
         default: {}
       },
 
+      // M1 Methodology totals
+      // totalBE/PE/LE come from Reduction.m1 design values (project level, not per-entry)
+      // totalInputValue/totalNetReduction come from NetReductionEntry actuals
+      m1Summary: {
+        totalBE:                  { type: Number, default: 0 },
+        totalPE:                  { type: Number, default: 0 },
+        totalLE:                  { type: Number, default: 0 },
+        totalInputValue:          { type: Number, default: 0 },
+        totalNetReduction:        { type: Number, default: 0 },
+        avgEmissionReductionRate: { type: Number, default: 0 },
+        entriesCount:             { type: Number, default: 0 },
+        byCategory: {
+          type: Map,
+          of: new mongoose.Schema(
+            {
+              totalBE:           { type: Number, default: 0 },
+              totalPE:           { type: Number, default: 0 },
+              totalLE:           { type: Number, default: 0 },
+              totalInputValue:   { type: Number, default: 0 },
+              totalNetReduction: { type: Number, default: 0 },
+              entriesCount:      { type: Number, default: 0 },
+            },
+            { _id: false }
+          ),
+          default: {},
+        },
+      },
+
+      // M2 Methodology totals
+      // totalLE comes from Reduction.m2.LE design value (project level)
+      // totalNetReduction/totalNetReductionInFormula come from NetReductionEntry actuals
+      m2Summary: {
+        totalLE:                    { type: Number, default: 0 },
+        totalNetReduction:          { type: Number, default: 0 },
+        totalNetReductionInFormula: { type: Number, default: 0 },
+        entriesCount:               { type: Number, default: 0 },
+        byFormula: {
+          type: Map,
+          of: new mongoose.Schema(
+            {
+              totalNetReduction:          { type: Number, default: 0 },
+              totalNetReductionInFormula: { type: Number, default: 0 },
+              entriesCount:               { type: Number, default: 0 },
+            },
+            { _id: false }
+          ),
+          default: {},
+        },
+        byCategory: {
+          type: Map,
+          of: new mongoose.Schema(
+            {
+              totalLE:           { type: Number, default: 0 },
+              totalNetReduction: { type: Number, default: 0 },
+              entriesCount:      { type: Number, default: 0 },
+            },
+            { _id: false }
+          ),
+          default: {},
+        },
+      },
+
       // M3 Methodology totals — BE (Baseline), PE (Project), LE (Leakage)
       m3Summary: {
         totalBE: { type: Number, default: 0 },
@@ -841,14 +903,14 @@ const emissionSummarySchema = new mongoose.Schema(
      },
   },
   {
-    timestamps: true,
-    indexes: [
-      { clientId: 1, 'period.type': 1, 'period.year': 1, 'period.month': 1 },
-      { clientId: 1, 'metadata.lastCalculated': -1 },
-      { 'period.from': 1, 'period.to': 1 }
-    ]
+    timestamps: true
+    // NOTE: 'indexes' is NOT a valid Mongoose schema option — moved to .index() calls below
   }
 );
+
+// ── Indexes (properly registered via .index()) ────────────────────────────────
+
+// Primary sort index: clientId + period fields descending (for GET queries)
 emissionSummarySchema.index({
   clientId: 1,
   'period.type': 1,
@@ -857,6 +919,32 @@ emissionSummarySchema.index({
   'period.week': -1,
   'period.day': -1
 });
+
+// BUG 5 FIX: These three were silently ignored inside schema options — now properly registered
+emissionSummarySchema.index(
+  { clientId: 1, 'period.type': 1, 'period.year': 1, 'period.month': 1 }
+);
+emissionSummarySchema.index(
+  { clientId: 1, 'metadata.lastCalculated': -1 }
+);
+emissionSummarySchema.index(
+  { 'period.from': 1, 'period.to': 1 }
+);
+
+// BUG 6 FIX: Unique compound index prevents duplicate summary docs for same period.
+// IMPORTANT: Run dedup migration (scripts/dedup_emission_summary.js) before deploying
+// to production to remove any pre-existing duplicates, otherwise this index will fail to build.
+emissionSummarySchema.index(
+  {
+    clientId: 1,
+    'period.type': 1,
+    'period.year': 1,
+    'period.month': 1,
+    'period.week': 1,
+    'period.day': 1,
+  },
+  { unique: true, sparse: false, name: 'unique_client_period' }
+);
 // =========================
 // Instance Helper Methods
 // =========================

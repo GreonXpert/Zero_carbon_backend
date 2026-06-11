@@ -227,6 +227,365 @@ async function getAvailablePeriods(req, res) {
   } catch (err) { return handleErr(res, err); }
 }
 
+// =============================================================================
+// GROUP 1 — Portfolio
+// =============================================================================
+
+async function getPortfolioDashboard(req, res) {
+  try {
+    const data = await svc.getPortfolioDashboard(req.user);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getClientHealthSummary(req, res) {
+  try {
+    const data = await svc.getClientHealthSummary(req.user);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 2 — Period Comparison & Trends
+// =============================================================================
+
+async function comparePeriodsForClient(req, res) {
+  try {
+    const { clientId } = req.params;
+    // periods is a JSON array of period param objects in the query string
+    let periodsArray = [];
+    try { periodsArray = JSON.parse(req.query.periods || '[]'); } catch { periodsArray = []; }
+    if (!periodsArray.length) {
+      return res.status(400).json({ success: false, message: 'periods query param is required (JSON array)' });
+    }
+    const data = await svc.comparePeriodsForClient(clientId, periodsArray, req.user);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getTrendForClient(req, res) {
+  try {
+    const { clientId }  = req.params;
+    const category      = req.query.category || 'overall';
+    const periodType    = req.query.periodType || 'year';
+    const count         = parseInt(req.query.count, 10) || 12;
+    const data = await svc.getTrendForClient(clientId, category, periodType, count);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function listAllClientPeriods(req, res) {
+  try {
+    const { clientId } = req.params;
+    const data = await svc.listAllClientPeriods(clientId);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 3 — Category & Top/Bottom
+// =============================================================================
+
+async function getCategoryBreakdown(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getCategoryBreakdown(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getMonthlyBreakdown(req, res) {
+  try {
+    const { clientId } = req.params;
+    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+    const data = await svc.getMonthlyBreakdown(clientId, year);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getDailyBreakdown(req, res) {
+  try {
+    const { clientId } = req.params;
+    const year  = parseInt(req.query.year,  10) || new Date().getFullYear();
+    const month = parseInt(req.query.month, 10) || new Date().getMonth() + 1;
+    const data = await svc.getDailyBreakdown(clientId, year, month);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getPeriodWorkflowStats(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getPeriodWorkflowStats(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getTopBottomMetrics(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const n            = parseInt(req.query.n, 10) || 5;
+    const data = await svc.getTopBottomMetrics(clientId, periodDef, n);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 4 — Coverage & Data Quality
+// =============================================================================
+
+async function getMetricCoverage(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getMetricCoverage(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getDataQualityStats(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getDataQualityStats(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getMissingMetrics(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getMissingMetrics(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 5 — Workflow Analytics
+// =============================================================================
+
+async function getWorkflowStatusCounts(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getWorkflowStatusCounts(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getWorkflowAging(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getWorkflowAging(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 6 — Reviewer Dashboard
+// =============================================================================
+
+async function getReviewerQueue(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    const periodDef                 = getPeriodParams(req);
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'reviewer') {
+      return res.status(403).json({ success: false, message: 'Reviewer access required' });
+    }
+    const data = await svc.getReviewerQueue(targetUserId, clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getReviewerStats(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'reviewer') {
+      return res.status(403).json({ success: false, message: 'Reviewer access required' });
+    }
+    const data = await svc.getReviewerStats(targetUserId, clientId);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getReviewerAgingQueue(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    const periodDef                 = getPeriodParams(req);
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'reviewer') {
+      return res.status(403).json({ success: false, message: 'Reviewer access required' });
+    }
+    const data = await svc.getReviewerAgingQueue(targetUserId, clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 7 — Approver Dashboard
+// =============================================================================
+
+async function getApproverQueue(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    const periodDef                 = getPeriodParams(req);
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'approver') {
+      return res.status(403).json({ success: false, message: 'Approver access required' });
+    }
+    const data = await svc.getApproverQueue(targetUserId, clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getApproverStats(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'approver') {
+      return res.status(403).json({ success: false, message: 'Approver access required' });
+    }
+    const data = await svc.getApproverStats(targetUserId, clientId);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getApproverDecisionHistory(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    const periodDef                 = getPeriodParams(req);
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'approver') {
+      return res.status(403).json({ success: false, message: 'Approver access required' });
+    }
+    const data = await svc.getApproverDecisionHistory(targetUserId, clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 8 — Contributor Dashboard
+// =============================================================================
+
+async function getContributorSubmissions(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    // Build an updatedAt date-range filter from the selected year (if any).
+    // We intentionally do NOT use period.year because the contributor's data
+    // may represent historical fiscal years; we filter by when they submitted it.
+    const year = parseInt(req.query.year, 10) || null;
+    const updatedAtFilter = year
+      ? { updatedAt: { $gte: new Date(year, 0, 1), $lt: new Date(year + 1, 0, 1) } }
+      : {};
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'contributor') {
+      return res.status(403).json({ success: false, message: 'Contributor access required' });
+    }
+    const data = await svc.getContributorSubmissions(targetUserId, clientId, updatedAtFilter);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getContributorCoverage(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+    // Same updatedAt-based filter for coverage so counts stay consistent with submissions view
+    const year = parseInt(req.query.year, 10) || null;
+    const updatedAtFilter = year
+      ? { updatedAt: { $gte: new Date(year, 0, 1), $lt: new Date(year + 1, 0, 1) } }
+      : {};
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'contributor') {
+      return res.status(403).json({ success: false, message: 'Contributor access required' });
+    }
+    const data = await svc.getContributorCoverage(targetUserId, clientId, updatedAtFilter);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getContributorPendingActions(req, res) {
+  try {
+    const { clientId }              = req.params;
+    const { role, isFullAccess, userId } = req.esgSummaryCtx;
+
+    // null = "all users" when full-access admin doesn't specify a userId
+    const targetUserId = isFullAccess ? (req.query.userId || null) : userId;
+    if (!isFullAccess && role !== 'contributor') {
+      return res.status(403).json({ success: false, message: 'Contributor access required' });
+    }
+    const data = await svc.getContributorPendingActions(targetUserId, clientId);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 9 — Boundary Comparison
+// =============================================================================
+
+async function compareBoundaries(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    let boundaryIds    = [];
+    try { boundaryIds = JSON.parse(req.query.boundaryIds || '[]'); } catch { boundaryIds = []; }
+    const data = await svc.compareBoundaries(clientId, periodDef, boundaryIds);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+// =============================================================================
+// GROUP 10 — Scorecard & Report-Readiness
+// =============================================================================
+
+async function getEsgScorecard(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getEsgScorecard(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
+async function getReportReadiness(req, res) {
+  try {
+    const { clientId } = req.params;
+    const periodDef    = getPeriodParams(req);
+    const data = await svc.getReportReadiness(clientId, periodDef);
+    return ok(res, { data });
+  } catch (err) { return handleErr(res, err); }
+}
+
 module.exports = {
   getBoundarySummary,
   getHierarchySummary,
@@ -237,4 +596,41 @@ module.exports = {
   refreshSummary,
   refreshAllPeriods,
   getAvailablePeriods,
+  // Group 1
+  getPortfolioDashboard,
+  getClientHealthSummary,
+  // Group 2
+  comparePeriodsForClient,
+  getTrendForClient,
+  listAllClientPeriods,
+  // Group 3
+  getCategoryBreakdown,
+  getPeriodWorkflowStats,
+  getMonthlyBreakdown,
+  getDailyBreakdown,
+  getTopBottomMetrics,
+  // Group 4
+  getMetricCoverage,
+  getDataQualityStats,
+  getMissingMetrics,
+  // Group 5
+  getWorkflowStatusCounts,
+  getWorkflowAging,
+  // Group 6
+  getReviewerQueue,
+  getReviewerStats,
+  getReviewerAgingQueue,
+  // Group 7
+  getApproverQueue,
+  getApproverStats,
+  getApproverDecisionHistory,
+  // Group 8
+  getContributorSubmissions,
+  getContributorCoverage,
+  getContributorPendingActions,
+  // Group 9
+  compareBoundaries,
+  // Group 10
+  getEsgScorecard,
+  getReportReadiness,
 };

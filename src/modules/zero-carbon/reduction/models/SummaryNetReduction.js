@@ -57,12 +57,19 @@ const SummaryNetReductionSchema = new mongoose.Schema({
   byLocation: [GroupTotalSchema], // uses location.place
 
   // metadata
-  lastComputedAt: { type: Date, default: Date.now }
+  lastComputedAt: { type: Date, default: Date.now },
+
+  // BUG 14 FIX: Flag set to true when a recalculation error occurs so the
+  // hourly maintenance job can retry it. Replaces the old 'pendingRecalculation'
+  // field that was queried but never existed in this schema.
+  needsRecalculation: { type: Boolean, default: false }
 }, {
   timestamps: true,
   collection: 'summary_net_reduction'
 });
 
 SummaryNetReductionSchema.index({ clientId: 1 }, { unique: true });
+// BUG 14 FIX: Index for maintenance job query — makes hourly scan O(matched) not O(all)
+SummaryNetReductionSchema.index({ needsRecalculation: 1 }, { sparse: true });
 
 module.exports = mongoose.model('SummaryNetReduction', SummaryNetReductionSchema);

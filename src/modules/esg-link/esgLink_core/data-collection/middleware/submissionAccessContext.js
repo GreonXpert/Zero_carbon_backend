@@ -33,21 +33,23 @@ async function resolveAssignedMappings(userId, userType, clientId) {
   const uid = userId.toString();
   const assigned = [];
 
+  // entries in contributors/reviewers/approvers arrays can be either plain
+  // ObjectId values or populated objects { _id, userName, ... }
+  const extractId = (entry) => {
+    if (!entry) return null;
+    if (entry._id) return entry._id.toString();
+    return entry.toString();
+  };
+
   for (const node of boundary.nodes) {
     for (const mapping of node.metricsDetails || []) {
       let inList = false;
       if (userType === 'contributor') {
-        inList = (mapping.contributors || []).some((id) => id && id.toString() === uid);
+        inList = (mapping.contributors || []).some((c) => extractId(c) === uid);
       } else if (userType === 'reviewer') {
-        const reviewers = mapping.inheritNodeReviewers
-          ? node.nodeReviewerIds || []
-          : mapping.reviewers || [];
-        inList = reviewers.some((id) => id && id.toString() === uid);
+        inList = (mapping.reviewers || []).some((r) => extractId(r) === uid);
       } else if (userType === 'approver') {
-        const approvers = mapping.inheritNodeApprovers
-          ? node.nodeApproverIds || []
-          : mapping.approvers || [];
-        inList = approvers.some((id) => id && id.toString() === uid);
+        inList = (mapping.approvers || []).some((a) => extractId(a) === uid);
       }
       if (inList && mapping._id) {
         assigned.push(mapping._id.toString());

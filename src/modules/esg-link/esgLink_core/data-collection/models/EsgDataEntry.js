@@ -108,6 +108,12 @@ const EsgDataEntrySchema = new Schema(
     // ── Submission Tracking ──────────────────────────────────────────────────
     submittedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     submittedAt: { type: Date, default: null },
+    underReviewAt: { type: Date, default: null }, // set when workflowStatus -> under_review
+
+    // ── Reviewer / Approver SLA Escalation ───────────────────────────────────
+    isEscalated:     { type: Boolean, default: false },
+    escalatedAt:     { type: Date, default: null },
+    escalationStage: { type: String, enum: ['review', 'approval', null], default: null },
 
     // ── Evidence Files ───────────────────────────────────────────────────────
     evidence: [EvidenceSchema],
@@ -154,6 +160,11 @@ EsgDataEntrySchema.index(
   { ingestionIdempotencyKey: 1 },
   { unique: true, sparse: true }
 );
+EsgDataEntrySchema.index({ clientId: 1, isDeleted: 1 });
+EsgDataEntrySchema.index({ clientId: 1, boundaryDocId: 1, 'period.year': 1 });
+EsgDataEntrySchema.index({ clientId: 1, boundaryDocId: 1, 'period.year': 1, workflowStatus: 1 });
+EsgDataEntrySchema.index({ clientId: 1, submittedAt: 1 });
+EsgDataEntrySchema.index({ workflowStatus: 1, isEscalated: 1, submittedAt: 1, underReviewAt: 1 });
 
 // ─── Virtual: approval percentage ────────────────────────────────────────────
 EsgDataEntrySchema.virtual('approvalPercentage').get(function () {

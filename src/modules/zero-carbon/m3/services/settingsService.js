@@ -7,10 +7,7 @@ const RolePermissionMatrix = require('../models/RolePermissionMatrix');
 const UserScopeMap = require('../models/UserScopeMap');
 
 async function getSettings(clientId) {
-  const existing = await OrgSettings.findOne({ clientId });
-  if (existing) return existing;
-  // Return defaults if none configured yet
-  return new OrgSettings({ clientId });
+  return OrgSettings.findOne({ clientId }) || null;
 }
 
 async function updateSettings(clientId, data, user) {

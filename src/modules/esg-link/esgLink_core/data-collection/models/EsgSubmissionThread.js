@@ -17,6 +17,7 @@ const ThreadMessageSchema = new Schema(
       required: true,
     },
     authorId:   { type: Schema.Types.ObjectId, ref: 'User' }, // null for system_event
+    authorName: { type: String },  // snapshot of display name at time of posting
     authorType: { type: String }, // snapshot: 'reviewer' | 'approver' | 'contributor' | 'system'
     text:       { type: String, required: true },
     attachments: [
@@ -46,6 +47,8 @@ const EsgSubmissionThreadSchema = new Schema(
     },
     clientId: { type: String, required: true, index: true },
     messages: [ThreadMessageSchema],
+    // userId (string) → last time that user read this thread
+    lastReadAt: { type: Map, of: Date, default: () => ({}) },
   },
   { timestamps: true }
 );

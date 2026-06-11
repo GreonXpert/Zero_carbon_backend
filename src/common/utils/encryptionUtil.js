@@ -9,12 +9,10 @@ const ENCODING = 'hex';
 const SEPARATOR = ':';      // v1:iv:authTag:ciphertext
 const VERSION_PREFIX = 'v1';
 
-/**
- * Loads and validates the 32-byte AES-256 key from FIELD_ENCRYPTION_KEY env var.
- * The env var must be a 64-character hex string.
- * Throws on startup if misconfigured so the server fails fast.
- */
+// Cached at module load — parsing hex on every encrypt/decrypt was the main CPU bottleneck.
+let _cachedKey = null;
 function getKey() {
+  if (_cachedKey) return _cachedKey;
   const hex = process.env.FIELD_ENCRYPTION_KEY;
   if (!hex || hex.length !== 64) {
     throw new Error(
@@ -22,7 +20,8 @@ function getKey() {
       'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
     );
   }
-  return Buffer.from(hex, 'hex');
+  _cachedKey = Buffer.from(hex, 'hex');
+  return _cachedKey;
 }
 
 /**

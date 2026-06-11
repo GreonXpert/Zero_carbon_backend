@@ -9,7 +9,9 @@
  * All can* helpers are therefore async.
  */
 
-const Client = require('../../../../client-management/client/Client');
+const mongoose = require('mongoose');
+const Client   = require('../../../../client-management/client/Client');
+const User     = require('../../../../../common/models/User');
 
 const ADMIN_ROLES   = ['super_admin', 'consultant_admin'];
 const MANAGER_ROLES = ['super_admin', 'consultant_admin', 'consultant'];
@@ -33,19 +35,40 @@ async function isConsultantAdminForClient(user, clientId) {
   if (!user) return false;
   if (user.userType === 'super_admin') return true;
   if (user.userType !== 'consultant_admin') return false;
-  const uid = (user._id || user.id).toString();
+
+  const uid    = user._id || user.id;
+  const uidStr = uid.toString();
+
+  // Mirrors the getClients() query for consultant_admin:
+  // admin can act on clients where they are directly assigned OR where any
+  // consultant they manage is assigned (leadInfo or workflowTracking).
+  const managedConsultants = await User.find({ consultantAdminId: uid }).select('_id').lean();
+  const managedIds = managedConsultants.map((c) => c._id);
+  if (mongoose.Types.ObjectId.isValid(uidStr)) {
+    managedIds.push(new mongoose.Types.ObjectId(uidStr));
+  }
+
   const client = await Client.findOne({
     clientId,
-    'leadInfo.consultantAdminId': uid,
+    $or: [
+      { 'leadInfo.consultantAdminId':              { $in: [uidStr, ...managedIds] } },
+      { 'leadInfo.assignedConsultantId':            { $in: managedIds } },
+      { 'workflowTracking.assignedConsultantId':    { $in: managedIds } },
+    ],
   }).select('_id').lean();
   return !!client;
 }
 
 // ── Helper: check if userId appears in an assignee array ─────────────────────
+// entries can be plain ObjectIds/strings OR populated objects { _id, userName, ... }
 function isInList(userId, list = []) {
   if (!userId || !Array.isArray(list)) return false;
   const uid = userId.toString();
-  return list.some((id) => id && id.toString() === uid);
+  return list.some((entry) => {
+    if (!entry) return false;
+    const id = entry._id ? entry._id : entry;
+    return id.toString() === uid;
+  });
 }
 
 /**
@@ -135,10 +158,31 @@ async function canManageApiKey(user, clientId) {
 }
 
 /**
- * canImport — consultant, consultant_admin, super_admin.
+ * canReadApiKeys — read-only access to key list / details.
+ * Includes all canManageApiKey roles PLUS contributor and client_admin for their own client.
+ * Contributors need this to see connection status on their My Tasks cards.
+ */
+async function canReadApiKeys(user, clientId) {
+  if (!user) return false;
+  if (await canManageApiKey(user, clientId)) return true;
+  if (user.userType === 'contributor' && user.clientId === clientId) return true;
+  if (user.userType === 'client_admin'  && user.clientId === clientId) return true;
+  return false;
+}
+
+/**
+ * canImport — contributor (assigned to at least one mapping), consultant, consultant_admin, super_admin.
+ * Security: submissionService.create() enforces canSubmit per-row, so contributor access
+ * here just allows them through the gate; they cannot import rows they are not assigned to.
  */
 async function canImport(user, clientId) {
-  return canManageApiKey(user, clientId);
+  if (!user) return false;
+  if (user.userType === 'super_admin') return true;
+  if (await isConsultantAdminForClient(user, clientId)) return true;
+  if (user.userType === 'consultant') return isConsultantForClient(user, clientId);
+  // Contributors are allowed — per-row canSubmit in submissionService.create is the security gate
+  if (user.userType === 'contributor') return true;
+  return false;
 }
 
 module.exports = {
@@ -149,6 +193,7 @@ module.exports = {
   canReply,
   canViewSubmission,
   canManageApiKey,
+  canReadApiKeys,
   canImport,
   isConsultantForClient,
   isConsultantAdminForClient,

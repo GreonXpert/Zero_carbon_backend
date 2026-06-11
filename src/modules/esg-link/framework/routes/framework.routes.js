@@ -11,6 +11,10 @@ const {
   listFrameworks,
   getFrameworkById,
   updateFramework,
+  activateFramework,
+  changeFrameworkStatus,
+  deleteFramework,
+  restoreFramework,
   seedBrsrFramework,
 } = require('../controllers/frameworkController');
 
@@ -18,23 +22,31 @@ const {
   createSection,
   listSections,
   updateSection,
+  deleteSection,
+  restoreSection,
 } = require('../controllers/frameworkSectionController');
 
 router.use(auth);
 const eslGate = requireActiveModuleSubscription('esg_link');
 
 // ── Framework CRUD ────────────────────────────────────────────────────────────
-router.post('/frameworks',               eslGate, createFramework);
-router.get('/frameworks',                eslGate, listFrameworks);
-router.get('/frameworks/:frameworkId',   eslGate, getFrameworkById);
-router.patch('/frameworks/:frameworkId', eslGate, updateFramework);
+router.post('/frameworks',                          eslGate, createFramework);
+router.get('/frameworks',                           eslGate, listFrameworks);
+router.get('/frameworks/:frameworkId',              eslGate, getFrameworkById);
+router.patch('/frameworks/:frameworkId',            eslGate, updateFramework);
+router.delete('/frameworks/:frameworkId',              eslGate, deleteFramework);
+router.post('/frameworks/:frameworkId/restore',       eslGate, restoreFramework);
+router.post('/frameworks/:frameworkId/activate',      eslGate, activateFramework);
+router.post('/frameworks/:frameworkId/change-status', eslGate, changeFrameworkStatus);
 
 // ── BRSR seed (idempotent, super_admin only) ──────────────────────────────────
 router.post('/frameworks/brsr/seed', eslGate, seedBrsrFramework);
 
 // ── Framework sections ────────────────────────────────────────────────────────
-router.post('/frameworks/sections',                  eslGate, createSection);
-router.get('/frameworks/:frameworkId/sections',      eslGate, listSections);
-router.patch('/frameworks/sections/:sectionId',      eslGate, updateSection);
+router.post('/frameworks/sections',                 eslGate, createSection);
+router.get('/frameworks/:frameworkId/sections',     eslGate, listSections);
+router.patch('/frameworks/sections/:sectionId',     eslGate, updateSection);
+router.delete('/frameworks/sections/:sectionId',    eslGate, deleteSection);
+router.post('/frameworks/sections/:sectionId/restore', eslGate, restoreSection);
 
 module.exports = router;

@@ -155,6 +155,30 @@ function getNextMonthlyReset(from = new Date()) {
   return new Date(ist.getTime() - IST_OFFSET_MS);
 }
 
+// ── Token → credit cost table ─────────────────────────────────────────────────
+// Converts total AI tokens (prompt + completion) to credits deducted.
+// Beyond 10,000 tokens: 10 + floor((tokens - 10,000) / 1,000) extra credits.
+const TOKEN_CREDIT_TIERS = [
+  { max: 500,   credits: 1  },
+  { max: 1200,  credits: 2  },
+  { max: 3500,  credits: 4  },
+  { max: 10000, credits: 10 },
+];
+
+/**
+ * Calculate credit cost from total AI tokens (prompt + completion).
+ * @param {number} totalTokens
+ * @returns {number}
+ */
+function getTokenCreditCost(totalTokens) {
+  const t = totalTokens || 0;
+  for (const tier of TOKEN_CREDIT_TIERS) {
+    if (t <= tier.max) return tier.credits;
+  }
+  // Beyond 10,000: base 10 + 1 per additional 1,000 tokens
+  return 10 + Math.floor((t - 10000) / 1000);
+}
+
 module.exports = {
   // Constants
   WEEKLY_DIVISOR,
@@ -163,11 +187,13 @@ module.exports = {
   TOKEN_BAND_RATE,
   BASE_CREDITS,
   IST_TIMEZONE,
+  TOKEN_CREDIT_TIERS,
   // Functions
   deriveWeekly,
   deriveDaily,
   getBaseCredits,
   getTokenBandAdjustment,
+  getTokenCreditCost,
   getPeriodKey,
   getWeekKey,
   getISTDayStart,

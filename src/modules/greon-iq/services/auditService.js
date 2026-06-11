@@ -20,24 +20,28 @@ async function writeAuditLog(payload) {
     await ChatAuditLog.create({
       userId:              payload.userId,
       userType:            payload.userType,
-      clientId:            payload.clientId,
-      sessionId:           payload.sessionId    || null,
-      messageId:           payload.messageId    || null,
-      question:            payload.question     || '',
-      normalizedIntent:    payload.normalizedIntent  || null,
-      detectedProduct:     payload.detectedProduct   || null,
-      queryPlan:           payload.queryPlan          || null,
-      modulesUsed:         payload.modulesUsed        || [],
+      clientId:            payload.clientId            || null,
+      sessionId:           payload.sessionId           || null,
+      messageId:           payload.messageId           || null,
+      question:            payload.question            || '',
+      normalizedIntent:    payload.normalizedIntent    || null,
+      detectedProduct:     payload.detectedProduct     || null,
+      queryPlan:           payload.queryPlan           || null,
+      modulesUsed:         payload.modulesUsed         || [],
       recordsTouchedCount: payload.recordsTouchedCount || 0,
-      excludedDomains:     payload.excludedDomains    || [],
-      aiRequestMeta:       payload.aiRequestMeta      || {},
-      aiResponseMeta:      payload.aiResponseMeta     || {},
-      durationMs:          payload.durationMs         || 0,
+      excludedDomains:     payload.excludedDomains     || [],
+      aiRequestMeta:       payload.aiRequestMeta       || {},
+      aiResponseMeta:      payload.aiResponseMeta      || {},
+      durationMs:          payload.durationMs          || 0,
       quotaConsumed:       payload.quotaConsumed       || 0,
-      status:              payload.status             || 'error',
+      status:              payload.status              || 'error',
+      // Restriction fields — populated for access_restricted / client_resolution_needed
+      restrictionCode:     payload.restrictionCode     || null,
+      restrictionReason:   payload.restrictionReason   || null,
+      attemptedDomain:     payload.attemptedDomain     || null,
+      attemptedClientId:   payload.attemptedClientId   || null,
     });
   } catch (err) {
-    // Audit failure must never propagate — log to console only
     console.error('[GreOnIQ] auditService: failed to write audit log:', err.message);
   }
 }

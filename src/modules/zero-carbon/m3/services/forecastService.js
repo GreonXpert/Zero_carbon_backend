@@ -5,9 +5,68 @@ const PathwayAnnual = require('../models/PathwayAnnual');
 const SourceAllocation = require('../models/SourceAllocation');
 const OrgSettings = require('../models/OrgSettings');
 const DataQualityFlag = require('../models/DataQualityFlag');
+const TargetMaster = require('../models/TargetMaster');
 const EmissionSummary = require('../../calculation/EmissionSummary');
+const SeasonalProfile = require('../models/SeasonalProfile');
+const { extractCO2eForScopeBoundary } = require('./emissionSummaryScopeService');
 const { ForecastStatus, ForecastMethod, SnapshotType, DQFlagCode, Severity } = require('../constants/enums');
 const { WARNINGS } = require('../constants/messages');
+
+/**
+ * Returns normalised seasonal weight per month (keys 1–12, values sum to 1.0)
+ * derived from the previous year's actual monthly emissions.
+ * Falls back to uniform 1/12 per month when no prior-year data is available.
+ */
+async function getSeasonalWeights(clientId, calendarYear, scopeBoundary = null, scope3CoveragePct = 100, targetId = null) {
+  const UNIFORM = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 1 / 12]));
+
+  // ── Tier 1: prior-year monthly EmissionSummary ────────────────────────────
+  const docs = await EmissionSummary.find({
+    clientId,
+    'period.type': 'monthly',
+    'period.year': calendarYear - 1,
+  }).lean();
+
+  if (docs.length > 0) {
+    const monthlyTotals = {};
+    let total = 0;
+    for (const doc of docs) {
+      const m    = doc.period.month;
+      const co2e = scopeBoundary
+        ? extractCO2eForScopeBoundary(doc, scopeBoundary, scope3CoveragePct).CO2e
+        : (doc.emissionSummary?.totalEmissions?.CO2e || 0);
+      monthlyTotals[m] = (monthlyTotals[m] || 0) + co2e;
+      total += co2e;
+    }
+
+    if (total > 0) {
+      const avgMonthly = total / Object.keys(monthlyTotals).length;
+      for (let m = 1; m <= 12; m++) {
+        if (monthlyTotals[m] === undefined) monthlyTotals[m] = avgMonthly;
+      }
+      const adjustedTotal = Object.values(monthlyTotals).reduce((s, v) => s + v, 0);
+      const weights = {};
+      for (let m = 1; m <= 12; m++) weights[m] = monthlyTotals[m] / adjustedTotal;
+      return { weights, hasPriorData: true };
+    }
+  }
+
+  // ── Tier 2: manual SeasonalProfile for this target ────────────────────────
+  if (targetId) {
+    const profile = await SeasonalProfile.findOne({ target_id: targetId, calendar_year: calendarYear }).lean();
+    if (profile && profile.monthly_weights && profile.monthly_weights.length === 12) {
+      const total = profile.monthly_weights.reduce((s, v) => s + v, 0);
+      if (total > 0) {
+        const weights = {};
+        for (let m = 1; m <= 12; m++) weights[m] = profile.monthly_weights[m - 1] / total;
+        return { weights, hasPriorData: true, fromSeasonalProfile: true };
+      }
+    }
+  }
+
+  // ── Tier 3: uniform fallback ──────────────────────────────────────────────
+  return { weights: UNIFORM, hasPriorData: false };
+}
 
 function computeForecastStatus(projected, allowed, atRiskThresholdPct) {
   if (projected <= allowed) return ForecastStatus.On_Track;
@@ -33,6 +92,11 @@ async function computeForecastSnapshot({
   allocationForecasts = [],
   allowedEmissionsOverride = null,
   isPrimary = true,
+  vsBaselineStatus = null,
+  ytdExpected = null,
+  baselineProjected = null,
+  monthlyAllowed = [],
+  monthlyBaseline = [],
 }) {
   let allowedEmissions;
 
@@ -86,6 +150,7 @@ async function computeForecastSnapshot({
         projected_emissions:  projectedEmissions,
         allowed_emissions:    allowedEmissions,
         forecast_status:      status,
+        vs_budget_status:     status,
         at_risk_indicator:    atRisk,
         forecast_method:      forecastMethod,
         confidence_lower:     confidenceLower,
@@ -94,6 +159,11 @@ async function computeForecastSnapshot({
         basis_period_end:     basisPeriodEnd,
         allocation_forecasts: allocationForecasts,
         is_primary:           isPrimary,
+        ...(vsBaselineStatus != null  && { vs_baseline_status: vsBaselineStatus }),
+        ...(ytdExpected       != null  && { ytd_expected:       ytdExpected }),
+        ...(baselineProjected != null  && { baseline_projected: baselineProjected }),
+        ...(monthlyAllowed.length > 0  && { monthly_allowed:    monthlyAllowed }),
+        ...(monthlyBaseline.length > 0 && { monthly_baseline:   monthlyBaseline }),
       },
     },
     { upsert: true, new: true }
@@ -145,7 +215,7 @@ function getSubPeriods(snapshotType, calendarYear) {
  * Pulls total CO2e emissions from EmissionSummary for the given date range.
  * Uses monthly docs only (finest granularity available from M1).
  */
-async function pullPeriodEmissions(clientId, start, end) {
+async function pullPeriodEmissions(clientId, start, end, scopeBoundary = null, scope3CoveragePct = 100) {
   const docs = await EmissionSummary.find({
     clientId,
     'period.type': 'monthly',
@@ -156,7 +226,12 @@ async function pullPeriodEmissions(clientId, start, end) {
       ],
     },
   }).lean();
-  return docs.reduce((s, d) => s + (d.emissionSummary?.totalEmissions?.CO2e || 0), 0);
+  return docs.reduce((s, d) => {
+    const co2e = scopeBoundary
+      ? extractCO2eForScopeBoundary(d, scopeBoundary, scope3CoveragePct).CO2e
+      : (d.emissionSummary?.totalEmissions?.CO2e || 0);
+    return s + co2e;
+  }, 0);
 }
 
 // ── Forecast Method Engines ───────────────────────────────────────────────────
@@ -166,32 +241,95 @@ async function pullPeriodEmissions(clientId, start, end) {
  * up to the most recently available month.
  * Returns { ytdTotal, monthsWithData, latestMonth, docs }
  */
-async function pullYtdEmissions(clientId, year) {
-  const docs = await EmissionSummary.find({
+async function pullYtdEmissions(clientId, year, scopeBoundary = null, scope3CoveragePct = 100) {
+  // ── Tier 1: monthly EmissionSummary docs ──────────────────────────────────
+  const allDocs = await EmissionSummary.find({
     clientId,
     'period.type': 'monthly',
     'period.year': year,
   }).sort({ 'period.month': 1 }).lean();
 
-  if (!docs.length) return { ytdTotal: 0, monthsWithData: 0, latestMonth: 0, docs: [] };
+  if (allDocs.length > 0) {
+    // Only include months up to the current calendar month — future months
+    // in the DB (e.g. a July doc computed in June) must not inflate latestMonth
+    // or the elapsed seasonal share, which would deflate the annualised projection.
+    const today        = new Date();
+    const currentMonth = year < today.getFullYear()
+      ? 12                          // completed past year — include all months
+      : today.getMonth() + 1;       // current year — cap to today's month
 
-  const ytdTotal      = docs.reduce((s, d) => s + (d.emissionSummary?.totalEmissions?.CO2e || 0), 0);
-  const monthsWithData = docs.length;
-  const latestMonth    = Math.max(...docs.map(d => d.period?.month || 0));
-  return { ytdTotal, monthsWithData, latestMonth, docs };
+    const docs = allDocs.filter(d => (d.period?.month || 0) <= currentMonth);
+
+    if (docs.length > 0) {
+      const ytdTotal = docs.reduce((s, d) => {
+        const co2e = scopeBoundary
+          ? extractCO2eForScopeBoundary(d, scopeBoundary, scope3CoveragePct).CO2e
+          : (d.emissionSummary?.totalEmissions?.CO2e || 0);
+        return s + co2e;
+      }, 0);
+
+      if (ytdTotal > 0) {
+        const monthsWithData = docs.length;
+        const latestMonth    = Math.max(...docs.map(d => d.period?.month || 0));
+        return { ytdTotal, monthsWithData, latestMonth, docs };
+      }
+    }
+  }
+
+  // ── Tier 2: yearly doc fallback (when monthly docs missing or all-zero) ───
+  // Treat the yearly total as YTD since data was entered for the current year.
+  // Use today's month as latestMonth for seasonal share calculations.
+  const yearlyDoc = await EmissionSummary.findOne({
+    clientId,
+    'period.type': 'yearly',
+    'period.year': year,
+  }).lean();
+
+  if (yearlyDoc) {
+    const co2e = scopeBoundary
+      ? extractCO2eForScopeBoundary(yearlyDoc, scopeBoundary, scope3CoveragePct).CO2e
+      : (yearlyDoc.emissionSummary?.totalEmissions?.CO2e || 0);
+    if (co2e > 0) {
+      const today          = new Date();
+      const latestMonth    = today.getMonth() + 1;           // 1–12
+      const monthsWithData = latestMonth;
+      return { ytdTotal: co2e, monthsWithData, latestMonth, docs: docs.length > 0 ? docs : [yearlyDoc], usedYearlyFallback: true };
+    }
+  }
+
+  // ── Tier 3: no data found ─────────────────────────────────────────────────
+  return { ytdTotal: 0, monthsWithData: 0, latestMonth: 0, docs: [] };
 }
 
 /**
  * Applies the chosen forecast method to a YTD total and returns { projected, confidenceLower, confidenceUpper }.
  * Pure function — no DB calls.
  */
-function applyForecastMethod({ method, ytdTotal, monthsWithData, daysInYear, daysElapsed, remainingDays, trailingTotal, trailingDays }) {
+function applyForecastMethod({
+  method, ytdTotal, monthsWithData, daysInYear, daysElapsed,
+  remainingDays, trailingTotal, trailingDays, elapsedSeasonalShare,
+  prevYearTotal = 0,       // prior year's full-year total (for Linear Extrapolation)
+  remainingPeriods = 0,    // periods (months/days/quarters/halves) left in year
+  periodsInYear = 12,      // total periods in a year for the chosen snapshot type
+  latestMonth = 0,         // last month with data (for CUSTOM slicing)
+  customMonthlyValues = null, // [12] array for CUSTOM method
+}) {
   if (method === ForecastMethod.LINEAR_EXTRAPOLATION) {
+    // Use previous year's average rate per period for remaining periods
+    if (prevYearTotal > 0 && periodsInYear > 0 && remainingPeriods >= 0) {
+      const ratePerPeriod = prevYearTotal / periodsInYear;
+      const projected = ytdTotal + ratePerPeriod * remainingPeriods;
+      return { projected, confidenceLower: projected * 0.9, confidenceUpper: projected * 1.1 };
+    }
+    // Fallback: current-year day-based extrapolation (when no prior year data)
     const projected = daysElapsed > 0 ? ytdTotal * (daysInYear / daysElapsed) : ytdTotal;
     return { projected, confidenceLower: projected * 0.9, confidenceUpper: projected * 1.1 };
   }
   if (method === ForecastMethod.YTD_ANNUALIZED) {
-    const projected = monthsWithData > 0 ? (ytdTotal / monthsWithData) * 12 : ytdTotal;
+    // Uses prior-year monthly EmissionSummary shares (via elapsedSeasonalShare)
+    const projected = (elapsedSeasonalShare > 0)
+      ? ytdTotal / elapsedSeasonalShare
+      : (monthsWithData > 0 ? (ytdTotal / monthsWithData) * 12 : ytdTotal);
     return { projected, confidenceLower: projected * 0.92, confidenceUpper: projected * 1.08 };
   }
   if (method === ForecastMethod.WEIGHTED_TRAILING_90D) {
@@ -199,14 +337,29 @@ function applyForecastMethod({ method, ytdTotal, monthsWithData, daysInYear, day
     const projected = ytdTotal + dailyRate * remainingDays;
     return { projected, confidenceLower: projected * 0.88, confidenceUpper: projected * 1.12 };
   }
-  // CUSTOM / fallback
+  if (method === ForecastMethod.CUSTOM) {
+    if (customMonthlyValues && customMonthlyValues.length === 12) {
+      // Sum the custom values for months not yet elapsed (remaining months)
+      const remainingCustom = customMonthlyValues
+        .slice(latestMonth)           // months after the latest month with actual data
+        .reduce((s, v) => s + (Number(v) || 0), 0);
+      const projected = ytdTotal + remainingCustom;
+      return { projected, confidenceLower: null, confidenceUpper: null };
+    }
+    return { projected: ytdTotal, confidenceLower: null, confidenceUpper: null };
+  }
+  // Fallback
   return { projected: ytdTotal, confidenceLower: null, confidenceUpper: null };
 }
 
 /**
  * Builds the allocationForecasts array for a single period given ytd emissions for that period.
  */
-function buildAllocationForecasts(allocations, periodYtd, annualAllowed, periodFraction, methodArgs, threshold) {
+function buildAllocationForecasts(
+  allocations, periodYtd, annualAllowed, periodFraction,
+  methodArgs, threshold,
+  { isPast, isFuture, annualProjected, futureShare } = {}
+) {
   return allocations.map((alloc) => {
     const effectivePct =
       ((alloc.scopeAllocationPct    || 0) / 100) *
@@ -214,11 +367,28 @@ function buildAllocationForecasts(allocations, periodYtd, annualAllowed, periodF
       ((alloc.nodeAllocationPct     || 0) / 100) *
       ((alloc.scopeDetailAllocationPct || 0) / 100);
 
-    const allocYtd     = periodYtd * effectivePct;
-    const trailingFrac = (methodArgs.trailingTotal || 0) * effectivePct;
+    const allocYtd = periodYtd * effectivePct;
 
-    const { projected: allocProjected, confidenceLower: allocLow, confidenceUpper: allocHigh } =
-      applyForecastMethod({ ...methodArgs, ytdTotal: allocYtd, trailingTotal: trailingFrac });
+    let allocProjected, allocLow, allocHigh;
+    if (isPast) {
+      allocProjected = allocYtd;
+      allocLow = allocHigh = null;
+    } else if (isFuture && annualProjected != null) {
+      allocProjected = annualProjected * effectivePct * (futureShare ?? periodFraction);
+      allocLow  = allocProjected * 0.88;
+      allocHigh = allocProjected * 1.12;
+    } else if (methodArgs && methodArgs.method) {
+      // Annual path or fallback — use existing method engine
+      const trailingFrac = (methodArgs.trailingTotal || 0) * effectivePct;
+      const res = applyForecastMethod({ ...methodArgs, ytdTotal: allocYtd, trailingTotal: trailingFrac });
+      allocProjected = res.projected;
+      allocLow  = res.confidenceLower;
+      allocHigh = res.confidenceUpper;
+    } else {
+      // Current in-progress sub-period — actual so far
+      allocProjected = allocYtd;
+      allocLow = allocHigh = null;
+    }
 
     const allocBudget = annualAllowed * effectivePct * periodFraction;
     const allocStatus = computeForecastStatus(allocProjected, allocBudget, threshold);
@@ -252,11 +422,16 @@ function buildAllocationForecasts(allocations, periodYtd, annualAllowed, periodF
  *   sub-period, stores all, returns array of snapshots.
  * When APPROVED/ACTIVE allocations exist the forecast is also broken down per allocation.
  */
-async function computeForecastByMethod({ targetId, clientId, calendarYear, forecastMethod, snapshotType = SnapshotType.ANNUAL, isPrimary = true }) {
-  const [settings, pathway] = await Promise.all([
+async function computeForecastByMethod({ targetId, clientId, calendarYear, forecastMethod, snapshotType = SnapshotType.ANNUAL, isPrimary = true, customValues = null }) {
+  const [settings, pathway, target] = await Promise.all([
     OrgSettings.findOne({ clientId }),
     PathwayAnnual.findOne({ target_id: targetId, calendar_year: calendarYear }),
+    TargetMaster.findById(targetId).lean(),
   ]);
+
+  // Scope boundary from the target — all emission pulls are filtered to these scopes only
+  const scopeBoundary     = target?.scope_boundary     || null;
+  const scope3CoveragePct = target?.scope3_coverage_pct ?? 100;
 
   if (!pathway && snapshotType === SnapshotType.ANNUAL) return null; // handled by computeForecastSnapshot
 
@@ -272,7 +447,14 @@ async function computeForecastByMethod({ targetId, clientId, calendarYear, forec
   if (snapshotType === SnapshotType.ANNUAL) {
     const daysElapsed   = Math.max(1, Math.floor((today - yearStart) / 86400000));
     const remainingDays = Math.max(0, Math.floor((yearEnd - today) / 86400000));
-    const { ytdTotal, monthsWithData } = await pullYtdEmissions(clientId, calendarYear);
+    const { ytdTotal, monthsWithData, latestMonth } = await pullYtdEmissions(clientId, calendarYear, scopeBoundary, scope3CoveragePct);
+
+    // Seasonal weights for YTD_ANNUALIZED: divide ytdTotal by the elapsed months' share
+    const { weights: seasonalWeights, hasPriorData } = await getSeasonalWeights(clientId, calendarYear, scopeBoundary, scope3CoveragePct, targetId);
+    const elapsedSeasonalShare = latestMonth > 0
+      ? Array.from({ length: latestMonth }, (_, i) => seasonalWeights[i + 1] || 1 / 12)
+          .reduce((s, w) => s + w, 0)
+      : 0;
 
     let trailingTotal = 0, trailingDays = 30.44;
     if (method === ForecastMethod.WEIGHTED_TRAILING_90D) {
@@ -281,12 +463,73 @@ async function computeForecastByMethod({ targetId, clientId, calendarYear, forec
         'period.type': 'monthly',
         'period.year': calendarYear,
       }).sort({ 'period.month': -1 }).limit(3).lean();
-      trailingTotal = trailing.reduce((s, d) => s + (d.emissionSummary?.totalEmissions?.CO2e || 0), 0);
+      trailingTotal = trailing.reduce((s, d) => {
+        const co2e = scopeBoundary
+          ? extractCO2eForScopeBoundary(d, scopeBoundary, scope3CoveragePct).CO2e
+          : (d.emissionSummary?.totalEmissions?.CO2e || 0);
+        return s + co2e;
+      }, 0);
       trailingDays  = Math.max(1, trailing.length) * 30.44;
     }
 
-    const methodArgs = { method, ytdTotal, monthsWithData, daysInYear, daysElapsed, remainingDays, trailingTotal, trailingDays };
+    // Prior-year total for Linear Extrapolation (reuse priorYearDocs fetched below)
+    // NOTE: priorYearDocs is fetched after this block; compute prevYearTotal lazily
+    // We fetch priorYearDocs early here so LINEAR_EXTRAPOLATION can use it
+    const _priorYearDocsForMethod = await EmissionSummary.find({
+      clientId, 'period.type': 'monthly', 'period.year': calendarYear - 1,
+    }).lean();
+    const prevYearTotal = _priorYearDocsForMethod.reduce((s, d) => {
+      return s + (scopeBoundary
+        ? extractCO2eForScopeBoundary(d, scopeBoundary, scope3CoveragePct).CO2e
+        : (d.emissionSummary?.totalEmissions?.CO2e || 0));
+    }, 0);
+    const remainingPeriods = 12 - latestMonth;   // remaining months in the year
+
+    const methodArgs = {
+      method, ytdTotal, monthsWithData, daysInYear, daysElapsed, remainingDays,
+      trailingTotal, trailingDays, elapsedSeasonalShare,
+      prevYearTotal, remainingPeriods, periodsInYear: 12,
+      latestMonth,
+      customMonthlyValues: customValues,
+    };
     const { projected, confidenceLower, confidenceUpper } = applyForecastMethod(methodArgs);
+
+    // ── Dual-status: vs Baseline ──────────────────────────────────────────────
+    // Expected YTD at today's date = allowed_emissions × share of year elapsed (seasonal)
+    const annualAllowed = pathway ? pathway.allowed_emissions : 0;
+    const ytdExpected   = annualAllowed * elapsedSeasonalShare;
+    const vsBaselineStatus = pathway
+      ? computeForecastStatus(ytdTotal, ytdExpected, threshold)
+      : ForecastStatus.On_Track;
+
+    // ── Monthly budget + baseline arrays for chart ────────────────────────────
+    // monthly_allowed[i] = annual budget × seasonalWeight[month i+1]
+    // monthly_baseline[i] = prior-year monthly actuals (if available) scaled to current budget
+    const monthlyAllowed = [];
+    for (let m = 1; m <= 12; m++) {
+      monthlyAllowed.push({ month: m, allowed_co2e: annualAllowed * (seasonalWeights[m] || 1 / 12) });
+    }
+
+    // Reuse already-fetched prior-year monthly docs (also used for Linear Extrapolation above)
+    const priorYearDocs = _priorYearDocsForMethod;
+    let monthlyBaseline = [];
+    if (priorYearDocs.length > 0) {
+      const priorTotal = priorYearDocs.reduce((s, d) => {
+        return s + (scopeBoundary
+          ? extractCO2eForScopeBoundary(d, scopeBoundary, scope3CoveragePct).CO2e
+          : (d.emissionSummary?.totalEmissions?.CO2e || 0));
+      }, 0);
+      const scaleFactor = priorTotal > 0 ? annualAllowed / priorTotal : 1;
+      for (let m = 1; m <= 12; m++) {
+        const priorDoc = priorYearDocs.find(d => d.period?.month === m);
+        const priorCo2e = priorDoc
+          ? (scopeBoundary
+              ? extractCO2eForScopeBoundary(priorDoc, scopeBoundary, scope3CoveragePct).CO2e
+              : (priorDoc.emissionSummary?.totalEmissions?.CO2e || 0))
+          : 0;
+        monthlyBaseline.push({ month: m, baseline_co2e: priorCo2e * scaleFactor });
+      }
+    }
 
     let allocationForecasts = [];
     if (pathway) {
@@ -295,7 +538,7 @@ async function computeForecastByMethod({ targetId, clientId, calendarYear, forec
         reconciliation_status: { $in: ['APPROVED', 'ACTIVE'] },
         isDeleted: false,
       }).lean();
-      allocationForecasts = buildAllocationForecasts(allocations, ytdTotal, pathway.allowed_emissions, 1, methodArgs, threshold);
+      allocationForecasts = buildAllocationForecasts(allocations, ytdTotal, pathway.allowed_emissions, 1, methodArgs, threshold, {});
     }
 
     return computeForecastSnapshot({
@@ -311,6 +554,11 @@ async function computeForecastByMethod({ targetId, clientId, calendarYear, forec
       basisPeriodEnd:      today,
       allocationForecasts,
       isPrimary,
+      vsBaselineStatus,
+      ytdExpected,
+      baselineProjected:   pathway ? annualAllowed : 0,
+      monthlyAllowed,
+      monthlyBaseline,
     });
   }
 
@@ -331,34 +579,73 @@ async function computeForecastByMethod({ targetId, clientId, calendarYear, forec
     isDeleted: false,
   }).lean();
 
+  const { weights: seasonalWeights } = await getSeasonalWeights(clientId, calendarYear, scopeBoundary, scope3CoveragePct, targetId);
+
+  // Compute the annual projection once — used to fill projected values for future sub-periods
+  const { ytdTotal: annualYtdTotal, latestMonth: annualLatestMonth } =
+    await pullYtdEmissions(clientId, calendarYear, scopeBoundary, scope3CoveragePct);
+  const annualElapsedShare = annualLatestMonth > 0
+    ? Array.from({ length: annualLatestMonth }, (_, i) => seasonalWeights[i + 1] || 1 / 12)
+        .reduce((s, w) => s + w, 0)
+    : 0;
+  const annualProjected = annualElapsedShare > 0
+    ? annualYtdTotal / annualElapsedShare
+    : pathway.allowed_emissions;
+
   const periods = getSubPeriods(snapshotType, calendarYear);
   const results = [];
 
   for (const period of periods) {
-    const periodDays     = Math.max(1, Math.round((period.end - period.start) / 86400000));
-    const periodFraction = periodDays / daysInYear;
-    const periodAllowed  = pathway.allowed_emissions * periodFraction;
+    const periodDays = Math.max(1, Math.round((period.end - period.start) / 86400000));
 
-    const periodYtd = await pullPeriodEmissions(clientId, period.start, period.end);
+    let periodFraction, periodAllowed;
+    if (snapshotType === SnapshotType.MONTHLY) {
+      const monthNum = period.start.getMonth() + 1;
+      periodFraction = seasonalWeights[monthNum] || 1 / 12;
+      periodAllowed  = pathway.allowed_emissions * periodFraction;
+    } else if (snapshotType === SnapshotType.QUARTERLY || snapshotType === SnapshotType.HALF_YEARLY) {
+      const startMonth = period.start.getMonth() + 1;
+      const endMonth   = period.end.getMonth()   + 1;
+      periodFraction = 0;
+      for (let m = startMonth; m <= endMonth; m++) periodFraction += (seasonalWeights[m] || 1 / 12);
+      periodAllowed = pathway.allowed_emissions * periodFraction;
+    } else {
+      // DAILY: distribute the month's seasonal weight evenly across its days
+      const monthNum        = period.start.getMonth() + 1;
+      const monthWeight     = seasonalWeights[monthNum] || 1 / 12;
+      const daysInThisMonth = new Date(period.start.getFullYear(), monthNum, 0).getDate();
+      periodFraction = monthWeight / daysInThisMonth;
+      periodAllowed  = pathway.allowed_emissions * periodFraction;
+    }
 
-    // Build methodArgs with period-scoped timing values
-    const daysElapsed   = Math.max(1, Math.floor((Math.min(today, period.end) - period.start) / 86400000));
-    const remainingDays = Math.max(0, Math.floor((period.end - today) / 86400000));
-    const methodArgs = {
-      method,
-      ytdTotal:       periodYtd,
-      monthsWithData: periodYtd > 0 ? 1 : 0,
-      daysInYear:     periodDays,  // treat period length as the "year" for extrapolation
-      daysElapsed,
-      remainingDays,
-      trailingTotal:  0,
-      trailingDays:   30.44,
-    };
+    const periodYtd = await pullPeriodEmissions(clientId, period.start, period.end, scopeBoundary, scope3CoveragePct);
 
-    const { projected, confidenceLower, confidenceUpper } = applyForecastMethod(methodArgs);
+    // Determine whether this period is in the past, future, or currently in progress
+    const isPast   = period.end   < today;
+    const isFuture = period.start > today;
+
+    let projected, confidenceLower, confidenceUpper;
+    if (isPast) {
+      // Actual completed period — store real recorded emissions at period scale (not annualized)
+      projected = periodYtd;
+      confidenceLower = null;
+      confidenceUpper = null;
+    } else if (isFuture) {
+      // Future period — seasonal share of the annual projection
+      projected = annualProjected * periodFraction;
+      confidenceLower = projected * 0.88;
+      confidenceUpper = projected * 1.12;
+    } else {
+      // Current in-progress period — actual recorded so far (partial)
+      projected = periodYtd;
+      confidenceLower = null;
+      confidenceUpper = null;
+    }
 
     const allocationForecasts = buildAllocationForecasts(
-      allocations, periodYtd, pathway.allowed_emissions, periodFraction, methodArgs, threshold
+      allocations, periodYtd, pathway.allowed_emissions, periodFraction,
+      {}, threshold,
+      { isPast, isFuture, annualProjected, futureShare: periodFraction }
     );
 
     const snap = await computeForecastSnapshot({

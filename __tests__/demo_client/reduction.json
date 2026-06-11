@@ -1,0 +1,1512 @@
+{
+    "success": true,
+    "total": 6,
+    "page": 1,
+    "limit": 20,
+    "data": [
+        {
+            "_id": "69e9dcc87ab87333b4c3620d",
+            "clientId": "Greon073",
+            "createdBy": {
+                "_id": "6971d6fac8c78728c2d9717e",
+                "email": "ananyamenon@codenest.com",
+                "userName": "Ananya Menon",
+                "userType": "consultant_admin"
+            },
+            "createdByType": "consultant_admin",
+            "projectName": "NexMove EV  Cabs ",
+            "projectActivity": "Reduction",
+            "status": "not_started",
+            "category": "Sustainable  Transportation",
+            "scope": "Scope 1",
+            "location": {
+                "latitude": 12.97,
+                "longitude": 77.589998,
+                "place": "Bangalore ",
+                "address": "Pickup/Drop zones  across Bangalore"
+            },
+            "commissioningDate": "2025-04-01T00:00:00.000Z",
+            "endDate": "2027-04-01T00:00:00.000Z",
+            "projectPeriodDays": 730,
+            "description": "Electric vehicles \nreplacing ICE cabs; \nCharged at office \npremises + public \nfast-charging network \n",
+            "baselineMethod": "Historical (Adjusted) Baseline",
+            "baselineJustification": "100% ICE \n(diesel/petrol) cabs \nfor employee \nhome- to-office \ntransport ",
+            "calculationMethodology": "methodology3",
+            "m3": {
+                "projectActivity": "Reduction",
+                "buffer": 0,
+                "baselineEmissions": [
+                    {
+                        "id": "B1",
+                        "label": "Diesel ICE Cab Emissions (Baseline)",
+                        "formulaId": "69e9daa27ab87333b4c35fc8",
+                        "formulaExpression": "((AD_Dist_Diesel / FE_Diesel) * EF_Diesel) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Dist_Diesel",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "km",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T08:48:08.111Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "FE_Diesel",
+                                "type": "constant",
+                                "value": 14.2,
+                                "unit": "km/L",
+                                "updatePolicy": "manual",
+                                "defaultValue": 14.2,
+                                "lastValue": 14.2,
+                                "lastUpdatedAt": "2026-04-23T08:42:21.512Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Diesel",
+                                "type": "constant",
+                                "value": 2.857,
+                                "unit": "kgCO2e/L",
+                                "updatePolicy": "manual",
+                                "defaultValue": 2.857,
+                                "lastValue": 2.857,
+                                "lastUpdatedAt": "2026-04-23T08:42:31.375Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "B2",
+                        "label": "Petrol ICE Cab Emissions (Baseline)",
+                        "formulaId": "6974849c455d1f980379b78b",
+                        "formulaExpression": "(FC_Petrol * EF_Petrol) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "FC_Petrol",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "L",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T08:48:08.111Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Petrol",
+                                "type": "constant",
+                                "value": 2.602,
+                                "unit": "kgCO2e/L",
+                                "updatePolicy": "manual",
+                                "defaultValue": 2.602,
+                                "lastValue": 2.602,
+                                "lastUpdatedAt": "2026-04-23T08:43:09.117Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "projectEmissions": [
+                    {
+                        "id": "P1",
+                        "label": "EV Charging Electricity (On-site)",
+                        "formulaId": "697484fa455d1f980379b7b1",
+                        "formulaExpression": "(Elec_Cons_Public * EF_Grid_Avg_India) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "Elec_Cons_Public",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T08:48:08.111Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_Avg_India",
+                                "type": "constant",
+                                "value": 0.775,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.775,
+                                "lastValue": 0.775,
+                                "lastUpdatedAt": "2026-04-23T08:43:38.310Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "P2",
+                        "label": "EV Charging Electricity (Public Fast-Charging)",
+                        "formulaId": "697484fa455d1f980379b7b1",
+                        "formulaExpression": "(Elec_Cons_Public * EF_Grid_Avg_India) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "Elec_Cons_Public",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T08:48:08.111Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_Avg_India",
+                                "type": "constant",
+                                "value": 0.838,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.838,
+                                "lastValue": 0.838,
+                                "lastUpdatedAt": "2026-04-23T08:44:12.211Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "leakageEmissions": [
+                    {
+                        "id": "L1",
+                        "label": "Residual Grid Emissions",
+                        "formulaId": "697366375697068a66135fe9",
+                        "formulaExpression": "(AD_Elec_WF_Post * EF_Grid_KA) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_WF_Post",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T08:48:08.111Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_KA",
+                                "type": "constant",
+                                "value": 0.232,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.232,
+                                "lastValue": 0.232,
+                                "lastUpdatedAt": "2026-04-23T08:45:03.013Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ]
+            },
+            "processFlow": {
+                "mode": "snapshot",
+                "flowchartId": null,
+                "snapshot": {
+                    "metadata": {
+                        "title": "",
+                        "description": "",
+                        "version": 1
+                    },
+                    "nodes": [
+                        {
+                            "id": "346554",
+                            "label": "Employee Commuting (Hired Transport Demand)",
+                            "position": {
+                                "x": -120,
+                                "y": 80
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "process",
+                                "department": "HR - Employee Services"
+                            },
+                            "kv": {
+                                "description": "<i>Employee home-to-office commuting demand served via contracted cab services across Bangalore, Pune, and Hyderabad pickup/drop zones.</i>"
+                            }
+                        },
+                        {
+                            "id": "906572",
+                            "label": "Baseline: ICE Cab Fleet (Diesel + Petrol)",
+                            "position": {
+                                "x": 340,
+                                "y": 80
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "source",
+                                "department": "Employee Transport / Procurement"
+                            },
+                            "kv": {
+                                "description": "<i>Business-as-usual baseline is fully ICE cab usage (diesel and petrol) for employee transport.</i>"
+                            }
+                        },
+                        {
+                            "id": "784861",
+                            "label": "Project: EV Cab Fleet (NexMove Mobility Partnership)",
+                            "position": {
+                                "x": -80,
+                                "y": 400
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "process",
+                                "department": "Employee Transport Coordinator"
+                            },
+                            "kv": {
+                                "description": "<span style=\"font-weight: 700;\"><i>Project scenario transitions employee transport service to a 100% EV cab fleet replacing ICE cabs.</i></span>"
+                            }
+                        },
+                        {
+                            "id": "332950",
+                            "label": "Project Emissions Source: EV Charging Electricity",
+                            "position": {
+                                "x": 320,
+                                "y": 380
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "source",
+                                "department": "Facilities / Charging Operations"
+                            },
+                            "kv": {
+                                "description": "EV charging occurs through office-premises charging plus public fast-charging network use."
+                            }
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-346554-906572-1776934004111",
+                            "source": "346554",
+                            "target": "906572",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-906572-784861-1776934036722",
+                            "source": "906572",
+                            "target": "784861",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-784861-332950-1776934082079",
+                            "source": "784861",
+                            "target": "332950",
+                            "kv": {}
+                        }
+                    ]
+                },
+                "mapping": {
+                    "ABD": [],
+                    "APD": [],
+                    "ALD": []
+                },
+                "snapshotCreatedAt": "2026-04-24T07:32:54.382Z",
+                "snapshotCreatedBy": "6971d6fac8c78728c2d9717e"
+            },
+            "reductionDataEntry": {
+                "apiKeyRequest": {
+                    "status": "approved",
+                    "requestedInputType": "API",
+                    "requestedAt": "2026-04-27T12:00:30.398Z",
+                    "approvedAt": "2026-04-27T12:00:30.398Z",
+                    "rejectedAt": null,
+                    "apiKeyId": "69ef4fdd6c6d86b82903e3bf",
+                    "requestId": null
+                },
+                "inputType": "manual",
+                "originalInputType": "manual",
+                "apiEndpoint": "",
+                "iotDeviceId": "",
+                "apiStatus": false,
+                "iotStatus": false
+            },
+            "isDeleted": false,
+            "reductionId": "RED-Greon073-0003",
+            "projectId": "Greon073-RED-Greon073-0003",
+            "createdAt": "2026-04-23T08:48:09.093Z",
+            "updatedAt": "2026-05-07T05:34:04.929Z",
+            "__v": 0,
+            "coverImage": {
+                "filename": "1776934093003.png",
+                "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0003/cover/1776934093003.png",
+                "s3Key": "reductions/Greon073/RED-Greon073-0003/cover/1776934093003.png",
+                "bucket": "zerocarbon-uploads-prod",
+                "uploadedAt": "2026-04-23T08:48:19.883Z"
+            },
+            "images": [
+                {
+                    "filename": "1776934099884_9qr572q1kxd.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0003/gallery/1776934099884_9qr572q1kxd.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0003/gallery/1776934099884_9qr572q1kxd.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T08:48:26.435Z"
+                },
+                {
+                    "filename": "1776934106435_2h5m8el6rh.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0003/gallery/1776934106435_2h5m8el6rh.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0003/gallery/1776934106435_2h5m8el6rh.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T08:48:32.667Z"
+                },
+                {
+                    "filename": "1776934112667_f28x2h3iil8.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0003/gallery/1776934112667_f28x2h3iil8.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0003/gallery/1776934112667_f28x2h3iil8.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T08:48:39.013Z"
+                }
+            ],
+            "assignedTeam": {
+                "employeeHeadId": "69f880482a1f2a4f4866bfbd",
+                "history": [
+                    {
+                        "action": "assign_head",
+                        "by": "69e89fb2733ae310f64a4135",
+                        "details": {
+                            "headId": "69f880482a1f2a4f4866bfbd"
+                        }
+                    },
+                    {
+                        "action": "assign_employees",
+                        "by": "69f880482a1f2a4f4866bfbd",
+                        "details": {
+                            "employeeIds": [
+                                "69f884d52a1f2a4f4866c9d5"
+                            ],
+                            "mode": "set"
+                        }
+                    }
+                ],
+                "employeeIds": [
+                    "69f884d52a1f2a4f4866c9d5"
+                ]
+            }
+        },
+        {
+            "_id": "69e9c0c17ab87333b4c3437e",
+            "clientId": "Greon073",
+            "createdBy": {
+                "_id": "6971d6fac8c78728c2d9717e",
+                "email": "ananyamenon@codenest.com",
+                "userName": "Ananya Menon",
+                "userType": "consultant_admin"
+            },
+            "createdByType": "consultant_admin",
+            "projectName": "Solar PV Generation",
+            "projectActivity": "Reduction",
+            "status": "not_started",
+            "category": "Renewable Energy Generation",
+            "scope": "",
+            "location": {
+                "latitude": 17.4474,
+                "longitude": 78.3808,
+                "place": "Hyderabad",
+                "address": "Whitefield (Bldg A-E),Hyderabad-HITEC City  (Bldg H1-H2) "
+            },
+            "commissioningDate": "2024-04-01T00:00:00.000Z",
+            "endDate": "2027-04-01T00:00:00.000Z",
+            "projectPeriodDays": 1095,
+            "description": "Grid-connected solar PV generation \noffsetting Scope 2 electricity; Surplus \nexported to grid under net metering ",
+            "baselineMethod": "Historical (Adjusted) Baseline",
+            "baselineJustification": "100% grid electricity consumption from \nKarnataka/Maharashtra/Telangana \nDISCOM grids",
+            "calculationMethodology": "methodology3",
+            "m3": {
+                "projectActivity": "Reduction",
+                "buffer": 0,
+                "baselineEmissions": [
+                    {
+                        "id": "B1",
+                        "label": "Baseline grid electricity emissions - Whitefield",
+                        "formulaId": "697364885697068a66135f35",
+                        "formulaExpression": "(AD_Elec_WF * EF_Grid_KA) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_WF",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T06:48:32.545Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_KA",
+                                "type": "constant",
+                                "value": 0.775,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.775,
+                                "lastValue": 0.775,
+                                "lastUpdatedAt": "2026-04-23T06:40:54.275Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "B2",
+                        "label": "Baseline grid electricity emissions - Pune",
+                        "formulaId": "697365885697068a66135f97",
+                        "formulaExpression": "(AD_Elec_PN * EF_Grid_MH) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_PN",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T06:48:32.545Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_MH",
+                                "type": "constant",
+                                "value": 0.792,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.792,
+                                "lastValue": 0.792,
+                                "lastUpdatedAt": "2026-04-23T06:41:43.011Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "B3",
+                        "label": "Baseline grid electricity emissions - Hyderabad",
+                        "formulaId": "697365eb5697068a66135fc0",
+                        "formulaExpression": "(AD_Elec_HYD * EF_Grid_TS) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_HYD",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T06:48:32.545Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_TS",
+                                "type": "constant",
+                                "value": 0.801,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.801,
+                                "lastValue": 0.801,
+                                "lastUpdatedAt": "2026-04-23T06:42:50.654Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "projectEmissions": [
+                    {
+                        "id": "P1",
+                        "label": "Residual grid emissions (post-solar) - Whitefield",
+                        "formulaId": "697366375697068a66135fe9",
+                        "formulaExpression": "(AD_Elec_WF_Post * EF_Grid_KA) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_WF_Post",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T06:48:32.545Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_KA",
+                                "type": "constant",
+                                "value": 0.775,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.775,
+                                "lastValue": 0.775,
+                                "lastUpdatedAt": "2026-04-23T06:43:30.535Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "P2",
+                        "label": "Residual grid emissions (post-solar) - Pune",
+                        "formulaId": "697366775697068a66136012",
+                        "formulaExpression": "(AD_Elec_PN_Post * EF_Grid_MH) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_PN_Post",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T06:48:32.545Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_MH",
+                                "type": "constant",
+                                "value": 0.792,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.792,
+                                "lastValue": 0.792,
+                                "lastUpdatedAt": "2026-04-23T06:44:16.535Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "leakageEmissions": [
+                    {
+                        "id": "L1",
+                        "label": "leakage_LE",
+                        "formulaId": "697471485697068a66137096",
+                        "formulaExpression": "(AD_Elec_HYD_Post * EF_Grid_TS) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_HYD_Post",
+                                "type": "constant",
+                                "value": 1,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": 1,
+                                "lastValue": 1,
+                                "lastUpdatedAt": "2026-04-23T06:46:19.136Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_TS",
+                                "type": "constant",
+                                "value": 0,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0,
+                                "lastValue": 0,
+                                "lastUpdatedAt": "2026-04-23T06:46:23.793Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ]
+            },
+            "processFlow": {
+                "mode": "snapshot",
+                "flowchartId": null,
+                "snapshot": {
+                    "metadata": {
+                        "title": "",
+                        "description": "",
+                        "version": 1
+                    },
+                    "nodes": [
+                        {
+                            "id": "034649",
+                            "label": "DISCOM Grid (Baseline Supply)",
+                            "position": {
+                                "x": -140,
+                                "y": -20
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "source",
+                                "department": "Energy Manager"
+                            },
+                            "kv": {
+                                "description": "<i>Grid electricity supply used in baseline emissions.</i>"
+                            }
+                        },
+                        {
+                            "id": "079304",
+                            "label": "Solar PV Generation (Grid-connected)",
+                            "position": {
+                                "x": 320,
+                                "y": -20
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "source",
+                                "department": "Lead Engineer - Renewable Energy"
+                            },
+                            "kv": {
+                                "description": "<i>Solar offsets Scope 2 electricity; surplus exported under net metering.</i>"
+                            }
+                        },
+                        {
+                            "id": "295358",
+                            "label": "Meters & Data (SCADA/SmartLogger + Net Meter)",
+                            "position": {
+                                "x": 20,
+                                "y": 240
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "department": "Energy Manager",
+                                "TypeOfNode": "process"
+                            },
+                            "kv": {
+                                "description": "<i>Monitors DC output, AC output, export, and residual grid consumption.</i>"
+                            }
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-034649-079304-1776926866545",
+                            "source": "034649",
+                            "target": "079304",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-079304-295358-1776926901384",
+                            "source": "079304",
+                            "target": "295358",
+                            "kv": {}
+                        }
+                    ]
+                },
+                "mapping": {
+                    "ABD": [],
+                    "APD": [],
+                    "ALD": []
+                },
+                "snapshotCreatedAt": "2026-04-23T11:48:37.614Z",
+                "snapshotCreatedBy": "6971d6fac8c78728c2d9717e"
+            },
+            "reductionDataEntry": {
+                "inputType": "manual",
+                "originalInputType": "manual",
+                "apiEndpoint": "",
+                "iotDeviceId": "",
+                "apiStatus": false,
+                "iotStatus": false,
+                "apiKeyRequest": {
+                    "status": "none",
+                    "requestedInputType": null,
+                    "requestedAt": null,
+                    "approvedAt": null,
+                    "rejectedAt": null,
+                    "apiKeyId": null,
+                    "requestId": null
+                }
+            },
+            "isDeleted": false,
+            "reductionId": "RED-Greon073-0002",
+            "projectId": "Greon073-RED-Greon073-0002",
+            "createdAt": "2026-04-23T06:48:33.480Z",
+            "updatedAt": "2026-05-08T05:49:53.676Z",
+            "__v": 0,
+            "coverImage": {
+                "filename": "1776926917188.png",
+                "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0002/cover/1776926917188.png",
+                "s3Key": "reductions/Greon073/RED-Greon073-0002/cover/1776926917188.png",
+                "bucket": "zerocarbon-uploads-prod",
+                "uploadedAt": "2026-04-23T06:48:43.724Z"
+            },
+            "images": [
+                {
+                    "filename": "1776926923724_ws5fypur6is.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0002/gallery/1776926923724_ws5fypur6is.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0002/gallery/1776926923724_ws5fypur6is.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T06:48:50.465Z"
+                },
+                {
+                    "filename": "1776926930465_u3zitqnscwf.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0002/gallery/1776926930465_u3zitqnscwf.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0002/gallery/1776926930465_u3zitqnscwf.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T06:48:57.238Z"
+                },
+                {
+                    "filename": "1776926937238_kgz3skvbc5e.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0002/gallery/1776926937238_kgz3skvbc5e.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0002/gallery/1776926937238_kgz3skvbc5e.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T06:49:03.883Z"
+                }
+            ],
+            "assignedTeam": {
+                "employeeHeadId": "69f8b3358a165144caefb139",
+                "history": [
+                    {
+                        "action": "assign_head",
+                        "by": "69e89fb2733ae310f64a4135",
+                        "details": {
+                            "headId": "69f880482a1f2a4f4866bfbd"
+                        }
+                    },
+                    {
+                        "action": "assign_employees",
+                        "by": "69f880482a1f2a4f4866bfbd",
+                        "details": {
+                            "employeeIds": [
+                                "69f8868b2a1f2a4f4866d206"
+                            ],
+                            "mode": "set"
+                        }
+                    },
+                    {
+                        "action": "change_head",
+                        "by": "69e89fb2733ae310f64a4135",
+                        "details": {
+                            "from": "69f880482a1f2a4f4866bfbd",
+                            "to": "69f8b3358a165144caefb139"
+                        }
+                    },
+                    {
+                        "action": "assign_employees",
+                        "by": "69f8b3358a165144caefb139",
+                        "details": {
+                            "employeeIds": [
+                                "69fd7975b58a09ef0d8db132"
+                            ],
+                            "mode": "set"
+                        }
+                    }
+                ],
+                "employeeIds": [
+                    "69fd7975b58a09ef0d8db132"
+                ]
+            }
+        },
+        {
+            "_id": "69e9b11e7ab87333b4c333f6",
+            "clientId": "Greon073",
+            "createdBy": {
+                "_id": "6971d6fac8c78728c2d9717e",
+                "email": "ananyamenon@codenest.com",
+                "userName": "Ananya Menon",
+                "userType": "consultant_admin"
+            },
+            "createdByType": "consultant_admin",
+            "projectName": "Water Reuse  & Management ",
+            "projectActivity": "Reduction",
+            "status": "not_started",
+            "category": "Water Resource  Management &  Treatment",
+            "scope": "Scope 2",
+            "location": {
+                "latitude": 12.9698,
+                "longitude": 77.7499,
+                "place": "Bangalore, Karnataka ",
+                "address": "Whitefield Campus,  Building A-D,  Bangalore, Karnataka "
+            },
+            "commissioningDate": "2026-04-01T00:00:00.000Z",
+            "endDate": "2027-04-01T00:00:00.000Z",
+            "projectPeriodDays": 365,
+            "description": "On-site treatment \nof wastewater; \nReuse for \ncooling towers \n(60%), \nlandscaping (25%), \ntoilet flushing \n(15%); Reduced \nfreshwater intake \n& wastewater \ndischarge",
+            "baselineMethod": "Benchmark/Intensity",
+            "baselineJustification": "Municipal \nfreshwater supply \nfor all non- \npotable needs; \nConventional \nwastewater \ndischarge to \nBWSSB network",
+            "calculationMethodology": "methodology3",
+            "m3": {
+                "projectActivity": "Reduction",
+                "buffer": 0,
+                "baselineEmissions": [
+                    {
+                        "id": "B1",
+                        "label": "Freshwater Supply Emissions (BE1)",
+                        "formulaId": "69735fe45697068a66135dbe",
+                        "formulaExpression": "(AD_FW * EF_FW) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_FW",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "KL/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T05:41:49.533Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_FW",
+                                "type": "constant",
+                                "value": 0.298,
+                                "unit": "kgCO2e/KL",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.298,
+                                "lastValue": 0.298,
+                                "lastUpdatedAt": "2026-04-23T05:33:09.596Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "B2",
+                        "label": "Wastewater Discharge Emissions (BE2)",
+                        "formulaId": "697360a25697068a66135dfa",
+                        "formulaExpression": "(AD_WW * EF_WW) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_WW",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "KL/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T05:41:49.533Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_WW",
+                                "type": "constant",
+                                "value": 0.272,
+                                "unit": "kgCO2e/KL",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.272,
+                                "lastValue": 0.272,
+                                "lastUpdatedAt": "2026-04-23T05:34:05.369Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "projectEmissions": [
+                    {
+                        "id": "P1",
+                        "label": "MBR+RO Treatment Plant Electricity (PE1)",
+                        "formulaId": "697363365697068a66135e94",
+                        "formulaExpression": "(AD_Elec_MBR * EF_Grid_KA) / 1000",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "AD_Elec_MBR",
+                                "type": "manual",
+                                "value": null,
+                                "unit": "kWh/year",
+                                "updatePolicy": "manual",
+                                "defaultValue": null,
+                                "lastValue": null,
+                                "lastUpdatedAt": "2026-04-23T05:41:49.533Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_Grid_KA",
+                                "type": "constant",
+                                "value": 0.775,
+                                "unit": "kgCO2e/kWh",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0.775,
+                                "lastValue": 0.775,
+                                "lastUpdatedAt": "2026-04-23T05:34:31.338Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ],
+                "leakageEmissions": [
+                    {
+                        "id": "L1",
+                        "label": "RO Membrane & MBR Module Replacement (LE1)",
+                        "formulaId": "69745eaf5697068a66136ce3",
+                        "formulaExpression": "(RO_Units * EF_RO )",
+                        "ssrType": "Source",
+                        "remark": "",
+                        "Reference": "",
+                        "variables": [
+                            {
+                                "name": "RO_Units",
+                                "type": "constant",
+                                "value": 1,
+                                "unit": " units",
+                                "updatePolicy": "manual",
+                                "defaultValue": 0,
+                                "lastValue": 1,
+                                "lastUpdatedAt": "2026-04-23T05:35:25.524Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            },
+                            {
+                                "name": "EF_RO",
+                                "type": "constant",
+                                "value": 0,
+                                "unit": "kgCO2e/unit",
+                                "updatePolicy": "manual",
+                                "defaultValue": 1,
+                                "lastValue": 0,
+                                "lastUpdatedAt": "2026-04-23T05:35:27.743Z",
+                                "policy": {
+                                    "isConstant": true,
+                                    "schedule": {
+                                        "frequency": "none",
+                                        "fromDate": null,
+                                        "toDate": null
+                                    },
+                                    "history": []
+                                },
+                                "internalSources": [],
+                                "computedInternalValue": null
+                            }
+                        ]
+                    }
+                ]
+            },
+            "processFlow": {
+                "mode": "snapshot",
+                "flowchartId": null,
+                "snapshot": {
+                    "metadata": {
+                        "title": "",
+                        "description": "",
+                        "version": 1
+                    },
+                    "nodes": [
+                        {
+                            "id": "311595",
+                            "label": "Campus Buildings A–D (Wastewater Generation)",
+                            "position": {
+                                "x": -480,
+                                "y": 40
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "source",
+                                "department": "Facilities Management"
+                            },
+                            "kv": {
+                                "description": "<i>Wastewater generated from campus non-potable uses; baseline freshwater intake tracked via WFD-M001.</i>"
+                            }
+                        },
+                        {
+                            "id": "995897",
+                            "label": "Wastewater Collection & Equalization",
+                            "position": {
+                                "x": -40,
+                                "y": 40
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "process",
+                                "department": "Facilities Management"
+                            },
+                            "kv": {
+                                "description": "<i>Influent collected and equalized before treatment; baseline municipal discharge tracked via WFD-M002.</i>"
+                            }
+                        },
+                        {
+                            "id": "720843",
+                            "label": "On-site Treatment Plant (MBR + RO + UV)",
+                            "position": {
+                                "x": 440,
+                                "y": 40
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "process",
+                                "department": "Water & Wastewater Operations"
+                            },
+                            "kv": {
+                                "description": "<i>Integrated MBR + RO + UV system producing reuse-grade water; electricity logged via plant energy meter.</i>"
+                            }
+                        },
+                        {
+                            "id": "006208",
+                            "label": "Treated Water Storage & Distribution Header",
+                            "position": {
+                                "x": -420,
+                                "y": 380
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "output",
+                                "department": "Water & Wastewater Operations"
+                            },
+                            "kv": {
+                                "description": "<i>Buffer storage and distribution manifold for treated water prior to end-use.</i>"
+                            }
+                        },
+                        {
+                            "id": "443284",
+                            "label": "Non-potable Reuse End-Uses (Cooling/Landscape/Toilet)",
+                            "position": {
+                                "x": 40,
+                                "y": 380
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "equipment",
+                                "department": "Facilities / HVAC / Grounds"
+                            },
+                            "kv": {
+                                "description": "<i>Treated water reused across cooling towers, landscaping irrigation, and toilet flushing as per reuse split.</i>"
+                            }
+                        },
+                        {
+                            "id": "955467",
+                            "label": "Residual/Reject Discharge to BWSSB Network",
+                            "position": {
+                                "x": 460,
+                                "y": 380
+                            },
+                            "parentNode": null,
+                            "details": {
+                                "TypeOfNode": "equipment",
+                                "department": "Facilities Management"
+                            },
+                            "kv": {
+                                "description": "<i>Any reject/brine + residual non-reused volume discharged to municipal network; reduction credited by lower discharge vs baseline.</i>"
+                            }
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "e-311595-995897-1776922621253",
+                            "source": "311595",
+                            "target": "995897",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-995897-720843-1776922667587",
+                            "source": "995897",
+                            "target": "720843",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-720843-006208-1776922755878",
+                            "source": "720843",
+                            "target": "006208",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-006208-443284-1776922788852",
+                            "source": "006208",
+                            "target": "443284",
+                            "kv": {}
+                        },
+                        {
+                            "id": "e-443284-955467-1776922900854",
+                            "source": "443284",
+                            "target": "955467",
+                            "kv": {}
+                        }
+                    ]
+                },
+                "mapping": {
+                    "ABD": [],
+                    "APD": [],
+                    "ALD": []
+                },
+                "snapshotCreatedAt": "2026-04-24T07:34:03.983Z",
+                "snapshotCreatedBy": "6971d6fac8c78728c2d9717e"
+            },
+            "reductionDataEntry": {
+                "inputType": "manual",
+                "originalInputType": "manual",
+                "apiEndpoint": "",
+                "iotDeviceId": "",
+                "apiStatus": false,
+                "iotStatus": false,
+                "apiKeyRequest": {
+                    "status": "none",
+                    "requestedInputType": null,
+                    "requestedAt": null,
+                    "approvedAt": null,
+                    "rejectedAt": null,
+                    "apiKeyId": null,
+                    "requestId": null
+                }
+            },
+            "isDeleted": false,
+            "reductionId": "RED-Greon073-0001",
+            "projectId": "Greon073-RED-Greon073-0001",
+            "createdAt": "2026-04-23T05:41:50.518Z",
+            "updatedAt": "2026-05-08T05:10:54.562Z",
+            "__v": 0,
+            "coverImage": {
+                "filename": "1776922914636.png",
+                "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0001/cover/1776922914636.png",
+                "s3Key": "reductions/Greon073/RED-Greon073-0001/cover/1776922914636.png",
+                "bucket": "zerocarbon-uploads-prod",
+                "uploadedAt": "2026-04-23T05:42:01.121Z"
+            },
+            "images": [
+                {
+                    "filename": "1776922921122_aokvcsfzx2e.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0001/gallery/1776922921122_aokvcsfzx2e.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0001/gallery/1776922921122_aokvcsfzx2e.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T05:42:08.530Z"
+                },
+                {
+                    "filename": "1776922928530_z4ermehie1d.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0001/gallery/1776922928530_z4ermehie1d.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0001/gallery/1776922928530_z4ermehie1d.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T05:42:15.093Z"
+                },
+                {
+                    "filename": "1776922935093_tockb8evhzh.png",
+                    "url": "https://zerocarbon-uploads-prod.s3.us-east-1.amazonaws.com/reductions/Greon073/RED-Greon073-0001/gallery/1776922935093_tockb8evhzh.png",
+                    "s3Key": "reductions/Greon073/RED-Greon073-0001/gallery/1776922935093_tockb8evhzh.png",
+                    "bucket": "zerocarbon-uploads-prod",
+                    "uploadedAt": "2026-04-23T05:42:21.644Z"
+                }
+            ],
+            "assignedTeam": {
+                "employeeHeadId": "69f880482a1f2a4f4866bfbd",
+                "history": [
+                    {
+                        "action": "assign_head",
+                        "by": "69e89fb2733ae310f64a4135",
+                        "details": {
+                            "headId": "69f880482a1f2a4f4866bfbd"
+                        }
+                    }
+                ]
+            }
+        }]

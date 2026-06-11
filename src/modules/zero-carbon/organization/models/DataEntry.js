@@ -1,5 +1,12 @@
 const mongoose = require('mongoose');
 
+const EvidenceLinkSchema = new mongoose.Schema({
+  label:   { type: String, default: '' },
+  url:     { type: String, required: true },
+  addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  addedAt: { type: Date, default: Date.now },
+});
+
 const EditHistorySchema = new mongoose.Schema({
   editedAt: {
     type: Date,
@@ -388,6 +395,8 @@ const DataEntrySchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null,
   },
+  // Evidence links attached to this data entry (e.g. invoices, reports, Google Drive links)
+  evidenceLinks: { type: [EvidenceLinkSchema], default: [] },
 },
 {
   timestamps: true,
@@ -406,15 +415,8 @@ DataEntrySchema.index({ 'summaryPeriod.month': 1, 'summaryPeriod.year': 1 });
 DataEntrySchema.index({ clientId: 1, nodeId: 1, scopeIdentifier: 1, timestamp: -1 });
 DataEntrySchema.index({ clientId: 1, processingStatus: 1, timestamp: -1 });
 DataEntrySchema.index({ clientId: 1, 'summaryPeriod.year': -1, 'summaryPeriod.month': -1 });
-
-
-// Compound index for efficient querying
-DataEntrySchema.index({ 
-  clientId: 1, 
-  nodeId: 1, 
-  scopeIdentifier: 1, 
-  timestamp: -1 
-});
+// Covers post-save countDocuments + calculateCumulativeValues findOne (ESR order: equality clientId/nodeId/scopeIdentifier/inputType, sort timestamp)
+DataEntrySchema.index({ clientId: 1, nodeId: 1, scopeIdentifier: 1, inputType: 1, isSummary: 1, timestamp: -1 });
 
 
 // --- Add near top (after schema declaration) ---
@@ -546,40 +548,44 @@ DataEntrySchema.post('save', async function(doc) {
     
     if (laterEntriesCount > 0) {
       console.log(`🔄 Found ${laterEntriesCount} data entries after this timestamp. Triggering recalculation...`);
-      
+
       // Import the recalculation helper
       const { recalculateDataEntriesAfter } = require('../../calculation/utils/recalculateHelpers');
-      
+
       // Trigger recalculation in background (don't await to avoid blocking)
       setImmediate(async () => {
         try {
           await recalculateDataEntriesAfter(doc);
-          
-          // 🔹 After recalculation, trigger summary updates
-          console.log(`📊 Triggering emission summary recalculation for client: ${doc.clientId}`);
-          try {
-            const { updateSummariesOnDataChange } = require('../../calculation/CalculationSummary');
-            await updateSummariesOnDataChange(doc);
-            console.log(`📊 ✅ Emission summary recalculation completed`);
-          } catch (summaryError) {
-            console.error(`📊 ❌ Error recalculating emission summary:`, summaryError);
+
+          // 🔹 After recalculation, trigger summary updates (skip during batch CSV uploads)
+          if (!doc._skipSummaryUpdate) {
+            console.log(`📊 Triggering emission summary recalculation for client: ${doc.clientId}`);
+            try {
+              const { updateSummariesOnDataChange } = require('../../calculation/CalculationSummary');
+              await updateSummariesOnDataChange(doc);
+              console.log(`📊 ✅ Emission summary recalculation completed`);
+            } catch (summaryError) {
+              console.error(`📊 ❌ Error recalculating emission summary:`, summaryError);
+            }
           }
         } catch (recalcError) {
           console.error('❌ Error in post-save recalculation:', recalcError);
         }
       });
     } else {
-      // No later entries, but still trigger summary update for this period
-      console.log(`📊 No later entries. Triggering emission summary update for client: ${doc.clientId}`);
-      setImmediate(async () => {
-        try {
-          const { updateSummariesOnDataChange } = require('../../calculation/CalculationSummary');
-          await updateSummariesOnDataChange(doc);
-          console.log(`📊 ✅ Emission summary update completed`);
-        } catch (summaryError) {
-          console.error(`📊 ❌ Error updating emission summary:`, summaryError);
-        }
-      });
+      // No later entries, but still trigger summary update for this period (skip during batch CSV uploads)
+      if (!doc._skipSummaryUpdate) {
+        console.log(`📊 No later entries. Triggering emission summary update for client: ${doc.clientId}`);
+        setImmediate(async () => {
+          try {
+            const { updateSummariesOnDataChange } = require('../../calculation/CalculationSummary');
+            await updateSummariesOnDataChange(doc);
+            console.log(`📊 ✅ Emission summary update completed`);
+          } catch (summaryError) {
+            console.error(`📊 ❌ Error updating emission summary:`, summaryError);
+          }
+        });
+      }
     }
   } catch (error) {
     console.error('❌ Error in DataEntry post-save hook:', error);
@@ -614,7 +620,8 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
   // Validate format first
   this.validateDataFormat();
   
-  // Find the latest previous entry for the same stream
+  // Find the latest previous entry for the same stream.
+  // .lean() skips full Mongoose hydration; .select() avoids decrypting unneeded fields.
   const previousEntry = await this.constructor.findOne({
     clientId: this.clientId,
     nodeId: this.nodeId,
@@ -622,8 +629,11 @@ DataEntrySchema.methods.calculateCumulativeValues = async function() {
     inputType: this.inputType,
     _id: { $ne: this._id },
     timestamp: { $lte: this.timestamp },
-    isSummary: false // Don't consider summary entries for cumulative calculation
-  }).sort({ timestamp: -1, _id: -1 });
+    isSummary: false
+  })
+    .select('cumulativeValues highData lowData dataEntryCumulative')
+    .sort({ timestamp: -1, _id: -1 })
+    .lean();
   
   // Initialize tracking objects
   const cumulativeValues = {};
@@ -1056,7 +1066,10 @@ DataEntrySchema.statics.getLatestCumulative = async function(clientId, nodeId, s
     nodeId,
     scopeIdentifier,
     inputType
-  }).sort({ timestamp: -1 });
+  })
+    .select('cumulativeValues highData lowData lastEnteredData dataEntryCumulative')
+    .sort({ timestamp: -1 })
+    .lean();
   
   if (!latest) return null;
   

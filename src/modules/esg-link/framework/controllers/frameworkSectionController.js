@@ -49,11 +49,17 @@ const createSection = async (req, res) => {
 const listSections = async (req, res) => {
   try {
     const { frameworkId } = req.params;
-    const { frameworkCode } = req.query;
+    const { frameworkCode, showDeleted } = req.query;
 
     const query = {};
     if (frameworkId)   query.frameworkId   = frameworkId;
     if (frameworkCode) query.frameworkCode = frameworkCode.toUpperCase();
+
+    if (showDeleted === 'true') {
+      query.isDeleted = true;
+    } else {
+      query.isDeleted = { $ne: true };
+    }
 
     const sections = await EsgFrameworkSection.find(query)
       .sort({ displayOrder: 1, sectionCode: 1 })
@@ -87,4 +93,42 @@ const updateSection = async (req, res) => {
   }
 };
 
-module.exports = { createSection, listSections, updateSection };
+const deleteSection = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const section = await EsgFrameworkSection.findOneAndUpdate(
+      { _id: req.params.sectionId, isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id } },
+      { new: true }
+    );
+
+    if (!section) return res.status(404).json({ message: 'Section not found or already deleted' });
+    return res.status(200).json({ success: true, message: 'Section deleted', data: section });
+  } catch (err) {
+    console.error('[frameworkSectionController] deleteSection:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+const restoreSection = async (req, res) => {
+  try {
+    const perm = canManageFrameworkLibrary(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const section = await EsgFrameworkSection.findOneAndUpdate(
+      { _id: req.params.sectionId, isDeleted: true },
+      { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+      { new: true }
+    );
+
+    if (!section) return res.status(404).json({ message: 'Section not found or not deleted' });
+    return res.status(200).json({ success: true, message: 'Section restored', data: section });
+  } catch (err) {
+    console.error('[frameworkSectionController] restoreSection:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+module.exports = { createSection, listSections, updateSection, deleteSection, restoreSection };

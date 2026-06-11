@@ -28,6 +28,22 @@ const ForecastSnapshotSchema = new mongoose.Schema({
   // false → manual comparison compute using a different method (does not affect live tracking)
   is_primary: { type: Boolean, default: true, index: true },
 
+  // ── Dual-status fields ─────────────────────────────────────────────────────
+  // vs_budget_status  → projected year-end vs pathway allowed_emissions (same as forecast_status, explicit alias)
+  // vs_baseline_status → actual YTD vs seasonally-expected YTD (prior-year pattern × allowed budget)
+  vs_budget_status:   { type: String, enum: [...Object.values(ForecastStatus), null], default: null },
+  vs_baseline_status: { type: String, enum: [...Object.values(ForecastStatus), null], default: null },
+  // Expected YTD at today's date per seasonal weights × allowed budget
+  ytd_expected:       { type: Number, default: null },
+  // Annual emissions if pace exactly follows prior-year seasonal pattern
+  baseline_projected: { type: Number, default: null },
+
+  // ── Monthly chart data arrays (ANNUAL snapshots only) ─────────────────────
+  // monthly_allowed[i] = { month (1-12), allowed_co2e } — budget × seasonal weight
+  // monthly_baseline[i] = { month (1-12), baseline_co2e } — prior-year actuals scaled to budget
+  monthly_allowed:  [{ month: { type: Number }, allowed_co2e:  { type: Number } }],
+  monthly_baseline: [{ month: { type: Number }, baseline_co2e: { type: Number } }],
+
   // Per-allocation breakdown (populated when APPROVED/ACTIVE allocations exist for the target)
   allocation_forecasts: [{
     allocation_id:               { type: mongoose.Schema.Types.ObjectId, ref: 'SourceAllocation' },

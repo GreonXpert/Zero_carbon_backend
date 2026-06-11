@@ -4191,6 +4191,21 @@ client.workflowTracking.assignedConsultantId = consultantId;
       });
     }
 
+    // 1b) GreOn IQ credit bonus: +500 to consultant for each new client assigned
+    try {
+      const { getOrCreateWallet, addCredits } = require('../../../modules/greon-iq/services/creditWalletService');
+      await getOrCreateWallet(consultantId, 'consultant', null);
+      await addCredits(consultantId, 500, 'client_assign_bonus', {
+        triggeredBy: String(req.user.id),
+        clientId,
+        reason: 'new_client_assigned',
+      });
+      console.log(`✅ GreOn IQ client_assign_bonus (+500) credited to consultant ${consultantId} for client ${clientId}`);
+    } catch (walletErr) {
+      console.warn(`[assignConsultant] GreOn IQ credit bonus skipped:`, walletErr.message);
+      postSaveWarnings.push({ area: 'greon_iq_credits', message: walletErr.message });
+    }
+
     // 2) Real-time emits / socket notifications
     try {
       // Emit real-time updates for dashboard
@@ -7595,11 +7610,11 @@ const moveToActive = async (req, res) => {
       // Not fatal — log and continue
     }
 
-    // 8) Create / sync client admin user
+    // 8) Create / sync client admin user + seed activation bonus credits
 try {
   const clientModules = normalizeAccessibleModules(client.accessibleModules);
 
-  await createClientAdmin(newClientId, {
+  const clientAdminUser = await createClientAdmin(newClientId, {
     consultantId: req.user.id,
     sandbox: false,
     accessibleModules: clientModules,
@@ -7608,6 +7623,21 @@ try {
   // Safety sync: if client_admin already exists, update its accessibleModules too
   await syncClientAdminModuleAccess(newClientId, clientModules);
 
+  // Add 10,000 opening balance credits when client goes active
+  if (clientAdminUser?._id) {
+    try {
+      const { getOrCreateWallet, addCredits } = require('../../../modules/greon-iq/services/creditWalletService');
+      await getOrCreateWallet(clientAdminUser._id, 'client_admin', newClientId);
+      await addCredits(clientAdminUser._id, 10000, 'activation_bonus', {
+        triggeredBy: String(req.user.id),
+        clientId: newClientId,
+        reason: 'client_activated_to_active_stage',
+      });
+      console.log(`✅ GreOn IQ activation bonus (10000 credits) added for client_admin of ${newClientId}`);
+    } catch (walletErr) {
+      console.warn(`⚠️ GreOn IQ activation bonus skipped for ${newClientId}:`, walletErr.message);
+    }
+  }
 } catch (err) {
   console.warn(`createClientAdmin warning: ${err.message}`);
 }

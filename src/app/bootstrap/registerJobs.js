@@ -12,7 +12,9 @@ const { startEsgLinkExpiryChecker }     = require('../../modules/zero-carbon/wor
 const { startSummaryMaintenanceJob }    = require('../../modules/zero-carbon/workflow/jobs/summaryMaintenanceJob');
 const { startSLAChecker }               = require('../../common/utils/jobs/ticketSlaChecker');
 const { startEsgDataFrequencyChecker }  = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgDataFrequencyChecker');
-const { startEsgApiKeyExpiryChecker }   = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgApiKeyExpiryChecker');
+const { startEsgReviewerApproverEscalationChecker } = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgReviewerApproverEscalationChecker');
+const { startEsgApiKeyExpiryChecker }       = require('../../modules/esg-link/esgLink_core/workflow/jobs/esgApiKeyExpiryChecker');
+const { startEsgSummaryMaintenanceJob }     = require('../../modules/esg-link/esgLink_core/summary/jobs/esgSummaryMaintenanceJob');
 const { publishScheduledNotifications } = require('../../common/controllers/notification/notificationControllers');
 const { startGreOnIQWeeklyReset }       = require('../../modules/greon-iq/jobs/greonIQWeeklyReset');
 const { startGreOnIQMonthlyReset }      = require('../../modules/greon-iq/jobs/greonIQMonthlyReset');
@@ -22,6 +24,11 @@ const {
   startForecastNightlyCron,
   registerEmissionSummaryHook,
 } = require('../../modules/zero-carbon/m3/jobs/m3ForecastAutoJob');
+
+// ── RAG Report Composer — Bull queue workers ──────────────────────────────────
+const { startExportPDFWorker }   = require('../../modules/rag/jobs/exportPDFJob');
+// generateReportJob attaches its processor at require-time
+require('../../modules/rag/jobs/generateReportJob');
 
 // ============================================================================
 // REGISTER ALL CRON JOBS AND BACKGROUND TASKS
@@ -71,18 +78,26 @@ function registerJobs() {
 
   // ── Summary maintenance job (hourly recalc + daily cleanup) ──────────────
   startSummaryMaintenanceJob();
+  startEsgSummaryMaintenanceJob();   // hourly ESGLink boundary summary pre-computation (:30 UTC)
 
   // ── ESG data frequency reminder checker (daily at 07:00 UTC) ─────────────
   startEsgDataFrequencyChecker();
 
+  // ── ESG reviewer/approver SLA escalation checker (daily at 08:00 UTC) ────
+  startEsgReviewerApproverEscalationChecker();
+
   // ── GreOn IQ quota resets + retention cleanup (IST-based) ────────────────
   startGreOnIQWeeklyReset();      // Mon 00:00 IST — zero weekly usage counters
   startGreOnIQMonthlyReset();     // 1st of month 00:00 IST — zero monthly counters
-  startGreOnIQRetentionCleanup(); // Daily 02:30 IST — trim sessions exceeding retention limit
+  startGreOnIQRetentionCleanup(); // Saturday 02:30 IST — trim sessions (count + 30-day age, pinned sessions never deleted)
 
   // ── M3 Forecast auto-recompute ────────────────────────────────────────────
   registerEmissionSummaryHook();  // trigger recompute whenever emission data is saved
   startForecastNightlyCron();     // nightly full recompute at 01:00 UTC
+
+  // ── RAG Report Composer — PDF export worker ───────────────────────────────
+  console.log('🤖 Starting RAG Report Composer PDF export worker...');
+  startExportPDFWorker();
 
   // ── Scheduled notification publisher (every 5 minutes) ───────────────────
   cron.schedule('*/5 * * * *', async () => {

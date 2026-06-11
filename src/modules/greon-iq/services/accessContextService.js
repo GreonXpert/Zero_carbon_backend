@@ -16,6 +16,41 @@ const {
   hasEsgModuleAccess,
 } = require('../../../common/utils/Permissions/accessControlPermission');
 
+const Client = require('../../client-management/client/Client');
+
+// Simple in-process cache to avoid repeated DB hits for the same clientId
+// within a request burst. TTL: 60 seconds.
+const _clientCache = new Map(); // key: clientId → { data, expiresAt }
+const CLIENT_CACHE_TTL_MS = 60_000;
+
+async function _fetchClientSubscription(clientId) {
+  const now = Date.now();
+  const cached = _clientCache.get(clientId);
+  if (cached && cached.expiresAt > now) return cached.data;
+
+  try {
+    const doc = await Client.findOne(
+      { clientId, isDeleted: { $ne: true } },
+      {
+        'submissionData.assessmentLevel':        1,
+        'submissionData.esgLinkAssessmentLevel': 1,
+        accessibleModules:                       1,
+      }
+    ).lean();
+
+    const data = {
+      clientAssessmentLevel:    doc?.submissionData?.assessmentLevel        || null,
+      clientEsgAssessmentLevel: doc?.submissionData?.esgLinkAssessmentLevel || null,
+    };
+
+    _clientCache.set(clientId, { data, expiresAt: now + CLIENT_CACHE_TTL_MS });
+    return data;
+  } catch (err) {
+    console.error('[GreOnIQ] accessContextService: client fetch error:', err.message);
+    return { clientAssessmentLevel: null, clientEsgAssessmentLevel: null };
+  }
+}
+
 // Roles that always have access to all ZeroCarbon + ESGLink modules
 const UNRESTRICTED_ROLES = ['super_admin', 'consultant_admin', 'consultant', 'client_admin'];
 
@@ -27,24 +62,22 @@ const SCOPE_RESTRICTED_ROLES = ['client_employee_head', 'employee'];
  *
  * @param {object} user             req.user (full Mongoose document or POJO)
  * @param {string} resolvedClientId The clientId resolved by clientScopeResolver
- * @returns {object} accessContext
+ * @returns {Promise<object>} accessContext
  */
-function buildAccessContext(user, resolvedClientId) {
+async function buildAccessContext(user, resolvedClientId) {
   const {
     _id: userId,
     userType,
     accessibleModules = [],
     accessControls    = {},
     esgAccessControls = {},
-    // Node/scope restrictions for employee-level roles
-    // These fields come from user assignments (populated in dataEntryPermission.js pattern)
     assignedNodes          = [],
     assignedScopeIds       = [],
     assignedProcessNodes   = [],
     assignedReductionProjects = [],
   } = user;
 
-  const isUnrestricted = UNRESTRICTED_ROLES.includes(userType);
+  const isUnrestricted    = UNRESTRICTED_ROLES.includes(userType);
   const isScopeRestricted = SCOPE_RESTRICTED_ROLES.includes(userType);
 
   // ── Product access ──────────────────────────────────────────────────────────
@@ -52,8 +85,6 @@ function buildAccessContext(user, resolvedClientId) {
   const canAccessEsgLink    = accessibleModules.includes('esg_link');
 
   // ── ZeroCarbon module access checker ───────────────────────────────────────
-  // For unrestricted roles: all modules granted
-  // For checklist roles: use hasModuleAccess from existing permission utility
   function hasZCModule(moduleName) {
     if (isUnrestricted) return true;
     if (!canAccessZeroCarbon) return false;
@@ -68,8 +99,6 @@ function buildAccessContext(user, resolvedClientId) {
   }
 
   // ── Node/scope restriction filter ──────────────────────────────────────────
-  // For employee-level roles: retrieval must be filtered by these IDs.
-  // For unrestricted roles: empty arrays mean "no filter applied" (all records returned).
   const nodeRestrictions = isScopeRestricted
     ? {
         nodeIds:             assignedNodes.map(String),
@@ -77,7 +106,10 @@ function buildAccessContext(user, resolvedClientId) {
         processNodeIds:      assignedProcessNodes.map(String),
         reductionProjectIds: assignedReductionProjects.map(String),
       }
-    : null; // null = no restriction (full scope)
+    : null;
+
+  // ── Client subscription levels (fetched from Client record) ────────────────
+  const clientSub = await _fetchClientSubscription(resolvedClientId);
 
   return {
     userId:            userId.toString(),
@@ -97,6 +129,10 @@ function buildAccessContext(user, resolvedClientId) {
     nodeRestrictions,
     isScopeRestricted,
     isUnrestricted,
+
+    // Client subscription — used for assessment-level gating
+    clientAssessmentLevel:    clientSub.clientAssessmentLevel,
+    clientEsgAssessmentLevel: clientSub.clientEsgAssessmentLevel,
   };
 }
 

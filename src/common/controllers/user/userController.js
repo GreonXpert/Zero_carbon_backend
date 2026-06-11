@@ -1381,7 +1381,25 @@ ZeroCarbon Team`;
     }
     
     // ==========================================
-    // 10. SEND SUCCESS RESPONSE
+    // 10. SEED GREON IQ CREDIT WALLET
+    // ==========================================
+    try {
+      const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
+      const initialCredits = typeof req.body.initialCredits === 'number' && req.body.initialCredits > 0
+        ? req.body.initialCredits
+        : 500;
+      await getOrCreateWallet(consultant._id, 'consultant', null);
+      await addCredits(consultant._id, initialCredits, 'initial_grant', {
+        triggeredBy: String(req.user._id),
+        reason: 'consultant_creation',
+      });
+      console.log(`✅ GreOn IQ wallet seeded (${initialCredits} credits) for: ${consultant.userName}`);
+    } catch (walletErr) {
+      console.warn(`⚠️ GreOn IQ wallet seeding skipped for ${consultant.userName}:`, walletErr.message);
+    }
+
+    // ==========================================
+    // 11. SEND SUCCESS RESPONSE
     // ==========================================
     res.status(201).json({
       message: "Consultant created successfully",
@@ -1643,6 +1661,23 @@ const createClientAdmin = async (clientId, clientData = {}) => {
     });
 
     await clientAdmin.save();
+
+    // Seed GreOn IQ credit wallet for new client_admin
+    try {
+      const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
+      const initialCredits = typeof clientData.initialCredits === 'number' && clientData.initialCredits > 0
+        ? clientData.initialCredits
+        : 10000;
+      await getOrCreateWallet(clientAdmin._id, 'client_admin', clientId);
+      await addCredits(clientAdmin._id, initialCredits, 'initial_grant', {
+        triggeredBy: 'system',
+        reason: 'client_admin_creation',
+        clientId,
+      });
+      console.log(`✅ GreOn IQ wallet seeded (${initialCredits} credits) for client_admin: ${clientAdmin.email}`);
+    } catch (walletErr) {
+      console.warn(`⚠️ GreOn IQ wallet seeding skipped for client_admin ${clientAdmin.email}:`, walletErr.message);
+    }
 
     // Update the client document with the new clientAdminId
     if (!client.accountDetails) client.accountDetails = {};
@@ -1948,6 +1983,20 @@ const createEmployeeHead = async (req, res) => {
         logUserCreated(req, head).catch(() => {})
 
         console.log(`✅ Employee Head created: ${head.userName} | Department: ${head.department} | Location: ${head.location}`);
+
+        // Seed GreOn IQ credit wallet (fixed 5,000 credits — not configurable)
+        try {
+          const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
+          await getOrCreateWallet(head._id, 'client_employee_head', head.clientId);
+          await addCredits(head._id, 5000, 'initial_grant', {
+            triggeredBy: String(req.user._id),
+            reason: 'client_employee_head_creation',
+            clientId: head.clientId,
+          });
+          console.log(`✅ GreOn IQ wallet seeded (5000 credits) for Employee Head: ${head.userName}`);
+        } catch (walletErr) {
+          console.warn(`⚠️ GreOn IQ wallet seeding skipped for Employee Head ${head.userName}:`, walletErr.message);
+        }
 
         // ==========================================
         // 8. HANDLE PROFILE IMAGE (Optional)

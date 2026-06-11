@@ -818,12 +818,13 @@ const calculateEmissions = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid scope type' });
     }
 
-    // 6. Save results
-    if (calculationResult.success) {
-      dataEntry.calculatedEmissions = calculationResult.emissions;
-      dataEntry.processingStatus = 'processed';
-      await dataEntry.save();
-    }
+    // 6. Return results
+    // NOTE: We intentionally do NOT save here. The caller (triggerEmissionCalculation
+    // in emissionIntegration.js) owns the single DataEntry save so that
+    // calculatedEmissions, emissionCalculationStatus = 'completed', processingStatus,
+    // and emissionCalculatedAt are all written in one atomic operation.
+    // Previously there were two saves here which caused a brief window of
+    // inconsistent status and an unnecessary extra DB write per entry.
 
     return res.status(200).json(calculationResult);
 

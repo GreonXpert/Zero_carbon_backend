@@ -11,6 +11,46 @@
 
 const mongoose = require('mongoose');
 
+// ── IoTConfigSchema ───────────────────────────────────────────────────────────
+const IoTConfigSchema = new mongoose.Schema({
+  deviceId:     { type: String, default: '' },
+  deviceName:   { type: String, default: '' },
+  protocol: {
+    type: String,
+    enum: ['mqtt', 'http', 'coap', 'modbus', 'other'],
+    default: 'mqtt'
+  },
+  brokerUrl:    { type: String, default: '' },
+  topic:        { type: String, default: '' },
+  serialNumber: { type: String, default: '' },
+  manufacturer: { type: String, default: '' },
+  location:     { type: String, default: '' },
+  notes:        { type: String, default: '' }
+}, { _id: false });
+
+// ── ApiConfigSchema ───────────────────────────────────────────────────────────
+const ApiConfigSchema = new mongoose.Schema({
+  sourceUrl:  { type: String, default: '' },
+  sourceName: { type: String, default: '' },
+  method: {
+    type: String,
+    enum: ['GET', 'POST', 'PUT', 'PATCH'],
+    default: 'POST'
+  },
+  authType: {
+    type: String,
+    enum: ['none', 'api_key', 'bearer_token', 'basic_auth', 'oauth2'],
+    default: 'api_key'
+  },
+  dataFormat: {
+    type: String,
+    enum: ['json', 'xml', 'csv', 'form_data'],
+    default: 'json'
+  },
+  ipWhitelist: { type: [String], default: [] },
+  notes: { type: String, default: '' }
+}, { _id: false });
+
 // ── §2.6 Validation Rule sub-schema ──────────────────────────────────────────
 const ValidationRuleSchema = new mongoose.Schema({
   validationRuleId: {
@@ -37,7 +77,7 @@ const VariableConfigSchema = new mongoose.Schema({
   updatePolicy: {
     type: String,
     enum: ['frozen', 'realtime', 'manual'],
-    required: true
+     required: true
   },
   defaultValue: { type: mongoose.Schema.Types.Mixed, default: null },
   notes:        { type: String, default: '' }
@@ -54,6 +94,18 @@ const VersionHistorySchema = new mongoose.Schema({
 
 // ── MetricDetailSchema — Step 3 core ─────────────────────────────────────────
 const MetricDetailSchema = new mongoose.Schema({
+
+  // ── Stable string _id — survives the AES encryption plugin's round-trip ─────
+  // The encryption plugin serialises the entire nodes array to JSON, encrypts it,
+  // then JSON.parse()s it back on read.  A Mongoose-generated ObjectId _id gets
+  // cast to String by JSON.stringify (via toJSON()), but if Mongoose later tries
+  // to cast it back to ObjectId after JSON.parse it can silently become null.
+  // Declaring _id as String here stops Mongoose from ever recasting it and keeps
+  // the value identical through every save/load cycle.
+  _id: {
+    type:    String,
+    default: () => new mongoose.Types.ObjectId().toString(),
+  },
 
   // ── Identity ────────────────────────────────────────────────────────────────
   metricId: {
@@ -81,6 +133,8 @@ const MetricDetailSchema = new mongoose.Schema({
   // ── §2.4 Source and References ───────────────────────────────────────────────
   allowedSourceTypes: [{ type: String }],
   defaultSourceType:  { type: String, default: null },
+  iotConfig:          { type: IoTConfigSchema, default: null },
+  apiConfig:          { type: ApiConfigSchema, default: null },
   zeroCarbonReference: { type: Boolean, default: false },
   zeroCarbonLink: {
     linkedBoundaryId: { type: mongoose.Schema.Types.ObjectId, ref: 'EsgLinkBoundary', default: null },
@@ -137,7 +191,9 @@ const MetricDetailSchema = new mongoose.Schema({
   mappingVersion: { type: Number, default: 1 },  // business version — do NOT use __v
   versionHistory: [VersionHistorySchema]
 
-}, { _id: true });  // _id: true → each entry gets its own mappingId
+  // NOTE: _id is explicitly declared as String above to prevent ObjectId
+  // re-casting through the AES encryption plugin's JSON round-trip.
+}, { _id: false });  // _id: false — we define _id manually as a String field above
 
 // ── BoundaryNodeSchema ────────────────────────────────────────────────────────
 const BoundaryNodeSchema = new mongoose.Schema({
@@ -161,11 +217,21 @@ const BoundaryNodeSchema = new mongoose.Schema({
     y: { type: Number, default: 0 }
   },
   details: {
-    name:       { type: String, default: '' },
-    department: { type: String, default: '' },
-    location:   { type: String, default: '' },
-    entityType: { type: String, default: '' },
-    notes:      { type: String, default: '' }
+    name:          { type: String, default: '' },
+    department:    { type: String, default: '' },
+    location:      { type: String, default: '' },
+    entityType:    { type: String, default: '' },
+    notes:         { type: String, default: '' },
+    // Structured location fields — optional, backward-compatible
+    country:       { type: String, default: '' },
+    state:         { type: String, default: '' },
+    city:          { type: String, default: '' },
+    district:      { type: String, default: '' },
+    siteName:      { type: String, default: '' },
+    address:       { type: String, default: '' },
+    latitude:      { type: Number, default: null },
+    longitude:     { type: Number, default: null },
+    locationLabel: { type: String, default: '' },
   },
 
   // ── Step 3: node-level workflow defaults ─────────────────────────────────────
@@ -259,13 +325,21 @@ const EsgLinkBoundarySchema = new mongoose.Schema(
 
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date },
-    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    // ── Reviewer / Approver SLA + Escalation Settings ────────────────────────
+    slaConfig: {
+      reviewDeadlineDays:   { type: Number, default: 3 },
+      approvalDeadlineDays: { type: Number, default: 3 },
+      escalationEnabled:    { type: Boolean, default: true },
+    }
   },
   { timestamps: true }
 );
 
 // ── Compound index — one active boundary per client ───────────────────────────
 EsgLinkBoundarySchema.index({ clientId: 1, isActive: 1 });
+EsgLinkBoundarySchema.index({ clientId: 1, isDeleted: 1, isActive: 1 });
 
 // ── Field-level encryption — AES-256-GCM ─────────────────────────────────────
 // nodes and edges (and now metricsDetails embedded inside nodes) are encrypted.

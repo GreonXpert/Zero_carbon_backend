@@ -402,7 +402,21 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     for (const entry of dataEntries) {
       try {
         const emissionValues = extractEmissionValues(entry.calculatedEmissions);
-        if (emissionValues.CO2e === 0) continue;
+        if (emissionValues.CO2e === 0) {
+          // Skip zero-emission entries (e.g. entries saved before emission
+          // factors were configured). Warn if activity data exists so config
+          // issues are visible in logs rather than silently ignored.
+          const hasActivityData = entry.calculatedEmissions &&
+            Object.keys(entry.calculatedEmissions?.incoming || {}).length > 0;
+          if (hasActivityData) {
+            console.warn(
+              `[EmissionSummary] Skipping entry ${entry._id} — CO2e is 0 ` +
+              `despite having incoming data. Check emission factor config for ` +
+              `scope ${entry.scopeIdentifier} on node ${entry.nodeId}.`
+            );
+          }
+          continue;
+        }
 
         const nodeContext = nodeMap.get(entry.nodeId);
         if (!nodeContext) {
@@ -1910,6 +1924,42 @@ async function saveEmissionSummary(summaryData) {
     setDefaultsOnInsert: true,
   });
 
+  // ------------------------------------------------------------------
+  // 6) Invalidate Redis cache so the next GET reads fresh MongoDB data
+  //
+  // BUG 4 FIX: delete ALL type variants (emission/reduction/both/process)
+  //            because they all share the same underlying document.
+  // BUG 9/10 FIX: also evict multi/filtered/toplow/hierarchy keys for this client.
+  // ------------------------------------------------------------------
+  try {
+    const ALL_TYPES = ['both', 'emission', 'reduction', 'process'];
+    await Promise.all(
+      ALL_TYPES.map(t =>
+        redisCache.del(redisCache.emissionSummaryKey(
+          clientId,
+          normalizedPeriod.type,
+          normalizedPeriod.year,
+          normalizedPeriod.month,
+          normalizedPeriod.week,
+          normalizedPeriod.day,
+          t
+        ))
+      )
+    );
+    // Evict list/filter endpoints — they depend on the same underlying summaries
+    await redisCache.delPattern(`multi_summary:${clientId}:*`);
+    await redisCache.delPattern(`filtered_summary:${clientId}:*`);
+    await redisCache.delPattern(`toplow_summary:${clientId}:*`);
+    await redisCache.delPattern(`hierarchy_summary:${clientId}:*`);
+    await redisCache.delPattern(`scope_extremes:${clientId}:*`);
+    // BUG 11 FIX: also evict reduction dashboard caches
+    await redisCache.delPattern(`reduction_hierarchy:${clientId}:*`);
+    await redisCache.delPattern(`reduction_projects:${clientId}:*`);
+  } catch (cacheErr) {
+    // Non-fatal — log and continue; MongoDB data is already correct
+    console.warn('[saveEmissionSummary] Redis cache invalidation failed:', cacheErr.message);
+  }
+
   return saved.toObject();
 }
 
@@ -1927,34 +1977,82 @@ const updateSummariesOnDataChange = async (dataEntry) => {
     const { clientId } = dataEntry;
     const entryDate = moment.utc(dataEntry.timestamp);
 
-    // DAILY
-    await recalculateAndSaveSummary(
+    // BUG 15 FIX: Run all 4 period recalculations in PARALLEL instead of sequentially.
+    // Each recalculation does a full DataEntry.find() scan — running them serially
+    // meant every IoT/API entry triggered 4 sequential full scans.
+    // They are completely independent and safe to run concurrently.
+    await Promise.all([
+      recalculateAndSaveSummary(clientId, 'daily',   entryDate.year(), entryDate.month() + 1, null, entryDate.date()),
+      recalculateAndSaveSummary(clientId, 'monthly', entryDate.year(), entryDate.month() + 1),
+      recalculateAndSaveSummary(clientId, 'yearly',  entryDate.year()),
+      recalculateAndSaveSummary(clientId, 'all-time'),
+    ]);
+
+    // BUG 1+3 FIX: Emit socket event so frontend knows to re-fetch dashboard data.
+    emitSummaryUpdate('data_entry_processed', {
       clientId,
-      'daily',
-      entryDate.year(),
-      entryDate.month() + 1,
-      null,
-      entryDate.date()
-    );
-
-    // MONTHLY
-    await recalculateAndSaveSummary(
-      clientId,
-      'monthly',
-      entryDate.year(),
-      entryDate.month() + 1
-    );
-
-    // YEARLY
-    await recalculateAndSaveSummary(clientId, 'yearly', entryDate.year());
-
-    // ALL-TIME
-    await recalculateAndSaveSummary(clientId, 'all-time');
+      entryId: dataEntry._id,
+      timestamp: dataEntry.timestamp,
+      updatedAt: new Date()
+    });
 
     console.log(`✅ Successfully updated summaries for client: ${clientId}`);
 
   } catch (error) {
     console.error('❌ Error updating summaries on data change:', error);
+    // Rethrow so emissionIntegration.js catch block can set
+    // dataEntry.summaryUpdateStatus = 'failed' — previously this was
+    // swallowed here and the failure was invisible to the caller.
+    throw error;
+  }
+};
+
+/**
+ * Batch-optimised summary update: called ONCE after a CSV bulk upload finishes.
+ * Instead of recalculating for every row (O(n) aggregations), this deduplicates
+ * all dates touched by the upload and runs the minimum required set of
+ * recalculations in parallel.
+ *
+ * @param {string}   clientId
+ * @param {Date[]}   timestamps  - one timestamp per successfully saved row
+ */
+const updateSummariesForDateSet = async (clientId, timestamps) => {
+  try {
+    console.log(`📊 [batch] Recalculating summaries for ${timestamps.length} saved rows (client: ${clientId})`);
+
+    const uniqueDays   = new Set();
+    const uniqueMonths = new Set();
+    const uniqueYears  = new Set();
+
+    for (const ts of timestamps) {
+      const m = moment.utc(ts);
+      uniqueDays.add(`${m.year()}-${m.month() + 1}-${m.date()}`);
+      uniqueMonths.add(`${m.year()}-${m.month() + 1}`);
+      uniqueYears.add(`${m.year()}`);
+    }
+
+    const tasks = [];
+
+    for (const key of uniqueDays) {
+      const [y, mo, d] = key.split('-').map(Number);
+      tasks.push(recalculateAndSaveSummary(clientId, 'daily', y, mo, null, d));
+    }
+    for (const key of uniqueMonths) {
+      const [y, mo] = key.split('-').map(Number);
+      tasks.push(recalculateAndSaveSummary(clientId, 'monthly', y, mo));
+    }
+    for (const key of uniqueYears) {
+      tasks.push(recalculateAndSaveSummary(clientId, 'yearly', Number(key)));
+    }
+    tasks.push(recalculateAndSaveSummary(clientId, 'all-time'));
+
+    console.log(`📊 [batch] Running ${tasks.length} summary recalcs in parallel (${uniqueDays.size} days, ${uniqueMonths.size} months, ${uniqueYears.size} years, 1 all-time)`);
+    await Promise.all(tasks);
+
+    console.log(`✅ [batch] Summary recalculation complete for client: ${clientId}`);
+  } catch (error) {
+    console.error('❌ [batch] Error in updateSummariesForDateSet:', error);
+    throw error;
   }
 };
 
@@ -1994,6 +2092,7 @@ const recalculateAndSaveSummary = async (
   userId = null
 ) => {
   try {
+    // 1. Recompute emission summary (scopes, categories, etc.)
     const summaryData = await calculateEmissionSummary(
       clientId,
       periodType,
@@ -2004,14 +2103,38 @@ const recalculateAndSaveSummary = async (
       userId
     );
 
-    // If nothing to save, return null
     if (!summaryData) {
       return null;
     }
 
-    // We now always save, even if totalDataPoints is 0
-    // (so that empty months/years still have a summary doc)
     const saved = await saveEmissionSummary(summaryData);
+
+    // 2. Also recompute reductionSummary (m3Summary BE/PE/LE) for this period.
+    //    calculateEmissionSummary preserves the existing reductionSummary without
+    //    recomputing it, so we must call recomputeClientNetReductionSummary explicitly.
+    //    Build a timestamp inside the requested period so the controller targets
+    //    the correct yearly/monthly/daily bucket.
+    const _y  = year  || moment.utc().year();
+    const _mo = month || 7;
+    const _d  = day   || 15;
+    const targetTs = periodType === 'all-time'
+      ? []
+      : [moment.utc({ year: _y, month: Math.max(_mo - 1, 0), day: _d }).toDate()];
+    await netReductionSummaryController.recomputeClientNetReductionSummary(clientId, { timestamps: targetTs });
+
+    // BUG 1 FIX: Notify all dashboard clients that this period's summary has been
+    // freshly recalculated. The frontend listens on 'summary_updated' to know
+    // it should re-fetch the affected widget without a manual page refresh.
+    emitSummaryUpdate('summary_updated', {
+      clientId,
+      periodType,
+      year,
+      month,
+      week,
+      day,
+      updatedAt: new Date()
+    });
+
     return saved;
   } catch (err) {
     console.error(
@@ -2053,8 +2176,9 @@ const getEmissionSummary = async (req, res) => {
     const noParts = !year && !month && !week && !day;
     const baseQuery = { clientId, "period.type": periodType };
 
-    // Change 5: Redis cache key + TTL
-    const redisCacheKey = redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d);
+    // BUG 4 FIX: cache key now includes `type` so emission/reduction/both/process
+    // each get their own Redis slot and cannot overwrite each other.
+    const redisCacheKey = redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d, type);
     const redisTTL      = redisCache.emissionSummaryTTL(y);
 
     let summary;
@@ -2071,7 +2195,20 @@ const getEmissionSummary = async (req, res) => {
       // Change 5: Try Redis first — fastest path (<1 ms)
       const cached = await redisCache.get(redisCacheKey);
       if (cached) {
-        return res.status(200).json(cached);
+        // Run stale-m3 check on the cached payload so the background recompute
+        // can fire even when Redis is warm (previously unreachable from cache path).
+        const _cRS = cached?.data?.reductionSummary;
+        const _cM3P = (_cRS?.byProject || []).filter(p => p.methodology === 'methodology3');
+        const cacheHasStaleM3 = (_cRS?.m3Summary?.entriesCount || 0) > 0
+          && _cM3P.length > 0
+          && _cM3P.every(p => !p.totalBE && !p.totalPE && !p.totalLE);
+        if (cacheHasStaleM3) {
+          // Evict the stale entry so the DB path below can detect + fix it.
+          await redisCache.del(redisCacheKey);
+          // fall through to DB load
+        } else {
+          return res.status(200).json(cached);
+        }
       }
 
       if (noParts) {
@@ -2109,7 +2246,14 @@ const getEmissionSummary = async (req, res) => {
           dataFreshness = 'stale';
           setImmediate(() => {
             recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id)
-              .then(() => redisCache.del(redisCacheKey))
+              .then(() => {
+                // BUG 2 FIX: invalidate all type variants + notify frontend via socket
+                const allTypes = ['both', 'emission', 'reduction', 'process'];
+                Promise.all(allTypes.map(t =>
+                  redisCache.del(redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d, t))
+                )).catch(() => {});
+                emitSummaryUpdate('summary_refreshed', { clientId, periodType, year: y, month: m, week: w, day: d });
+              })
               .catch(err => console.error('[BgRecalc] Error:', err.message));
           });
         }
@@ -2143,7 +2287,14 @@ const getEmissionSummary = async (req, res) => {
           : [moment.utc({ year: y, month: Math.max((m || 7) - 1, 0), day: d || 15 }).toDate()];
         netReductionSummaryController
           .recomputeClientNetReductionSummary(clientId, { timestamps: targetTs })
-          .then(() => redisCache.del(redisCacheKey))
+          .then(() => {
+            // BUG 2 FIX: invalidate all type variants + notify frontend via socket
+            const allTypes = ['both', 'emission', 'reduction', 'process'];
+            Promise.all(allTypes.map(t =>
+              redisCache.del(redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d, t))
+            )).catch(() => {});
+            emitSummaryUpdate('summary_refreshed', { clientId, periodType, year: y, month: m, week: w, day: d });
+          })
           .catch(err => console.error('[BgM3Recalc]', err.message));
       });
     }
@@ -2283,6 +2434,13 @@ const getMultipleSummaries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid period type" });
     }
 
+    // BUG 9 FIX: Redis read-before — serve hot trend/comparison charts from cache.
+    const cacheKey = redisCache.multipleSummariesKey(
+      clientId, periodType, startYear, endYear, startMonth, endMonth, limit, type
+    );
+    const cached = await redisCache.get(cacheKey);
+    if (cached) return res.status(200).json(cached);
+
     // ---------------------------------------------
     // 1) BUILD QUERY
     // ---------------------------------------------
@@ -2395,12 +2553,15 @@ const getMultipleSummaries = async (req, res) => {
     // ---------------------------------------------
     // 5) RETURN RESPONSE
     // ---------------------------------------------
-    return res.status(200).json({
+    const responsePayload = {
       success: true,
       type,
       count: formatted.length,
       data: formatted
-    });
+    };
+    // BUG 9 FIX: Write-after — cache for 5 min (trend charts don't need sub-minute freshness).
+    redisCache.set(cacheKey, responsePayload, 300).catch(() => {});
+    return res.status(200).json(responsePayload);
 
   } catch (error) {
     console.error("❌ Error getting multiple summaries:", error);
@@ -2629,6 +2790,18 @@ const getFilteredSummary = async (req, res) => {
 
     // summaryKind supports: emission | reduction | process | both
     const summaryKind = (summaryKindRaw || summaryTypeRaw || "emission").toLowerCase();
+
+    // BUG 10 FIX: Redis read-before — all filtered summary queries are cached for 3 min.
+    // Key is built from sorted query params to handle all current & future filter combos.
+    const _fCacheKey = `filtered_summary:${clientId}:` +
+      Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
+    const _fCached = await redisCache.get(_fCacheKey);
+    if (_fCached) return res.status(200).json(_fCached);
+    // Helper: write-after (3 min TTL, non-blocking), then send response.
+    const sendFiltered = (payload) => {
+      redisCache.set(_fCacheKey, payload, 180).catch(() => {});
+      return res.status(200).json(payload);
+    };
 
     // -------------------------------------------
     // 1) Load summary doc (exact period or latest)
@@ -2986,7 +3159,7 @@ const getFilteredSummary = async (req, res) => {
           facets: facetsProcess,
         },
       };
-      return res.status(200).json(response);
+      return sendFiltered(response);
     }
 
     if (summaryKind === "reduction") {
@@ -2998,7 +3171,7 @@ const getFilteredSummary = async (req, res) => {
         aggregates: reductionAgg,
         facets: facetsReduction,
       };
-      return res.status(200).json(response);
+      return sendFiltered(response);
     }
 
     if (summaryKind === "process") {
@@ -3010,7 +3183,7 @@ const getFilteredSummary = async (req, res) => {
         aggregates: processAgg,
         facets: facetsProcess,
       };
-      return res.status(200).json(response);
+      return sendFiltered(response);
     }
 
     // both (default)
@@ -3038,7 +3211,7 @@ const getFilteredSummary = async (req, res) => {
         facets: facetsProcess,
       },
     };
-    return res.status(200).json(response);
+    return sendFiltered(response);
 
   } catch (error) {
     console.error("❌ Error in getFilteredSummary:", error);
@@ -3420,6 +3593,16 @@ const getTopLowEmissionStats = async (req, res) => {
       });
     }
 
+    // BUG 10 FIX: Redis read-before — top/low stats are cached for 5 min.
+    const _tlCacheKey = redisCache.topLowKey(clientId, periodType, year, month, limitRaw);
+    const _tlCached = await redisCache.get(_tlCacheKey);
+    if (_tlCached) return res.status(200).json(_tlCached);
+    // Write-after helper: cache successful responses for 5 min (non-blocking).
+    const sendTopLow = (payload) => {
+      redisCache.set(_tlCacheKey, payload, 300).catch(() => {});
+      return res.status(200).json(payload);
+    };
+
     // Helpers
     const limit = limitRaw ? Math.max(1, parseInt(limitRaw)) : 5;
 
@@ -3643,7 +3826,7 @@ const getTopLowEmissionStats = async (req, res) => {
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
-      return res.status(200).json({
+      return sendTopLow({
         success: true,
         summaryKind: "emission",
         data: {
@@ -3831,7 +4014,7 @@ const getTopLowEmissionStats = async (req, res) => {
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
-      return res.status(200).json({
+      return sendTopLow({
         success: true,
         summaryKind: "process",
         data: {
@@ -3967,7 +4150,7 @@ const getTopLowEmissionStats = async (req, res) => {
         .sort((a, b) => a.CO2e - b.CO2e)
         .slice(0, limit);
 
-      return res.status(200).json({
+      return sendTopLow({
         success: true,
         summaryKind: "reduction",
         data: {
@@ -4042,6 +4225,11 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
         message: `Invalid periodType. Allowed: ${allowedTypes.join(", ")}`
       });
     }
+
+    // BUG 10 FIX: Redis read-before — scope identifier extremes cached 5 min.
+    const _exCacheKey = `scope_extremes:${clientId}:${periodType}:${year||0}:${month||0}:${week||0}:${day||0}`;
+    const _exCached = await redisCache.get(_exCacheKey);
+    if (_exCached) return res.status(200).json(_exCached);
 
     // ----------------------------------------------
     // Resolve period
@@ -4324,9 +4512,9 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
     }));
 
     // ----------------------------------------------
-    // Final response
+    // Final response — BUG 10 FIX: write to cache before sending
     // ----------------------------------------------
-    return res.status(200).json({
+    const _exPayload = {
       success: true,
       data: {
         clientId,
@@ -4349,7 +4537,9 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
           metadata:          processEmissionSummary.metadata          || {}
         }
       }
-    });
+    };
+    redisCache.set(_exCacheKey, _exPayload, 300).catch(() => {});
+    return res.status(200).json(_exPayload);
 
   } catch (error) {
     console.error("Error in getScopeIdentifierEmissionExtremes:", error);
@@ -4438,6 +4628,12 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     if (!clientId) {
       return res.status(400).json({ success: false, message: "clientId is required" });
     }
+
+    // BUG 10 FIX: Redis read-before — hierarchy view cached 5 min.
+    const _hierCacheKey = `hierarchy_summary:${clientId}:` +
+      Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
+    const _hierCached = await redisCache.get(_hierCacheKey);
+    if (_hierCached) return res.status(200).json(_hierCached);
 
     // ── helpers ─────────────────────────────────────────────────────────────
     const toArr = (v) => {
@@ -4866,8 +5062,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
         .sort((a, b) => b.CO2e - a.CO2e);
     }
 
-    // ── Final response ────────────────────────────────────────────────────────
-    return res.status(200).json({
+    // ── Final response — BUG 10 FIX: write to cache before sending ──────────────
+    const _hierPayload = {
       success: true,
       data: {
         clientId,
@@ -4904,7 +5100,9 @@ const getScopeIdentifierHierarchy = async (req, res) => {
           activity:        activityFilter,
         },
       },
-    });
+    };
+    redisCache.set(_hierCacheKey, _hierPayload, 300).catch(() => {});
+    return res.status(200).json(_hierPayload);
 
   } catch (error) {
     console.error("Hierarchy Error:", error);
@@ -4965,6 +5163,12 @@ const getReductionSummaryHierarchy = async (req, res) => {
     if (!clientId) {
       return res.status(400).json({ success: false, message: "clientId is required" });
     }
+
+    // BUG 11 FIX: Redis read-before — reduction hierarchy cached 5 min.
+    const _redHierKey = `reduction_hierarchy:${clientId}:` +
+      Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
+    const _redHierCached = await redisCache.get(_redHierKey);
+    if (_redHierCached) return res.status(200).json(_redHierCached);
 
     const now = moment.utc();
 
@@ -5154,6 +5358,10 @@ const getReductionSummaryHierarchy = async (req, res) => {
 
     let grandTotal = 0;
 
+    // m3Summary accumulators
+    let m3TotalBE = 0, m3TotalPE = 0, m3TotalLE = 0, m3EntriesCount = 0;
+    const m3ByCategory = {};
+
     for (const row of filteredRows) {
       const meta = metaByProject.get(row.projectId) || {};
       const projectLabel = meta.projectName || row.projectId;
@@ -5177,6 +5385,10 @@ const getReductionSummaryHierarchy = async (req, res) => {
           id: row.projectId,
           label: projectLabel,
           total: 0,
+          totalBE: 0,
+          totalPE: 0,
+          totalLE: 0,
+          methodology: meth,
           methodologies: new Map(),
         });
       }
@@ -5203,6 +5415,25 @@ const getReductionSummaryHierarchy = async (req, res) => {
       // LOCATION
       if (!locationMap.has(location)) locationMap.set(location, { id: location, label: location, total: 0 });
       locationMap.get(location).total += net;
+
+      // M3 BE / PE / LE accumulation
+      if (meth === 'methodology3' && row.m3) {
+        const be = safe(row.m3.BE_total);
+        const pe = safe(row.m3.PE_total);
+        const le = safe(row.m3.LE_total);
+        m3TotalBE += be;
+        m3TotalPE += pe;
+        m3TotalLE += le;
+        m3EntriesCount++;
+        pObj.totalBE += be;
+        pObj.totalPE += pe;
+        pObj.totalLE += le;
+        if (!m3ByCategory[category]) m3ByCategory[category] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
+        m3ByCategory[category].totalBE += be;
+        m3ByCategory[category].totalPE += pe;
+        m3ByCategory[category].totalLE += le;
+        m3ByCategory[category].entriesCount++;
+      }
     }
 
     const projectList = Array.from(projectMap.values()).map((p) => ({
@@ -5210,7 +5441,8 @@ const getReductionSummaryHierarchy = async (req, res) => {
       methodologies: toList(p.methodologies),
     }));
 
-    return res.status(200).json({
+    // BUG 11 FIX: write-after — cache reduction hierarchy for 5 min (non-blocking).
+    const _redHierPayload = {
       success: true,
       data: {
         clientId,
@@ -5230,6 +5462,29 @@ const getReductionSummaryHierarchy = async (req, res) => {
           totalNetReduction: grandTotal,
         },
 
+        reductionSummary: {
+          totalNetReduction: grandTotal,
+          entriesCount: filteredRows.length,
+          byProject: Array.from(projectMap.values()).map(p => ({
+            projectId: p.id,
+            projectName: p.label,
+            methodology: p.methodology,
+            totalNetReduction: p.total,
+            totalBE: p.totalBE,
+            totalPE: p.totalPE,
+            totalLE: p.totalLE,
+          })),
+          m3Summary: {
+            totalBE: m3TotalBE,
+            totalPE: m3TotalPE,
+            totalLE: m3TotalLE,
+            totalNetWithoutUncertainty: m3TotalBE - m3TotalPE - m3TotalLE,
+            totalNetWithUncertainty: 0,
+            entriesCount: m3EntriesCount,
+            byCategory: m3ByCategory,
+          },
+        },
+
         projectHierarchy: { list: projectList },
         categoryHierarchy: { list: toList(categoryMap) },
         methodologyHierarchy: { list: toList(methodologyMap) },
@@ -5245,7 +5500,9 @@ const getReductionSummaryHierarchy = async (req, res) => {
           projectActivities: Array.from(projectActivityFilter),
         },
       },
-    });
+    };
+    redisCache.set(_redHierKey, _redHierPayload, 300).catch(() => {});
+    return res.status(200).json(_redHierPayload);
   } catch (error) {
     console.error("getReductionSummaryHierarchy error:", error);
     return res.status(500).json({
@@ -5372,6 +5629,12 @@ const getReductionSummariesByProjects = async (req, res) => {
       return res.status(400).json({ success: false, message: "clientId is required" });
     }
 
+    // BUG 11 FIX: Redis read-before — reduction projects comparison cached 5 min.
+    const _redProjKey = `reduction_projects:${clientId}:` +
+      Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
+    const _redProjCached = await redisCache.get(_redProjKey);
+    if (_redProjCached) return res.status(200).json(_redProjCached);
+
     const list = String(projectIds || "")
   .split(",")
   .map(s => s.trim())
@@ -5464,7 +5727,8 @@ const getReductionSummariesByProjects = async (req, res) => {
       };
     });
 
-    return res.status(200).json({
+    // BUG 11 FIX: write-after cache for 5 min (non-blocking).
+    const _redProjPayload = {
       success: true,
       data: {
         clientId,
@@ -5472,7 +5736,9 @@ const getReductionSummariesByProjects = async (req, res) => {
         count: data.length,
         projects: data,
       },
-    });
+    };
+    redisCache.set(_redProjKey, _redProjPayload, 300).catch(() => {});
+    return res.status(200).json(_redProjPayload);
   } catch (err) {
     console.error("getReductionSummariesByProjects error:", err);
     return res.status(500).json({ success: false, message: err.message });
@@ -6191,6 +6457,7 @@ module.exports = {
   calculateEmissionSummary,
   saveEmissionSummary,
   updateSummariesOnDataChange,
+  updateSummariesForDateSet,
   recalculateAndSaveSummary,
   getEmissionSummary,
   getMultipleSummaries,

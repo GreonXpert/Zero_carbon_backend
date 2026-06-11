@@ -38,6 +38,7 @@ const {
 } = require('../services/mappingService');
 
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
+const { invalidateBoundarySummary } = require('../../summary/services/summaryService');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,25 @@ const addMetricToNode = async (req, res) => {
       }
     }
 
+    // Validate IoT and API config details
+    const sourceTypes = req.body.allowedSourceTypes || [];
+    if (sourceTypes.includes('iot')) {
+      if (!req.body.iotConfig?.deviceId) {
+        return res.status(400).json({
+          message: 'iotConfig.deviceId is required when iot is an allowed source type',
+          code: 'IOT_DEVICE_ID_REQUIRED',
+        });
+      }
+    }
+    if (sourceTypes.includes('api')) {
+      if (!req.body.apiConfig?.sourceUrl) {
+        return res.status(400).json({
+          message: 'apiConfig.sourceUrl is required when api is an allowed source type',
+          code: 'API_SOURCE_URL_REQUIRED',
+        });
+      }
+    }
+
     // Validate assignees by role type
     if ((req.body.contributors || []).length > 0) {
       const check = await validateAssignees(req.body.contributors, clientId, 'contributor', UserModel);
@@ -264,17 +284,20 @@ const addMetricToNode = async (req, res) => {
       message: 'Metric mapped to node successfully',
       nodeId,
       mapping: {
-        _id:            savedMapping._id,
-        metricId:       savedMapping.metricId,
-        metricCode:     savedMapping.metricCode,
-        metricName:     savedMapping.metricName,
-        mappingStatus:  savedMapping.mappingStatus,
-        frequency:      savedMapping.frequency,
+        _id:                savedMapping._id,
+        metricId:           savedMapping.metricId,
+        metricCode:         savedMapping.metricCode,
+        metricName:         savedMapping.metricName,
+        mappingStatus:      savedMapping.mappingStatus,
+        frequency:          savedMapping.frequency,
         allowedSourceTypes: savedMapping.allowedSourceTypes,
+        defaultSourceType:  savedMapping.defaultSourceType,
+        iotConfig:          savedMapping.iotConfig,
+        apiConfig:          savedMapping.apiConfig,
         auditTrailRequired: savedMapping.auditTrailRequired,
-        mappingVersion: savedMapping.mappingVersion,
-        createdBy:      savedMapping.createdBy,
-        createdAt:      savedMapping.createdAt,
+        mappingVersion:     savedMapping.mappingVersion,
+        createdBy:          savedMapping.createdBy,
+        createdAt:          savedMapping.createdAt,
       },
     });
   } catch (err) {
@@ -319,6 +342,26 @@ const updateMapping = async (req, res) => {
     const newDefault = body.defaultSourceType !== undefined ? body.defaultSourceType : mapping.defaultSourceType;
     if (newDefault && newAllowed.length > 0 && !newAllowed.includes(newDefault)) {
       return res.status(400).json({ message: 'defaultSourceType must be one of allowedSourceTypes', code: 'INVALID_DEFAULT_SOURCE_TYPE' });
+    }
+
+    // Validate IoT and API config details
+    if (newAllowed.includes('iot')) {
+      const deviceId = body.iotConfig?.deviceId ?? mapping.iotConfig?.deviceId;
+      if (!deviceId) {
+        return res.status(400).json({
+          message: 'iotConfig.deviceId is required when iot is an allowed source type',
+          code: 'IOT_DEVICE_ID_REQUIRED',
+        });
+      }
+    }
+    if (newAllowed.includes('api')) {
+      const sourceUrl = body.apiConfig?.sourceUrl ?? mapping.apiConfig?.sourceUrl;
+      if (!sourceUrl) {
+        return res.status(400).json({
+          message: 'apiConfig.sourceUrl is required when api is an allowed source type',
+          code: 'API_SOURCE_URL_REQUIRED',
+        });
+      }
     }
 
     // Validate status transition
@@ -383,6 +426,7 @@ const updateMapping = async (req, res) => {
     boundary.lastModifiedBy = req.user._id;
     boundary.markModified('nodes');
     await boundary.save();
+    setImmediate(() => invalidateBoundarySummary(clientId, boundary._id).catch(() => {}));
 
     // Determine subAction by status change (compare against pre-update status)
     const statusChanged = body.mappingStatus && body.mappingStatus !== previousStatus;
@@ -434,12 +478,37 @@ const updateMapping = async (req, res) => {
       message: 'Mapping updated successfully',
       nodeId,
       mapping: {
-        _id:            mapping._id,
-        metricCode:     mapping.metricCode,
-        mappingStatus:  mapping.mappingStatus,
-        mappingVersion: mapping.mappingVersion,
-        updatedBy:      mapping.updatedBy,
-        updatedAt:      mapping.updatedAt,
+        _id:                   mapping._id,
+        metricId:              mapping.metricId,
+        metricCode:            mapping.metricCode,
+        metricName:            mapping.metricName,
+        metricType:            mapping.metricType,
+        mappingStatus:         mapping.mappingStatus,
+        mappingVersion:        mapping.mappingVersion,
+        frequency:             mapping.frequency,
+        boundaryScope:         mapping.boundaryScope,
+        rollUpBehavior:        mapping.rollUpBehavior,
+        reportingLevelNote:    mapping.reportingLevelNote,
+        allowedSourceTypes:    mapping.allowedSourceTypes,
+        defaultSourceType:     mapping.defaultSourceType,
+        apiConfig:             mapping.apiConfig,
+        iotConfig:             mapping.iotConfig,
+        zeroCarbonReference:   mapping.zeroCarbonReference,
+        ingestionInstructions: mapping.ingestionInstructions,
+        formulaSnapshot:       mapping.formulaSnapshot       || null,
+        variableConfigs:       mapping.variableConfigs       || [],
+        validationRules:       mapping.validationRules       || [],
+        evidenceRequirement:   mapping.evidenceRequirement,
+        evidenceTypeNote:      mapping.evidenceTypeNote,
+        contributors:          mapping.contributors          || [],
+        reviewers:             mapping.reviewers             || [],
+        approvers:             mapping.approvers             || [],
+        inheritNodeReviewers:  mapping.inheritNodeReviewers,
+        inheritNodeApprovers:  mapping.inheritNodeApprovers,
+        approvalLevel:         mapping.approvalLevel,
+        auditTrailRequired:    mapping.auditTrailRequired,
+        updatedBy:             mapping.updatedBy,
+        updatedAt:             mapping.updatedAt,
       },
     });
   } catch (err) {
@@ -480,6 +549,7 @@ const removeMapping = async (req, res) => {
     boundary.lastModifiedBy = req.user._id;
     boundary.markModified('nodes');
     await boundary.save();
+    setImmediate(() => invalidateBoundarySummary(clientId, boundary._id).catch(() => {}));
 
     logEventFireAndForget({
       req,
@@ -717,20 +787,25 @@ const getMyAssignedMetrics = async (req, res) => {
           nodeLabel: node.label,
           role:      assignedRole,
           mapping: {
-            _id:                mapping._id,
-            metricId:           mapping.metricId,
-            metricCode:         mapping.metricCode,
-            metricName:         mapping.metricName,
-            mappingStatus:      mapping.mappingStatus,
-            frequency:          mapping.frequency,
-            allowedSourceTypes: mapping.allowedSourceTypes,
-            defaultSourceType:  mapping.defaultSourceType,
-            evidenceRequirement: mapping.evidenceRequirement,
-            evidenceTypeNote:   mapping.evidenceTypeNote,
+            _id:                   mapping._id,
+            metricId:              mapping.metricId,
+            metricCode:            mapping.metricCode,
+            metricName:            mapping.metricName,
+            metricType:            mapping.metricType,
+            mappingStatus:         mapping.mappingStatus,
+            frequency:             mapping.frequency,
+            allowedSourceTypes:    mapping.allowedSourceTypes,
+            defaultSourceType:     mapping.defaultSourceType,
+            iotConfig:             mapping.iotConfig,
+            apiConfig:             mapping.apiConfig,
+            evidenceRequirement:   mapping.evidenceRequirement,
+            evidenceTypeNote:      mapping.evidenceTypeNote,
             ingestionInstructions: mapping.ingestionInstructions,
-            auditTrailRequired: mapping.auditTrailRequired,
-            mappingVersion:     mapping.mappingVersion,
-            updatedAt:          mapping.updatedAt,
+            auditTrailRequired:    mapping.auditTrailRequired,
+            mappingVersion:        mapping.mappingVersion,
+            updatedAt:             mapping.updatedAt,
+            formulaSnapshot:       mapping.formulaSnapshot   || null,
+            variableConfigs:       mapping.variableConfigs   || [],
           },
         });
       }
@@ -805,6 +880,8 @@ const getMappingById = async (req, res) => {
         rollUpBehavior:        mapping.rollUpBehavior,
         allowedSourceTypes:    mapping.allowedSourceTypes,
         defaultSourceType:     mapping.defaultSourceType,
+        iotConfig:             mapping.iotConfig,
+        apiConfig:             mapping.apiConfig,
         evidenceRequirement:   mapping.evidenceRequirement,
         evidenceTypeNote:      mapping.evidenceTypeNote,
         ingestionInstructions: mapping.ingestionInstructions,

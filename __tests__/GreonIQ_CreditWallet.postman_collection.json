@@ -1,0 +1,725 @@
+{
+  "info": {
+    "name": "GreOn IQ — Credit Wallet System",
+    "description": "Postman collection for testing the GreOn IQ credit wallet quota system.\n\nSetup:\n1. Set the 'baseUrl' variable to your server (default: http://localhost:5000)\n2. Run the 'Login' request for each role and copy the token into the matching variable.\n3. Run requests in the order shown in each folder.\n\nVariables used:\n- {{baseUrl}}           — e.g. http://localhost:5000\n- {{consultantAdminToken}}\n- {{consultantToken}}\n- {{clientAdminToken}}\n- {{employeeHeadToken}}\n- {{superAdminToken}}\n- {{consultantUserId}}  — filled automatically by post-request scripts\n- {{clientAdminUserId}}\n- {{employeeHeadUserId}}\n- {{targetClientId}}    — e.g. Greon001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",              "value": "http://localhost:5000", "type": "string" },
+    { "key": "consultantAdminToken", "value": "", "type": "string" },
+    { "key": "consultantToken",      "value": "", "type": "string" },
+    { "key": "clientAdminToken",     "value": "", "type": "string" },
+    { "key": "employeeHeadToken",    "value": "", "type": "string" },
+    { "key": "superAdminToken",      "value": "", "type": "string" },
+    { "key": "consultantUserId",     "value": "", "type": "string" },
+    { "key": "clientAdminUserId",    "value": "", "type": "string" },
+    { "key": "employeeHeadUserId",   "value": "", "type": "string" },
+    { "key": "targetClientId",       "value": "Greon001", "type": "string" }
+  ],
+  "item": [
+
+    {
+      "name": "🔐 Auth — Login",
+      "description": "Login with each role and paste the returned token into the matching collection variable.",
+      "item": [
+        {
+          "name": "Login as super_admin",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/users/login", "host": ["{{baseUrl}}"], "path": ["api","users","login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"superadmin@greon.com\",\n  \"password\": \"SuperAdmin@123\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["const r = pm.response.json();",
+                     "if (r.token) pm.collectionVariables.set('superAdminToken', r.token);",
+                     "pm.test('Login success', () => pm.response.to.have.status(200));" ] } }]
+        },
+        {
+          "name": "Login as consultant_admin",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/users/login", "host": ["{{baseUrl}}"], "path": ["api","users","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"consultantadmin@greon.com\",\n  \"password\": \"ConsAdmin@123\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["const r = pm.response.json();",
+                     "if (r.token) pm.collectionVariables.set('consultantAdminToken', r.token);",
+                     "pm.test('Login success', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Login as consultant",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/users/login", "host": ["{{baseUrl}}"], "path": ["api","users","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"consultant1@test.com\",\n  \"password\": \"Test@12345\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["const r = pm.response.json();",
+                     "if (r.token) pm.collectionVariables.set('consultantToken', r.token);",
+                     "pm.test('Login success', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Login as client_admin",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/users/login", "host": ["{{baseUrl}}"], "path": ["api","users","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"clientadmin@clientco.com\",\n  \"password\": \"ClientAdmin@123\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["const r = pm.response.json();",
+                     "if (r.token) pm.collectionVariables.set('clientAdminToken', r.token);",
+                     "if (r.user?._id) pm.collectionVariables.set('clientAdminUserId', r.user._id);",
+                     "pm.test('Login success', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Login as client_employee_head",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/users/login", "host": ["{{baseUrl}}"], "path": ["api","users","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"emphead1@clientco.com\",\n  \"password\": \"Test@12345\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["const r = pm.response.json();",
+                     "if (r.token) pm.collectionVariables.set('employeeHeadToken', r.token);",
+                     "if (r.user?._id) pm.collectionVariables.set('employeeHeadUserId', r.user._id);",
+                     "pm.test('Login success', () => pm.response.to.have.status(200));"] } }]
+        }
+      ]
+    },
+
+    {
+      "name": "A — Wallet Auto-Seeding (Creation Events)",
+      "item": [
+
+        {
+          "name": "A1 — Create Consultant (Default 500 Credits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/users/consultant", "host": ["{{baseUrl}}"], "path": ["api","users","consultant"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"consultant1@test.com\",\n  \"password\": \"Test@12345\",\n  \"contactNumber\": \"9876543210\",\n  \"userName\": \"consultant_one\",\n  \"address\": \"Chennai\",\n  \"employeeId\": \"EMP001\",\n  \"jobRole\": \"Junior Consultant\",\n  \"branch\": \"South\",\n  \"accessibleModules\": [\"zero_carbon\"]\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 201', () => pm.response.to.have.status(201));",
+              "const r = pm.response.json();",
+              "pm.test('Created successfully', () => pm.expect(r.message).to.include('created'));",
+              "if (r.consultant?.id) pm.collectionVariables.set('consultantUserId', r.consultant.id);"
+            ] } }]
+        },
+
+        {
+          "name": "A2 — Create Consultant with Custom Credits (2000)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/users/consultant", "host": ["{{baseUrl}}"], "path": ["api","users","consultant"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"consultant2@test.com\",\n  \"password\": \"Test@12345\",\n  \"contactNumber\": \"9876543211\",\n  \"userName\": \"consultant_two\",\n  \"address\": \"Delhi\",\n  \"employeeId\": \"EMP002\",\n  \"jobRole\": \"Senior Consultant\",\n  \"branch\": \"North\",\n  \"accessibleModules\": [\"zero_carbon\"],\n  \"initialCredits\": 2000\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 201', () => pm.response.to.have.status(201));",
+              "pm.test('Custom credits accepted', () => pm.response.to.have.status(201));"
+            ] } }]
+        },
+
+        {
+          "name": "A3 — Create Employee Head (Fixed 5000 Credits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{clientAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/users/employee-head", "host": ["{{baseUrl}}"], "path": ["api","users","employee-head"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"emphead1@clientco.com\",\n  \"password\": \"Test@12345\",\n  \"contactNumber\": \"9123456780\",\n  \"userName\": \"emphead_one\",\n  \"address\": \"Mumbai\",\n  \"department\": \"Operations\",\n  \"location\": \"HQ\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 201', () => pm.response.to.have.status(201));",
+              "const r = pm.response.json();",
+              "if (r.user?._id) pm.collectionVariables.set('employeeHeadUserId', r.user._id);"
+            ] } }]
+        },
+
+        {
+          "name": "A4 — Assign Consultant to Client (+500 to Consultant)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/clients/{{targetClientId}}/assign-consultant", "host": ["{{baseUrl}}"], "path": ["api","clients","{{targetClientId}}","assign-consultant"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consultantId\": \"{{consultantUserId}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Assignment success 200', () => pm.response.to.have.status(200));"
+            ] } }]
+        },
+
+        {
+          "name": "A5 — Activate Client (client_admin gets +10000 bonus)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/clients/Sandbox_Greon001/move-to-active", "host": ["{{baseUrl}}"], "path": ["api","clients","Sandbox_Greon001","move-to-active"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subscriptionStartDate\": \"2026-06-01\",\n  \"subscriptionEndDate\": \"2027-06-01\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Activation 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('Stage is active', () => pm.expect(r.client?.stage).to.equal('active'));"
+            ] } }]
+        }
+
+      ]
+    },
+
+    {
+      "name": "B — Wallet Read Endpoints",
+      "item": [
+
+        {
+          "name": "B1 — GET Own Quota (consultant)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('isUnlimited false', () => pm.expect(r.isUnlimited).to.be.false);",
+              "pm.test('balance is number', () => pm.expect(r.balance).to.be.a('number'));",
+              "pm.test('balance >= 500', () => pm.expect(r.balance).to.be.at.least(500));",
+              "console.log('Consultant balance:', r.balance);"
+            ] } }]
+        },
+
+        {
+          "name": "B2 — GET Own Quota (client_admin)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{clientAdminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('isUnlimited false', () => pm.expect(r.isUnlimited).to.be.false);",
+              "pm.test('balance >= 20000 (initial 10k + activation 10k)', () => pm.expect(r.balance).to.be.at.least(20000));",
+              "console.log('Client admin balance:', r.balance);"
+            ] } }]
+        },
+
+        {
+          "name": "B3 — GET Own Quota (client_employee_head)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{employeeHeadToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('balance 5000', () => pm.expect(r.balance).to.equal(5000));",
+              "pm.test('enabled true', () => pm.expect(r.enabled).to.be.true);"
+            ] } }]
+        },
+
+        {
+          "name": "B4 — GET Own Quota (consultant_admin = unlimited)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('isUnlimited true', () => pm.expect(r.isUnlimited).to.be.true);",
+              "pm.test('balance null', () => pm.expect(r.balance).to.be.null);"
+            ] } }]
+        },
+
+        {
+          "name": "B5 — GET Own Quota (auditor = BLOCKED)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{auditorToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('403 blocked', () => pm.response.to.have.status(403));",
+              "const r = pm.response.json();",
+              "pm.test('GREON_IQ_ROLE_BLOCKED', () => pm.expect(r.code).to.equal('GREON_IQ_ROLE_BLOCKED'));"
+            ] } }]
+        },
+
+        {
+          "name": "B6 — GET Own Usage Summary",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/usage", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","usage"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('Has usage fields', () => {",
+              "  pm.expect(r.usage).to.have.property('balance');",
+              "  pm.expect(r.usage).to.have.property('lifetimeAdded');",
+              "  pm.expect(r.usage).to.have.property('lifetimeUsed');",
+              "  pm.expect(r.usage).to.have.property('totalQueries');",
+              "});",
+              "console.log('Usage:', JSON.stringify(r.usage));"
+            ] } }]
+        },
+
+        {
+          "name": "B7 — GET Credit Transaction History",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/greon-iq/quota/transactions?page=1&limit=20",
+              "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","transactions"],
+              "query": [{ "key": "page", "value": "1" }, { "key": "limit", "value": "20" }]
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('Has transactions array', () => pm.expect(r.transactions).to.be.an('array'));",
+              "pm.test('Has pagination', () => pm.expect(r.pagination).to.have.property('total'));",
+              "if (r.transactions.length > 0) {",
+              "  const tx = r.transactions[0];",
+              "  pm.test('Transaction has required fields', () => {",
+              "    pm.expect(tx).to.have.property('amount');",
+              "    pm.expect(tx).to.have.property('balanceAfter');",
+              "    pm.expect(tx).to.have.property('type');",
+              "    pm.expect(tx).to.have.property('createdAt');",
+              "  });",
+              "}",
+              "console.log('Total transactions:', r.pagination?.total);"
+            ] } }]
+        },
+
+        {
+          "name": "B8 — GET Another User's Wallet (admin view)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/{{consultantUserId}}", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","{{consultantUserId}}"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('Has balance', () => pm.expect(r.balance).to.be.a('number'));",
+              "pm.test('isUnlimited false', () => pm.expect(r.isUnlimited).to.be.false);",
+              "console.log('Viewed wallet balance:', r.balance);"
+            ] } }]
+        },
+
+        {
+          "name": "B9 — GET Another User's Wallet (non-admin = FORBIDDEN)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/{{clientAdminUserId}}", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","{{clientAdminUserId}}"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+              "pm.test('FORBIDDEN code', () => pm.expect(pm.response.json().code).to.equal('FORBIDDEN'));"
+            ] } }]
+        }
+
+      ]
+    },
+
+    {
+      "name": "C — Manual Credit Adjustment (Admin)",
+      "item": [
+
+        {
+          "name": "C1 — Add Credits (+500 top-up)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": 500,\n  \"reason\": \"Top-up for Q3 project\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('newBalance defined', () => pm.expect(r.newBalance).to.be.a('number'));",
+              "pm.test('transactionId present', () => pm.expect(r.transactionId).to.be.a('string'));",
+              "console.log('New balance after top-up:', r.newBalance);"
+            ] } }]
+        },
+
+        {
+          "name": "C2 — Deduct Credits (-100)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": -100,\n  \"reason\": \"Correction for unused credits\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('amount is -100', () => pm.expect(r.amount).to.equal(-100));",
+              "console.log('New balance after deduction:', r.newBalance);"
+            ] } }]
+        },
+
+        {
+          "name": "C3 — Invalid: amount=0",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": { "mode": "raw", "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": 0,\n  \"reason\": \"Test zero\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('400 INVALID_AMOUNT', () => pm.response.to.have.status(400));",
+              "pm.test('code INVALID_AMOUNT', () => pm.expect(pm.response.json().code).to.equal('INVALID_AMOUNT'));"
+            ] } }]
+        },
+
+        {
+          "name": "C4 — Invalid: missing reason",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": { "mode": "raw", "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": 100\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('400 MISSING_REASON', () => pm.response.to.have.status(400));",
+              "pm.test('code MISSING_REASON', () => pm.expect(pm.response.json().code).to.equal('MISSING_REASON'));"
+            ] } }]
+        },
+
+        {
+          "name": "C5 — Invalid: non-admin tries to adjust (FORBIDDEN)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": { "mode": "raw", "raw": "{\n  \"targetUserId\": \"{{clientAdminUserId}}\",\n  \"amount\": 500,\n  \"reason\": \"Unauthorized test\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('403 FORBIDDEN', () => pm.response.to.have.status(403));",
+              "pm.test('code FORBIDDEN', () => pm.expect(pm.response.json().code).to.equal('FORBIDDEN'));"
+            ] } }]
+        },
+
+        {
+          "name": "C6 — Drain Consultant to Zero (for quota exhausted test)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": { "mode": "raw", "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": -99999,\n  \"reason\": \"Drain for test\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('400 INSUFFICIENT_BALANCE', () => pm.response.to.have.status(400));",
+              "pm.test('code INSUFFICIENT_BALANCE', () => pm.expect(pm.response.json().code).to.equal('INSUFFICIENT_BALANCE'));"
+            ] } }]
+        }
+
+      ]
+    },
+
+    {
+      "name": "D — Query Execution & Credit Deduction",
+      "item": [
+
+        {
+          "name": "D1 — Run Query as consultant (deducts credits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/query", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","query"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is our total Scope 1 emissions for 2025?\",\n  \"clientId\": \"{{targetClientId}}\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('creditsUsed present', () => pm.expect(r.creditsUsed).to.be.a('number'));",
+              "pm.test('creditsUsed >= 1', () => pm.expect(r.creditsUsed).to.be.at.least(1));",
+              "pm.test('creditsRemaining present', () => pm.expect(r.creditsRemaining).to.be.a('number'));",
+              "console.log('Credits used:', r.creditsUsed, '| Remaining:', r.creditsRemaining);"
+            ] } }]
+        },
+
+        {
+          "name": "D2 — Run Query as consultant_admin (unlimited, 0 deduction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/query", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","query"] },
+            "body": { "mode": "raw", "raw": "{\n  \"question\": \"Summarise client emissions.\",\n  \"clientId\": \"{{targetClientId}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('creditsUsed is 0 for unlimited', () => pm.expect(r.creditsUsed).to.equal(0));"
+            ] } }]
+        },
+
+        {
+          "name": "D3 — Verify Balance Reduced After Query",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('lifetimeUsed > 0 after query', () => pm.expect(r.lifetime?.used ?? 0).to.be.above(0));",
+              "console.log('Current balance:', r.balance);"
+            ] } }]
+        },
+
+        {
+          "name": "D4 — Query as auditor (BLOCKED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auditorToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/query", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","query"] },
+            "body": { "mode": "raw", "raw": "{\n  \"question\": \"Test\",\n  \"clientId\": \"{{targetClientId}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('403 GREON_IQ_ROLE_BLOCKED', () => pm.response.to.have.status(403));",
+              "pm.test('code GREON_IQ_ROLE_BLOCKED', () => pm.expect(pm.response.json().code).to.equal('GREON_IQ_ROLE_BLOCKED'));"
+            ] } }]
+        }
+
+      ]
+    },
+
+    {
+      "name": "E — Quota Exhausted Flow",
+      "item": [
+
+        {
+          "name": "E1 — Check balance before drain",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "const r = pm.response.json();",
+              "pm.collectionVariables.set('preDrainBalance', r.balance);",
+              "console.log('Balance before drain:', r.balance);"
+            ] } }]
+        },
+
+        {
+          "name": "E2 — Drain Balance to Zero",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": -{{preDrainBalance}},\n  \"reason\": \"Drain for quota exhausted test\"\n}"
+            }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('newBalance is 0', () => pm.expect(r.newBalance).to.equal(0));"
+            ] } }]
+        },
+
+        {
+          "name": "E3 — Query with Zero Balance (QUOTA_EXHAUSTED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/query", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","query"] },
+            "body": { "mode": "raw", "raw": "{\n  \"question\": \"Test with no credits\",\n  \"clientId\": \"{{targetClientId}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('429 or 402 QUOTA_EXHAUSTED', () => {",
+              "  pm.expect(pm.response.code).to.be.oneOf([402, 429]);",
+              "});",
+              "pm.test('code QUOTA_EXHAUSTED', () => pm.expect(pm.response.json().code).to.equal('QUOTA_EXHAUSTED'));"
+            ] } }]
+        },
+
+        {
+          "name": "E4 — Top Up and Retry Query",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/adjust", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","adjust"] },
+            "body": { "mode": "raw", "raw": "{\n  \"targetUserId\": \"{{consultantUserId}}\",\n  \"amount\": 500,\n  \"reason\": \"Emergency top-up\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('newBalance 500', () => pm.expect(pm.response.json().newBalance).to.equal(500));"
+            ] } }]
+        }
+
+      ]
+    },
+
+    {
+      "name": "F — Deprecated Endpoints (Must Return 410)",
+      "item": [
+
+        {
+          "name": "F1 — POST /quota/allocate (deprecated)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/allocate", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","allocate"] },
+            "body": { "mode": "raw", "raw": "{}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": [
+              "pm.test('410 Gone', () => pm.response.to.have.status(410));",
+              "pm.test('DEPRECATED code', () => pm.expect(pm.response.json().code).to.equal('DEPRECATED'));"
+            ] } }]
+        },
+
+        {
+          "name": "F2 — GET /quota/user-policy (deprecated)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/user-policy", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","user-policy"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["pm.test('410 Gone', () => pm.response.to.have.status(410));"] } }]
+        },
+
+        {
+          "name": "F3 — DELETE /quota/allocate/:id (deprecated)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{consultantAdminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/greon-iq/quota/allocate/000000000000000000000000", "host": ["{{baseUrl}}"], "path": ["api","greon-iq","quota","allocate","000000000000000000000000"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript",
+            "exec": ["pm.test('410 Gone', () => pm.response.to.have.status(410));"] } }]
+        }
+
+      ]
+    }
+
+  ]
+}

@@ -69,6 +69,9 @@ const esgBrsrClientR             = require('../../modules/esg-link/framework/rou
 const esgBrsrAnswerR             = require('../../modules/esg-link/framework/routes/brsrAnswer.routes');
 const esgBrsrReviewR             = require('../../modules/esg-link/framework/routes/brsrReview.routes');
 
+// ── RAG Report Composer ───────────────────────────────────────────────────────
+const ragRouter                  = require('../../modules/rag/routes/index');
+
 // ============================================================================
 // REGISTER ALL ROUTES
 // ============================================================================
@@ -152,6 +155,9 @@ function registerRoutes(app) {
   app.use('/api/esg-link', esgBrsrClientR);
   app.use('/api/esg-link', esgBrsrAnswerR);
   app.use('/api/esg-link', esgBrsrReviewR);
+
+  // ── RAG Report Composer ──────────────────────────────────────────────────
+  app.use('/api/v1/rag', auth, ragRouter);
 }
 
 module.exports = { registerRoutes };

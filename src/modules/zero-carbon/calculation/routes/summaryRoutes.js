@@ -27,15 +27,17 @@ const zcGate = requireActiveModuleSubscription('zero_carbon');
 
 
 
+// Apply authentication to all routes
+// BUG 12 FIX: auth middleware is now applied BEFORE all routes (scope12-total was previously public)
+router.use(auth);
+
 /**
  * @route   GET /api/summaries/:clientId/scope12-total
- * @desc    Return latest Scope 1 + Scope 2 total for the client by
- *          reading the most recent EmissionSummary document
+ * @desc    Return latest Scope 1 + Scope 2 total for the client
+ * NOTE: Moved below router.use(auth) — was previously registered before auth (security bug).
+ *       URL is unchanged; only the middleware stack is fixed.
  */
-router.get('/:clientId/scope12-total',getLatestScope12Total);
-
-// Apply authentication to all routes
-router.use(auth);
+router.get('/:clientId/scope12-total', zcGate, checkSummaryPermission, getLatestScope12Total);
 
 /**
  * @route   GET /api/summaries/:clientId

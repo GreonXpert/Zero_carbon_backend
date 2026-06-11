@@ -108,16 +108,25 @@ async function updateContextState(sessionId, contextPatch) {
 
 /**
  * Get paginated list of sessions for a user.
+ *
+ * When clientId is null (multi-client roles requesting their full history),
+ * all sessions for the userId are returned regardless of which client was
+ * queried in each session.
+ * When clientId is provided, only sessions for that specific client are returned.
  */
 async function listSessions(userId, clientId, { page = 1, limit = 20 } = {}) {
   const skip = (page - 1) * limit;
+  // Build the filter — omit clientId filter when null so all sessions are returned
+  const filter = { userId, isActive: true };
+  if (clientId) filter.clientId = clientId;
+
   const [sessions, total] = await Promise.all([
-    ChatSession.find({ userId, clientId, isActive: true })
+    ChatSession.find(filter)
       .sort({ isPinned: -1, updatedAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    ChatSession.countDocuments({ userId, clientId, isActive: true }),
+    ChatSession.countDocuments(filter),
   ]);
   return { sessions, total, page, limit };
 }

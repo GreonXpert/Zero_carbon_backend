@@ -21,10 +21,14 @@ const canManageBoundary = async (user, clientId) => {
 
 /**
  * canViewBoundary
- * More permissive — allows client users to view boundary.
- * For now, same as canManageBoundary. Expand later if client-read needed.
+ * More permissive — allows client_admin to read their own boundary.
+ * Write operations still require canManageBoundary (consultant/admin roles).
  */
 const canViewBoundary = async (user, clientId) => {
+  // client_admin can always view their own boundary
+  if (user.userType === 'client_admin' && user.clientId === clientId) {
+    return { allowed: true, reason: 'Client admin viewing own boundary' };
+  }
   return canManageFlowchart(user, clientId);
 };
 

@@ -15,6 +15,14 @@ const HANDLERS = {
     const valid = values.filter((v) => v != null && isFinite(v));
     return valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : 0;
   },
+  min: (values) => {
+    const valid = values.filter((v) => v != null && isFinite(v));
+    return valid.length ? Math.min(...valid) : 0;
+  },
+  max: (values) => {
+    const valid = values.filter((v) => v != null && isFinite(v));
+    return valid.length ? Math.max(...valid) : 0;
+  },
 };
 
 /**

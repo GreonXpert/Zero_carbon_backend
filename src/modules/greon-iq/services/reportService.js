@@ -17,6 +17,7 @@ const RETRIEVERS = {
   reductionRetriever:       require('../retrievers/reductionRetriever'),
   sbtiRetriever:            require('../retrievers/m3Retriever'),
   esgRetriever:             require('../retrievers/esgRetriever'),
+  userDataRetriever:        require('../retrievers/userDataRetriever'),
 };
 
 /**

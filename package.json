@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --testPathPatterns=__tests__"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +16,7 @@
     "@aws-sdk/lib-storage": "^3.948.0",
     "@aws-sdk/s3-request-presigner": "^3.948.0",
     "@google/generative-ai": "^0.24.1",
+    "ajv": "^8.20.0",
     "aws-sdk": "^2.1693.0",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.3",
@@ -29,9 +30,12 @@
     "exceljs": "^4.4.0",
     "expr-eval": "^2.0.2",
     "express": "^4.21.1",
+    "express-rate-limit": "^8.5.2",
     "helmet": "^8.1.0",
     "html-pdf-node": "^1.0.8",
+    "joi": "^18.2.1",
     "jsonwebtoken": "^9.0.2",
+    "lodash": "^4.18.1",
     "moment": "^2.30.1",
     "mongoose": "^8.8.2",
     "mqtt": "^5.5.0",
@@ -39,8 +43,10 @@
     "node-cron": "^4.1.0",
     "nodemailer": "^6.9.16",
     "nodemon": "^3.1.7",
+    "pdf-parse": "^2.4.5",
     "pdf2pic": "^3.2.0",
     "pdfkit": "^0.17.2",
+    "puppeteer": "^25.1.0",
     "redis": "^3.1.2",
     "response-time": "^2.3.2",
     "sharp": "^0.34.5",
@@ -49,5 +55,10 @@
     "util": "^0.12.5",
     "uuid": "^11.1.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "mongodb-memory-server": "^11.2.0",
+    "supertest": "^7.2.2"
   }
 }

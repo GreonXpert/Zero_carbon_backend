@@ -114,7 +114,7 @@ function buildTopNChart(title, dataPoints, topN = 10, options = {}) {
 function buildScopeBreakdownChart(byScopeData) {
   const dataPoints = (byScopeData || []).map((s) => ({
     label: `Scope ${s.scope}`,
-    value: s.totalEmissions || 0,
+    value: s.CO2e || s.totalEmissions || 0,
   }));
   const unit = byScopeData?.[0]?.unit || 'tCO₂e';
   return buildBarChart('Emissions by Scope', dataPoints, { yLabel: `Emissions (${unit})`, unit });

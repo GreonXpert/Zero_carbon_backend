@@ -4,6 +4,123 @@ const submissionService = require('../services/submissionService');
 const workflowService   = require('../services/workflowService');
 const { canSubmit, canViewSubmission } = require('../utils/submissionPermissions');
 const { resolveAssignees } = require('../services/workflowService');
+const EsgLinkBoundary   = require('../../boundary/models/EsgLinkBoundary');
+
+// ── POST /:clientId/submissions/batch ────────────────────────────────────────
+// Body: { submissions: [ { nodeId, mappingId, period, dataValues, ... }, ... ], submitImmediately?: bool }
+// Returns per-row results so the frontend can show inline evidence uploaders.
+async function createBatchSubmissions(req, res) {
+  try {
+    const { clientId } = req.params;
+    const actor        = req.user;
+    const { submissions = [], submitImmediately = false } = req.body;
+
+    if (!Array.isArray(submissions) || submissions.length === 0) {
+      return res.status(400).json({ success: false, message: '`submissions` must be a non-empty array' });
+    }
+    if (submissions.length > 100) {
+      return res.status(400).json({ success: false, message: 'Maximum 100 submissions per batch request' });
+    }
+
+    const created     = [];   // { index, submissionId, period }
+    const errors      = [];   // { index, period, error }
+
+    for (let i = 0; i < submissions.length; i++) {
+      const sub = submissions[i];
+      try {
+        const result = await submissionService.create(
+          { ...sub, clientId, submitImmediately },
+          actor,
+          { req }
+        );
+        if (result.error) {
+          errors.push({
+            index:    i,
+            period:   sub.period?.periodLabel || null,
+            error:    result.error,
+            code:     result.code     || null,
+            existing: result.existing || null,
+          });
+        } else {
+          created.push({
+            index:        i,
+            submissionId: result.doc._id.toString(),
+            period:       result.doc.period?.periodLabel || null,
+            workflowStatus: result.doc.workflowStatus,
+          });
+        }
+      } catch (err) {
+        errors.push({ index: i, period: sub.period?.periodLabel || null, error: err.message });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        processed:     submissions.length,
+        created:       created.length,
+        failed:        errors.length,
+        errors,
+        submissions:   created,   // array of { index, submissionId, period, workflowStatus }
+        submissionIds: created.map((c) => c.submissionId),  // convenience flat array
+      },
+    });
+  } catch (err) {
+    console.error('[submissionController.createBatchSubmissions]', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
+
+// ── POST /:clientId/submissions/batch-submit ──────────────────────────────────
+// Body: { submissionIds: [ "id1", "id2", ... ] }
+// Transitions each draft → submitted in one request.
+async function batchSubmitForReview(req, res) {
+  try {
+    const { clientId } = req.params;
+    const actor        = req.user;
+    const { submissionIds = [] } = req.body;
+
+    if (!Array.isArray(submissionIds) || submissionIds.length === 0) {
+      return res.status(400).json({ success: false, message: '`submissionIds` must be a non-empty array' });
+    }
+    if (submissionIds.length > 100) {
+      return res.status(400).json({ success: false, message: 'Maximum 100 submissions per batch-submit request' });
+    }
+
+    const submitted = [];
+    const errors    = [];
+
+    for (const submissionId of submissionIds) {
+      try {
+        const result = await workflowService.transition(submissionId, 'submitted', actor, {
+          clientId,
+          req,
+        });
+        if (result.error) {
+          errors.push({ submissionId, error: result.error });
+        } else {
+          submitted.push({ submissionId, workflowStatus: result.doc.workflowStatus });
+        }
+      } catch (err) {
+        errors.push({ submissionId, error: err.message });
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        processed: submissionIds.length,
+        submitted: submitted.length,
+        failed:    errors.length,
+        errors,
+        results:   submitted,
+      },
+    });
+  } catch (err) {
+    console.error('[submissionController.batchSubmitForReview]', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
 
 // ── POST /:clientId/submissions ───────────────────────────────────────────────
 async function createSubmission(req, res) {
@@ -18,13 +135,24 @@ async function createSubmission(req, res) {
     );
 
     if (result.error) {
-      return res.status(result.status || 400).json({ success: false, message: result.error });
+      return res.status(result.status || 400).json({
+        success:  false,
+        message:  result.error,
+        code:     result.code    || null,
+        existing: result.existing || null,
+      });
     }
 
     return res.status(201).json({ success: true, data: result.doc });
   } catch (err) {
-    console.error('[submissionController.createSubmission]', err);
-    return res.status(500).json({ success: false, message: 'Internal server error' });
+    console.error('[submissionController.createSubmission] FULL ERROR:', err);
+    // Expose detailed message in development to aid debugging
+    const isDev = process.env.NODE_ENV !== 'production';
+    return res.status(500).json({
+      success: false,
+      message: isDev ? `Internal server error: ${err.message}` : 'Internal server error',
+      ...(isDev && { errorType: err.name, detail: err.message }),
+    });
   }
 }
 
@@ -35,13 +163,32 @@ async function listSubmissions(req, res) {
     const accessCtx    = req.submissionAccessCtx;
 
     const result = await submissionService.list(clientId, accessCtx, req.query);
+
+    // Build nodeId → label map from boundary (same as single-submission endpoint)
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false })
+      .select('nodes').lean();
+    const nodeLabelMap = {};
+    for (const node of boundary?.nodes || []) {
+      nodeLabelMap[node.id] = node.label;
+    }
+
+    const submissions = result.docs.map((doc) => {
+      const docObj = doc.toObject ? doc.toObject({ flattenMaps: true }) : doc;
+      return {
+        ...docObj,
+        metricDetails:   { metricName: doc.metricId?.metricName || '', metricCode: doc.metricId?.metricCode || '' },
+        nodeDetails:     { label: nodeLabelMap[doc.nodeId] || doc.nodeId || '' },
+        contributorName: doc.submittedBy?.userName || doc.submittedBy?.email || '',
+      };
+    });
+
     return res.json({
       success: true,
       data: {
-        submissions: result.docs,
-        total:       result.total,
-        page:        result.page,
-        limit:       result.limit,
+        submissions,
+        total: result.total,
+        page:  result.page,
+        limit: result.limit,
       },
     });
   } catch (err) {
@@ -61,14 +208,50 @@ async function getSubmission(req, res) {
       return res.status(result.status || 404).json({ success: false, message: result.error });
     }
 
-    const { reviewers, approvers } = await resolveAssignees(result.doc);
-    const { mapping } = await resolveAssignees(result.doc);
+    const { reviewers, approvers, mapping } = await resolveAssignees(result.doc);
 
     if (!await canViewSubmission(actor, mapping, reviewers, approvers, clientId)) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    return res.json({ success: true, data: result.doc });
+    const doc = result.doc;
+    const boundary = await EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false })
+      .select('nodes').lean();
+    const nodeLabelMap = {};
+    for (const node of boundary?.nodes || []) {
+      nodeLabelMap[node.id] = node.label;
+    }
+
+    const docObj = doc.toObject ? doc.toObject({ flattenMaps: true }) : doc;
+
+    // Populate approverName for each approvalDecision slot
+    const approverIds = (docObj.approvalDecisions || [])
+      .map((d) => d.approverId)
+      .filter(Boolean);
+    const approverMap = {};
+    if (approverIds.length > 0) {
+      const User = require('../../../../../common/models/User');
+      const approverUsers = await User.find({ _id: { $in: approverIds } })
+        .select('_id userName email').lean();
+      for (const u of approverUsers) {
+        approverMap[String(u._id)] = u.userName || u.email;
+      }
+    }
+    const approvalDecisions = (docObj.approvalDecisions || []).map((d) => ({
+      ...d,
+      approverName: approverMap[String(d.approverId)] || null,
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        ...docObj,
+        approvalDecisions,
+        metricDetails:   { metricName: doc.metricId?.metricName || '', metricCode: doc.metricId?.metricCode || '' },
+        nodeDetails:     { label: nodeLabelMap[doc.nodeId] || doc.nodeId || '' },
+        contributorName: doc.submittedBy?.userName || doc.submittedBy?.email || '',
+      },
+    });
   } catch (err) {
     console.error('[submissionController.getSubmission]', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
@@ -187,9 +370,46 @@ async function deleteDraft(req, res) {
   }
 }
 
+// ── POST /:clientId/submissions/batch-delete ─────────────────────────────────
+async function batchDeleteDrafts(req, res) {
+  try {
+    const { clientId } = req.params;
+    const { submissionIds } = req.body;
+
+    if (!Array.isArray(submissionIds) || submissionIds.length === 0)
+      return res.status(400).json({ success: false, message: 'submissionIds array is required' });
+    if (submissionIds.length > 100)
+      return res.status(400).json({ success: false, message: 'Max 100 submissions per request' });
+
+    const results = [];
+    let deleted = 0, failed = 0;
+
+    for (const id of submissionIds) {
+      try {
+        const result = await submissionService.softDelete(id, clientId, req.user, { req });
+        if (result.error) {
+          results.push({ id, success: false, error: result.error });
+          failed++;
+        } else {
+          results.push({ id, success: true });
+          deleted++;
+        }
+      } catch (rowErr) {
+        results.push({ id, success: false, error: rowErr.message });
+        failed++;
+      }
+    }
+
+    return res.json({ success: true, data: { deleted, failed, results } });
+  } catch (err) {
+    console.error('[submissionController.batchDeleteDrafts]', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+}
+
 // ── Shared helper: resolve esgEvidenceMode for a client ───────────────────────
 async function _getEvidenceMode(clientId) {
-  const ConsultantClientQuota = require('../../../../modules/client-management/quota/ConsultantClientQuota');
+  const ConsultantClientQuota = require('../../../../client-management/quota/ConsultantClientQuota');
   const quota = await ConsultantClientQuota.findOne({ clientId }).select('limits.esgEvidenceMode').lean();
   return quota?.limits?.esgEvidenceMode || 'both';
 }
@@ -316,6 +536,8 @@ async function addEvidenceUrl(req, res) {
 }
 
 module.exports = {
+  createBatchSubmissions,
+  batchSubmitForReview,
   createSubmission,
   listSubmissions,
   getSubmission,
@@ -323,6 +545,7 @@ module.exports = {
   submitForReview,
   resubmit,
   deleteDraft,
+  batchDeleteDrafts,
   uploadEvidence,
   addEvidenceUrl,
 };

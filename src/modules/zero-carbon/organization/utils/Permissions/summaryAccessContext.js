@@ -565,7 +565,7 @@ const filterCalcSummary = (calc, allowedIds) => {
  * Filters reductionSummary to only data for allowed project IDs.
  * - byProject: filtered directly
  * - calculationSummary: per-project arrays filtered by projectId
- * - m3Summary: recomputed from filtered byProject (using per-project BE/PE/LE stored there)
+ * - m1Summary/m2Summary/m3Summary: recomputed from filtered byProject per-project fields
  * - byScope/byCategory/byLocation/byProjectActivity/byMethodology: recomputed from filtered byProject
  */
 const filterReductionSummary = (reductionSummary, context) => {
@@ -586,48 +586,81 @@ const filterReductionSummary = (reductionSummary, context) => {
   const entriesCount      = byProject.reduce((sum, p) => sum + safeN(p.entriesCount), 0);
 
   // Recompute byScope / byCategory / byLocation from filtered projects
-  const byScope    = {};
-  const byCategory = {};
-  const byLocation = {};
+  const byScope           = {};
+  const byCategory        = {};
+  const byLocation        = {};
   const byProjectActivity = {};
   const byMethodology     = {};
 
+  // Per-methodology recomputation accumulators
+  const m1 = { totalBE: 0, totalPE: 0, totalLE: 0, totalInputValue: 0, totalNetReduction: 0, _rateSum: 0, avgEmissionReductionRate: 0, entriesCount: 0, byCategory: {} };
+  const m2 = { totalLE: 0, totalNetReduction: 0, totalNetReductionInFormula: 0, entriesCount: 0, byFormula: {}, byCategory: {} };
+  const m3 = { totalBE: 0, totalPE: 0, totalLE: 0, totalNetWithoutUncertainty: 0, totalNetWithUncertainty: 0, entriesCount: 0, byCategory: {} };
+
   for (const p of byProject) {
-    const nr   = safeN(p.totalNetReduction);
+    const nr  = safeN(p.totalNetReduction);
+    const ec  = safeN(p.entriesCount);
+    const cat = p.category || 'Unknown';
     const bump = (obj, key) => {
       const k = key || 'Unknown';
       if (!obj[k]) obj[k] = { totalNetReduction: 0, entriesCount: 0 };
       obj[k].totalNetReduction += nr;
-      obj[k].entriesCount      += safeN(p.entriesCount);
+      obj[k].entriesCount      += ec;
     };
-    bump(byScope,          p.scope);
-    bump(byCategory,       p.category);
-    bump(byLocation,       p.location);
+    bump(byScope,           p.scope);
+    bump(byCategory,        p.category);
+    bump(byLocation,        p.location);
     bump(byProjectActivity, p.projectActivity);
-    bump(byMethodology,    p.methodology);
+    bump(byMethodology,     p.methodology);
+
+    if (p.methodology === 'methodology1') {
+      const be = safeN(p.projectBE), pe = safeN(p.projectPE), le = safeN(p.projectLE);
+      m1.totalBE          += be;
+      m1.totalPE          += pe;
+      m1.totalLE          += le;
+      m1.totalInputValue  += safeN(p.totalInputValue);
+      m1.totalNetReduction = safeN(m1.totalNetReduction + nr);
+      m1._rateSum         += safeN(p.totalEmissionReductionRate);
+      m1.entriesCount     += ec;
+      if (!m1.byCategory[cat]) m1.byCategory[cat] = { totalBE: 0, totalPE: 0, totalLE: 0, totalInputValue: 0, totalNetReduction: 0, entriesCount: 0 };
+      m1.byCategory[cat].totalBE           += be;
+      m1.byCategory[cat].totalPE           += pe;
+      m1.byCategory[cat].totalLE           += le;
+      m1.byCategory[cat].totalInputValue   += safeN(p.totalInputValue);
+      m1.byCategory[cat].totalNetReduction += nr;
+      m1.byCategory[cat].entriesCount      += ec;
+    } else if (p.methodology === 'methodology2') {
+      const le = safeN(p.projectLE);
+      m2.totalLE                    += le;
+      m2.totalNetReduction          += nr;
+      m2.totalNetReductionInFormula += safeN(p.totalNetReductionInFormula);
+      m2.entriesCount               += ec;
+      const fid = p.formulaId || 'unknown';
+      if (!m2.byFormula[fid]) m2.byFormula[fid] = { totalNetReduction: 0, totalNetReductionInFormula: 0, entriesCount: 0 };
+      m2.byFormula[fid].totalNetReduction          += nr;
+      m2.byFormula[fid].totalNetReductionInFormula += safeN(p.totalNetReductionInFormula);
+      m2.byFormula[fid].entriesCount               += ec;
+      if (!m2.byCategory[cat]) m2.byCategory[cat] = { totalLE: 0, totalNetReduction: 0, entriesCount: 0 };
+      m2.byCategory[cat].totalLE           += le;
+      m2.byCategory[cat].totalNetReduction += nr;
+      m2.byCategory[cat].entriesCount      += ec;
+    } else if (p.methodology === 'methodology3') {
+      const be = safeN(p.totalBE), pe = safeN(p.totalPE), le = safeN(p.totalLE);
+      m3.totalBE  += be; m3.totalPE  += pe; m3.totalLE  += le;
+      m3.totalNetWithoutUncertainty += be - pe - le;
+      m3.entriesCount += ec;
+      if (!m3.byCategory[cat]) m3.byCategory[cat] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
+      m3.byCategory[cat].totalBE += be;
+      m3.byCategory[cat].totalPE += pe;
+      m3.byCategory[cat].totalLE += le;
+      m3.byCategory[cat].entriesCount += ec;
+    }
   }
 
-  // Recompute m3Summary from per-project BE/PE/LE stored in byProject entries.
-  // Only M3 projects carry these values (others default to 0).
-  const m3Projects = byProject.filter(p => p.methodology === 'methodology3');
-  const m3ByCategory = {};
-  for (const p of m3Projects) {
-    const k = p.category || 'Unknown';
-    if (!m3ByCategory[k]) m3ByCategory[k] = { totalBE: 0, totalPE: 0, totalLE: 0, entriesCount: 0 };
-    m3ByCategory[k].totalBE       += safeN(p.totalBE);
-    m3ByCategory[k].totalPE       += safeN(p.totalPE);
-    m3ByCategory[k].totalLE       += safeN(p.totalLE);
-    m3ByCategory[k].entriesCount  += safeN(p.entriesCount);
-  }
-  const m3Summary = {
-    totalBE:                    m3Projects.reduce((s, p) => s + safeN(p.totalBE), 0),
-    totalPE:                    m3Projects.reduce((s, p) => s + safeN(p.totalPE), 0),
-    totalLE:                    m3Projects.reduce((s, p) => s + safeN(p.totalLE), 0),
-    totalNetWithoutUncertainty: 0,
-    totalNetWithUncertainty:    0,
-    entriesCount:               m3Projects.reduce((s, p) => s + safeN(p.entriesCount), 0),
-    byCategory:                 m3ByCategory,
-  };
+  // Finalise m1 average
+  m1.avgEmissionReductionRate = m1.entriesCount
+    ? Math.round((m1._rateSum / m1.entriesCount) * 1e6) / 1e6 : 0;
+  delete m1._rateSum;
 
   return {
     ...reductionSummary,
@@ -639,7 +672,9 @@ const filterReductionSummary = (reductionSummary, context) => {
     byLocation,
     byProjectActivity,
     byMethodology,
-    m3Summary,
+    m1Summary: m1,
+    m2Summary: m2,
+    m3Summary: m3,
     calculationSummary: filterCalcSummary(reductionSummary.calculationSummary, allowedReductionProjectIds),
     metadata: {
       ...(reductionSummary.metadata || {}),
@@ -681,6 +716,9 @@ const buildEmptyProcessSummaryShell = (original = {}) => ({
 const buildEmptyReductionSummaryShell = () => ({
   totalNetReduction: 0, entriesCount: 0,
   byProject: [], byScope: {}, byCategory: {}, byLocation: {}, byProjectActivity: {}, byMethodology: {},
+  m1Summary: { totalBE: 0, totalPE: 0, totalLE: 0, totalInputValue: 0, totalNetReduction: 0, avgEmissionReductionRate: 0, entriesCount: 0, byCategory: {} },
+  m2Summary: { totalLE: 0, totalNetReduction: 0, totalNetReductionInFormula: 0, entriesCount: 0, byFormula: {}, byCategory: {} },
+  m3Summary: { totalBE: 0, totalPE: 0, totalLE: 0, totalNetWithoutUncertainty: 0, totalNetWithUncertainty: 0, entriesCount: 0, byCategory: {} },
 });
 
 // ─── Master apply function ─────────────────────────────────────────────────────

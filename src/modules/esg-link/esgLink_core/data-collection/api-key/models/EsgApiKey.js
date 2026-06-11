@@ -25,6 +25,20 @@ const EsgApiKeySchema = new Schema(
     status:    { type: String, enum: ['ACTIVE', 'REVOKED', 'EXPIRED'], default: 'ACTIVE', index: true },
     expiresAt: { type: Date, required: true, index: true },
 
+    // ── Connection Gate ───────────────────────────────────────────────────────
+    // Controls whether the ingestion endpoint accepts data for this key.
+    // ACTIVE status = key is not revoked/expired; connectionStatus = data flow toggle.
+    connectionStatus: {
+      type:    String,
+      enum:    ['connected', 'disconnected'],
+      default: 'connected',
+      index:   true,
+    },
+    disconnectedAt: { type: Date },
+    disconnectedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    reconnectedAt:  { type: Date },
+    reconnectedBy:  { type: Schema.Types.ObjectId, ref: 'User' },
+
     // ── Creator ───────────────────────────────────────────────────────────────
     createdBy:   { type: Schema.Types.ObjectId, ref: 'User' },
     creatorRole: { type: String }, // snapshot
@@ -94,5 +108,8 @@ EsgApiKeySchema.statics.findExpiringSoon = function (days = 7) {
   const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   return this.find({ status: 'ACTIVE', expiresAt: { $lte: cutoff } });
 };
+
+EsgApiKeySchema.index({ clientId: 1, status: 1 });
+EsgApiKeySchema.index({ status: 1, expiresAt: 1 });
 
 module.exports = mongoose.model('EsgApiKey', EsgApiKeySchema, 'esg_api_keys');

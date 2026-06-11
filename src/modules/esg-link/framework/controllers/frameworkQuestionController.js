@@ -2,8 +2,10 @@
 
 const EsgFrameworkQuestion        = require('../models/FrameworkQuestion.model');
 const EsgFramework                = require('../models/Framework.model');
+const QuestionMetricMapping       = require('../models/QuestionMetricMapping.model');
 const { canManageFrameworkQuestion, canApproveQuestion } = require('../services/frameworkAccessService');
 const { blockPublishedEdit, createDraftVersion }         = require('../services/questionVersionService');
+const { syncMetricFrameworkFlags }                       = require('../services/metricFrameworkSyncService');
 
 const createQuestion = async (req, res) => {
   try {
@@ -71,6 +73,52 @@ const createQuestion = async (req, res) => {
       status:                 'draft',
       createdBy:              req.user._id,
     });
+
+    // Auto-create a QuestionMetricMapping for each linked metric so the prefill service can use them
+    const metricIdsToMap = Array.isArray(linkedMetricIds) && linkedMetricIds.length
+      ? linkedMetricIds
+      : [];
+    const metricCodesToMap = Array.isArray(linkedMetricCodes) ? linkedMetricCodes : [];
+
+    for (let i = 0; i < metricIdsToMap.length; i++) {
+      const mId   = metricIdsToMap[i];
+      const mCode = metricCodesToMap[i] || '';
+      try {
+        const alreadyExists = await QuestionMetricMapping.findOne({
+          questionId: question._id,
+          metricId:   mId,
+          clientId:   null,
+          active:     true,
+        }).lean();
+        if (!alreadyExists) {
+          await QuestionMetricMapping.create({
+            clientId:          null,
+            frameworkId,
+            frameworkCode:     frameworkCode.toUpperCase(),
+            questionId:        question._id,
+            questionCode:      question.questionCode,
+            metricId:          mId,
+            metricCode:        mCode,
+            sectionCode:       sectionCode   || null,
+            principleCode:     principleCode || null,
+            indicatorType:     indicatorType || null,
+            mappingType:       'auto_answer',
+            aggregationMethod: 'sum',
+            isPrimary:         i === 0,
+            isCore:            false,
+            isBrsrCore:        false,
+            allowManualOverride: true,
+            useAllNodes:       true,
+            boundaryNodeIds:   [],
+            active:            true,
+            createdBy:         req.user._id,
+          });
+          await syncMetricFrameworkFlags(mId);
+        }
+      } catch (mapErr) {
+        console.error('[frameworkQuestionController] auto-create mapping failed for metric', mId, ':', mapErr.message);
+      }
+    }
 
     return res.status(201).json({ success: true, message: 'Question created', data: question });
   } catch (err) {
@@ -224,7 +272,7 @@ const versionQuestion = async (req, res) => {
 
 const listQuestions = async (req, res) => {
   try {
-    const { frameworkCode, sectionCode, principleCode, status, indicatorType } = req.query;
+    const { frameworkCode, sectionCode, principleCode, status, indicatorType, includeMappings } = req.query;
 
     const query = { isDeleted: false };
     if (frameworkCode) query.frameworkCode = frameworkCode.toUpperCase();
@@ -237,6 +285,34 @@ const listQuestions = async (req, res) => {
       .sort({ sectionCode: 1, displayOrder: 1 })
       .lean();
 
+    // Optional: attach framework-level metric mappings to each question
+    // Call with ?includeMappings=true (e.g. in the assignment modal question dropdown)
+    if (includeMappings === 'true' && questions.length) {
+      const questionIds = questions.map((q) => q._id);
+      const allMappings = await QuestionMetricMapping.find({
+        questionId: { $in: questionIds },
+        clientId:   null,
+        active:     true,
+      })
+        .populate('metricId', 'metricCode metricName esgCategory primaryUnit')
+        .lean();
+
+      const byQuestion = {};
+      for (const m of allMappings) {
+        const qId = String(m.questionId);
+        if (!byQuestion[qId]) byQuestion[qId] = [];
+        byQuestion[qId].push(m);
+      }
+
+      const enriched = questions.map((q) => ({
+        ...q,
+        metricMappings:     byQuestion[String(q._id)] || [],
+        metricMappingCount: (byQuestion[String(q._id)] || []).length,
+      }));
+
+      return res.status(200).json({ success: true, count: enriched.length, data: enriched });
+    }
+
     return res.status(200).json({ success: true, count: questions.length, data: questions });
   } catch (err) {
     console.error('[frameworkQuestionController] listQuestions:', err);
@@ -248,7 +324,27 @@ const getQuestion = async (req, res) => {
   try {
     const question = await EsgFrameworkQuestion.findById(req.params.questionId).lean();
     if (!question || question.isDeleted) return res.status(404).json({ message: 'Question not found' });
-    return res.status(200).json({ success: true, data: question });
+
+    // Optional: include the framework-level metric mappings (with metric details)
+    // Call with ?includeMappings=true from the assignment modal or anywhere that needs them
+    let metricMappings = undefined;
+    if (req.query.includeMappings === 'true') {
+      metricMappings = await QuestionMetricMapping.find({
+        questionId: question._id,
+        clientId:   null,
+        active:     true,
+      })
+        .populate('metricId', 'metricCode metricName esgCategory primaryUnit')
+        .lean();
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...question,
+        ...(metricMappings !== undefined && { metricMappings }),
+      },
+    });
   } catch (err) {
     console.error('[frameworkQuestionController] getQuestion:', err);
     return res.status(500).json({ message: 'Server error', error: err.message });

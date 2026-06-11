@@ -8,6 +8,7 @@ const {
   ComplianceObligationType,
   FlagEmissionSource, SupplierMetric, SdaSector,
   ResidualRemovalFilterType,
+  ApprovalDepth, SeasonalityMethod, ForecastMethod,
 } = require('../constants/enums');
 
 const TargetMasterSchema = new mongoose.Schema({
@@ -103,6 +104,17 @@ const TargetMasterSchema = new mongoose.Schema({
   verification_required:     { type: Boolean, default: false },
   verification_standard:     { type: String, default: null },
   verifier_name:             { type: String, default: null },
+
+  // ── Per-target settings (override OrgSettings when set) ──────────────────
+  target_settings: {
+    approval_depth:                { type: String, enum: [...Object.values(ApprovalDepth), null], default: null },
+    allocation_tolerance_pct:      { type: Number, default: null },
+    seasonality_default_method:    { type: String, enum: [...Object.values(SeasonalityMethod), null], default: null },
+    forecast_method_default:       { type: String, enum: [...Object.values(ForecastMethod), null], default: null },
+    forecast_at_risk_threshold_pct:{ type: Number, default: null },
+    scope3_coverage_threshold_pct: { type: Number, default: null },
+    settings_configured_at:        { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 TargetMasterSchema.index({ clientId: 1, target_code: 1 }, { unique: true });

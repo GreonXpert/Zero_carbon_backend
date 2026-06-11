@@ -7,6 +7,7 @@ const EsgLinkBoundary     = require('../../boundary/models/EsgLinkBoundary');
 const { logEventFireAndForget } = require('../../../../../common/services/audit/auditLogService');
 const { canReview, canApprove, isConsultantForClient } = require('../utils/submissionPermissions');
 const { triggerAllPeriodSummaryRefresh, resolvePeriodFromEntry } = require('../../summary/services/summaryService');
+const { emitWorkflowStatusChanged } = require('../../summary/utils/esgSummarySocket');
 
 // ─── Internal: fire-and-forget summary refresh + socket broadcast ─────────────
 function _refreshSummaryAsync(doc, toStatus, reviewers, approvers) {
@@ -64,7 +65,7 @@ const VALID_TRANSITIONS = {
   submitted:                 ['under_review', 'clarification_requested'],
   resubmitted:               ['under_review', 'clarification_requested'],
   under_review:              ['approved', 'rejected', 'clarification_requested'],
-  clarification_requested:   ['resubmitted'],
+  clarification_requested:   ['resubmitted', 'under_review'],
 };
 
 function isValidTransition(from, to) {
@@ -80,22 +81,22 @@ async function resolveAssignees(submission) {
   });
   if (!boundary) return { reviewers: [], approvers: [], contributors: [] };
 
+  // entries in reviewers/approvers/contributors can be plain ObjectIds or
+  // populated objects { _id, userName, ... } — extract the id in either case
+  const extractIds = (arr) =>
+    (arr || [])
+      .map((entry) => (entry && entry._id ? entry._id.toString() : entry ? entry.toString() : null))
+      .filter(Boolean);
+
   for (const node of boundary.nodes || []) {
     if (node.id !== submission.nodeId) continue;
     for (const mapping of node.metricsDetails || []) {
       if (!mapping._id || mapping._id.toString() !== submission.mappingId) continue;
 
-      const reviewers = mapping.inheritNodeReviewers
-        ? node.nodeReviewerIds || []
-        : mapping.reviewers || [];
-      const approvers = mapping.inheritNodeApprovers
-        ? node.nodeApproverIds || []
-        : mapping.approvers || [];
-
       return {
-        reviewers:    reviewers.map((id) => id.toString()),
-        approvers:    approvers.map((id) => id.toString()),
-        contributors: (mapping.contributors || []).map((id) => id.toString()),
+        reviewers:    extractIds(mapping.reviewers),
+        approvers:    extractIds(mapping.approvers),
+        contributors: extractIds(mapping.contributors),
         mapping,
         node,
       };
@@ -172,22 +173,41 @@ async function transition(submissionId, targetStatus, actor, options = {}) {
 
   // ── 4. Status-specific logic ──────────────────────────────────────────────
   submission.workflowStatus = targetStatus;
+  let actualToStatus = targetStatus;
+
+  // Reset SLA escalation flags — the item is "fresh" again for its new owner
+  submission.isEscalated     = false;
+  submission.escalatedAt     = null;
+  submission.escalationStage = null;
 
   if (targetStatus === 'submitted' || targetStatus === 'resubmitted') {
     submission.submittedBy = actor._id || actor.id;
     submission.submittedAt = now;
+
+    // No reviewers assigned — skip reviewer step and go straight to under_review
+    // so the submission appears in the approver's queue immediately.
+    if (reviewers.length === 0 && approvers.length > 0) {
+      actualToStatus = 'under_review';
+      submission.workflowStatus = 'under_review';
+      submission.underReviewAt = now;
+      submission.approvalDecisions = approvers.map((approverId) => ({
+        approverId,
+        approverType: 'approver',
+        decision:     'pending',
+      }));
+    }
   }
 
-  // When moving to under_review, populate approvalDecisions for all approvers
-  if (targetStatus === 'under_review' && submission.approvalDecisions.length === 0) {
-    submission.approvalDecisions = approvers.map((approverId) => {
-      // Determine approver type: check if this approver is a consultant
-      return {
+  // When moving to under_review explicitly, populate approvalDecisions for all approvers
+  if (targetStatus === 'under_review') {
+    submission.underReviewAt = now;
+    if (submission.approvalDecisions.length === 0) {
+      submission.approvalDecisions = approvers.map((approverId) => ({
         approverId,
-        approverType: 'approver', // simplified — enriched below if needed
+        approverType: 'approver',
         decision:     'pending',
-      };
-    });
+      }));
+    }
   }
 
   await submission.save();
@@ -196,17 +216,17 @@ async function transition(submissionId, targetStatus, actor, options = {}) {
   await EsgWorkflowAction.create({
     submissionId: submission._id,
     clientId,
-    action:    _statusToAction(targetStatus),
+    action:    _statusToAction(actualToStatus),
     actorId:   actor._id || actor.id,
     actorType: actor.userType,
     fromStatus,
-    toStatus:  targetStatus,
+    toStatus:  actualToStatus,
     note:      note || null,
     createdAt: now,
   });
 
   // ── 6. Thread: system event + optional clarification message ─────────────
-  const systemText = `Status changed: ${fromStatus} → ${targetStatus} by ${actor.userName || actor.userType}`;
+  const systemText = `Status changed: ${fromStatus} → ${actualToStatus} by ${actor.userName || actor.userType}`;
   await appendSystemEvent(submission._id, clientId, systemText);
 
   if (threadMessage && (targetStatus === 'clarification_requested' || targetStatus === 'resubmitted')) {
@@ -237,18 +257,27 @@ async function transition(submissionId, targetStatus, actor, options = {}) {
     req,
     actor,
     module:        'esg_data_collection',
-    action:        _statusToAuditAction(targetStatus),
+    action:        _statusToAuditAction(actualToStatus),
     entityType:    'EsgDataEntry',
     entityId:      submission._id.toString(),
     clientId,
-    changeSummary: `Submission ${submission._id}: ${fromStatus} → ${targetStatus}`,
+    changeSummary: `Submission ${submission._id}: ${fromStatus} → ${actualToStatus}`,
     metadata:      { nodeId: submission.nodeId, mappingId: submission.mappingId },
   });
 
-  // ── 8. Fire-and-forget summary refresh ───────────────────────────────────
-  _refreshSummaryAsync(submission, targetStatus, reviewers, approvers);
+  // ── 8. Fire-and-forget summary refresh + realtime socket push ────────────
+  _refreshSummaryAsync(submission, actualToStatus, reviewers, approvers);
+  emitWorkflowStatusChanged(
+    submission.clientId, submission._id, submission.metricCode,
+    submission.nodeId, fromStatus, actualToStatus,
+    {
+      reviewerIds: reviewers.map((r) => r._id || r),
+      approverIds: approvers.map((a) => a._id || a),
+      submittedBy: submission.submittedBy,
+    }
+  );
 
-  return { doc: submission, fromStatus, toStatus: targetStatus, reviewers, approvers };
+  return { doc: submission, fromStatus, toStatus: actualToStatus, reviewers, approvers };
 }
 
 // ─── Approver Decision ────────────────────────────────────────────────────────
@@ -367,6 +396,14 @@ async function recordApproverDecision(submissionId, actorId, decision, note, opt
   }
 
   submission.workflowStatus = finalStatus;
+
+  // Reset SLA escalation flags once the submission leaves under_review
+  if (finalStatus !== 'under_review') {
+    submission.isEscalated     = false;
+    submission.escalatedAt     = null;
+    submission.escalationStage = null;
+  }
+
   await submission.save();
 
   // ── 6. Workflow action ────────────────────────────────────────────────────
@@ -406,8 +443,17 @@ async function recordApproverDecision(submissionId, actorId, decision, note, opt
     metadata:      { approvalPct, rejectionPct },
   });
 
-  // ── 8. Fire-and-forget summary refresh ───────────────────────────────────
+  // ── 8. Fire-and-forget summary refresh + realtime socket push ────────────
   _refreshSummaryAsync(submission, finalStatus, [], approvers);
+  emitWorkflowStatusChanged(
+    submission.clientId, submission._id, submission.metricCode,
+    submission.nodeId, 'under_review', finalStatus,
+    {
+      approverIds: approvers.map((a) => a._id || a),
+      submittedBy: submission.submittedBy,
+      note,
+    }
+  );
 
   return {
     doc:              submission,

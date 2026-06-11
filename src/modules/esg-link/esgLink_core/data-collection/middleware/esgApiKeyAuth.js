@@ -78,7 +78,17 @@ function esgApiKeyAuth(keyType) {
         return res.status(403).json({ success: false, message: 'API key scope mismatch' });
       }
 
-      // ── 5. IP whitelist check ──────────────────────────────────────────────
+      // ── 5. Connection gate ─────────────────────────────────────────────────
+      // Allows pausing data ingestion without revoking the key.
+      if (matched.connectionStatus === 'disconnected') {
+        return res.status(409).json({
+          success: false,
+          message: 'Data connection is disabled. Reconnect the source to resume ingestion.',
+          reason:  'connection_disabled',
+        });
+      }
+
+      // ── 6. IP whitelist check ──────────────────────────────────────────────
       if (matched.ipWhitelist && matched.ipWhitelist.length > 0) {
         const remoteIp = req.ip || req.connection?.remoteAddress || '';
         const allowed  = matched.ipWhitelist.some((entry) => {
@@ -93,7 +103,7 @@ function esgApiKeyAuth(keyType) {
         }
       }
 
-      // ── 6. Rate limiting ───────────────────────────────────────────────────
+      // ── 7. Rate limiting ───────────────────────────────────────────────────
       const { allowed, count, limit } = checkRateLimit(matched._id.toString());
       res.set('X-RateLimit-Limit',     String(limit));
       res.set('X-RateLimit-Remaining', String(Math.max(0, limit - count)));
@@ -102,10 +112,10 @@ function esgApiKeyAuth(keyType) {
         return res.status(429).json({ success: false, message: 'Rate limit exceeded' });
       }
 
-      // ── 7. Record usage (non-blocking) ─────────────────────────────────────
+      // ── 8. Record usage (non-blocking) ─────────────────────────────────────
       setImmediate(() => matched.recordUsage().catch(() => {}));
 
-      // ── 8. Attach to request ───────────────────────────────────────────────
+      // ── 9. Attach to request ───────────────────────────────────────────────
       req.esgApiKey = {
         id:        matched._id.toString(),
         clientId:  matched.clientId,

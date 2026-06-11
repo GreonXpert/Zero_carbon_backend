@@ -34,9 +34,8 @@ const ChatAuditLogSchema = new mongoose.Schema(
       type: String,
     },
     clientId: {
-      type:     String,
-      required: true,
-      index:    true,
+      type:  String,
+      index: true,
     },
 
     // ── Question + classification ─────────────────────────────────────────────
@@ -45,7 +44,6 @@ const ChatAuditLogSchema = new mongoose.Schema(
     detectedProduct:  { type: String, enum: ['zero_carbon', 'esg_link', 'both', 'out_of_system', null], default: null },
 
     // ── Resolved query plan (stored for traceability) ─────────────────────────
-    // Stored as plain object — no sensitive filters, no raw values
     queryPlan: {
       type:    mongoose.Schema.Types.Mixed,
       default: null,
@@ -66,8 +64,14 @@ const ChatAuditLogSchema = new mongoose.Schema(
     exportRequested:     { type: Boolean, default: false },
     exportFormat:        { type: String, enum: ['pdf', 'docx', 'xlsx', null], default: null },
 
+    // ── Restriction / access-denied detail ────────────────────────────────────
+    // Populated whenever status is 'access_restricted' or 'client_resolution_needed'
+    restrictionCode:   { type: String, default: null },
+    restrictionReason: { type: String, default: null },
+    attemptedDomain:   { type: String, default: null },
+    attemptedClientId: { type: String, default: null },
+
     // ── AI provider metadata (safe — no keys, no raw prompts) ─────────────────
-    // Stores: model name, token counts, request duration only.
     aiRequestMeta: {
       model:      { type: String, default: null },
       durationMs: { type: Number, default: 0 },
@@ -91,6 +95,8 @@ const ChatAuditLogSchema = new mongoose.Schema(
         'provider_error',
         'greon_iq_disabled',
         'invalid_request',
+        'access_restricted',
+        'client_resolution_needed',
       ],
       required: true,
     },
@@ -98,13 +104,11 @@ const ChatAuditLogSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    // Audit logs are append-only; disable updates at the Mongoose level
-    // by convention (services must never call .save() on retrieved logs)
   }
 );
 
-// Time-range queries for admin reporting
 ChatAuditLogSchema.index({ clientId: 1, createdAt: -1 });
 ChatAuditLogSchema.index({ userId: 1, createdAt: -1 });
+ChatAuditLogSchema.index({ status: 1, createdAt: -1 });
 
 module.exports = mongoose.model('ChatAuditLog', ChatAuditLogSchema);

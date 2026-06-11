@@ -35,7 +35,8 @@ const TRANSITIONS = [
     allowedRoles: ['contributor', 'consultant', 'client_admin', 'consultant_admin', 'super_admin'],
   },
   {
-    from:         ['submitted_to_reviewer'],
+    // Reviewer can ask for changes on first review OR after a resubmission
+    from:         ['submitted_to_reviewer', 'resubmitted_to_reviewer'],
     to:           'reviewer_changes_requested',
     allowedRoles: ['reviewer', 'consultant_admin', 'super_admin'],
   },
@@ -47,7 +48,7 @@ const TRANSITIONS = [
   {
     from:         ['reviewer_changes_requested'],
     to:           'resubmitted_to_reviewer',
-    allowedRoles: ['contributor', 'consultant', 'client_admin', 'super_admin'],
+    allowedRoles: ['contributor', 'consultant', 'client_admin', 'consultant_admin', 'super_admin'],
   },
   {
     from:         ['reviewer_approved'],
@@ -65,7 +66,9 @@ const TRANSITIONS = [
     allowedRoles: ['reviewer', 'consultant_admin', 'super_admin'],
   },
   {
-    from:         ['reviewer_response_pending'],
+    // Reviewer can request clarification from: the approver-query chain
+    // (reviewer_response_pending) OR directly after a resubmission
+    from:         ['reviewer_response_pending', 'resubmitted_to_reviewer'],
     to:           'contributor_clarification_required',
     allowedRoles: ['reviewer', 'consultant_admin', 'super_admin'],
   },
@@ -85,9 +88,27 @@ const TRANSITIONS = [
     allowedRoles: ['reviewer', 'consultant_admin', 'super_admin'],
   },
   {
-    from:         ['submitted_to_approver'],
+    from:         ['submitted_to_approver', 'approver_query_to_reviewer', 'reviewer_response_pending'],
     to:           'final_approved',
     allowedRoles: ['approver', 'super_admin'],
+  },
+  {
+    // Approver declines — process restarts from the beginning
+    from:         ['submitted_to_approver', 'approver_query_to_reviewer', 'reviewer_response_pending'],
+    to:           'approver_declined',
+    allowedRoles: ['approver', 'super_admin'],
+  },
+  {
+    // Contributor picks up a declined answer — saving restarts to in_progress
+    from:         ['approver_declined'],
+    to:           'in_progress',
+    allowedRoles: ['contributor', 'consultant', 'client_admin', 'consultant_admin', 'super_admin'],
+  },
+  {
+    // Contributor can submit a declined answer directly back to reviewer (skipping in_progress)
+    from:         ['approver_declined'],
+    to:           'submitted_to_reviewer',
+    allowedRoles: ['contributor', 'consultant', 'client_admin', 'consultant_admin', 'super_admin'],
   },
   {
     from:         ['final_approved'],

@@ -9,6 +9,45 @@
 
 const mongoose = require('mongoose');
 
+// ── IoTConfigSchema ───────────────────────────────────────────────────────────
+const IoTConfigSchema = new mongoose.Schema({
+  deviceId:     { type: String, default: '' },
+  deviceName:   { type: String, default: '' },
+  protocol: {
+    type: String,
+    enum: ['mqtt', 'http', 'coap', 'modbus', 'other'],
+    default: 'mqtt'
+  },
+  brokerUrl:    { type: String, default: '' },
+  topic:        { type: String, default: '' },
+  serialNumber: { type: String, default: '' },
+  manufacturer: { type: String, default: '' },
+  location:     { type: String, default: '' },
+  notes:        { type: String, default: '' }
+}, { _id: false });
+
+// ── ApiConfigSchema ───────────────────────────────────────────────────────────
+const ApiConfigSchema = new mongoose.Schema({
+  sourceUrl:  { type: String, default: '' },
+  sourceName: { type: String, default: '' },
+  method: {
+    type: String,
+    enum: ['GET', 'POST', 'PUT', 'PATCH'],
+    default: 'POST'
+  },
+  authType: {
+    type: String,
+    enum: ['none', 'api_key', 'bearer_token', 'basic_auth', 'oauth2'],
+    default: 'api_key'
+  },
+  dataFormat: {
+    type: String,
+    enum: ['json', 'xml', 'csv', 'form_data'],
+    default: 'json'
+  },
+  notes: { type: String, default: '' }
+}, { _id: false });
+
 const ValidationRuleSchema = new mongoose.Schema(
   {
     validationRuleId: {
@@ -81,14 +120,16 @@ const EsgMetricNodeMappingSchema = new mongoose.Schema(
     // ── Data ingestion ────────────────────────────────────────────────────────
     allowedSourceTypes: {
       type: [String],
-      enum: ['manual', 'api', 'iot'],
+      enum: ['manual', 'api', 'iot', 'ocr'],
       default: ['manual']
     },
     defaultSourceType: {
       type: String,
-      enum: ['manual', 'api', 'iot'],
+      enum: ['manual', 'api', 'iot', 'ocr'],
       default: 'manual'
     },
+    iotConfig:             { type: IoTConfigSchema, default: null },
+    apiConfig:             { type: ApiConfigSchema, default: null },
     zeroCarbonReference:    { type: Boolean, default: false },
     ingestionInstructions:  { type: String, trim: true, default: '' },
 

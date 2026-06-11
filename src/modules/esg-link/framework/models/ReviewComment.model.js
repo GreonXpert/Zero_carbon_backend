@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const COMMENT_TYPE_ENUM   = [
   'reviewer_comment',
   'approver_query',
+  'approver_decline',
   'contributor_reply',
   'reviewer_reply',
   'system_note',

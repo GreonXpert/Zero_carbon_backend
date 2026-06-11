@@ -14,6 +14,7 @@ const PathwayAnnual            = require('../models/PathwayAnnual');
 const UserLayoutPreference     = require('../models/UserLayoutPreference');
 const { assertWriteAccess, assertCanApprove, resolveClientId } = require('../utils/m3Permission');
 const OrgSettings = require('../models/OrgSettings');
+const SeasonalProfile = require('../models/SeasonalProfile');
 
 const respond = (res, data, status = 200) => res.status(status).json({ success: true, data });
 const err = (res, e) => res.status(e.status || 500).json({ success: false, message: e.message });
@@ -279,7 +280,7 @@ exports.computeForecast = async (req, res) => {
     const target = await targetService.getTargetById(req.params.targetId);
     await assertWriteAccess(req, target.clientId);
 
-    const { calendarYear, forecastMethod, snapshotType } = req.body;
+    const { calendarYear, forecastMethod, snapshotType, customValues } = req.body;
     if (!calendarYear) {
       return res.status(422).json({ success: false, message: 'calendarYear is required.' });
     }
@@ -315,6 +316,7 @@ exports.computeForecast = async (req, res) => {
       forecastMethod,
       snapshotType:  snapshotType || 'ANNUAL',
       isPrimary,
+      customValues:  Array.isArray(customValues) ? customValues.map(Number) : null,
     });
 
     // Annual returns single snapshot; sub-period returns array — always reply with the latest
@@ -423,5 +425,74 @@ exports.saveLayoutPreference = async (req, res) => {
       { upsert: true, new: true }
     );
     respond(res, { hidden_cards: pref.hidden_cards });
+  } catch (e) { err(res, e); }
+};
+
+// ── Seasonal Profile CRUD ─────────────────────────────────────────────────────
+
+exports.getSeasonalProfile = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    const { calendar_year } = req.query;
+    const filter = { target_id: target._id };
+    if (calendar_year) filter.calendar_year = Number(calendar_year);
+    const profiles = await SeasonalProfile.find(filter).lean();
+    respond(res, profiles);
+  } catch (e) { err(res, e); }
+};
+
+exports.saveSeasonalProfile = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+
+    const { calendar_year, scope = 'All', monthly_weights } = req.body;
+    if (!calendar_year) {
+      return res.status(422).json({ success: false, message: 'calendar_year is required.' });
+    }
+    if (!Array.isArray(monthly_weights) || monthly_weights.length !== 12) {
+      return res.status(422).json({ success: false, message: 'monthly_weights must be an array of 12 numbers.' });
+    }
+
+    const profile = await SeasonalProfile.findOneAndUpdate(
+      { target_id: target._id, calendar_year: Number(calendar_year), scope },
+      {
+        $set: {
+          clientId:        target.clientId,
+          monthly_weights: monthly_weights.map(Number),
+          created_by:      req.user?.email || req.user?._id || null,
+        },
+      },
+      { upsert: true, new: true }
+    );
+    respond(res, profile, 201);
+  } catch (e) { err(res, e); }
+};
+
+exports.deleteSeasonalProfile = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    const deleted = await SeasonalProfile.findOneAndDelete({ _id: req.params.profileId, target_id: target._id });
+    if (!deleted) return res.status(404).json({ success: false, message: 'Profile not found.' });
+    respond(res, { deleted: true });
+  } catch (e) { err(res, e); }
+};
+
+// ── Per-target settings ────────────────────────────────────────────────────────
+
+exports.getTargetSettings = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    respond(res, target.target_settings ?? {});
+  } catch (e) { err(res, e); }
+};
+
+exports.updateTargetSettings = async (req, res) => {
+  try {
+    const target = await targetService.getTargetById(req.params.targetId);
+    await assertWriteAccess(req, target.clientId);
+    const updated = await targetService.updateTargetSettings(req.params.targetId, req.body, req.user);
+    respond(res, updated.target_settings);
   } catch (e) { err(res, e); }
 };

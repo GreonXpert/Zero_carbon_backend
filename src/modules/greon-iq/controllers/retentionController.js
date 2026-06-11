@@ -16,11 +16,16 @@ const ADMIN_ROLES = new Set(['consultant_admin', 'consultant', 'client_admin']);
 // GET /api/greon-iq/retention
 async function getRetention(req, res) {
   try {
-    const user     = req.user;
-    const clientId = user.clientId || req.query.clientId;
-    if (!clientId) {
-      return res.status(400).json({ success: false, code: 'MISSING_CLIENT_ID' });
+    const user = req.user;
+    const { resolveClientScope } = require('../services/clientScopeResolver');
+    const scopeResult = await resolveClientScope(user, req.query.clientId);
+    if (scopeResult.error) {
+      return res.status(400).json({ success: false, code: scopeResult.code, message: scopeResult.error });
     }
+    if (scopeResult.needsClientResolution) {
+      return res.status(400).json({ success: false, code: 'CLIENT_ID_REQUIRED', message: 'clientId is required for your role.' });
+    }
+    const { clientId } = scopeResult;
 
     const [limit, sessionCount] = await Promise.all([
       getChatRetentionLimit(user, clientId),
@@ -47,10 +52,16 @@ async function updateRetention(req, res) {
       return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Only admins can update retention limits.' });
     }
 
-    const { targetUserId, clientId, chatRetentionLimit } = req.body;
-    if (!targetUserId || !clientId || chatRetentionLimit === undefined) {
+    const { targetUserId, clientId: rawClientId, chatRetentionLimit } = req.body;
+    if (!targetUserId || !rawClientId || chatRetentionLimit === undefined) {
       return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: 'targetUserId, clientId, and chatRetentionLimit are required.' });
     }
+    const { resolveClientScope } = require('../services/clientScopeResolver');
+    const scopeResult = await resolveClientScope(user, rawClientId);
+    if (scopeResult.error) {
+      return res.status(400).json({ success: false, code: scopeResult.code, message: scopeResult.error });
+    }
+    const clientId = scopeResult.clientId;
 
     const clamped = Math.min(Math.max(parseInt(chatRetentionLimit, 10), 10), 100);
     const allocation = await getAllocationForUser(targetUserId, clientId);

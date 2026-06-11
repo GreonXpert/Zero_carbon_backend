@@ -10,8 +10,10 @@
  *   getPendingApprovals    — query helper for listing approvals
  */
 
-const EsgMetricApproval = require('../models/EsgMetricApproval');
-const EsgMetric         = require('../models/EsgMetric');
+const EsgMetricApproval    = require('../models/EsgMetricApproval');
+const EsgMetric            = require('../models/EsgMetric');
+const EsgMetricNodeMapping = require('../../boundary/models/EsgMetricNodeMapping');
+const EsgBoundarySummary   = require('../../summary/models/EsgBoundarySummary');
 const { generateMetricCode, hasDefinitionChange } = require('./metricService');
 
 /**
@@ -76,6 +78,24 @@ const createApprovalRequest = async ({
  * @param {object}            reviewer   - req.user (super_admin)
  * @returns {Promise<EsgMetric|null>}    - The resulting metric doc (null for delete)
  */
+function _bustSummariesForMetric(metricId) {
+  setImmediate(async () => {
+    try {
+      const mappings = await EsgMetricNodeMapping.find(
+        { metricId, isDeleted: false }
+      ).select('clientId boundaryDocId').lean();
+
+      const pairs = [...new Map(
+        mappings.map((m) => [`${m.clientId}-${m.boundaryDocId}`, m])
+      ).values()];
+
+      for (const { clientId, boundaryDocId } of pairs) {
+        await EsgBoundarySummary.deleteMany({ clientId, boundaryDocId });
+      }
+    } catch (_) {}
+  });
+}
+
 const executeApprovedAction = async (approval, reviewer) => {
   const { actionType, metricId, proposedPayload } = approval;
 
@@ -126,6 +146,7 @@ const executeApprovedAction = async (approval, reviewer) => {
 
       Object.assign(metric, proposedPayload);
       await metric.save();
+      _bustSummariesForMetric(metricId);
       return metric;
     }
 
@@ -148,6 +169,7 @@ const executeApprovedAction = async (approval, reviewer) => {
       metric.retiredAt       = new Date();
       metric.updatedBy       = reviewer._id;
       await metric.save();
+      _bustSummariesForMetric(metricId);
       return metric;
     }
 
@@ -159,6 +181,7 @@ const executeApprovedAction = async (approval, reviewer) => {
       metric.deletedAt  = new Date();
       metric.deletedBy  = reviewer._id;
       await metric.save();
+      _bustSummariesForMetric(metricId);
       return null;
     }
 

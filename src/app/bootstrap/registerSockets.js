@@ -1059,6 +1059,34 @@ function registerSockets(io) {
       }
     });
 
+    // ── RAG Report Composer handlers ───────────────────────────────────────
+
+    socket.on('rag:subscribe-report', ({ reportId } = {}) => {
+      try {
+        if (reportId) {
+          socket.join(`rag:report:${reportId}`);
+          console.log(`📄 Socket ${socket.id} joined RAG report room: rag:report:${reportId}`);
+        }
+        // client_{clientId} room is joined on connect — org-level events already work
+        socket.emit('rag:subscribed', {
+          clientId: socket.clientId,
+          reportId: reportId || null,
+          timestamp: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error('Error in rag:subscribe-report:', err.message);
+      }
+    });
+
+    socket.on('rag:unsubscribe-report', ({ reportId } = {}) => {
+      try {
+        if (reportId) socket.leave(`rag:report:${reportId}`);
+        socket.emit('rag:unsubscribed', { reportId: reportId || null, timestamp: new Date().toISOString() });
+      } catch (err) {
+        console.error('Error in rag:unsubscribe-report:', err.message);
+      }
+    });
+
     // ── Common handlers ────────────────────────────────────────────────────
 
     socket.on('disconnect', () => {
@@ -1268,7 +1296,10 @@ function registerSockets(io) {
   // ── ESG Summary realtime broadcasts ──────────────────────────────────────
   global.broadcastEsgSummaryUpdate = function(clientId, boundaryDocId, eventType, payload) {
     try {
-      if (!io) return;
+      if (!io) {
+        console.warn('[ESG Socket] broadcastEsgSummaryUpdate called but Socket.IO not initialized — event dropped');
+        return;
+      }
       io.to(`esg-summary-${clientId}`).emit('esg_summary_updated', {
         type: eventType,
         clientId,

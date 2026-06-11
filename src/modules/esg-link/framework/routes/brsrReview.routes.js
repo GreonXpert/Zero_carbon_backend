@@ -14,6 +14,7 @@ const {
   requestContributorClarification,
   approverQuery,
   approverApprove,
+  approverDecline,
   replyToComment,
   resolveComment,
 } = require('../controllers/reviewController');
@@ -31,6 +32,7 @@ router.post('/brsr/answers/:answerId/reviewer/request-contributor-clarification'
 // ── Approver actions ──────────────────────────────────────────────────────────
 router.post('/brsr/answers/:answerId/approver/query',   eslGate, approverQuery);
 router.post('/brsr/answers/:answerId/approver/approve', eslGate, approverApprove);
+router.post('/brsr/answers/:answerId/approver/decline', eslGate, approverDecline);
 
 // ── Comment thread ────────────────────────────────────────────────────────────
 router.post('/brsr/comments/:commentId/reply',   eslGate, replyToComment);

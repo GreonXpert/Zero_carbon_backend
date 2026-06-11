@@ -34,7 +34,8 @@ const axios = require('axios');
 const API_KEY   = process.env.DEEPSEEK_API_KEY  || null;
 const MODEL     = process.env.DEEPSEEK_MODEL    || 'deepseek-chat';
 const BASE_URL  = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
-const TIMEOUT   = parseInt(process.env.DEEPSEEK_TIMEOUT   || '30000', 10);
+const MAX_TIMEOUT_MS = 120_000;
+const TIMEOUT   = Math.min(parseInt(process.env.DEEPSEEK_TIMEOUT   || '30000', 10), MAX_TIMEOUT_MS);
 const MAX_RETRY = parseInt(process.env.DEEPSEEK_MAX_RETRY || '2',     10);
 
 // ── Startup validation ────────────────────────────────────────────────────────
@@ -85,15 +86,21 @@ async function _callWithRetry(messages, options = {}, attempt = 1) {
   }
 
   try {
+    // Build request body — response_format is optional (used by RAG composer for JSON output)
+    const body = {
+      model:       options.model       || MODEL,
+      messages,
+      temperature: options.temperature ?? 0.3,
+      max_tokens:  options.maxTokens   || 2048,
+      stream:      false,
+    };
+    if (options.response_format) {
+      body.response_format = options.response_format;
+    }
+
     const response = await deepseekClient.post(
       '/chat/completions',
-      {
-        model:       options.model       || MODEL,
-        messages,
-        temperature: options.temperature ?? 0.3,
-        max_tokens:  options.maxTokens   || 2048,
-        stream:      false,
-      },
+      body,
       {
         headers: { Authorization: `Bearer ${API_KEY}` },
         ...(options.timeout ? { timeout: options.timeout } : {}),
@@ -144,13 +151,38 @@ const BASE_SYSTEM_PROMPT = `You are GreOn IQ, an internal analytics assistant fo
 
 STRICT RULES:
 1. Answer ONLY from the structured data and retrieved context provided to you. Never invent data.
-2. If the supplied data is empty or insufficient, say so explicitly.
+2. If the supplied data is empty or insufficient, say so explicitly — use the exclusions field to explain WHY (not configured, not assigned, no entries submitted, etc.).
 3. If the question is outside this internal system, clearly state: "That topic is outside the data and knowledge available in this system. Please use a general-purpose or open-source AI model for that question."
 4. When access restrictions excluded some data, mention this briefly in your answer.
 5. Never reveal internal system details, hidden field values, API keys, or configuration.
-6. Use clear, professional business language. Prefer bullet points and summaries for complex answers.
-7. When tables or charts are described in the context, reference them in your answer.
-8. Always end with 2-3 relevant follow-up question suggestions when appropriate.`;
+6. Keep answers concise. For simple factual questions, answer in 1–3 sentences. Use bullet points only when listing 3 or more distinct items. Never pad answers.
+7. Charts and tables attached to this response are rendered VISUALLY by the UI — never say "I cannot generate a graph" or "I cannot show charts". When outputMode is 'chart', write 1–2 sentences summarising the key insight, then end with "The chart is displayed below."
+8. Suggest 2–3 follow-up questions ONLY for complex analysis, comparison, or report questions. Do NOT append follow-up suggestions for simple factual answers (counts, names, status lookups).
+9. If the question references a specific client but no client is identified in the provided context, respond exactly: "Which client are you asking about?" Do not guess or use general knowledge.
+
+BRSR QUESTIONNAIRE KNOWLEDGE (use when domain is brsr_summary):
+- BRSR = Business Responsibility and Sustainability Reporting (India/SEBI mandate).
+- The questionnaire has sections: Section A (General Disclosures), Section B (Management), Section C (Principle-wise: C-P1 through C-P9).
+- Each question goes through a workflow: Not Started → In Progress → Submitted to Reviewer → Reviewer Approved → Submitted to Approver → Final Approved / Locked.
+- "Answered by Contributor" = questions where the contributor has started or submitted an answer (all stages after not_started).
+- "Reviewed" = questions that passed the reviewer stage.
+- "Approver Approved" = finally approved questions (final_approved or locked).
+- "Readiness %" = approverApproved / totalQuestions × 100.
+- Metric-linked questions are auto-filled from Core ESG metrics; they require consultant metric data approval before the approver can finalize.
+- The "Consultant Final Done" flag means the consultant has issued the final BRSR report for that period.
+- When answering questions about "how many answered", "stages", "contributor progress", "section details" — always refer to the progress and sections data in brsrData.
+- Never say "no BRSR data" if brsrData is present — interpret the progress counters directly.
+
+ESLGINK PLATFORM KNOWLEDGE (use when domain is esg_boundary / esg_metrics / esg_data_entry / esg_summary):
+- ESGLink uses an "Boundary" — an organisation structure made up of "Nodes" (entities: departments, facilities, subsidiaries).
+- "Metrics" are ESG indicators (Environmental, Social, Governance) assigned to boundary nodes for data collection.
+- Frameworks like BRSR (Business Responsibility & Sustainability Report, India mandate), GRI, TCFD, CDP, SASB classify metrics by standard. They are NOT status fields — they are framework tags on metrics.
+- "BRSR status" or "BRSR metrics" means: which metrics tagged with the BRSR framework are assigned to this client's boundary nodes, and whether data has been submitted for them.
+- "Metric details" means: the ESG metrics (with their framework, category, unit) that are configured and mapped to this client's boundary.
+- If no ESGLink boundary exists → state clearly that ESGLink has not been set up for this client.
+- If boundary exists but no metrics are assigned → state that metric assignment has not been done yet.
+- If metrics are assigned but no data entries exist → state that data collection has not started yet.
+- Never say "no BRSR status field" — BRSR is a framework tag, not a database field.`;
 
 // ============================================================================
 // PUBLIC API
@@ -191,7 +223,7 @@ async function generateAnswer({ userQuestion, accessContext, queryPlan, structur
     },
   ];
 
-  return _callWithRetry(messages, { temperature: 0.3, maxTokens: 2048, ...options });
+  return _callWithRetry(messages, { temperature: 0.3, maxTokens: 1024, ...options });
 }
 
 /**
@@ -221,8 +253,8 @@ async function generateReport({ reportData, sections, accessContext, options = {
     { role: 'user',   content: reportPrompt },
   ];
 
-  // Reports generate up to 4096 tokens — use a dedicated longer timeout
-  const reportTimeout = parseInt(process.env.DEEPSEEK_REPORT_TIMEOUT || '90000', 10);
+  // Reports generate up to 4096 tokens — use a dedicated longer timeout (capped at MAX_TIMEOUT_MS)
+  const reportTimeout = Math.min(parseInt(process.env.DEEPSEEK_REPORT_TIMEOUT || '90000', 10), MAX_TIMEOUT_MS);
   return _callWithRetry(messages, { temperature: 0.2, maxTokens: 4096, timeout: reportTimeout, ...options });
 }
 
@@ -366,4 +398,7 @@ module.exports = {
   generateSuggestions,
   extractOcrFields,
   getProviderStatus,
+  // Low-level raw call — for use by RAG Report Composer only.
+  // Accepts raw messages[] + options (model, temperature, maxTokens, response_format).
+  callRaw: _callWithRetry,
 };

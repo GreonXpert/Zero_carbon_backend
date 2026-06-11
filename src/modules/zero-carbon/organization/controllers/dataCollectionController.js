@@ -21,7 +21,7 @@ const {
 // re-trigger summaries AFTER ProcessEmissionDataEntry records are persisted.
 // The first summary run (inside triggerEmissionCalculation) fires before those
 // records exist; a second run ensures Strategy A picks them up correctly.
-const { updateSummariesOnDataChange } = require('../../calculation/CalculationSummary');
+const { updateSummariesOnDataChange, updateSummariesForDateSet } = require('../../calculation/CalculationSummary');
 
 const {getActiveFlowchart} = require('../../data-collection/utils/dataCollection');
 const {
@@ -1785,7 +1785,8 @@ async function saveOneEntry({
   csvMeta = null,
   overrideInputType = null,
   ocrMeta = null,
-  _bypassThreshold = false
+  _bypassThreshold = false,
+  skipSummaryUpdate = false   // ← batch CSV: skip per-row summary, recalc once at the end
 }) {
   // ✅ IMPORTANT: unwrap first so date/time can be read even if inside { dataValues: {...} }
   const rawRow = unwrapDataRow(row || {});
@@ -1911,9 +1912,25 @@ async function saveOneEntry({
     emissionCalculationStatus: 'pending',
     emissionFactor: resolveEmissionFactor(rawRow?.emissionFactor, scope?.emissionFactor),
     calculationModel: scope?.calculationModel || 'tier 1',
+    ...(Array.isArray(rawRow?.evidenceLinks) && rawRow.evidenceLinks.length > 0
+      ? {
+          evidenceLinks: rawRow.evidenceLinks
+            .filter(l => l && typeof l.url === 'string' && /^https?:\/\/.+/i.test(l.url.trim()))
+            .map(l => ({
+              label: (l.label || '').trim(),
+              url: l.url.trim(),
+              addedBy: req.user._id || req.user.id,
+              addedAt: new Date(),
+            })),
+        }
+      : {}),
   });
 
- await entry.save();
+    // Propagate skip flag to entry so post-save hook and triggerEmissionCalculation
+    // both skip per-row summary updates during batch CSV uploads.
+    if (skipSummaryUpdate) entry._skipSummaryUpdate = true;
+
+    await entry.save();
     const calcResult = await triggerEmissionCalculation(entry);
 
     // ── NEW: Propagate emission to ProcessFlowchart nodes ───────────────────
@@ -1928,18 +1945,19 @@ async function saveOneEntry({
     // and falls back to Strategy B (unallocated values).
     // This second call guarantees Strategy A finds the ProcessEmissionDataEntry
     // records and uses the correct pre-computed allocated CO2e values.
+    // Skip during batch CSV uploads — batch summary recalc at end covers this.
     setImmediate(async () => {
       try {
         const freshEntry = await require('../models/DataEntry')
           .findById(entry._id).lean();
         if (freshEntry && freshEntry.calculatedEmissions) {
           await createProcessEmissionDataEntry(freshEntry);
-          // ✅ Re-trigger summaries now that ProcessEmissionDataEntry records exist.
-          // Strategy A in buildProcessEmissionSummary will now find and use
-          // the pre-computed allocated values (e.g. 4.788 instead of 15.96).
-          console.log(`📊 [saveOneEntry] Re-triggering summary updates after ProcessEmission propagation for: ${freshEntry._id}`);
-          await updateSummariesOnDataChange(freshEntry);
-          console.log(`✅ [saveOneEntry] Summary updates completed with allocated process emissions.`);
+          if (!skipSummaryUpdate) {
+            // ✅ Re-trigger summaries now that ProcessEmissionDataEntry records exist.
+            console.log(`📊 [saveOneEntry] Re-triggering summary updates after ProcessEmission propagation for: ${freshEntry._id}`);
+            await updateSummariesOnDataChange(freshEntry);
+            console.log(`✅ [saveOneEntry] Summary updates completed with allocated process emissions.`);
+          }
         }
       } catch (e) {
         console.error('[saveOneEntry] ProcessEmission propagation failed:', e.message);
@@ -2142,6 +2160,36 @@ const saveManualData = async (req, res) => {
  * ❌ No local disk usage
  * ❌ No temp files
  */
+// In-memory store for background CSV upload jobs (keyed by jobId)
+const uploadJobStore = new Map();
+
+const getUploadProgress = (req, res) => {
+  const { jobId } = req.params;
+  const job = uploadJobStore.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, message: 'Job not found or expired' });
+  }
+  return res.json({
+    success: true,
+    jobId,
+    status:               job.status,
+    total:                job.total,
+    processed:            job.processed,
+    savedCount:           job.savedCount,
+    failedCount:          job.failedCount,
+    pendingApprovalCount: job.pendingApprovals.length,
+    errors:               job.errors,
+    pendingApprovals:     job.pendingApprovals,
+    results:              job.status === 'done' ? job.results : [],
+    message:              job.message,
+    fileName:             job.fileName,
+    s3:                   job.s3,
+    dataEntryCumulative:  job.dataEntryCumulative,
+    startTime:            job.startTime,
+    endTime:              job.endTime,
+  });
+};
+
 const uploadCSVData = async (req, res) => {
   try {
     const { clientId, nodeId, scopeIdentifier } = req.params;
@@ -2255,116 +2303,134 @@ const uploadCSVData = async (req, res) => {
     });
 
     /* -------------------------------------------------- */
-    /* 6) Save rows → DataEntry + calculation              */
+    /* 6) Create background job and respond immediately    */
     /* -------------------------------------------------- */
-    const saved = [];
-    const errors = [];
-    const pendingApprovals = [];
+    const jobId = `csv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-    for (let i = 0; i < rows.length; i++) {
+    const job = {
+      status:               'processing',
+      total:                rows.length,
+      processed:            0,
+      savedCount:           0,
+      failedCount:          0,
+      pendingApprovals:     [],
+      errors:               [],
+      results:              [],
+      message:              null,
+      fileName,
+      s3:                   { bucket: s3Upload.bucket, key: s3Upload.key, etag: s3Upload.etag },
+      dataEntryCumulative:  null,
+      startTime:            Date.now(),
+      endTime:              null,
+    };
+
+    uploadJobStore.set(jobId, job);
+
+    // Respond immediately so frontend can start polling
+    res.status(202).json({ success: true, jobId, total: rows.length });
+
+    // Process rows in background (req remains in closure — safe after res.json)
+    setImmediate(async () => {
       try {
-        const result = await saveOneEntry({
-          req,
-          clientId,
-          nodeId,
-          scopeIdentifier,
-          scope,
-          node,
-          inputSource: 'CSV',
-          row: rows[i],
-          csvMeta: {
-            fileName,
-            s3: s3Upload
-          }
-        });
+        // Collect timestamps of successfully saved rows for batch summary update at the end.
+        const savedTimestamps = [];
 
-        // Anomaly detected — row held in PendingApproval
-        if (result.intercepted) {
-          pendingApprovals.push({
-            rowNumber: i + 1,
-            pendingApprovalId: result.pendingApproval._id,
-            reason: result.pendingApproval.verificationMeta?.anomalyReason || 'Anomaly detected',
-            deviationPercentage: result.pendingApproval.verificationMeta?.deviationPercentage,
-            thresholdPercentage: result.pendingApproval.verificationMeta?.thresholdPercentage
-          });
-          continue;
+        for (let i = 0; i < rows.length; i++) {
+          try {
+            const result = await saveOneEntry({
+              req,
+              clientId,
+              nodeId,
+              scopeIdentifier,
+              scope,
+              node,
+              inputSource: 'CSV',
+              row: rows[i],
+              csvMeta: { fileName, s3: s3Upload },
+              skipSummaryUpdate: true   // ← skip per-row: run once at end
+            });
+
+            if (result.intercepted) {
+              job.pendingApprovals.push({
+                rowNumber: i + 1,
+                pendingApprovalId: result.pendingApproval._id,
+                reason: result.pendingApproval.verificationMeta?.anomalyReason || 'Anomaly detected',
+                deviationPercentage: result.pendingApproval.verificationMeta?.deviationPercentage,
+                thresholdPercentage: result.pendingApproval.verificationMeta?.thresholdPercentage
+              });
+            } else {
+              const { entry, calcResult } = result;
+              job.results.push({
+                rowNumber: i + 1,
+                dataEntryId: entry._id,
+                emissionCalculationStatus: entry.emissionCalculationStatus,
+                calculatedEmissions: entry.calculatedEmissions || null,
+                calculationBreakdown: calcResult?.data?.calculationBreakdown || null,
+                dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
+              });
+              job.savedCount++;
+              job.dataEntryCumulative = toDataEntryCumulative(entry.dataEntryCumulative);
+              if (entry.timestamp) savedTimestamps.push(entry.timestamp);
+            }
+          } catch (err) {
+            job.errors.push({ row: i + 1, error: err.message });
+            job.failedCount++;
+          }
+          job.processed = i + 1;
         }
 
-        const { entry, calcResult } = result;
+        // ── Run summaries ONCE for all unique date periods in this batch ──────
+        // This replaces the per-row summary recalculation that was causing
+        // 31 rows × 8 aggregations = 248 full MongoDB aggregations.
+        // Now it runs the minimum required set in parallel (typically 4–40 calls).
+        if (savedTimestamps.length > 0) {
+          console.log(`📊 [CSV batch] Running batch summary update for ${savedTimestamps.length} saved rows...`);
+          try {
+            await updateSummariesForDateSet(clientId, savedTimestamps);
+            console.log(`✅ [CSV batch] Batch summary update complete.`);
+          } catch (summaryErr) {
+            console.error('❌ [CSV batch] Summary update failed (non-fatal):', summaryErr.message);
+          }
+        }
 
-        saved.push({
-          rowNumber: i + 1,
-          dataEntryId: entry._id,
-          emissionCalculationStatus: entry.emissionCalculationStatus,
-          calculatedEmissions: entry.calculatedEmissions || null,
-          calculationBreakdown: calcResult?.data?.calculationBreakdown || null,
+        // Audit log
+        if (job.savedCount > 0) {
+          await logDataEntryImport(req, clientId, job.savedCount, {
+            fileName,
+            failedCount: job.failedCount,
+            s3Key: s3Upload?.key ?? null,
+            nodeId,
+            scopeIdentifier,
+          });
+        }
 
-          // ✅ NEW: include dataEntryCumulative per saved row
-          dataEntryCumulative: toDataEntryCumulative(entry.dataEntryCumulative)
-        });
+        // Broadcast
+        if (job.savedCount > 0 && global.broadcastDataCompletionUpdate) {
+          global.broadcastDataCompletionUpdate(clientId);
+        }
 
+        let csvMsg = `CSV processed: ${job.savedCount} rows saved`;
+        if (job.pendingApprovals.length > 0) {
+          csvMsg += `, ${job.pendingApprovals.length} rows held for approval`;
+        }
+        if (job.failedCount > 0) {
+          csvMsg += `, ${job.failedCount} errors`;
+        }
 
-      } catch (err) {
-        errors.push({
-          row: i + 1,
-          error: err.message
-        });
+        job.message = csvMsg;
+        job.status  = 'done';
+        job.endTime = Date.now();
+
+        // Auto-cleanup after 30 minutes
+        setTimeout(() => uploadJobStore.delete(jobId), 30 * 60 * 1000);
+
+      } catch (bgErr) {
+        console.error('uploadCSVData background error:', bgErr);
+        job.status  = 'error';
+        job.message = bgErr.message;
+        job.endTime = Date.now();
+        setTimeout(() => uploadJobStore.delete(jobId), 30 * 60 * 1000);
       }
-    }
-
-    // ✅ Audit log — bulk import summary (after all rows processed)
-    if (saved.length > 0) {
-      await logDataEntryImport(req, clientId, saved.length, {
-        fileName,
-        failedCount: errors.length,
-        s3Key: s3Upload?.key ?? null,
-        nodeId,
-        scopeIdentifier,
-      });
-    }
-
-    /* -------------------------------------------------- */
-    /* 7) Broadcast completion                             */
-    /* -------------------------------------------------- */
-    if (saved.length > 0 && global.broadcastDataCompletionUpdate) {
-      global.broadcastDataCompletionUpdate(clientId);
-    }
-
-    const ok = errors.length === 0 && pendingApprovals.length === 0;
-
-    // ✅ NEW: latest cumulative snapshot (last saved entry)
-    const latestDataEntryCumulative =
-      saved.length > 0 ? saved[saved.length - 1].dataEntryCumulative : null;
-
-    let csvMsg = `CSV processed: ${saved.length} rows saved`;
-    if (pendingApprovals.length > 0) {
-      csvMsg += `, ${pendingApprovals.length} rows held for approval (anomaly detected)`;
-    }
-    if (errors.length > 0) {
-      csvMsg += `, ${errors.length} errors`;
-    }
-
-    return res.status(ok ? 201 : saved.length > 0 || pendingApprovals.length > 0 ? 207 : 400).json({
-      success: saved.length > 0,
-      message: csvMsg,
-      fileName,
-
-      /* ✅ S3 info returned */
-      s3: {
-        bucket: s3Upload.bucket,
-        key: s3Upload.key,
-        etag: s3Upload.etag
-      },
-
-      savedCount: saved.length,
-      failedCount: errors.length,
-      pendingApprovalCount: pendingApprovals.length,
-      results: saved,
-      errors,
-      pendingApprovals,
-
-      // ✅ NEW: top-level snapshot for frontend
-      dataEntryCumulative: latestDataEntryCumulative
     });
 
   } catch (error) {
@@ -3324,6 +3390,74 @@ const editManualData = async (req, res) => {
       message: 'Failed to edit data entry',
       error: error.message
     });
+  }
+};
+
+// Add Evidence Link
+const addEvidenceLink = async (req, res) => {
+  try {
+    const { dataId } = req.params;
+    const { label = '', url } = req.body;
+
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+      return res.status(400).json({ message: 'URL is required' });
+    }
+    const trimmedUrl = url.trim();
+    if (!/^https?:\/\/.+/i.test(trimmedUrl)) {
+      return res.status(400).json({ message: 'URL must start with http:// or https://' });
+    }
+
+    const entry = await DataEntry.findById(dataId);
+    if (!entry) {
+      return res.status(404).json({ message: 'Data entry not found' });
+    }
+
+    entry.evidenceLinks.push({
+      label: (label || '').trim(),
+      url: trimmedUrl,
+      addedBy: req.user._id || req.user.id,
+      addedAt: new Date(),
+    });
+    await entry.save();
+
+    res.status(200).json({
+      message: 'Evidence link added successfully',
+      evidenceLinks: entry.evidenceLinks,
+    });
+  } catch (error) {
+    console.error('Add evidence link error:', error);
+    res.status(500).json({ message: 'Failed to add evidence link', error: error.message });
+  }
+};
+
+// Remove Evidence Link
+const removeEvidenceLink = async (req, res) => {
+  try {
+    const { dataId, linkId } = req.params;
+
+    const entry = await DataEntry.findById(dataId);
+    if (!entry) {
+      return res.status(404).json({ message: 'Data entry not found' });
+    }
+
+    const before = entry.evidenceLinks.length;
+    entry.evidenceLinks = entry.evidenceLinks.filter(
+      (l) => l._id.toString() !== linkId
+    );
+
+    if (entry.evidenceLinks.length === before) {
+      return res.status(404).json({ message: 'Evidence link not found' });
+    }
+
+    await entry.save();
+
+    res.status(200).json({
+      message: 'Evidence link removed successfully',
+      evidenceLinks: entry.evidenceLinks,
+    });
+  } catch (error) {
+    console.error('Remove evidence link error:', error);
+    res.status(500).json({ message: 'Failed to remove evidence link', error: error.message });
   }
 };
 
@@ -5454,7 +5588,10 @@ module.exports = {
   saveIoTData,
   saveManualData,
   uploadCSVData,
+  getUploadProgress,
   editManualData,
+  addEvidenceLink,
+  removeEvidenceLink,
   deleteManualData,
   switchInputType,
   getDataEntries,

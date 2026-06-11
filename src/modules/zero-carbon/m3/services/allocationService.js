@@ -3,6 +3,7 @@
 const SourceAllocation = require('../models/SourceAllocation');
 const ApprovalWorkflowLog = require('../models/ApprovalWorkflowLog');
 const OrgSettings = require('../models/OrgSettings');
+const TargetMaster = require('../models/TargetMaster');
 const { validateAllocationRow, validateAllocationSum } = require('../validators/allocationValidator');
 const { AllocationStatus, ApprovableEntityType, WorkflowEventType } = require('../constants/enums');
 const { ERRORS } = require('../constants/messages');
@@ -122,14 +123,20 @@ async function submitAllocation(allocationId, user) {
   }
 
   const siblings = await SourceAllocation.find({
-    target_id:       alloc.target_id,
-    chartType:       alloc.chartType,
-    scopeIdentifier: alloc.scopeIdentifier,
-    isDeleted:       false,
+    target_id:     alloc.target_id,
+    chartType:     alloc.chartType,
+    chartId:       alloc.chartId,
+    category_code: alloc.category_code,
+    isDeleted:     false,
   });
 
-  const settings  = await OrgSettings.findOne({ clientId: alloc.clientId });
-  const tolerance = settings?.allocation_tolerance_pct ?? 0.005;
+  const [targetDoc, orgSettings] = await Promise.all([
+    TargetMaster.findById(alloc.target_id).select('target_settings').lean(),
+    OrgSettings.findOne({ clientId: alloc.clientId }).lean(),
+  ]);
+  const tolerance = targetDoc?.target_settings?.allocation_tolerance_pct
+    ?? orgSettings?.allocation_tolerance_pct
+    ?? 0.005;
   const pcts      = siblings.map(s => s.allocated_pct);
 
   const check = validateAllocationSum(pcts, tolerance);

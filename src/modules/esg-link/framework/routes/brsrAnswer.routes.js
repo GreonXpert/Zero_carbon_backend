@@ -19,15 +19,16 @@ const {
   deleteEvidence,
 } = require('../controllers/evidenceController');
 
-const { updateAssignment }    = require('../controllers/assignmentController');
+const { updateAssignment, deleteAssignment } = require('../controllers/assignmentController');
 const { listComments }        = require('../controllers/reviewController');
 const { approveMetricData }   = require('../controllers/consultantApprovalController');
 
 router.use(auth);
 const eslGate = requireActiveModuleSubscription('esg_link');
 
-// ── Assignment update ─────────────────────────────────────────────────────────
-router.patch('/brsr/assignments/:assignmentId', eslGate, updateAssignment);
+// ── Assignment update / delete ────────────────────────────────────────────────
+router.patch('/brsr/assignments/:assignmentId',  eslGate, updateAssignment);
+router.delete('/brsr/assignments/:assignmentId', eslGate, deleteAssignment);
 
 // ── Answer CRUD & submission ──────────────────────────────────────────────────
 router.get('/brsr/answers/:answerId',         eslGate, getAnswer);

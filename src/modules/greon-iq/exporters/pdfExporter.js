@@ -243,7 +243,7 @@ function _buildHtmlFromQueryResponse(qr, B, logoUri) {
   const tables   = qr.tables   || [];
   const charts   = qr.charts   || [];
   const followup = qr.followupQuestions || [];
-  const answer   = qr.answer   || '';
+  const answer   = qr.content  || qr.answer || '';
 
   const product       = trace.product || 'zero_carbon';
   const productLabel  = product === 'esg_link' ? 'ESG Link' : 'Zero Carbon';

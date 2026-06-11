@@ -1,42 +1,57 @@
 // utils/jobs/summaryMaintenanceJob.js
-// Two scheduled maintenance jobs for ReductionSummary:
-//   1. Hourly (0 * * * *) — processes up to 50 summaries with pendingRecalculation=true
-//   2. Daily  (0 2 * * *) — removes non-lifetime summaries older than 90 days
+// Two scheduled maintenance jobs for EmissionSummary and SummaryNetReduction:
+//   1. Hourly (0 * * * *) — retries SummaryNetReduction docs flagged needsRecalculation=true
+//   2. Daily  (0 2 * * *) — removes old EmissionSummary daily/weekly records (>90 days)
 //
-// Both jobs are inactive until startSummaryMaintenanceJob() is called (from index.js).
+// BUG 13 FIX: Old job queried SummaryNetReduction using `period` and `periodStart` fields
+//   that don't exist in that schema. Cleanup now correctly targets EmissionSummary.
+//
+// BUG 14 FIX: Old job queried SummaryNetReduction.pendingRecalculation which also didn't
+//   exist. Replaced with `needsRecalculation` (added to SummaryNetReduction schema with
+//   a sparse index). The recompute function now sets it to true on error, false on success.
 
 'use strict';
 
-const cron             = require('node-cron');
-const ReductionSummary = require('../../reduction/models/SummaryNetReduction');
-const { calculateFullSummary } = require('../../reduction/controllers/netReductionSummaryController');
+const cron = require('node-cron');
+
+// Reduction summary (singleton per client — stores rollup stats only)
+const SummaryNetReduction = require('../../reduction/models/SummaryNetReduction');
+
+// BUG 13 FIX: EmissionSummary IS the collection with period/date fields — use this for cleanup
+const EmissionSummary = require('../../calculation/EmissionSummary');
+
+// BUG 14 FIX: use the correct exported function name
+const { recomputeClientNetReductionSummary } = require('../../reduction/controllers/netReductionSummaryController');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Job 1: Process pending recalculations (runs every hour)
+// Job 1: Retry failed reductions (runs every hour)
+// BUG 14 FIX: Query SummaryNetReduction.needsRecalculation (indexed, actually exists).
+// The old query used `pendingRecalculation` which never existed — always returned 0 docs.
 // ─────────────────────────────────────────────────────────────────────────────
 async function processPendingRecalculations() {
   console.log('[Summary Maintenance] Starting pending recalculations...');
 
   try {
-    const pendingSummaries = await ReductionSummary.find({
-      pendingRecalculation: true,
+    const pendingSummaries = await SummaryNetReduction.find({
+      needsRecalculation: true,
     }).select('clientId').limit(50); // process 50 at a time
 
     console.log(`[Summary Maintenance] Found ${pendingSummaries.length} summaries needing recalculation`);
 
     for (const summary of pendingSummaries) {
       try {
-        const updated = await calculateFullSummary(summary.clientId);
+        await recomputeClientNetReductionSummary(summary.clientId);
 
-        await ReductionSummary.findOneAndUpdate(
-          { clientId: summary.clientId, period: 'lifetime', periodStart: null },
-          updated,
-          { upsert: true, new: true, setDefaultsOnInsert: true }
+        // Mark as resolved
+        await SummaryNetReduction.findOneAndUpdate(
+          { clientId: summary.clientId },
+          { $set: { needsRecalculation: false } }
         );
 
         console.log(`[Summary Maintenance] Recalculated summary for client ${summary.clientId}`);
       } catch (error) {
         console.error(`[Summary Maintenance] Error recalculating summary for client ${summary.clientId}:`, error);
+        // Leave needsRecalculation=true so next run retries
       }
     }
 
@@ -47,21 +62,27 @@ async function processPendingRecalculations() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Job 2: Clean up old summary data (runs daily at 02:00 UTC)
+// Job 2: Clean up old EmissionSummary records (runs daily at 02:00 UTC)
+// BUG 13 FIX: Old job ran deleteMany on SummaryNetReduction using `period` and
+//   `periodStart` fields that don't exist — it deleted nothing.
+//   SummaryNetReduction is a singleton per client; there's nothing to clean up.
+//   EmissionSummary IS the collection with period/date fields — clean up
+//   daily + weekly records older than 90 days to keep it manageable.
 // ─────────────────────────────────────────────────────────────────────────────
 async function cleanupOldSummaries() {
-  console.log('[Summary Maintenance] Starting cleanup of old summaries...');
+  console.log('[Summary Maintenance] Starting cleanup of old EmissionSummary records...');
 
   try {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-    const result = await ReductionSummary.deleteMany({
-      period:      { $ne: 'lifetime' },
-      periodStart: { $lt: ninetyDaysAgo },
+    const result = await EmissionSummary.deleteMany({
+      // Only prune granular periods — keep monthly/yearly/all-time forever
+      'period.type': { $in: ['daily', 'weekly'] },
+      'period.from': { $lt: ninetyDaysAgo },
     });
 
-    console.log(`[Summary Maintenance] Cleaned up ${result.deletedCount} old summary records`);
+    console.log(`[Summary Maintenance] Cleaned up ${result.deletedCount} old EmissionSummary records`);
   } catch (error) {
     console.error('[Summary Maintenance] Error in cleanup job:', error);
   }

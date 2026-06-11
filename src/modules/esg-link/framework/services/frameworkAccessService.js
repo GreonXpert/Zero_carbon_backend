@@ -44,13 +44,13 @@ const canSubmitQuestion = (user) => {
 /**
  * canApproveQuestion
  * Approve / reject / publish submitted questions.
- * Allowed: super_admin only.
+ * Allowed: super_admin, consultant_admin.
  */
 const canApproveQuestion = (user) => {
-  if (user.userType === 'super_admin') {
-    return { allowed: true, reason: 'Super admin can approve questions' };
+  if (user.userType === 'super_admin' || user.userType === 'consultant_admin') {
+    return { allowed: true, reason: 'Admin can approve questions' };
   }
-  return { allowed: false, reason: 'Only super_admin can approve questions' };
+  return { allowed: false, reason: 'Only super_admin or consultant_admin can approve questions' };
 };
 
 /**
@@ -152,6 +152,9 @@ const canViewClientBrsr = async (user, clientId) => {
       return { allowed: true, reason: 'Client user accessing own client data' };
     }
     return { allowed: false, reason: 'Can only view own client BRSR data' };
+  }
+  if (user.userType === 'auditor' || user.userType === 'viewer') {
+    return { allowed: true, reason: 'Read-only global access' };
   }
   return { allowed: false, reason: 'Insufficient permissions to view client BRSR data' };
 };

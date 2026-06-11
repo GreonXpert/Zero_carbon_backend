@@ -50,4 +50,13 @@ router.delete('/:targetId/output-records/:recordId',      c.deleteOutputRecord);
 router.get   ('/:targetId/layout-preference',             c.getLayoutPreference);
 router.put   ('/:targetId/layout-preference',             c.saveLayoutPreference);
 
+// ── Seasonal Profile (manual monthly emission distribution) ───────────────────
+router.get   ('/:targetId/seasonal-profile',                        c.getSeasonalProfile);
+router.post  ('/:targetId/seasonal-profile',                        c.saveSeasonalProfile);
+router.delete('/:targetId/seasonal-profile/:profileId',             c.deleteSeasonalProfile);
+
+// ── Per-target settings ────────────────────────────────────────────────────────
+router.get ('/:targetId/settings', c.getTargetSettings);
+router.put ('/:targetId/settings', c.updateTargetSettings);
+
 module.exports = router;

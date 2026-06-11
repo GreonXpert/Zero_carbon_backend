@@ -1,0 +1,1035 @@
+{
+    "success": true,
+    "message": "Client details fetched successfully",
+    "client": {
+        "_id": "69e88801733ae310f64a1ad3",
+        "clientId": "Greon073",
+        "clientSequenceNumber": 73,
+        "sandbox": false,
+        "stage": "active",
+        "status": "active",
+        "leadInfo": {
+            "companyName": "UrbanAxis India Limited",
+            "contactPersonName": "Rohan Menon",
+            "email": "rohan.menon@urbanaxis.com",
+            "mobileNumber": "+91 98765 43210",
+            "leadSource": "online ads",
+            "consultantAdminId": {
+                "_id": "6971d6fac8c78728c2d9717e",
+                "email": "ananyamenon@codenest.com",
+                "userName": "Ananya Menon",
+                "profileImage": {
+                    "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                    "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                    "uploadedAt": "2026-01-22T07:51:27.578Z"
+                }
+            },
+            "assignedConsultantId": {
+                "_id": "6971d9dfc8c78728c2d9732f",
+                "email": "hariprasad@codenest.com",
+                "userName": "Hari Prasad",
+                "profileImage": {
+                    "filename": "6971d9dfc8c78728c2d9732f_1769069024031_Hari Prasad_.jpg",
+                    "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant/Carbon_Accounting_Team/6971d9dfc8c78728c2d9732f_1769069024031_Hari Prasad_.jpg",
+                    "uploadedAt": "2026-01-22T08:03:47.137Z"
+                }
+            },
+            "createdBy": "6971d6fac8c78728c2d9717e",
+            "notes": "UrbanAxis India Limited is a multi-site managed workspace operator in India. Zero Carbon demo covers 4 representative sites across FY 2024, FY 2025, and FY 2026 YTD, with India operations under operational control.",
+            "createdAt": "2026-04-22T08:34:09.526Z",
+            "hasAssignedConsultant": true,
+            "consultantHistory": [
+                {
+                    "consultantId": "6971d9dfc8c78728c2d9732f",
+                    "consultantName": "Hari Prasad",
+                    "employeeId": "GTACON01411234",
+                    "assignedAt": "2026-04-22T10:23:08.698Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Initial assignment",
+                    "isActive": true,
+                    "_id": "69e8a18c733ae310f64a4453"
+                }
+            ]
+        },
+        "accessibleModules": [
+            "zero_carbon",
+            "esg_link"
+        ],
+        "timeline": [
+            {
+                "stage": "lead",
+                "status": "contacted",
+                "action": "Lead created",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Lead created by Ananya Menon with modules: [zero_carbon, esg_link]",
+                "_id": "69e88801733ae310f64a1ad4",
+                "timestamp": "2026-04-22T08:34:09.529Z"
+            },
+            {
+                "stage": "registered",
+                "status": "pending",
+                "action": "Moved to data submission",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Client moved to data submission stage",
+                "_id": "69e88808733ae310f64a1b1d",
+                "timestamp": "2026-04-22T08:34:16.451Z"
+            },
+            {
+                "stage": "registered",
+                "status": "submitted",
+                "action": "Data submitted",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "timestamp": "2026-04-22T10:15:13.928Z",
+                "notes": "Client data submission completed",
+                "_id": "69e89fb1733ae310f64a412e"
+            },
+            {
+                "stage": "proposal",
+                "status": "proposal_submitted",
+                "action": "Submission verified & proposal submitted",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Moved to proposal (toggle only — no proposal creation).",
+                "_id": "69e8a158733ae310f64a4427",
+                "timestamp": "2026-04-22T10:22:16.147Z"
+            },
+            {
+                "stage": "proposal",
+                "status": "proposal_submitted",
+                "action": "Consultant assigned",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Assigned to Hari Prasad (GTACON01411234)",
+                "_id": "69e8a18c733ae310f64a4454",
+                "timestamp": "2026-04-22T10:23:08.701Z"
+            },
+            {
+                "stage": "quota_pending",
+                "status": "quota_completed",
+                "action": "Quota configured — ready to activate",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "timestamp": "2026-04-22T10:23:34.133Z",
+                "notes": "Quota has been set up. Client can now be moved to active.",
+                "_id": "69e8a1a6733ae310f64a4489"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Client activated after quota setup",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "timestamp": "2026-04-22T10:23:42.026Z",
+                "notes": "Client activated. Subscription valid for 365 days until 2027-04-22.",
+                "_id": "69e8a1ae733ae310f64a44ab"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Flowchart creation started",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Status automatically updated to on-going",
+                "_id": "69e920c31ecb48d6785fc5f7",
+                "timestamp": "2026-04-22T19:25:55.014Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Reduction module started",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "First reduction project created (total=1).",
+                "_id": "69e9b13e7ab87333b4c33440",
+                "timestamp": "2026-04-23T05:42:22.491Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Reduction module status → on_going",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "_id": "69e9b13e7ab87333b4c33441",
+                "timestamp": "2026-04-23T05:42:22.493Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Process flowchart creation started",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Status automatically updated to on-going",
+                "_id": "69ef505b95322657504de2b8",
+                "timestamp": "2026-04-27T12:02:35.171Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Module access updated",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "accessibleModules changed from [zero_carbon] to [zero_carbon, esg_link].",
+                "_id": "69f47f0365b67b48472f1c9f",
+                "timestamp": "2026-05-01T10:22:59.911Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Assessment level updated (post-onboarding)",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Changed from [reduction, organization, process, decarbonization] to [reduction, organization, process, decarbonization].",
+                "_id": "69f47f0465b67b48472f1cb5",
+                "timestamp": "2026-05-01T10:23:00.875Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Active client submission data updated",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Submission data was updated after client activation.",
+                "_id": "69f47f0565b67b48472f1ccb",
+                "timestamp": "2026-05-01T10:23:01.800Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Assessment level updated (post-onboarding)",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Changed from [reduction, organization, process, decarbonization] to [net_zero].",
+                "_id": "6a0ea9bdce464a886ad61f62",
+                "timestamp": "2026-05-21T06:44:13.335Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Assessment level updated (post-onboarding)",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Changed from [net_zero] to [reduction, organization, process, decarbonization, net_zero].",
+                "_id": "6a0eaa78ce464a886ad626c5",
+                "timestamp": "2026-05-21T06:47:20.786Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Assessment level updated (post-onboarding)",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Changed from [reduction, organization, process, decarbonization, net_zero] to [reduction, organization, process, decarbonization, net_zero].",
+                "_id": "6a0eab636ac992c4a849250e",
+                "timestamp": "2026-05-21T06:51:15.662Z"
+            },
+            {
+                "stage": "active",
+                "status": "active",
+                "action": "Assessment level updated (post-onboarding)",
+                "performedBy": {
+                    "_id": "6971d6fac8c78728c2d9717e",
+                    "email": "ananyamenon@codenest.com",
+                    "userName": "Ananya Menon",
+                    "profileImage": {
+                        "filename": "6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "url": "https://zerocarbon-profile-images-prod.s3.us-east-1.amazonaws.com/profiles/consultant_admin/IT_Sustainability_ESG_Consulting/6971d6fac8c78728c2d9717e_1769068283332_Ananya Menon_.jpg",
+                        "uploadedAt": "2026-01-22T07:51:27.578Z"
+                    }
+                },
+                "notes": "Changed from [reduction, organization, process, decarbonization, net_zero] to [reduction, organization, process, net_zero].",
+                "_id": "6a0ecff414abf099ef5ecd8d",
+                "timestamp": "2026-05-21T09:27:16.629Z"
+            }
+        ],
+        "isDeleted": false,
+        "submissionData": {
+            "assessmentLevel": [
+                "reduction",
+                "organization",
+                "process",
+                "net_zero"
+            ],
+            "esgLinkFrameworks": [
+                "BRSR",
+                "GRI"
+            ],
+            "projectProfile": [
+                {
+                    "projectName": "Water Reuse  & Management",
+                    "projectType": "Water Management",
+                    "projectTypeSelection": "Water Management",
+                    "projectTypeCustom": "",
+                    "description": "On-site treatment \nof wastewater; \nReuse for \ncooling towers \n(60%), \nlandscaping (25%), \ntoilet flushing \n(15%); Reduced \nfreshwater intake \n& wastewater \ndischarge "
+                },
+                {
+                    "projectName": "Solar PV Generation",
+                    "projectType": "Renewable Energy",
+                    "projectTypeSelection": "Renewable Energy",
+                    "projectTypeCustom": "",
+                    "description": "Grid-connected solar PV generation \noffsetting Scope 2 electricity; Surplus \nexported to grid under net metering "
+                },
+                {
+                    "projectName": "NexMove EV  Cabs",
+                    "projectType": "Sustainable  Transportation",
+                    "projectTypeSelection": "Other",
+                    "projectTypeCustom": "Sustainable  Transportation",
+                    "description": "Electric vehicles \nreplacing ICE cabs; \nCharged at office \npremises + public \nfast-charging network \n"
+                }
+            ],
+            "companyInfo": {
+                "companyName": "UrbanAxis India Limited",
+                "companyAddress": "Corporate Office, 8th Floor, UrbanAxis Business Tower,Whitefield Main Road, Bengaluru, Karnataka",
+                "primaryContactPerson": {
+                    "name": "Rohan Mehta",
+                    "designation": "Sustainability Manager",
+                    "email": "rohan.mehta@urbanaxis.com",
+                    "phoneNumber": "+91 9876543210"
+                },
+                "alternateContactPerson": {
+                    "name": "",
+                    "designation": "",
+                    "email": "",
+                    "phoneNumber": ""
+                }
+            },
+            "organizationalOverview": {
+                "industrySector": "Managed Workspaces / Flexible Office Operator",
+                "companyDescription": "Multi-site workspace operator with centralized sustainability oversight and site-level operational data dependencies.",
+                "numberOfOperationalSites": 4,
+                "sitesDetails": [
+                    {
+                        "siteName": "Whitefield Flagship Centre",
+                        "location": "Bengaluru, Karnataka, India",
+                        "operation": "Flagship Managed Workspace",
+                        "productionCapacity": "450",
+                        "unit": "Seats",
+                        "unitSelection": "other",
+                        "unitCustom": "Seats",
+                        "remark": "Large high-occupancy flagship site with direct electricity records, DG consumption, and refrigerant tracking."
+                    },
+                    {
+                        "siteName": "Andheri Business Hub",
+                        "location": "Mumbai, Maharashtra, India",
+                        "operation": "Managed Office / Business Centre",
+                        "productionCapacity": "300",
+                        "unit": "Seats",
+                        "unitSelection": "other",
+                        "unitCustom": "Seats",
+                        "remark": "High-traffic metro site with invoice-led utility management, OCR/upload workflow, manual review, and small fleet relevance."
+                    },
+                    {
+                        "siteName": "Cyber Greens Centre",
+                        "location": "Gurugram, Haryana, India",
+                        "operation": "Managed Workspace Centre",
+                        "productionCapacity": "220",
+                        "unit": "Seats",
+                        "unitSelection": "other",
+                        "unitCustom": "Seats",
+                        "remark": "Medium-scale site with direct electricity records and regular site-level reporting."
+                    },
+                    {
+                        "siteName": "HITEC Smart Campus",
+                        "location": "Hyderabad, Telangana, India",
+                        "operation": "Automation Pilot Campus",
+                        "productionCapacity": "280",
+                        "unit": "Seats",
+                        "unitSelection": "other",
+                        "unitCustom": "Seats",
+                        "remark": "Digitally mature pilot site with BMS or meter-supported electricity data and automation showcase narrative."
+                    }
+                ],
+                "totalEmployees": 1250,
+                "employeesByFacility": [
+                    {
+                        "facilityName": "Whitefield Flagship Centre",
+                        "employeeCount": 420
+                    },
+                    {
+                        "facilityName": "Andheri Business Hub",
+                        "employeeCount": 280
+                    },
+                    {
+                        "facilityName": "Cyber Greens Centre",
+                        "employeeCount": 220
+                    },
+                    {
+                        "facilityName": "HITEC Smart Campus",
+                        "employeeCount": 330
+                    }
+                ],
+                "accountingPeriod": {
+                    "startDate": "2026-04-01",
+                    "endDate": "2027-04-01"
+                },
+                "accountingYear": "01/04/2026 - 01/04/2027"
+            },
+            "emissionsProfile": {
+                "scope1": {
+                    "stationaryCombustion": {
+                        "included": true,
+                        "details": {
+                            "name": "",
+                            "description": "Backup diesel generator fuel consumption for site operations",
+                            "otherDetails": "",
+                            "sourceName": "DG Set Diesel Consumption",
+                            "facility": "Whitefield Flagship Centre, Andheri Business Hub, HITEC Smart Campus",
+                            "emissionDataTypes": "Diesel Consumption",
+                            "relevantDepartment": "Facilities / Operations"
+                        }
+                    },
+                    "mobileCombustion": {
+                        "included": true,
+                        "details": {
+                            "name": "",
+                            "description": "Fuel use from small operational fleet associated with the site",
+                            "otherDetails": "",
+                            "sourceName": "Small Fleet Fuel Consumption",
+                            "facility": "Andheri Business Hub",
+                            "emissionDataTypes": "Fuel Consumption",
+                            "relevantDepartment": "Admin / Transport / Operations"
+                        }
+                    },
+                    "processEmissions": {
+                        "included": false,
+                        "details": {
+                            "name": "",
+                            "description": "",
+                            "otherDetails": "",
+                            "sourceName": "",
+                            "facility": "",
+                            "emissionDataTypes": "",
+                            "relevantDepartment": ""
+                        }
+                    },
+                    "fugitiveEmissions": {
+                        "included": true,
+                        "details": {
+                            "name": "",
+                            "description": "Refrigerant loss and refill from air-conditioning and cooling equipment",
+                            "otherDetails": "",
+                            "sourceName": "HVAC Refrigerant Leakage / Refill",
+                            "facility": "Whitefield Flagship Centre, Andheri Business Hub",
+                            "emissionDataTypes": "Refrigerant Refill / Leakage",
+                            "relevantDepartment": "Facility Maintenance / HVAC"
+                        }
+                    }
+                },
+                "scope2": {
+                    "purchasedElectricity": {
+                        "included": true,
+                        "details": {
+                            "name": "",
+                            "description": "Direct monthly electricity consumption records",
+                            "otherDetails": "",
+                            "sourceName": "Purchased Electricity",
+                            "facility": "Whitefield Flagship Centre, Andheri Business Hub, Cyber Greens Centre, HITEC Smart Campus",
+                            "emissionDataTypes": "Electricity Consumption",
+                            "relevantDepartment": "Facilities / Utilities"
+                        }
+                    },
+                    "purchasedSteamHeating": {
+                        "included": false,
+                        "details": {
+                            "name": "",
+                            "description": "",
+                            "otherDetails": "",
+                            "sourceName": "",
+                            "facility": "",
+                            "emissionDataTypes": "",
+                            "relevantDepartment": ""
+                        }
+                    }
+                },
+                "scope3": {
+                    "includeScope3": true,
+                    "categories": {
+                        "businessTravel": true,
+                        "employeeCommuting": true,
+                        "wasteGenerated": true,
+                        "purchasedGoodsAndServices": true,
+                        "capitalGoods": true
+                    },
+                    "categoriesDetails": {
+                        "businessTravel": {
+                            "details": {
+                                "name": "",
+                                "description": "Employee business travel data collected through travel partner feed, tickets, invoices, and expense records",
+                                "otherDetails": "",
+                                "sourceName": "Corporate Business Travel",
+                                "facility": "Whitefield Flagship Centre, Andheri Business Hub, Cyber Greens Centre, HITEC Smart Campus",
+                                "emissionDataTypes": "Travel Activity Data",
+                                "relevantDepartment": "Travel Desk / Finance / Admin"
+                            }
+                        },
+                        "employeeCommuting": {
+                            "details": {
+                                "name": "",
+                                "description": "Daily employee commute data by travel mode and distance for office attendance",
+                                "otherDetails": "",
+                                "sourceName": "Employee Commuting",
+                                "facility": "Whitefield Flagship Centre, Andheri Business Hub",
+                                "emissionDataTypes": "Commute Survey Data",
+                                "relevantDepartment": "HR / Admin"
+                            }
+                        },
+                        "wasteGenerated": {
+                            "details": {
+                                "name": "",
+                                "description": "Waste generated from daily workspace operations including dry, wet, and mixed waste streams",
+                                "otherDetails": "",
+                                "sourceName": "Operational Waste Generated",
+                                "facility": "Whitefield Flagship Centre, Andheri Business Hub, Cyber Greens Centre",
+                                "emissionDataTypes": "Whitefield Flagship Centre",
+                                "relevantDepartment": "Facilities / Admin / Housekeeping"
+                            }
+                        },
+                        "upstreamTransportation": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "downstreamTransportation": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "purchasedGoodsAndServices": {
+                            "details": {
+                                "name": "",
+                                "description": "Centralized procurement data for goods and services used in workspace operations",
+                                "otherDetails": "",
+                                "sourceName": "Purchased Goods and Services",
+                                "facility": "Whitefield Flagship Centre, Andheri Business Hub, Cyber Greens Centre, HITEC Smart Campus",
+                                "emissionDataTypes": "Procurement / Spend Data",
+                                "relevantDepartment": "Procurement / Finance"
+                            }
+                        },
+                        "capitalGoods": {
+                            "details": {
+                                "name": "",
+                                "description": "Centralized capital expenditure and fit-out procurement data for centres and infrastructure",
+                                "otherDetails": "",
+                                "sourceName": "Capital Goods and Fit-outs",
+                                "facility": "Whitefield Flagship Centre, Andheri Business Hub, Cyber Greens Centre, HITEC Smart Campus",
+                                "emissionDataTypes": "Capital Expenditure Data",
+                                "relevantDepartment": "Projects / Procurement / Finance"
+                            }
+                        },
+                        "fuelAndEnergyRelated": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "upstreamLeasedAssets": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "downstreamLeasedAssets": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "processingOfSoldProducts": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "useOfSoldProducts": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "endOfLifeTreatment": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "franchises": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        },
+                        "investments": {
+                            "details": {
+                                "name": "",
+                                "description": "",
+                                "otherDetails": "",
+                                "sourceName": "",
+                                "facility": "",
+                                "emissionDataTypes": "",
+                                "relevantDepartment": ""
+                            }
+                        }
+                    },
+                    "otherIndirectSources": ""
+                }
+            },
+            "ghgDataManagement": {
+                "previousCarbonAccounting": {
+                    "conducted": true
+                },
+                "dataTypesAvailable": {
+                    "dataFormat": "Mixed format: direct monthly records, invoice uploads, manual validation records, BMS/automated feed data, travel partner feed, SAP extracts, Darwinbox records, and manual invoices",
+                    "otherDataTypes": "Refrigerant data, waste data, business travel records, employee commuting data, invoice uploads, BMS feed data",
+                    "energyUsage": true,
+                    "fuelConsumption": true
+                }
+            },
+            "additionalNotes": {
+                "stakeholderRequirements": "Audit-ready, traceable, and evidence-linked carbon reporting across India operations under operational control, with site-level aggregation to company total and stronger assurance readiness.",
+                "additionalExpectations": "The demo should reflect mixed data capture modes including direct records, invoice-based validation, and automated/BMS feed visibility, while prioritizing realism, reviewability, and progressive Scope 3 maturity.",
+                "completedBy": "UrbanAxis Sustainability Team",
+                "completionDate": "2026-04-22T00:00:00.000Z"
+            },
+            "supportingDocuments": [],
+            "esgLinkAssessmentLevel": {
+                "module": "esg_link_core",
+                "frameworks": [
+                    "BRSR",
+                    "GRI"
+                ]
+            },
+            "submittedAt": "2026-04-22T10:15:13.925Z",
+            "submittedBy": "6971d6fac8c78728c2d9717e",
+            "dataCompleteness": 100,
+            "validationStatus": "validated",
+            "validatedAt": "2026-04-22T10:15:13.928Z",
+            "validatedBy": "6971d6fac8c78728c2d9717e",
+            "accessibleModules": [
+                "zero_carbon",
+                "esg_link"
+            ],
+            "updatedAt": "2026-05-21T09:27:16.628Z",
+            "updatedBy": "6971d6fac8c78728c2d9717e"
+        },
+        "createdAt": "2026-04-22T08:34:09.560Z",
+        "updatedAt": "2026-05-21T09:27:16.632Z",
+        "__v": 16,
+        "accountDetails": {
+            "clientAdminId": "69e89fb2733ae310f64a4135",
+            "defaultPassword": "UrbanAxisIndiaLimited@2026",
+            "subscriptionStartDate": "2026-04-22T10:23:42.024Z",
+            "subscriptionEndDate": "2027-04-22T10:23:42.024Z",
+            "subscriptionStatus": "active",
+            "isActive": true,
+            "activeUsers": 1,
+            "dataSubmissions": 0,
+            "esgLinkSubscription": {
+                "subscriptionStatus": "active",
+                "isActive": true,
+                "subscriptionStartDate": "2026-04-22T10:23:42.025Z",
+                "subscriptionEndDate": "2027-04-22T10:23:42.024Z"
+            }
+        },
+        "proposalData": {
+            "submitted": true,
+            "submittedAt": "2026-04-22T10:22:16.143Z",
+            "submittedBy": "6971d6fac8c78728c2d9717e"
+        },
+        "workflowTracking": {
+            "assignedConsultantId": "6971d9dfc8c78728c2d9732f",
+            "consultantAssignedAt": "2026-04-22T10:23:08.701Z",
+            "flowchartStatus": "on_going",
+            "processFlowchartStatus": "on_going",
+            "dataInputPoints": {
+                "manual": {
+                    "inputs": [],
+                    "totalCount": 0,
+                    "completedCount": 0,
+                    "pendingCount": 0,
+                    "onGoingCount": 0,
+                    "notStartedCount": 0
+                },
+                "api": {
+                    "inputs": [
+                        {
+                            "pointId": "greon073-node-d2cd50_UAI-BLR-S2-ELEC",
+                            "nodeId": "greon073-node-d2cd50",
+                            "scopeIdentifier": "UAI-BLR-S2-ELEC",
+                            "endpoint": "/api/data-collection/clients/Greon073/nodes/greon073-node-d2cd50/scopes/UAI-BLR-S2-ELEC/662F3m/api-data",
+                            "status": "pending",
+                            "connectionStatus": "connected"
+                        },
+                        {
+                            "pointId": "greon073-node-f25703_UAI-GGN-S2-ELEC",
+                            "nodeId": "greon073-node-f25703",
+                            "scopeIdentifier": "UAI-GGN-S2-ELEC",
+                            "endpoint": "/api/data-collection/clients/Greon073/nodes/greon073-node-f25703/scopes/UAI-GGN-S2-ELEC/R9fdpy/api-data",
+                            "status": "pending",
+                            "connectionStatus": "connected"
+                        }
+                    ],
+                    "totalCount": 0,
+                    "completedCount": 0,
+                    "pendingCount": 0,
+                    "onGoingCount": 0,
+                    "notStartedCount": 0
+                },
+                "iot": {
+                    "inputs": [],
+                    "totalCount": 0,
+                    "completedCount": 0,
+                    "pendingCount": 0,
+                    "onGoingCount": 0,
+                    "notStartedCount": 0
+                },
+                "totalDataPoints": 0,
+                "lastSyncedWithFlowchart": null
+            },
+            "flowchartStartedAt": "2026-04-22T19:25:55.011Z",
+            "reduction": {
+                "status": "on_going",
+                "projects": {
+                    "totalCount": 3,
+                    "activeCount": 3,
+                    "completedCount": 0,
+                    "pendingCount": 0,
+                    "lastProjectCreatedAt": "2026-04-23T08:48:09.093Z"
+                },
+                "dataInputPoints": {
+                    "manual": {
+                        "totalCount": 3
+                    },
+                    "api": {
+                        "totalCount": 0
+                    },
+                    "iot": {
+                        "totalCount": 0
+                    },
+                    "totalDataPoints": 3
+                },
+                "startedAt": "2026-04-23T05:42:22.486Z"
+            },
+            "processFlowchartStartedAt": "2026-04-27T12:02:35.150Z"
+        },
+        "supportSection": {
+            "supportManagerHistory": [
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T06:01:43.520Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager removed",
+                    "isActive": false,
+                    "unassignedAt": "2026-05-20T06:34:05.669Z",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e"
+                },
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T06:34:17.427Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Initial assignment",
+                    "isActive": false,
+                    "unassignedAt": "2026-05-20T06:35:49.103Z",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e"
+                },
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T06:34:17.427Z",
+                    "unassignedAt": "2026-05-20T06:35:49.157Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false
+                },
+                {
+                    "supportManagerId": "69fdaca95055aa1956c51075",
+                    "supportManagerName": "qqqash",
+                    "supportTeamName": "gfchkg",
+                    "assignedAt": "2026-05-20T06:35:49.157Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false,
+                    "unassignedAt": "2026-05-20T06:37:05.892Z",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e"
+                },
+                {
+                    "supportManagerId": "69fdaca95055aa1956c51075",
+                    "supportManagerName": "qqqash",
+                    "supportTeamName": "gfchkg",
+                    "assignedAt": "2026-05-20T06:35:49.157Z",
+                    "unassignedAt": "2026-05-20T06:37:05.935Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false
+                },
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T06:37:05.935Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false,
+                    "unassignedAt": "2026-05-20T06:38:14.475Z",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e"
+                },
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T06:37:05.935Z",
+                    "unassignedAt": "2026-05-20T06:38:14.511Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false
+                },
+                {
+                    "supportManagerId": "69fdaca95055aa1956c51075",
+                    "supportManagerName": "qqqash",
+                    "supportTeamName": "gfchkg",
+                    "assignedAt": "2026-05-20T06:38:14.512Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false,
+                    "unassignedAt": "2026-05-20T08:38:47.981Z",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e"
+                },
+                {
+                    "supportManagerId": "69fdaca95055aa1956c51075",
+                    "supportManagerName": "qqqash",
+                    "supportTeamName": "gfchkg",
+                    "assignedAt": "2026-05-20T06:38:14.511Z",
+                    "unassignedAt": "2026-05-20T08:38:48.060Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "unassignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": false
+                },
+                {
+                    "supportManagerId": "6a0d4decd09833e55401bdf0",
+                    "supportManagerName": "NimishaS",
+                    "supportTeamName": "Nimisha's Team",
+                    "assignedAt": "2026-05-20T08:38:48.060Z",
+                    "assignedBy": "6971d6fac8c78728c2d9717e",
+                    "reasonForChange": "Support manager changed",
+                    "isActive": true
+                }
+            ],
+            "activeSupportTeamMembers": [],
+            "supportMetrics": {
+                "totalTicketsRaised": 0,
+                "totalTicketsResolved": 0,
+                "avgResolutionTime": 0,
+                "lastTicketRaisedAt": null,
+                "lastTicketResolvedAt": null
+            },
+            "assignedSupportManagerId": "6a0d4decd09833e55401bdf0",
+            "supportManagerType": "general_support",
+            "supportAssignedAt": "2026-05-20T08:38:48.060Z",
+            "supportAssignedBy": "6971d6fac8c78728c2d9717e",
+            "supportPriority": "normal",
+            "supportNotes": "",
+            "assignedSupportManager": {
+                "_id": "6a0d4decd09833e55401bdf0",
+                "email": "nimisha@supportmanager.com",
+                "contactNumber": "986786778",
+                "userName": "NimishaS",
+                "isActive": true,
+                "supportTeamName": "Nimisha's Team",
+                "supportManagerType": "general_support"
+            }
+        }
+    }
+}

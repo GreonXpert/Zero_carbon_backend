@@ -1,6 +1,7 @@
 'use strict';
 
 const EsgDataEntry    = require('../models/EsgDataEntry');
+const EsgLinkBoundary = require('../../boundary/models/EsgLinkBoundary');
 const workflowService = require('../services/workflowService');
 
 // ── GET /:clientId/approval-queue ─────────────────────────────────────────────
@@ -19,28 +20,41 @@ async function getApprovalQueue(req, res) {
       query.mappingId = { $in: Array.from(accessCtx.assignedMappingIds) };
     }
 
-    if (req.query.nodeId) query.nodeId = req.query.nodeId;
+    if (req.query.nodeId && req.query.nodeId !== 'undefined') query.nodeId = req.query.nodeId;
 
     const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const skip  = (page - 1) * limit;
 
-    const [submissions, total] = await Promise.all([
-      EsgDataEntry.find(query)
-        .populate('submittedBy', 'userName email')
-        .populate('metricId', 'metricName metricCode')
-        .sort({ submittedAt: 1 })
-        .skip(skip)
-        .limit(limit),
-      EsgDataEntry.countDocuments(query),
+    const [[submissions, total], boundary] = await Promise.all([
+      Promise.all([
+        EsgDataEntry.find(query)
+          .populate('submittedBy', 'userName email')
+          .populate('metricId', 'metricName metricCode')
+          .sort({ submittedAt: 1 })
+          .skip(skip)
+          .limit(limit),
+        EsgDataEntry.countDocuments(query),
+      ]),
+      EsgLinkBoundary.findOne({ clientId, isActive: true, isDeleted: false }).select('nodes').lean(),
     ]);
 
-    // Enrich with current approval percentage
+    const nodeLabelMap = {};
+    for (const node of boundary?.nodes || []) {
+      nodeLabelMap[node.id] = node.label;
+    }
+
     const enriched = submissions.map((s) => {
-      const total    = s.approvalDecisions.length;
-      const approved = s.approvalDecisions.filter((d) => d.decision === 'approved').length;
-      const pct      = total > 0 ? Math.round((approved / total) * 100) : 0;
-      return { ...s.toObject(), approvalPercentage: pct };
+      const decisions = s.approvalDecisions || [];
+      const approved  = decisions.filter((d) => d.decision === 'approved').length;
+      const pct       = decisions.length > 0 ? Math.round((approved / decisions.length) * 100) : 0;
+      return {
+        ...s.toObject(),
+        approvalPercentage: pct,
+        metricDetails:      { metricName: s.metricId?.metricName || '', metricCode: s.metricId?.metricCode || '' },
+        nodeDetails:        { label: nodeLabelMap[s.nodeId] || s.nodeId || '' },
+        contributorName:    s.submittedBy?.userName || s.submittedBy?.email || '',
+      };
     });
 
     return res.json({ success: true, data: { submissions: enriched, total, page, limit } });

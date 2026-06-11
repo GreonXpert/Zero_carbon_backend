@@ -6,7 +6,7 @@ const INDICATOR_TYPE_ENUM       = ['essential', 'leadership', 'core', 'general',
 const DISCLOSURE_TYPE_ENUM      = ['quantitative', 'qualitative', 'mixed'];
 const ANSWER_MODE_ENUM          = ['auto_mapped', 'manual', 'hybrid', 'narrative', 'table', 'matrix'];
 const ANSWER_COMPONENT_ENUM     = [
-  'number_input', 'text_input', 'boolean', 'dropdown', 'multi_select',
+  'number_input', 'text_input', 'text_area', 'boolean', 'dropdown', 'multi_select',
   'date_picker', 'table_grid', 'matrix_grid', 'file_upload', 'rich_text',
   'percentage', 'ratio', 'currency', 'unit_value', 'yes_no_na', 'ranking',
 ];

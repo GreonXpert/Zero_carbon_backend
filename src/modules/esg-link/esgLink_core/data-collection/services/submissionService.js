@@ -1,7 +1,8 @@
 'use strict';
 
-const { Parser } = require('expr-eval');
-const EsgDataEntry     = require('../models/EsgDataEntry');
+const mongoose     = require('mongoose');
+const { Parser }   = require('expr-eval');
+const EsgDataEntry = require('../models/EsgDataEntry');
 const EsgWorkflowAction = require('../models/EsgWorkflowAction');
 const EsgSubmissionThread = require('../models/EsgSubmissionThread');
 const EsgLinkBoundary  = require('../../boundary/models/EsgLinkBoundary');
@@ -42,12 +43,32 @@ function evaluateFormula(mapping, dataValues) {
   const snap = mapping.formulaSnapshot;
   if (!snap || !snap.expression) return { calculatedValue: null, derivedFrom: null };
 
-  // Build variable value map from dataValues + variableConfigs defaults
+  // Build variable value map from dataValues + variableConfigs defaults.
+  // Case-insensitive key lookup: API payloads may send "emission" while the
+  // mapping variableConfig stores varName "Emission" (or vice-versa).
   const vars = {};
+
+  // Build a lowercase → original-key index of the dataValues Map once
+  const dvLowerIndex = {};
+  if (dataValues) {
+    for (const [k] of dataValues.entries()) {
+      dvLowerIndex[k.toLowerCase()] = k;
+    }
+  }
+
   for (const cfg of mapping.variableConfigs || []) {
     const key = cfg.varName;
+    // Exact match first; fall back to case-insensitive match
+    let actualKey = null;
     if (dataValues && dataValues.has(key)) {
-      vars[key] = Number(dataValues.get(key));
+      actualKey = key;
+    } else {
+      const lower = key.toLowerCase();
+      if (dvLowerIndex[lower]) actualKey = dvLowerIndex[lower];
+    }
+
+    if (actualKey != null) {
+      vars[key] = Number(dataValues.get(actualKey));
     } else if (cfg.defaultValue != null) {
       vars[key] = Number(cfg.defaultValue);
     }
@@ -62,10 +83,26 @@ function evaluateFormula(mapping, dataValues) {
   const expr   = parser.parse(snap.expression);
   const result = expr.evaluate(vars);
 
+  // Guard 1: MongoDB does NOT support NaN or Infinity as Number field values.
+  // typeof NaN === 'number' is true in JS, so the old `typeof result === 'number'`
+  // check was insufficient and caused Mongoose to throw on entry.save().
+  // Use Number.isFinite() to accept only real, finite numeric results.
+  const calculatedValue = Number.isFinite(result) ? result : null;
+
+  // Guard 2: EsgDataEntry.derivedFrom.formulaId is ObjectId — only set it when the
+  // value stored in the snapshot is a valid 24-char hex ObjectId string.
+  // A non-ObjectId string (e.g. a UUID or legacy custom ID) would cause a
+  // Mongoose CastError on entry.save(), surfacing as an unexpected 500.
+  const rawFormulaId = snap.formulaId;
+  const safeFormulaId =
+    rawFormulaId && mongoose.Types.ObjectId.isValid(String(rawFormulaId))
+      ? rawFormulaId
+      : null;
+
   return {
-    calculatedValue: typeof result === 'number' ? result : null,
+    calculatedValue,
     derivedFrom: {
-      formulaId:      snap.formulaId,
+      formulaId:      safeFormulaId,
       expression:     snap.expression,
       variableValues: vars,
     },
@@ -133,6 +170,53 @@ async function create(payload, actor, options = {}) {
     return { error: 'Not authorized to submit for this mapping', status: 403 };
   }
 
+  // ── 2a. Duplicate period check ────────────────────────────────────────────
+  // Returns 409 if a non-deleted submission already exists for the same
+  // clientId + nodeId + mappingId + period.periodLabel, UNLESS the caller
+  // sets skipDuplicateCheck: true (user confirmed they want a new entry).
+  const skipDuplicateCheck = payload.skipDuplicateCheck === true;
+  if (!skipDuplicateCheck && period?.periodLabel) {
+    const dup = await EsgDataEntry.findOne({
+      clientId,
+      nodeId,
+      mappingId,
+      'period.periodLabel': period.periodLabel,
+      isDeleted: false,
+    }).select('_id workflowStatus period').lean();
+
+    if (dup) {
+      return {
+        error:  `A submission for period "${period.periodLabel}" already exists (status: ${dup.workflowStatus}).`,
+        status: 409,
+        code:   'DUPLICATE_PERIOD',
+        existing: {
+          _id:           String(dup._id),
+          workflowStatus: dup.workflowStatus,
+          periodLabel:   period.periodLabel,
+        },
+      };
+    }
+  }
+
+  // ── 2b. Source type validation ────────────────────────────────────────────
+  const allowedSrcTypes = mapping.allowedSourceTypes || [];
+  const MANUAL_FAMILY   = ['manual', 'ocr', 'csv', 'excel'];
+  let requiredSrcType   = null;
+  if (MANUAL_FAMILY.includes(inputType))  requiredSrcType = 'manual';
+  else if (inputType === 'api')            requiredSrcType = 'api';
+  else if (inputType === 'iot')            requiredSrcType = 'iot';
+
+  if (requiredSrcType && !allowedSrcTypes.includes(requiredSrcType)) {
+    // For OCR input, also accept when 'ocr' is explicitly in allowedSourceTypes
+    const ocrExplicitlyAllowed = inputType === 'ocr' && allowedSrcTypes.includes('ocr');
+    if (!ocrExplicitlyAllowed) {
+      return {
+        error: `Source type '${inputType}' is not allowed for this mapping (allowed: ${allowedSrcTypes.join(', ') || 'none'})`,
+        status: 403,
+      };
+    }
+  }
+
   // ── 3. Convert plain object dataValues → Map if needed ───────────────────
   const dvMap = dataValues instanceof Map
     ? dataValues
@@ -169,15 +253,44 @@ async function create(payload, actor, options = {}) {
   };
 
   // ── 7. Create EsgDataEntry ────────────────────────────────────────────────
-  const workflowStatus = submitImmediately ? 'submitted' : 'draft';
-  const now            = new Date();
+  const now = new Date();
+
+  // Resolve reviewer/approver IDs from the mapping to decide whether to
+  // skip the reviewer step (same logic as workflowService.transition).
+  const extractId = (entry) => {
+    if (!entry) return null;
+    return entry._id ? entry._id.toString() : entry.toString();
+  };
+  const mappingReviewers = (mapping.reviewers || []).map(extractId).filter(Boolean);
+  const mappingApprovers = (mapping.approvers || []).map(extractId).filter(Boolean);
+
+  const autoSkipReviewer =
+    submitImmediately &&
+    mappingReviewers.length === 0 &&
+    mappingApprovers.length > 0;
+
+  const workflowStatus = submitImmediately
+    ? (autoSkipReviewer ? 'under_review' : 'submitted')
+    : 'draft';
+
+  const initialApprovalDecisions = autoSkipReviewer
+    ? mappingApprovers.map((approverId) => ({ approverId, approverType: 'approver', decision: 'pending' }))
+    : [];
+
+  // Guard metricId: if the value stored on the boundary mapping is not a
+  // valid ObjectId, set null rather than letting Mongoose throw a CastError.
+  const rawMetricId = mapping.metricId;
+  const safeMetricId =
+    rawMetricId && mongoose.Types.ObjectId.isValid(String(rawMetricId))
+      ? rawMetricId
+      : null;
 
   const entry = new EsgDataEntry({
     clientId,
     boundaryDocId: boundary._id,
     nodeId,
     mappingId,
-    metricId:     mapping.metricId,
+    metricId:     safeMetricId,
     period:       periodData,
     submissionSource,
     inputType,
@@ -186,13 +299,20 @@ async function create(payload, actor, options = {}) {
     calculatedValue,
     derivedFrom,
     workflowStatus,
-    submittedBy:  submitImmediately ? (actor._id || actor.id) : null,
-    submittedAt:  submitImmediately ? now : null,
+    submittedBy:        submitImmediately ? (actor._id || actor.id) : null,
+    submittedAt:        submitImmediately ? now : null,
+    underReviewAt:      autoSkipReviewer ? now : null,
+    approvalDecisions:  initialApprovalDecisions,
     validationResult,
     auditTrailRequired: true,
   });
 
-  await entry.save();
+  try {
+    await entry.save();
+  } catch (saveErr) {
+    console.error('[submissionService.create] entry.save() failed:', saveErr.message, saveErr.errors || '');
+    throw saveErr;
+  }
 
   // ── 8. Create thread + initial system_event ───────────────────────────────
   const thread = new EsgSubmissionThread({
@@ -207,20 +327,32 @@ async function create(payload, actor, options = {}) {
       },
     ],
   });
-  await thread.save();
+  try {
+    await thread.save();
+  } catch (threadErr) {
+    console.error('[submissionService.create] thread.save() failed:', threadErr.message);
+    throw threadErr;
+  }
 
   // ── 9. Workflow action record ─────────────────────────────────────────────
-  await EsgWorkflowAction.create({
-    submissionId: entry._id,
-    clientId,
-    action:       submitImmediately ? 'submit' : 'draft_saved',
-    actorId:      actor._id || actor.id,
-    actorType:    actor.userType,
-    fromStatus:   null,
-    toStatus:     workflowStatus,
-    note:         options.note || null,
-    createdAt:    now,
-  });
+  try {
+    await EsgWorkflowAction.create({
+      submissionId: entry._id,
+      clientId,
+      action:       submitImmediately
+        ? (autoSkipReviewer ? 'review_pass' : 'submit')
+        : 'draft_saved',
+      actorId:      actor._id || actor.id,
+      actorType:    actor.userType,
+      fromStatus:   null,
+      toStatus:     workflowStatus,
+      note:         options.note || null,
+      createdAt:    now,
+    });
+  } catch (wfErr) {
+    console.error('[submissionService.create] EsgWorkflowAction.create() failed:', wfErr.message);
+    throw wfErr;
+  }
 
   // ── 10. Audit log ─────────────────────────────────────────────────────────
   logEventFireAndForget({
@@ -267,7 +399,7 @@ async function list(clientId, accessCtx, filters = {}) {
     }
   }
 
-  if (filters.nodeId)        query.nodeId = filters.nodeId;
+  if (filters.nodeId && filters.nodeId !== 'undefined') query.nodeId = filters.nodeId;
   if (filters.mappingId)     query.mappingId = filters.mappingId;
   if (filters.workflowStatus) query.workflowStatus = filters.workflowStatus;
   if (filters.year)          query['period.year'] = Number(filters.year);
@@ -278,7 +410,12 @@ async function list(clientId, accessCtx, filters = {}) {
   const skip  = (page - 1) * limit;
 
   const [docs, total] = await Promise.all([
-    EsgDataEntry.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    EsgDataEntry.find(query)
+      .populate('metricId', 'metricName metricCode')
+      .populate('submittedBy', 'userName email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit),
     EsgDataEntry.countDocuments(query),
   ]);
 
@@ -293,7 +430,9 @@ async function getOne(submissionId, user, clientId) {
     _id:       submissionId,
     clientId,
     isDeleted: false,
-  });
+  })
+    .populate('metricId', 'metricName metricCode')
+    .populate('submittedBy', 'userName email');
   if (!doc) return { error: 'Submission not found', status: 404 };
   return { doc };
 }
@@ -326,7 +465,9 @@ async function updateDraft(submissionId, payload, actor, options = {}) {
     const validationResult = runValidationRules(mapping, dvMap);
     doc.validationResult = validationResult;
 
-    const needsFormula = ['derived', 'intensity'].includes(mapping.metricType);
+    // Use formulaSnapshot presence (consistent with create()), since metricType is not
+    // embedded in MetricDetailSchema and may not be available on the mapping object.
+    const needsFormula = !!(mapping.formulaSnapshot?.expression);
     if (needsFormula) {
       try {
         const evalResult     = evaluateFormula(mapping, dvMap);
@@ -349,6 +490,10 @@ async function updateDraft(submissionId, payload, actor, options = {}) {
     changeSummary: `Draft updated for mapping ${doc.mappingId}`,
   });
 
+  setImmediate(() =>
+    triggerAllPeriodSummaryRefresh(doc.clientId, doc.boundaryDocId, doc.period)
+  );
+
   return { doc };
 }
 
@@ -370,6 +515,10 @@ async function softDelete(submissionId, clientId, actor, options = {}) {
   doc.deletedAt = new Date();
   doc.deletedBy = actor._id || actor.id;
   await doc.save();
+
+  setImmediate(() =>
+    triggerAllPeriodSummaryRefresh(doc.clientId, doc.boundaryDocId, doc.period)
+  );
 
   logEventFireAndForget({
     req:           options.req,

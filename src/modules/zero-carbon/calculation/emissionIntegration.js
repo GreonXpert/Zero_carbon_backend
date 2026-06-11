@@ -63,19 +63,25 @@ const triggerEmissionCalculation = async (dataEntry) => {
         dataEntry.processingStatus = 'processed'; 
         
         dataEntry.emissionCalculatedAt = new Date();
+        // Carry the skip flag through to the second save so the post-save hook also skips
+        // summary updates during batch CSV uploads.
+        if (dataEntry._skipSummaryUpdate) dataEntry._skipSummaryUpdate = true;
         await dataEntry.save();
 
         // 🆕 Trigger summary updates after successful calculation
-        console.log(`📊 Triggering summary updates for client: ${clientId}`);
-        try {
-          await updateSummariesOnDataChange(dataEntry);
-          console.log(`📊 ✅ Summary updates completed for client: ${clientId}`);
-        } catch (summaryError) {
-          console.error(`📊 ❌ Error updating summaries for client ${clientId}:`, summaryError);
-          // Don't throw error to avoid affecting the main calculation flow
-          dataEntry.summaryUpdateStatus = 'failed';
-          dataEntry.summaryUpdateError = summaryError.message;
-          await dataEntry.save();
+        // Skip during batch CSV uploads — summaries are recalculated once at the end.
+        if (!dataEntry._skipSummaryUpdate) {
+          console.log(`📊 Triggering summary updates for client: ${clientId}`);
+          try {
+            await updateSummariesOnDataChange(dataEntry);
+            console.log(`📊 ✅ Summary updates completed for client: ${clientId}`);
+          } catch (summaryError) {
+            console.error(`📊 ❌ Error updating summaries for client ${clientId}:`, summaryError);
+            // Don't throw error to avoid affecting the main calculation flow
+            dataEntry.summaryUpdateStatus = 'failed';
+            dataEntry.summaryUpdateError = summaryError.message;
+            await dataEntry.save();
+          }
         }
       }
     } else {

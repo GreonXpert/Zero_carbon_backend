@@ -84,17 +84,63 @@ const BoundaryScopeSummarySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const DataSourceCountSchema = new mongoose.Schema(
+  {
+    count:         { type: Number, default: 0 },
+    combinedValue: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const LocationSummarySchema = new mongoose.Schema(
+  {
+    locationKey:   { type: String },
+    locationLabel: { type: String },
+    country:       { type: String, default: '' },
+    state:         { type: String, default: '' },
+    city:          { type: String, default: '' },
+    siteName:      { type: String, default: '' },
+    latitude:      { type: Number, default: null },
+    longitude:     { type: Number, default: null },
+    nodeIds:       [{ type: String }],
+    nodeCount:     { type: Number, default: 0 },
+    combinedValue: { type: Number, default: 0 },
+    totals: {
+      E: { type: Number, default: 0 },
+      S: { type: Number, default: 0 },
+      G: { type: Number, default: 0 },
+    },
+  },
+  { _id: false }
+);
+
 const SummaryLayerSchema = new mongoose.Schema(
   {
     byMetric:        [MetricGroupSchema],
     byNode:          [NodeSummarySchema],
     byCategory:      [CategorySummarySchema],
     byBoundaryScope: [BoundaryScopeSummarySchema],
+    byLocation:      [LocationSummarySchema],
     totals: {
-      E:       { type: Number, default: 0 },
-      S:       { type: Number, default: 0 },
-      G:       { type: Number, default: 0 },
-      overall: { type: Number, default: 0 },
+      E: { type: Number, default: 0 },
+      S: { type: Number, default: 0 },
+      G: { type: Number, default: 0 },
+    },
+    dataSourceBreakdown: {
+      byInputType: {
+        manual: { type: DataSourceCountSchema, default: () => ({}) },
+        ocr:    { type: DataSourceCountSchema, default: () => ({}) },
+        csv:    { type: DataSourceCountSchema, default: () => ({}) },
+        excel:  { type: DataSourceCountSchema, default: () => ({}) },
+        api:    { type: DataSourceCountSchema, default: () => ({}) },
+        iot:    { type: DataSourceCountSchema, default: () => ({}) },
+      },
+      bySubmissionSource: {
+        contributor:   { type: DataSourceCountSchema, default: () => ({}) },
+        api:           { type: DataSourceCountSchema, default: () => ({}) },
+        iot:           { type: DataSourceCountSchema, default: () => ({}) },
+        system_import: { type: DataSourceCountSchema, default: () => ({}) },
+      },
     },
   },
   { _id: false }
@@ -151,5 +197,7 @@ const esgBoundarySummarySchema = new mongoose.Schema(
 );
 
 esgBoundarySummarySchema.index({ clientId: 1, boundaryDocId: 1, periodType: 1, periodKey: 1 }, { unique: true });
+esgBoundarySummarySchema.index({ clientId: 1, periodType: 1 });
+esgBoundarySummarySchema.index({ clientId: 1, boundaryDocId: 1, periodType: 1 });
 
 module.exports = mongoose.model('EsgBoundarySummary', esgBoundarySummarySchema);

@@ -95,4 +95,50 @@ async function _resolveRetentionLimit(userId, clientId) {
   return clientQuota?.limits?.greonIQChatRetentionLimit || 10;
 }
 
-module.exports = { trimForUser, runNightlyCleanup };
+/**
+ * Weekend age-based cleanup: delete non-pinned sessions older than `daysThreshold`.
+ * Called by the Saturday cron job in greonIQRetentionCleanup.js.
+ *
+ * @param {number} daysThreshold - sessions last updated more than this many days ago are deleted
+ * @returns {Promise<{ usersAffected: number, sessionsDeleted: number, userSummary: Array }>}
+ */
+async function runWeekendCleanup(daysThreshold = 30) {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysThreshold);
+
+  let usersAffected  = 0;
+  let sessionsDeleted = 0;
+  const userSummary  = []; // [{ userId: string, sessionsDeleted: number }]
+
+  const grouped = await ChatSession.aggregate([
+    {
+      $match: {
+        isPinned:  { $ne: true },
+        updatedAt: { $lt: cutoffDate },
+      },
+    },
+    {
+      $group: {
+        _id:        '$userId',
+        sessionIds: { $push: '$_id' },
+        count:      { $sum: 1 },
+      },
+    },
+  ]);
+
+  for (const { _id: userId, sessionIds, count } of grouped) {
+    try {
+      await ChatMessage.deleteMany({ sessionId: { $in: sessionIds } });
+      await ChatSession.deleteMany({ _id: { $in: sessionIds } });
+      sessionsDeleted += count;
+      usersAffected++;
+      userSummary.push({ userId: String(userId), sessionsDeleted: count });
+    } catch (err) {
+      console.error(`[GreOnIQ] weekend cleanup error for user ${userId}:`, err.message);
+    }
+  }
+
+  return { usersAffected, sessionsDeleted, userSummary };
+}
+
+module.exports = { trimForUser, runNightlyCleanup, runWeekendCleanup };

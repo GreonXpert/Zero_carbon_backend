@@ -16,6 +16,7 @@ const ANSWER_STATUS_ENUM       = [
   'reviewer_response_pending',
   'contributor_clarification_required',
   'contributor_clarification_submitted',
+  'approver_declined',
   'final_approved',
   'locked',
 ];
@@ -196,6 +197,10 @@ const disclosureAnswerSchema = new mongoose.Schema(
       default: null,
     },
     approvedAt: {
+      type:    Date,
+      default: null,
+    },
+    declinedAt: {
       type:    Date,
       default: null,
     },
