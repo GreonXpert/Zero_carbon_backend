@@ -272,7 +272,8 @@ const versionQuestion = async (req, res) => {
 
 const listQuestions = async (req, res) => {
   try {
-    const { frameworkCode, sectionCode, principleCode, status, indicatorType, includeMappings } = req.query;
+    const { sectionCode, principleCode, status, indicatorType, includeMappings } = req.query;
+    const frameworkCode = req.params.frameworkCode || req.query.frameworkCode;
 
     const query = { isDeleted: false };
     if (frameworkCode) query.frameworkCode = frameworkCode.toUpperCase();
@@ -351,9 +352,31 @@ const getQuestion = async (req, res) => {
   }
 };
 
+const deleteQuestion = async (req, res) => {
+  try {
+    const perm = canManageFrameworkQuestion(req.user);
+    if (!perm.allowed) return res.status(403).json({ message: perm.reason });
+
+    const question = await EsgFrameworkQuestion.findById(req.params.questionId);
+    if (!question || question.isDeleted) return res.status(404).json({ message: 'Question not found' });
+
+    if (question.status !== 'draft') {
+      return res.status(400).json({ message: `Only draft questions can be deleted. Current status: ${question.status}` });
+    }
+
+    await QuestionMetricMapping.deleteMany({ questionId: question._id });
+    await EsgFrameworkQuestion.deleteOne({ _id: question._id });
+
+    return res.status(200).json({ success: true, message: 'Question permanently deleted' });
+  } catch (err) {
+    console.error('[frameworkQuestionController] deleteQuestion:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
 const getQuestionStats = async (req, res) => {
   try {
-    const { frameworkCode } = req.query;
+    const frameworkCode = req.params.frameworkCode || req.query.frameworkCode;
     const matchStage = { isDeleted: false };
     if (frameworkCode) matchStage.frameworkCode = frameworkCode.toUpperCase();
 
@@ -391,5 +414,6 @@ module.exports = {
   versionQuestion,
   listQuestions,
   getQuestion,
+  deleteQuestion,
   getQuestionStats,
 };

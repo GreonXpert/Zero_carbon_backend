@@ -1,12 +1,13 @@
 'use strict';
 
-const express   = require('express');
-const dotenv    = require('dotenv');
-const cors      = require('cors');
-const http      = require('http');
-const socketIo  = require('socket.io');
-const helmet    = require('helmet');
-const path      = require('path');
+const express     = require('express');
+const dotenv      = require('dotenv');
+const cors        = require('cors');
+const http        = require('http');
+const socketIo    = require('socket.io');
+const helmet      = require('helmet');
+const compression = require('compression');
+const path        = require('path');
 
 dotenv.config();
 
@@ -22,6 +23,9 @@ const { registerJobs }    = require('./src/app/bootstrap/registerJobs');
 // ============================================================================
 
 const app = express();
+
+// Gzip/deflate compression for all responses (JSON payloads, etc.)
+app.use(compression());
 
 // Security headers (first pass — default)
 app.use(helmet());

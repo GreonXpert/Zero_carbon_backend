@@ -14,7 +14,8 @@
       "Bash(python -c ' *)",
       "Bash(Get-ChildItem -Path \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\" -Recurse -Filter \"*.js\")",
       "Bash(Select-Object -First 20 FullName)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(Head -20)"
     ]
   }
 }

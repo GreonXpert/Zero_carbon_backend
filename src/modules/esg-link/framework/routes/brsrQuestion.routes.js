@@ -16,6 +16,7 @@ const {
   versionQuestion,
   listQuestions,
   getQuestion,
+  deleteQuestion,
   getQuestionStats,
 } = require('../controllers/frameworkQuestionController');
 
@@ -31,25 +32,27 @@ router.use(auth);
 const eslGate = requireActiveModuleSubscription('esg_link');
 
 // ── Question list and stats ───────────────────────────────────────────────────
-// IMPORTANT: these literal paths must come before /:questionId
-router.get('/frameworks/brsr/questions/stats/summary', eslGate, getQuestionStats);
-router.get('/frameworks/brsr/questions',               eslGate, listQuestions);
-router.post('/frameworks/brsr/questions',              eslGate, createQuestion);
+// IMPORTANT: the stats/summary route must come before /:questionId so "stats"
+// isn't matched as a questionId.
+router.get('/frameworks/:frameworkCode/questions/stats/summary', eslGate, getQuestionStats);
+router.get('/frameworks/:frameworkCode/questions',               eslGate, listQuestions);
+router.post('/frameworks/:frameworkCode/questions',              eslGate, createQuestion);
 
 // ── Single question operations ────────────────────────────────────────────────
-router.get('/frameworks/brsr/questions/:questionId',         eslGate, getQuestion);
-router.patch('/frameworks/brsr/questions/:questionId',       eslGate, updateQuestion);
-router.post('/frameworks/brsr/questions/:questionId/submit', eslGate, submitQuestion);
-router.post('/frameworks/brsr/questions/:questionId/approve', eslGate, approveQuestion);
-router.post('/frameworks/brsr/questions/:questionId/reject',  eslGate, rejectQuestion);
-router.post('/frameworks/brsr/questions/:questionId/publish', eslGate, publishQuestion);
-router.post('/frameworks/brsr/questions/:questionId/version', eslGate, versionQuestion);
+router.get('/frameworks/:frameworkCode/questions/:questionId',         eslGate, getQuestion);
+router.patch('/frameworks/:frameworkCode/questions/:questionId',       eslGate, updateQuestion);
+router.post('/frameworks/:frameworkCode/questions/:questionId/submit', eslGate, submitQuestion);
+router.post('/frameworks/:frameworkCode/questions/:questionId/approve', eslGate, approveQuestion);
+router.post('/frameworks/:frameworkCode/questions/:questionId/reject',  eslGate, rejectQuestion);
+router.post('/frameworks/:frameworkCode/questions/:questionId/publish', eslGate, publishQuestion);
+router.post('/frameworks/:frameworkCode/questions/:questionId/version', eslGate, versionQuestion);
+router.delete('/frameworks/:frameworkCode/questions/:questionId',        eslGate, deleteQuestion);
 
 // ── Question metric mappings ──────────────────────────────────────────────────
-router.post('/frameworks/brsr/questions/:questionId/metrics',                        eslGate, createMapping);
-router.get('/frameworks/brsr/questions/:questionId/metrics',                         eslGate, listMappings);
-router.patch('/frameworks/brsr/questions/:questionId/metrics/:mappingId',            eslGate, updateMapping);
-router.delete('/frameworks/brsr/questions/:questionId/metrics/:mappingId',           eslGate, deactivateMapping);
-router.post('/frameworks/brsr/questions/:questionId/metrics/:mappingId/reactivate',  eslGate, reactivateMapping);
+router.post('/frameworks/:frameworkCode/questions/:questionId/metrics',                        eslGate, createMapping);
+router.get('/frameworks/:frameworkCode/questions/:questionId/metrics',                         eslGate, listMappings);
+router.patch('/frameworks/:frameworkCode/questions/:questionId/metrics/:mappingId',            eslGate, updateMapping);
+router.delete('/frameworks/:frameworkCode/questions/:questionId/metrics/:mappingId',           eslGate, deactivateMapping);
+router.post('/frameworks/:frameworkCode/questions/:questionId/metrics/:mappingId/reactivate',  eslGate, reactivateMapping);
 
 module.exports = router;
