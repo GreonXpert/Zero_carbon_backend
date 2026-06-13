@@ -7,6 +7,32 @@ const { canManageFrameworkQuestion, canApproveQuestion } = require('../services/
 const { blockPublishedEdit, createDraftVersion }         = require('../services/questionVersionService');
 const { syncMetricFrameworkFlags }                       = require('../services/metricFrameworkSyncService');
 
+/**
+ * Translate common Mongoose/Mongo errors (bad enum values, cast failures,
+ * duplicate key on the unique frameworkCode+questionCode+questionVersion index)
+ * into actionable 400/409 responses instead of a generic 500.
+ * Returns true if it handled (and responded to) the error.
+ */
+const handleKnownDbError = (res, err) => {
+  if (err.name === 'ValidationError') {
+    const errors = {};
+    for (const [field, e] of Object.entries(err.errors || {})) {
+      errors[field] = e.message;
+    }
+    res.status(400).json({ message: 'Validation failed', errors });
+    return true;
+  }
+  if (err.name === 'CastError') {
+    res.status(400).json({ message: `Invalid value for field "${err.path}": ${err.value}` });
+    return true;
+  }
+  if (err.code === 11000) {
+    res.status(409).json({ message: 'A question with this code and version already exists for this framework.' });
+    return true;
+  }
+  return false;
+};
+
 const createQuestion = async (req, res) => {
   try {
     const perm = canManageFrameworkQuestion(req.user);
@@ -123,6 +149,7 @@ const createQuestion = async (req, res) => {
     return res.status(201).json({ success: true, message: 'Question created', data: question });
   } catch (err) {
     console.error('[frameworkQuestionController] createQuestion:', err);
+    if (handleKnownDbError(res, err)) return;
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
@@ -161,6 +188,7 @@ const updateQuestion = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Question updated', data: updated });
   } catch (err) {
     console.error('[frameworkQuestionController] updateQuestion:', err);
+    if (handleKnownDbError(res, err)) return;
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
@@ -266,6 +294,7 @@ const versionQuestion = async (req, res) => {
     return res.status(201).json({ success: true, message: result.message, data: result.data });
   } catch (err) {
     console.error('[frameworkQuestionController] versionQuestion:', err);
+    if (handleKnownDbError(res, err)) return;
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };

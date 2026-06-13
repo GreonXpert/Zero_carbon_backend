@@ -260,14 +260,22 @@ const saveOCRData = async (req, res) => {
       console.warn('[saveOCRData] Client OCR tracking update failed:', clientErr.message);
     }
 
-    if (global.io) global.io.emit('ocrDataSaved', { clientId, nodeId, scopeIdentifier, dataEntryId: entry._id });
-    if (global.broadcastDataCompletionUpdate) global.broadcastDataCompletionUpdate(clientId);
+    // Notifications are non-blocking — must never turn a successful save into a 500.
+    try {
+      if (global.io) global.io.emit('ocrDataSaved', { clientId, nodeId, scopeIdentifier, dataEntryId: entry._id });
+      if (global.broadcastDataCompletionUpdate) {
+        global.broadcastDataCompletionUpdate(clientId)
+          .catch(err => console.warn('[saveOCRData] broadcastDataCompletionUpdate failed:', err.message));
+      }
+    } catch (notifyErr) {
+      console.warn('[saveOCRData] Post-save notification failed (non-blocking):', notifyErr.message);
+    }
 
     const warnings = extracted.warnings || [];
     if (ocrResult.confidence < 70) warnings.push(`OCR confidence is ${ocrResult.confidence}% — please review the extracted values.`);
     if (s3Warning) warnings.push(s3Warning);
 
-    return res.status(201).json({
+    const responseBody = {
       success: true,
       message: 'OCR data saved successfully',
       dataEntryId: entry._id,
@@ -282,7 +290,16 @@ const saveOCRData = async (req, res) => {
       warnings,
       emissionCalculationStatus: entry.emissionCalculationStatus,
       calculationResponse: calcResult?.data || null
-    });
+    };
+
+    try {
+      return res.status(201).json(responseBody);
+    } catch (jsonErr) {
+      // The DataEntry is already saved at this point — if the response payload
+      // itself fails to serialize, strip the offending field and resend.
+      console.warn('[saveOCRData] Response serialization failed, retrying without calculationResponse:', jsonErr.message);
+      return res.status(201).json({ ...responseBody, calculationResponse: null });
+    }
 
   } catch (error) {
     console.error('[saveOCRData] Unexpected error:', error);
@@ -652,15 +669,22 @@ const confirmOCRSave = async (req, res) => {
       });
     }
 
-    // ── Delete session if present (cleanup) ───────────────────────────────────
-    if (extractionId) {
-      deleteSession(extractionId);
-    }
+    // ── Cleanup / notifications (non-blocking — must never turn a successful
+    //    save into a 500, since the DataEntry/PendingApproval is already saved) ──
+    try {
+      if (extractionId) {
+        deleteSession(extractionId);
+      }
 
-    // ── Socket events ─────────────────────────────────────────────────────────
-    if (results.length > 0) {
-      if (global.io) global.io.emit('ocrDataSaved', { clientId, nodeId, scopeIdentifier, savedCount: results.length });
-      if (global.broadcastDataCompletionUpdate) global.broadcastDataCompletionUpdate(clientId);
+      if (results.length > 0) {
+        if (global.io) global.io.emit('ocrDataSaved', { clientId, nodeId, scopeIdentifier, savedCount: results.length });
+        if (global.broadcastDataCompletionUpdate) {
+          global.broadcastDataCompletionUpdate(clientId)
+            .catch(err => console.warn('[confirmOCRSave] broadcastDataCompletionUpdate failed:', err.message));
+        }
+      }
+    } catch (notifyErr) {
+      console.warn('[confirmOCRSave] Post-save notification failed (non-blocking):', notifyErr.message);
     }
 
     // ── Response ──────────────────────────────────────────────────────────────
@@ -668,7 +692,7 @@ const confirmOCRSave = async (req, res) => {
                      : errors.length > 0 ? 207   // multi-status: some saved, some failed
                      : 201;
 
-    return res.status(statusCode).json({
+    const responseBody = {
       success: results.length > 0,
       message: results.length > 0
         ? `${results.length} record(s) saved successfully${errors.length > 0 ? `, ${errors.length} failed` : ''}.`
@@ -676,7 +700,18 @@ const confirmOCRSave = async (req, res) => {
       savedCount: results.length,
       results,
       errors
-    });
+    };
+
+    try {
+      return res.status(statusCode).json(responseBody);
+    } catch (jsonErr) {
+      // The DataEntry/PendingApproval records are already saved at this point —
+      // if the response payload itself fails to serialize (e.g. a non-plain value
+      // inside calculationResponse), strip it and resend rather than 500.
+      console.warn('[confirmOCRSave] Response serialization failed, retrying without calculationResponse:', jsonErr.message);
+      const safeResults = results.map(r => ({ ...r, calculationResponse: null }));
+      return res.status(statusCode).json({ ...responseBody, results: safeResults });
+    }
 
   } catch (error) {
     console.error('[confirmOCRSave] Unexpected error:', error);

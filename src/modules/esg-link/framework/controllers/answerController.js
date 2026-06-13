@@ -11,6 +11,27 @@ const { checkEvidenceRequirement }  = require('../services/evidenceValidationSer
 const { validateTransition }        = require('../services/workflowStateService');
 const { emitEsgClientEvent, emitEsgUserEvent } = require('../../esgLink_core/summary/utils/esgSummarySocket');
 
+/**
+ * Translate common Mongoose/Mongo errors (bad enum/cast values) into a 400
+ * response instead of a generic 500. Returns true if it handled (and
+ * responded to) the error.
+ */
+const handleKnownDbError = (res, err) => {
+  if (err.name === 'ValidationError') {
+    const errors = {};
+    for (const [field, e] of Object.entries(err.errors || {})) {
+      errors[field] = e.message;
+    }
+    res.status(400).json({ message: 'Validation failed', errors });
+    return true;
+  }
+  if (err.name === 'CastError') {
+    res.status(400).json({ message: `Invalid value for field "${err.path}": ${err.value}` });
+    return true;
+  }
+  return false;
+};
+
 const listClientQuestions = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -112,32 +133,45 @@ const saveAnswer = async (req, res) => {
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode is required' });
     if (!questionCode)  return res.status(400).json({ message: 'questionCode is required' });
 
-    const answer = await DisclosureAnswer.findOneAndUpdate(
-      { clientId, periodId, questionId },
-      {
-        $set: {
-          clientId,
-          periodId,
-          frameworkId,
-          frameworkCode: frameworkCode.toUpperCase(),
-          questionId,
-          questionCode,
-          assignmentId:        assignmentId        || null,
-          answerSource:        answerSource        || 'manual',
-          answerData:          answerData          || null,
-          autoFilledData:      autoFilledData      || null,
-          sourceTrace:         sourceTrace         || [],
-          applicabilityStatus: applicabilityStatus || 'applicable',
-          naReason:            naReason            || null,
-          status:              'in_progress',
-          updatedBy:           req.user._id,
-        },
-        $setOnInsert: {
-          createdBy:   req.user._id,
-        },
+    const update = {
+      $set: {
+        clientId,
+        periodId,
+        frameworkId,
+        frameworkCode: frameworkCode.toUpperCase(),
+        questionId,
+        questionCode,
+        assignmentId:        assignmentId        || null,
+        answerSource:        answerSource        || 'manual',
+        answerData:          answerData          || null,
+        autoFilledData:      autoFilledData      || null,
+        sourceTrace:         sourceTrace         || [],
+        applicabilityStatus: applicabilityStatus || 'applicable',
+        naReason:            naReason            || null,
+        status:              'in_progress',
+        updatedBy:           req.user._id,
       },
-      { upsert: true, new: true, runValidators: true }
-    );
+      $setOnInsert: {
+        createdBy:   req.user._id,
+      },
+    };
+    const filter = { clientId, periodId, questionId };
+    const options = { upsert: true, new: true, runValidators: true };
+
+    let answer;
+    try {
+      answer = await DisclosureAnswer.findOneAndUpdate(filter, update, options);
+    } catch (upsertErr) {
+      // Two concurrent saves (e.g. double-click) can both try to insert the same
+      // {clientId, periodId, questionId} doc — the loser hits the unique index
+      // (E11000) instead of finding the winner's just-inserted row. Retry once;
+      // the doc now exists so this becomes a plain update.
+      if (upsertErr.code === 11000) {
+        answer = await DisclosureAnswer.findOneAndUpdate(filter, update, options);
+      } else {
+        throw upsertErr;
+      }
+    }
 
     emitEsgClientEvent(String(clientId), 'answer:updated', {
       clientId:   String(clientId),
@@ -149,6 +183,7 @@ const saveAnswer = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Answer saved', data: answer });
   } catch (err) {
     console.error('[answerController] saveAnswer:', err);
+    if (handleKnownDbError(res, err)) return;
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };

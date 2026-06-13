@@ -426,7 +426,7 @@ try {
 // Check if flowchart exists
 const activeChart = await getActiveFlowchart(clientId);
 if (!activeChart) {
-  return res.status(404).json({ message: 'No active flowchart found' });
+  return { isValid: false, message: 'No active flowchart found for client' };
 }
 const flowchart = activeChart.chart;
 if (!flowchart) {
