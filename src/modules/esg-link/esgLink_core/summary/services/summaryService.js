@@ -1091,7 +1091,7 @@ async function listAllClientPeriods(clientId) {
 /**
  * E/S/G category breakdown with subcategory drill-down for a client & period.
  */
-function _mergeSummaryMetrics(categories, summariesList) {
+function _mergeSummaryMetrics(categories, summariesList, nodes) {
   for (const s of summariesList) {
     const layer = s.approvedSummary || {};
     for (const metric of layer.byMetric || []) {
@@ -1118,23 +1118,67 @@ function _mergeSummaryMetrics(categories, summariesList) {
           entryCount:    metric.entryCount,
         });
       }
+
+      // Merge per-node contributions for the Facility view
+      if (nodes && nodes[cat]) {
+        for (const n of metric.contributingNodes || []) {
+          if (!n.nodeId) continue;
+          if (!nodes[cat][n.nodeId]) {
+            nodes[cat][n.nodeId] = { nodeId: n.nodeId, nodeLabel: n.nodeLabel, total: 0, metrics: new Map() };
+          }
+          const nodeEntry = nodes[cat][n.nodeId];
+          nodeEntry.nodeLabel = nodeEntry.nodeLabel || n.nodeLabel;
+          nodeEntry.total += n.value || 0;
+
+          const mKey = metric.metricCode;
+          if (!nodeEntry.metrics.has(mKey)) {
+            nodeEntry.metrics.set(mKey, {
+              metricId:    metric.metricId,
+              metricCode:  metric.metricCode,
+              metricName:  metric.metricName,
+              primaryUnit: metric.primaryUnit,
+              value:       0,
+            });
+          }
+          nodeEntry.metrics.get(mKey).value += n.value || 0;
+        }
+      }
     }
   }
 }
 
 async function getCategoryBreakdown(clientId, periodDef) {
-  const summaries = await EsgBoundarySummary.find({
+  let summaries = await EsgBoundarySummary.find({
     clientId,
     periodType: periodDef.periodType,
     periodKey:  periodDef.periodKey,
   }).lean();
 
   const categories = { E: {}, S: {}, G: {} };
-  _mergeSummaryMetrics(categories, summaries);
+  const nodes      = { E: {}, S: {}, G: {} };
+  _mergeSummaryMetrics(categories, summaries, nodes);
 
-  // If monthly or daily period returned no approved data, aggregate from daily boundary summaries.
+  let isEmpty = Object.values(categories).every((cat) => Object.keys(cat).length === 0);
+
+  // For a single-day request with a stale/empty boundary summary (byMetric not
+  // yet computed for this day), recompute on demand from raw entries and retry.
+  if (isEmpty && periodDef.periodType === 'day') {
+    const activeBoundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false })
+      .select('_id').lean();
+    for (const b of activeBoundaries) {
+      await computeAndSaveSummary(clientId, b._id, periodDef);
+    }
+    summaries = await EsgBoundarySummary.find({
+      clientId,
+      periodType: periodDef.periodType,
+      periodKey:  periodDef.periodKey,
+    }).lean();
+    _mergeSummaryMetrics(categories, summaries, nodes);
+    isEmpty = Object.values(categories).every((cat) => Object.keys(cat).length === 0);
+  }
+
+  // If monthly period returned no approved data, aggregate from daily boundary summaries.
   // This handles the case where the summary doc was computed before entries were approved.
-  const isEmpty = Object.values(categories).every((cat) => Object.keys(cat).length === 0);
   if (isEmpty && periodDef.periodType === 'month') {
     const activeBoundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false })
       .select('_id').lean();
@@ -1145,15 +1189,23 @@ async function getCategoryBreakdown(clientId, periodDef) {
       periodType: 'day',
       periodKey:  { $regex: `^${periodDef.periodKey}-` },
     }).lean();
-    _mergeSummaryMetrics(categories, dailySummaries);
+    _mergeSummaryMetrics(categories, dailySummaries, nodes);
   }
 
   const format = (catMap) => Object.values(catMap).sort((a, b) => b.total - a.total);
+  const formatNodes = (nodeMap) => Object.values(nodeMap)
+    .map((n) => ({
+      nodeId:    n.nodeId,
+      nodeLabel: n.nodeLabel,
+      total:     n.total,
+      metrics:   Array.from(n.metrics.values()),
+    }))
+    .sort((a, b) => b.total - a.total);
 
   return {
-    E: { subcategories: format(categories.E) },
-    S: { subcategories: format(categories.S) },
-    G: { subcategories: format(categories.G) },
+    E: { subcategories: format(categories.E), byNode: formatNodes(nodes.E) },
+    S: { subcategories: format(categories.S), byNode: formatNodes(nodes.S) },
+    G: { subcategories: format(categories.G), byNode: formatNodes(nodes.G) },
   };
 }
 

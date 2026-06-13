@@ -819,17 +819,26 @@ const createClientMetric = async (req, res) => {
       });
     }
 
-    const { metricName, metricDescription, esgCategory, subcategoryCode,
+    const { metricName, metricDescription, esgCategory, subcategoryCode: rawSubcategoryCode, newSubcategory,
             primaryUnit, allowedUnits, dataType, formulaId } = req.body;
 
-    if (!metricName || !esgCategory || !subcategoryCode) {
+    if (!metricName || !esgCategory || !rawSubcategoryCode) {
       return res.status(400).json({
         message: 'metricName, esgCategory, and subcategoryCode are required',
         code: 'MISSING_REQUIRED_FIELDS',
       });
     }
 
-    const subCatCheck = validateSubcategoryCode(esgCategory, subcategoryCode);
+    // Resolve 'OTHER' -> a real (new or reused) custom subcategory code
+    const subResolution = await resolveSubcategory({
+      esgCategory, subcategoryCode: rawSubcategoryCode, newSubcategory, userId: req.user._id,
+    });
+    if (subResolution.error) {
+      return res.status(400).json({ message: subResolution.error, code: 'INVALID_NEW_SUBCATEGORY' });
+    }
+    const subcategoryCode = subResolution.code;
+
+    const subCatCheck = await validateSubcategoryCode(esgCategory, subcategoryCode);
     if (!subCatCheck.valid) {
       return res.status(400).json({ message: subCatCheck.message, code: 'INVALID_SUBCATEGORY' });
     }
@@ -983,6 +992,33 @@ const listAvailableMetrics = async (req, res) => {
   }
 };
 
+// ── 11. listSubcategories ─────────────────────────────────────────────────────
+
+const listSubcategories = async (req, res) => {
+  try {
+    const { esgCategory } = req.query;
+
+    if (!['E', 'S', 'G'].includes(esgCategory)) {
+      return res.status(400).json({
+        message: 'esgCategory (E | S | G) is required',
+        code: 'INVALID_CATEGORY',
+      });
+    }
+
+    const custom = await EsgSubcategory.find({ esgCategory, isDeleted: false })
+      .select('code label')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    return res.status(200).json({
+      subcategories: custom.map((c) => ({ code: c.code, label: c.label, isCustom: true })),
+    });
+  } catch (err) {
+    console.error('[metricController] listSubcategories error:', err);
+    return res.status(500).json({ message: 'Internal server error', code: 'SERVER_ERROR' });
+  }
+};
+
 // ── Exports ────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -996,4 +1032,5 @@ module.exports = {
   createClientMetric,
   listClientMetrics,
   listAvailableMetrics,
+  listSubcategories,
 };

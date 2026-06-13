@@ -43,6 +43,7 @@ const {
   createClientMetric,
   listClientMetrics,
   listAvailableMetrics,
+  listSubcategories,
 } = require('../controllers/metricController');
 
 const {
@@ -82,6 +83,12 @@ router.post('/metrics/approvals/:approvalId/approve', eslGate, approveMetricChan
 router.post('/metrics/approvals/:approvalId/reject', eslGate, rejectMetricChange);
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+// List custom (user-added) subcategories for a given esgCategory — used to
+// populate the "Subcategory" dropdown alongside the static register.
+// Must appear before /metrics/:metricId to avoid Express treating
+// "subcategories" as a :metricId param.
+router.get('/metrics/subcategories', eslGate, listSubcategories);
 
 // Create a new global metric (draft state, super_admin / consultant_admin only)
 router.post('/metrics', eslGate, createGlobalMetric);
