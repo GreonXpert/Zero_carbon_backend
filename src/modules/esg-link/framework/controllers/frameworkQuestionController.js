@@ -172,7 +172,7 @@ const updateQuestion = async (req, res) => {
       'manualAnswerAllowed', 'autoAnswerAllowed', 'manualOverrideAllowed',
       'evidenceRequirement', 'evidenceInstructions', 'defaultOwnerRole',
       'reviewRequired', 'approvalRequired', 'applicability', 'displayOrder',
-      'indicatorType', 'principleCode', 'subsectionCode',
+      'indicatorType', 'principleCode', 'subsectionCode', 'sectionCode',
     ];
     const update = {};
     for (const key of allowed) {
@@ -291,7 +291,7 @@ const versionQuestion = async (req, res) => {
     const result = await createDraftVersion(req.params.questionId, req.body, req.user._id);
     if (!result.success) return res.status(400).json({ message: result.message });
 
-    return res.status(201).json({ success: true, message: result.message, data: result.data });
+    return res.status(200).json({ success: true, message: result.message, data: result.data });
   } catch (err) {
     console.error('[frameworkQuestionController] versionQuestion:', err);
     if (handleKnownDbError(res, err)) return;
