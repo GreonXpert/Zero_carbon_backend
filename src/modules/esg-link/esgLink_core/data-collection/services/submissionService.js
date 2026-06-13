@@ -236,6 +236,15 @@ async function create(payload, actor, options = {}) {
       const evalResult = evaluateFormula(mapping, dvMap);
       calculatedValue  = evalResult.calculatedValue;
       derivedFrom      = evalResult.derivedFrom;
+
+      // Persist resolved frozen/default variable values into dataValues so they
+      // display correctly in the submission table — matches manual entry, which
+      // already includes frozen variable values in its submitted dataValues.
+      if (derivedFrom?.variableValues) {
+        for (const [k, v] of Object.entries(derivedFrom.variableValues)) {
+          if (!dvMap.has(k) && v != null) dvMap.set(k, v);
+        }
+      }
     } catch (err) {
       validationResult.errors.push({
         field:    'formula',
@@ -473,6 +482,15 @@ async function updateDraft(submissionId, payload, actor, options = {}) {
         const evalResult     = evaluateFormula(mapping, dvMap);
         doc.calculatedValue  = evalResult.calculatedValue;
         doc.derivedFrom      = evalResult.derivedFrom;
+
+        // Persist resolved frozen/default variable values into dataValues so they
+        // display correctly in the submission table (see create()).
+        if (evalResult.derivedFrom?.variableValues) {
+          for (const [k, v] of Object.entries(evalResult.derivedFrom.variableValues)) {
+            if (!dvMap.has(k) && v != null) dvMap.set(k, v);
+          }
+          doc.dataValues = dvMap;
+        }
       } catch (_) {}
     }
   }

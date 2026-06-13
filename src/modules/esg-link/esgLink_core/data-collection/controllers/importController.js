@@ -32,9 +32,15 @@ const REQUIRED_FIELDS = ['year', 'periodLabel', 'primaryValue'];
 // ── Helper: load variableConfigs for a mapping ────────────────────────────────
 // bodyVariableConfigs: array sent by the frontend (preferred — already loaded into task card)
 // Falls back to querying EsgLinkBoundary where variableConfigs actually lives.
+// Variables with updatePolicy 'frozen' are excluded — their value comes from
+// the mapping's configured defaultValue (resolved in evaluateFormula), not from
+// the imported file, so they must not appear as required/mappable columns.
 async function _getVarNames(mappingId, clientId, bodyVariableConfigs) {
   if (Array.isArray(bodyVariableConfigs) && bodyVariableConfigs.length > 0) {
-    return bodyVariableConfigs.map((vc) => vc.varName || vc.name).filter(Boolean);
+    return bodyVariableConfigs
+      .filter((vc) => vc.updatePolicy !== 'frozen')
+      .map((vc) => vc.varName || vc.name)
+      .filter(Boolean);
   }
   if (!mappingId) return [];
   try {
@@ -45,7 +51,10 @@ async function _getVarNames(mappingId, clientId, bodyVariableConfigs) {
       for (const node of (doc.nodes || [])) {
         const m = (node.metricsDetails || []).find((m) => String(m._id) === String(mappingId));
         if (m?.variableConfigs?.length > 0) {
-          return m.variableConfigs.map((vc) => vc.varName).filter(Boolean);
+          return m.variableConfigs
+            .filter((vc) => vc.updatePolicy !== 'frozen')
+            .map((vc) => vc.varName)
+            .filter(Boolean);
         }
       }
     }

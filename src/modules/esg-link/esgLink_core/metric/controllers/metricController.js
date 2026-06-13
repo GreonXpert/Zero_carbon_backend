@@ -22,6 +22,7 @@
 
 const mongoose = require('mongoose');
 const EsgMetric = require('../models/EsgMetric');
+const EsgSubcategory = require('../models/EsgSubcategory');
 const Client    = require('../../../../../modules/client-management/client/Client');
 const Formula   = require('../../../../zero-carbon/reduction/models/Formula');
 const {
@@ -32,6 +33,7 @@ const {
 const {
   generateMetricCode,
   validateSubcategoryCode,
+  resolveSubcategory,
   hasDefinitionChange,
 } = require('../services/metricService');
 const { createApprovalRequest } = require('../services/metricApprovalService');
@@ -104,7 +106,8 @@ const createGlobalMetric = async (req, res) => {
     if (_guardPermission(perm, res)) return;
 
     const {
-      metricName, metricDescription, esgCategory, subcategoryCode, metricType,
+      metricName, metricDescription, esgCategory, subcategoryCode: rawSubcategoryCode, metricType,
+      newSubcategory,
       primaryUnit, allowedUnits, dataType, formulaId,
       frequency, boundaryScope, sourceType, rollUpBehaviour,
       reportingUnitNote, reportingLevelNote,
@@ -114,15 +117,24 @@ const createGlobalMetric = async (req, res) => {
     } = req.body;
 
     // Required field validation
-    if (!metricName || !esgCategory || !subcategoryCode || !metricType) {
+    if (!metricName || !esgCategory || !rawSubcategoryCode || !metricType) {
       return res.status(400).json({
         message: 'metricName, esgCategory, subcategoryCode, and metricType are required',
         code: 'MISSING_REQUIRED_FIELDS',
       });
     }
 
+    // Resolve 'OTHER' -> a real (new or reused) custom subcategory code
+    const subResolution = await resolveSubcategory({
+      esgCategory, subcategoryCode: rawSubcategoryCode, newSubcategory, userId: req.user._id,
+    });
+    if (subResolution.error) {
+      return res.status(400).json({ message: subResolution.error, code: 'INVALID_NEW_SUBCATEGORY' });
+    }
+    const subcategoryCode = subResolution.code;
+
     // subcategoryCode must match esgCategory
-    const subCatCheck = validateSubcategoryCode(esgCategory, subcategoryCode);
+    const subCatCheck = await validateSubcategoryCode(esgCategory, subcategoryCode);
     if (!subCatCheck.valid) {
       return res.status(400).json({ message: subCatCheck.message, code: 'INVALID_SUBCATEGORY' });
     }
