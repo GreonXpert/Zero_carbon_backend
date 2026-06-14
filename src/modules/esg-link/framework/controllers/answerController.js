@@ -316,7 +316,7 @@ const listAllAnswers = async (req, res) => {
     const perm = await canViewClientBrsr(req.user, clientId);
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
-    const { frameworkCode, periodId } = req.query;
+    const { frameworkCode, periodId, sectionCode, statsOnly } = req.query;
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode query param is required' });
     if (!periodId)      return res.status(400).json({ message: 'periodId query param is required' });
 
@@ -331,7 +331,7 @@ const listAllAnswers = async (req, res) => {
     ).sort({ sectionCode: 1, displayOrder: 1 }).lean();
 
     if (!questions.length) {
-      return res.status(200).json({ success: true, count: 0, data: [] });
+      return res.status(200).json({ success: true, count: 0, data: [], sectionStats: [] });
     }
 
     const questionIds = questions.map((q) => q._id);
@@ -372,7 +372,7 @@ const listAllAnswers = async (req, res) => {
     }
 
     // Merge question + answer into one record per question
-    const data = questions.map((q) => {
+    let data = questions.map((q) => {
       const answer     = answerMap[String(q._id)]     || null;
       const assignment = assignmentMap[String(q._id)] || null;
       return {
@@ -428,7 +428,48 @@ const listAllAnswers = async (req, res) => {
       ).length,
     };
 
-    return res.status(200).json({ success: true, summary, count: data.length, data });
+    // Per-section stats — total / answered by contributor / reviewed / approved.
+    // Computed once over the full dataset so the section overview and the
+    // per-section stat cards stay accurate even when `data` below is later
+    // filtered/paginated to a single section.
+    const sectionStatsMap = {};
+    for (const d of data) {
+      const sec = d.sectionCode || 'GENERAL';
+      if (!sectionStatsMap[sec]) {
+        sectionStatsMap[sec] = { sectionCode: sec, total: 0, contributorAnswered: 0, reviewed: 0, approved: 0 };
+      }
+      const s = sectionStatsMap[sec];
+      s.total += 1;
+      if (d.answerStatus !== 'not_started') s.contributorAnswered += 1;
+      if (d.reviewedAt) s.reviewed += 1;
+      if (d.answerStatus === 'final_approved') s.approved += 1;
+    }
+    const sectionStats = Object.values(sectionStatsMap).sort((a, b) => a.sectionCode.localeCompare(b.sectionCode));
+
+    // Lightweight mode — used to populate the section overview without
+    // shipping every question's full answerSchema/answerData payload.
+    if (statsOnly === 'true' || statsOnly === '1') {
+      return res.status(200).json({ success: true, summary, sectionStats, count: data.length });
+    }
+
+    // Optionally scope to a single section and paginate the result —
+    // keeps per-request payloads small for sections with many questions.
+    let pagination = null;
+    if (sectionCode) {
+      data = data.filter((d) => (d.sectionCode || 'GENERAL') === sectionCode);
+
+      const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
+      const limit = Math.max(0, parseInt(req.query.limit, 10) || 0);
+      if (limit > 0) {
+        const total      = data.length;
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+        const start      = (page - 1) * limit;
+        data = data.slice(start, start + limit);
+        pagination = { page, limit, total, totalPages };
+      }
+    }
+
+    return res.status(200).json({ success: true, summary, sectionStats, pagination, count: data.length, data });
   } catch (err) {
     console.error('[answerController] listAllAnswers:', err);
     return res.status(500).json({ message: 'Server error', error: err.message });

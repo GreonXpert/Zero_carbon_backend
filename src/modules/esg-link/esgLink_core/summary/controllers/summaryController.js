@@ -295,34 +295,6 @@ async function getCategoryBreakdown(req, res) {
   } catch (err) { return handleErr(res, err); }
 }
 
-async function getMonthlyBreakdown(req, res) {
-  try {
-    const { clientId } = req.params;
-    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
-    const data = await svc.getMonthlyBreakdown(clientId, year);
-    return ok(res, { data });
-  } catch (err) { return handleErr(res, err); }
-}
-
-async function getDailyBreakdown(req, res) {
-  try {
-    const { clientId } = req.params;
-    const year  = parseInt(req.query.year,  10) || new Date().getFullYear();
-    const month = parseInt(req.query.month, 10) || new Date().getMonth() + 1;
-    const data = await svc.getDailyBreakdown(clientId, year, month);
-    return ok(res, { data });
-  } catch (err) { return handleErr(res, err); }
-}
-
-async function getPeriodWorkflowStats(req, res) {
-  try {
-    const { clientId } = req.params;
-    const periodDef    = getPeriodParams(req);
-    const data = await svc.getPeriodWorkflowStats(clientId, periodDef);
-    return ok(res, { data });
-  } catch (err) { return handleErr(res, err); }
-}
-
 async function getTopBottomMetrics(req, res) {
   try {
     const { clientId } = req.params;
@@ -605,9 +577,6 @@ module.exports = {
   listAllClientPeriods,
   // Group 3
   getCategoryBreakdown,
-  getPeriodWorkflowStats,
-  getMonthlyBreakdown,
-  getDailyBreakdown,
   getTopBottomMetrics,
   // Group 4
   getMetricCoverage,

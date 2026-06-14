@@ -99,9 +99,6 @@ router.get('/:clientId/summary/period-list', guard, adminAndAbove, ctrl.listAllC
 // GET /:clientId/summary/by-category  — E/S/G breakdown with subcategory drill-down
 // GET /:clientId/summary/top-bottom   ?n=5  — top/bottom N metrics by value
 router.get('/:clientId/summary/by-category',       guard, adminAndAbove, ctrl.getCategoryBreakdown);
-router.get('/:clientId/summary/period-stats',      guard, adminAndAbove, ctrl.getPeriodWorkflowStats);
-router.get('/:clientId/summary/monthly-breakdown', guard, adminAndAbove, ctrl.getMonthlyBreakdown);
-router.get('/:clientId/summary/daily-breakdown',   guard, adminAndAbove, ctrl.getDailyBreakdown);
 router.get('/:clientId/summary/top-bottom',        guard, adminAndAbove, ctrl.getTopBottomMetrics);
 
 // =============================================================================

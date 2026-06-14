@@ -188,7 +188,12 @@ function encryptionPlugin(schema, options = {}) {
   //   run after this hook will receive plain (decrypted) values.
 
   schema.post('save', function (doc) {
-    if (doc) decryptFields(doc);
+    try {
+      if (doc) decryptFields(doc);
+    } catch (err) {
+      // Never reject an already-committed save because of a decrypt issue.
+      console.error('[EncryptionPlugin] post(save) decrypt failed (non-fatal):', err.message);
+    }
   });
 
   // ─── HOOK 3: post('init') ────────────────────────────────────────────────────
@@ -198,7 +203,11 @@ function encryptionPlugin(schema, options = {}) {
   //   as-is and this hook decrypts it back to the original JS type.
 
   schema.post('init', function (doc) {
-    if (doc) decryptFields(doc);
+    try {
+      if (doc) decryptFields(doc);
+    } catch (err) {
+      console.error('[EncryptionPlugin] post(init) decrypt failed (non-fatal):', err.message);
+    }
   });
 
   // ─── HOOK 4: post('find') ────────────────────────────────────────────────────
@@ -210,7 +219,11 @@ function encryptionPlugin(schema, options = {}) {
   schema.post('find', function (docs) {
     if (Array.isArray(docs)) {
       for (const doc of docs) {
-        decryptFields(doc);
+        try {
+          decryptFields(doc);
+        } catch (err) {
+          console.error('[EncryptionPlugin] post(find) decrypt failed (non-fatal):', err.message);
+        }
       }
     }
   });
@@ -218,7 +231,11 @@ function encryptionPlugin(schema, options = {}) {
   // ─── HOOK 5: post('findOne') ─────────────────────────────────────────────────
 
   schema.post('findOne', function (doc) {
-    if (doc) decryptFields(doc);
+    try {
+      if (doc) decryptFields(doc);
+    } catch (err) {
+      console.error('[EncryptionPlugin] post(findOne) decrypt failed (non-fatal):', err.message);
+    }
   });
 
   // ─── HOOK 6: pre('findOneAndUpdate') ─────────────────────────────────────────
@@ -237,7 +254,11 @@ function encryptionPlugin(schema, options = {}) {
   // ─── HOOK 7: post('findOneAndUpdate') ────────────────────────────────────────
 
   schema.post('findOneAndUpdate', function (doc) {
-    if (doc) decryptFields(doc);
+    try {
+      if (doc) decryptFields(doc);
+    } catch (err) {
+      console.error('[EncryptionPlugin] post(findOneAndUpdate) decrypt failed (non-fatal):', err.message);
+    }
   });
 
   // ─── HOOK 8: pre('updateOne') / pre('updateMany') ────────────────────────────

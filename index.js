@@ -25,7 +25,15 @@ const { registerJobs }    = require('./src/app/bootstrap/registerJobs');
 const app = express();
 
 // Gzip/deflate compression for all responses (JSON payloads, etc.)
-app.use(compression());
+// SSE responses (Content-Type: text/event-stream) must be excluded — gzip
+// buffers chunks internally and never flushes small writes, so the response
+// headers/body never reach the client and EventSource hangs on "connecting".
+app.use(compression({
+  filter: (req, res) => {
+    if (res.getHeader('Content-Type') === 'text/event-stream') return false;
+    return compression.filter(req, res);
+  }
+}));
 
 // Security headers (first pass — default)
 app.use(helmet());

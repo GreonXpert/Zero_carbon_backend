@@ -709,8 +709,32 @@ const confirmOCRSave = async (req, res) => {
       // if the response payload itself fails to serialize (e.g. a non-plain value
       // inside calculationResponse), strip it and resend rather than 500.
       console.warn('[confirmOCRSave] Response serialization failed, retrying without calculationResponse:', jsonErr.message);
-      const safeResults = results.map(r => ({ ...r, calculationResponse: null }));
-      return res.status(statusCode).json({ ...responseBody, results: safeResults });
+      try {
+        const safeResults = results.map(r => ({ ...r, calculationResponse: null }));
+        return res.status(statusCode).json({ ...responseBody, results: safeResults });
+      } catch (retryErr) {
+        // Last resort: the records were saved successfully — never report a 500
+        // for a write that already succeeded. Send a minimal, guaranteed-safe payload.
+        console.error('[confirmOCRSave] Fallback response serialization also failed:', retryErr.message);
+        const minimalResults = results.map(r => ({
+          recordIndex: r.recordIndex,
+          dataEntryId: String(r.dataEntryId),
+          emissionCalculationStatus: r.emissionCalculationStatus,
+          calculationResponse: null
+        }));
+        const minimalErrors = errors.map(e => ({
+          recordIndex: e.recordIndex,
+          error: typeof e.error === 'string' ? e.error : 'Unknown error',
+          ...(e.existingDataEntryId ? { existingDataEntryId: String(e.existingDataEntryId) } : {})
+        }));
+        return res.status(statusCode).json({
+          success: results.length > 0,
+          message: responseBody.message,
+          savedCount: results.length,
+          results: minimalResults,
+          errors: minimalErrors
+        });
+      }
     }
 
   } catch (error) {
