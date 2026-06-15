@@ -1726,6 +1726,41 @@ async function getReviewerQueue(userId, clientId, periodDef) {
 /**
  * Reviewer stats: historical performance metrics.
  */
+async function getAssignedMetricsByCategory(userId, clientId, role) {
+  const userIdStr = userId ? userId.toString() : null;
+  const boundaries = await EsgLinkBoundary.find({ clientId, isActive: true, isDeleted: false }).lean();
+  const assignedMetricIds = new Set();
+
+  for (const b of boundaries) {
+    for (const node of b.nodes || []) {
+      for (const mapping of node.metricsDetails || []) {
+        let isAssigned = false;
+        if (role === 'reviewer') {
+          isAssigned = (mapping.reviewers || []).some((id) => String(id) === userIdStr) ||
+            (mapping.inheritNodeReviewers && (node.nodeReviewerIds || []).some((id) => String(id) === userIdStr));
+        } else if (role === 'approver') {
+          isAssigned = (mapping.approvers || []).some((id) => String(id) === userIdStr) ||
+            (mapping.inheritNodeApprovers && (node.nodeApproverIds || []).some((id) => String(id) === userIdStr));
+        }
+        if (!userIdStr) isAssigned = true; // admin full-access: count all
+        if (isAssigned && mapping.metricId) {
+          assignedMetricIds.add(mapping.metricId.toString());
+        }
+      }
+    }
+  }
+
+  const byCategory = { E: 0, S: 0, G: 0 };
+  if (assignedMetricIds.size === 0) return byCategory;
+
+  const metrics = await EsgMetric.find({ _id: { $in: [...assignedMetricIds] } }).select('_id esgCategory').lean();
+  for (const m of metrics) {
+    const cat = m.esgCategory;
+    if (cat && Object.prototype.hasOwnProperty.call(byCategory, cat)) byCategory[cat]++;
+  }
+  return byCategory;
+}
+
 async function getReviewerStats(userId, clientId) {
   const entries = await EsgDataEntry.find({
     clientId,
@@ -1741,15 +1776,12 @@ async function getReviewerStats(userId, clientId) {
 
   for (const e of entries) {
     if (userIdStr) {
-      // Scoped: only count entries this specific reviewer acted on
       const wasHandledByThisReviewer =
         (e.reviewerIds || []).some((id) => id?.toString() === userIdStr) ||
         e.workflowStatus === 'under_review' ||
         e.workflowStatus === 'clarification_requested';
       if (!wasHandledByThisReviewer) continue;
     }
-    // Null userId: count all matching entries (admin aggregate view)
-
     totalReviewed++;
     const refDate = e.updatedAt || e.submittedAt;
     if (refDate && e.submittedAt) {
@@ -1760,12 +1792,15 @@ async function getReviewerStats(userId, clientId) {
     if (refDate && new Date(refDate) >= last30Cutoff) last30++;
   }
 
+  const byCategory = await getAssignedMetricsByCategory(userId, clientId, 'reviewer');
+
   return {
     totalReviewed,
     avgReviewDays: totalReviewed > 0 ? Math.round(totalDays / totalReviewed) : 0,
     clarificationRate: totalReviewed > 0 ? Math.round((clarifications / totalReviewed) * 100) : 0,
     forwardedToApprovalRate: totalReviewed > 0 ? Math.round((forwarded / totalReviewed) * 100) : 0,
     last30Days: last30,
+    byCategory,
   };
 }
 
@@ -1850,7 +1885,7 @@ async function getApproverStats(userId, clientId) {
 
   for (const e of entries) {
     for (const d of e.approvalDecisions || []) {
-      if (userIdStr && d.approverId?.toString() !== userIdStr) continue; // scoped: filter by user
+      if (userIdStr && d.approverId?.toString() !== userIdStr) continue;
       if (d.decision === 'pending') continue;
       totalDecisions++;
       if (d.decision === 'approved') approvedCount++;
@@ -1861,11 +1896,14 @@ async function getApproverStats(userId, clientId) {
     }
   }
 
+  const byCategory = await getAssignedMetricsByCategory(userId, clientId, 'approver');
+
   return {
     totalDecisions,
     approvedCount,
     rejectedCount,
     avgDecisionDays: totalDecisions > 0 ? Math.round(totalDays / totalDecisions) : 0,
+    byCategory,
   };
 }
 

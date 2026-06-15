@@ -11,11 +11,6 @@ const { checkEvidenceRequirement }  = require('../services/evidenceValidationSer
 const { validateTransition }        = require('../services/workflowStateService');
 const { emitEsgClientEvent, emitEsgUserEvent } = require('../../esgLink_core/summary/utils/esgSummarySocket');
 
-/**
- * Translate common Mongoose/Mongo errors (bad enum/cast values) into a 400
- * response instead of a generic 500. Returns true if it handled (and
- * responded to) the error.
- */
 const handleKnownDbError = (res, err) => {
   if (err.name === 'ValidationError') {
     const errors = {};
@@ -41,7 +36,6 @@ const listClientQuestions = async (req, res) => {
     const { periodId, frameworkCode, sectionCode, principleCode } = req.query;
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode query param is required' });
 
-    // Verify an active instance exists for this client + framework
     const instance = await ClientFrameworkInstance.findOne({
       clientId,
       frameworkCode: frameworkCode.toUpperCase(),
@@ -59,7 +53,6 @@ const listClientQuestions = async (req, res) => {
       .sort({ sectionCode: 1, displayOrder: 1 })
       .lean();
 
-    // Attach answer status if periodId is given
     let answerMap = {};
     if (periodId && questions.length) {
       const answers = await DisclosureAnswer.find(
@@ -91,7 +84,6 @@ const prefillAnswer = async (req, res) => {
 
     const { periodId, periodType, periodKey, boundaryDocId } = req.query;
 
-    // At least one period identifier is required
     if (!periodId && !(periodType && periodKey)) {
       return res.status(400).json({
         message: 'Provide either periodId (e.g. "2026") or both periodType + periodKey (e.g. "financial_year" + "2025-04-01_2026-03-31")',
@@ -99,12 +91,7 @@ const prefillAnswer = async (req, res) => {
     }
 
     const prefill = await prefillAnswerFromCore({
-      clientId,
-      periodId,
-      periodType,
-      periodKey,
-      questionId,
-      boundaryDocId,
+      clientId, periodId, periodType, periodKey, questionId, boundaryDocId,
     });
     return res.status(200).json({ success: true, data: prefill });
   } catch (err) {
@@ -126,21 +113,17 @@ const saveAnswer = async (req, res) => {
       applicabilityStatus, naReason,
     } = req.body;
 
-    // Accept periodType + periodKey as an alternative period identifier (matches prefill API format)
     const periodId = rawPeriodId || (periodType && periodKey ? periodKey : null);
-    if (!periodId) return res.status(400).json({ message: 'periodId is required (or provide both periodType and periodKey)' });
+    if (!periodId)      return res.status(400).json({ message: 'periodId is required (or provide both periodType and periodKey)' });
     if (!frameworkId)   return res.status(400).json({ message: 'frameworkId is required' });
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode is required' });
     if (!questionCode)  return res.status(400).json({ message: 'questionCode is required' });
 
     const update = {
       $set: {
-        clientId,
-        periodId,
-        frameworkId,
-        frameworkCode: frameworkCode.toUpperCase(),
-        questionId,
-        questionCode,
+        clientId, periodId,
+        frameworkId, frameworkCode: frameworkCode.toUpperCase(),
+        questionId, questionCode,
         assignmentId:        assignmentId        || null,
         answerSource:        answerSource        || 'manual',
         answerData:          answerData          || null,
@@ -151,21 +134,15 @@ const saveAnswer = async (req, res) => {
         status:              'in_progress',
         updatedBy:           req.user._id,
       },
-      $setOnInsert: {
-        createdBy:   req.user._id,
-      },
+      $setOnInsert: { createdBy: req.user._id },
     };
-    const filter = { clientId, periodId, questionId };
+    const filter  = { clientId, periodId, questionId };
     const options = { upsert: true, new: true, runValidators: true };
 
     let answer;
     try {
       answer = await DisclosureAnswer.findOneAndUpdate(filter, update, options);
     } catch (upsertErr) {
-      // Two concurrent saves (e.g. double-click) can both try to insert the same
-      // {clientId, periodId, questionId} doc — the loser hits the unique index
-      // (E11000) instead of finding the winner's just-inserted row. Retry once;
-      // the doc now exists so this becomes a plain update.
       if (upsertErr.code === 11000) {
         answer = await DisclosureAnswer.findOneAndUpdate(filter, update, options);
       } else {
@@ -174,10 +151,8 @@ const saveAnswer = async (req, res) => {
     }
 
     emitEsgClientEvent(String(clientId), 'answer:updated', {
-      clientId:   String(clientId),
-      questionId: String(questionId),
-      answerId:   String(answer._id),
-      status:     answer.status,
+      clientId: String(clientId), questionId: String(questionId),
+      answerId: String(answer._id), status: answer.status,
     });
 
     return res.status(200).json({ success: true, message: 'Answer saved', data: answer });
@@ -242,29 +217,21 @@ const submitAnswer = async (req, res) => {
     const perm = await canAnswerQuestion(req.user, answer.clientId);
     if (!perm.allowed) return res.status(403).json({ message: perm.reason });
 
-    // Determine the correct target status:
-    //   resubmission after changes requested → resubmitted_to_reviewer
-    //   clarification reply → contributor_clarification_submitted
-    //   first submission / after approver_declined → submitted_to_reviewer (full cycle restarts)
     let targetStatus;
     if (answer.status === 'reviewer_changes_requested') {
       targetStatus = 'resubmitted_to_reviewer';
     } else if (answer.status === 'contributor_clarification_required') {
       targetStatus = 'contributor_clarification_submitted';
     } else {
-      // 'in_progress', 'approver_declined', or any other editable state → submitted_to_reviewer
       targetStatus = 'submitted_to_reviewer';
     }
 
     const transition = validateTransition(answer.status, targetStatus, req.user.userType);
     if (!transition.valid) return res.status(400).json({ message: transition.reason });
 
-    // Check evidence requirement before allowing submission
     const evidenceCheck = await checkEvidenceRequirement(answer.questionId, answerId);
     if (!evidenceCheck.valid) return res.status(400).json({ message: evidenceCheck.reason });
 
-    // Stamp reviewerId / approverId from the linked assignment so the reviewer/approver
-    // can later query their own queue by answer.reviewerId / answer.approverId
     if (!answer.reviewerId || !answer.approverId) {
       const assignment = await QuestionAssignment.findOne(
         { clientId: answer.clientId, periodId: answer.periodId, questionId: answer.questionId },
@@ -276,14 +243,10 @@ const submitAnswer = async (req, res) => {
       }
     }
 
-    // Freeze the current autoFilledData as coreSnapshot at submission time
     if (answer.sourceTrace && answer.sourceTrace.length) {
       answer.coreSnapshot = answer.sourceTrace.map((t) => ({
-        metricId:   t.metricId,
-        metricCode: t.metricCode,
-        value:      t.value,
-        unit:       t.unit,
-        snapshotAt: new Date(),
+        metricId: t.metricId, metricCode: t.metricCode,
+        value: t.value, unit: t.unit, snapshotAt: new Date(),
       }));
     }
 
@@ -293,10 +256,8 @@ const submitAnswer = async (req, res) => {
     await answer.save();
 
     emitEsgClientEvent(String(answer.clientId), 'answer:submitted', {
-      clientId:   String(answer.clientId),
-      answerId:   String(answer._id),
-      questionId: String(answer.questionId),
-      status:     answer.status,
+      clientId: String(answer.clientId), answerId: String(answer._id),
+      questionId: String(answer.questionId), status: answer.status,
     });
     if (answer.reviewerId) emitEsgUserEvent(String(answer.reviewerId), 'answer:submitted', { answerId: String(answer._id) });
     if (answer.approverId) emitEsgUserEvent(String(answer.approverId), 'answer:submitted', { answerId: String(answer._id) });
@@ -308,8 +269,15 @@ const submitAnswer = async (req, res) => {
   }
 };
 
-// ── Consultant: list all answers for a client+period with question details ────
-
+// ── List all answers — supports statsOnly, sectionCode+pagination ─────────────
+//
+// Query params:
+//   frameworkCode  (required)
+//   periodId       (required)
+//   statsOnly      "true"  → return section-level summary only (lightweight)
+//   sectionCode            → scope to one section
+//   page           number  → page index (1-based), used with sectionCode + limit
+//   limit          number  → page size (0 = no limit)
 const listAllAnswers = async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -320,34 +288,107 @@ const listAllAnswers = async (req, res) => {
     if (!frameworkCode) return res.status(400).json({ message: 'frameworkCode query param is required' });
     if (!periodId)      return res.status(400).json({ message: 'periodId query param is required' });
 
-    const fc = frameworkCode.toUpperCase();
+    const fc           = frameworkCode.toUpperCase();
+    const baseQFilter  = { frameworkCode: fc, status: 'published', isDeleted: false };
 
-    // All published questions for this framework
-    const questions = await EsgFrameworkQuestion.find(
-      { frameworkCode: fc, status: 'published', isDeleted: false },
-      { _id: 1, questionCode: 1, questionTitle: 1, questionText: 1, sectionCode: 1,
+    // ── LIGHTWEIGHT STATS-ONLY MODE ───────────────────────────────────────────
+    // Fetches minimal fields (no answerSchema/answerData) to compute per-section
+    // totals and the overall summary — used by the sections overview view.
+    if (statsOnly === 'true' || statsOnly === '1') {
+      const questions = await EsgFrameworkQuestion
+        .find(baseQFilter, { _id: 1, sectionCode: 1 })
+        .lean();
+
+      if (!questions.length) {
+        return res.status(200).json({ success: true, summary: { total: 0 }, sectionStats: [], count: 0 });
+      }
+
+      const questionIds = questions.map((q) => q._id);
+
+      const answers = await DisclosureAnswer
+        .find(
+          { clientId, periodId, questionId: { $in: questionIds } },
+          { questionId: 1, status: 1, reviewedAt: 1 }
+        )
+        .lean();
+
+      const answerMap = {};
+      for (const a of answers) answerMap[String(a.questionId)] = a;
+
+      const sectionStatsMap = {};
+      for (const q of questions) {
+        const sec = q.sectionCode || 'GENERAL';
+        if (!sectionStatsMap[sec]) {
+          sectionStatsMap[sec] = { sectionCode: sec, total: 0, contributorAnswered: 0, reviewed: 0, approved: 0 };
+        }
+        const ans = answerMap[String(q._id)];
+        const s   = sectionStatsMap[sec];
+        s.total += 1;
+        if (ans && ans.status && ans.status !== 'not_started') s.contributorAnswered += 1;
+        if (ans && ans.reviewedAt) s.reviewed += 1;
+        if (ans && ans.status === 'final_approved') s.approved += 1;
+      }
+      const sectionStats = Object.values(sectionStatsMap)
+        .sort((a, b) => a.sectionCode.localeCompare(b.sectionCode));
+
+      const summary = {
+        total:            questions.length,
+        notStarted:       questions.length - answers.filter((a) => a.status && a.status !== 'not_started').length,
+        inProgress:       answers.filter((a) => a.status === 'in_progress').length,
+        submitted:        answers.filter((a) => a.status === 'submitted_to_reviewer').length,
+        reviewerApproved: answers.filter((a) => a.status === 'reviewer_approved').length,
+        finalApproved:    answers.filter((a) => a.status === 'final_approved').length,
+      };
+
+      return res.status(200).json({ success: true, summary, sectionStats, count: questions.length });
+    }
+
+    // ── PAGINATED SECTION / FULL FETCH ────────────────────────────────────────
+    const questionQuery = { ...baseQFilter };
+    if (sectionCode) questionQuery.sectionCode = sectionCode;
+
+    const page  = Math.max(1, parseInt(req.query.page,  10) || 1);
+    const limit = Math.max(0, parseInt(req.query.limit, 10) || 0);
+
+    // DB-level count and pagination when a section + limit are provided
+    let totalCount = 0;
+    if (sectionCode && limit > 0) {
+      totalCount = await EsgFrameworkQuestion.countDocuments(questionQuery);
+    }
+
+    const qCursor = EsgFrameworkQuestion
+      .find(questionQuery, {
+        _id: 1, questionCode: 1, questionTitle: 1, questionText: 1, sectionCode: 1,
         principleCode: 1, indicatorType: 1, answerMode: 1, answerComponentType: 1,
-        answerSchema: 1, evidenceRequirement: 1, displayOrder: 1 }
-    ).sort({ sectionCode: 1, displayOrder: 1 }).lean();
+        answerSchema: 1, evidenceRequirement: 1, displayOrder: 1,
+      })
+      .sort({ sectionCode: 1, displayOrder: 1 });
+
+    if (sectionCode && limit > 0) {
+      qCursor.skip((page - 1) * limit).limit(limit);
+    }
+
+    const questions = await qCursor.lean();
 
     if (!questions.length) {
-      return res.status(200).json({ success: true, count: 0, data: [], sectionStats: [] });
+      return res.status(200).json({
+        success: true, count: 0, data: [],
+        pagination: sectionCode && limit > 0 ? { page, limit, total: totalCount, totalPages: 0 } : null,
+      });
     }
 
     const questionIds = questions.map((q) => q._id);
 
-    // All answers for this client+period
-    const answers = await DisclosureAnswer.find(
-      { clientId, periodId, questionId: { $in: questionIds } }
-    ).lean();
+    // Answers only for the fetched questions
+    const answers = await DisclosureAnswer
+      .find({ clientId, periodId, questionId: { $in: questionIds } })
+      .lean();
 
     const answerMap = {};
-    for (const a of answers) {
-      answerMap[String(a.questionId)] = a;
-    }
+    for (const a of answers) answerMap[String(a.questionId)] = a;
 
-    // Count open (non-resolved) comments per answer
-    const answerIds = answers.map((a) => a._id);
+    // Open comment counts
+    const answerIds    = answers.map((a) => a._id);
     const commentCounts = answerIds.length
       ? await ReviewComment.aggregate([
           { $match: { answerId: { $in: answerIds }, status: { $ne: 'resolved' } } },
@@ -357,22 +398,21 @@ const listAllAnswers = async (req, res) => {
     const commentMap = {};
     for (const c of commentCounts) commentMap[String(c._id)] = c.count;
 
-    // Assignments — fetch contributor (and reviewer/approver) names for display
-    const assignments = await QuestionAssignment.find(
-      { clientId, periodId, questionId: { $in: questionIds } },
-      { questionId: 1, contributorId: 1, reviewerId: 1, approverId: 1 }
-    ).populate('contributorId', 'userName email')
-     .populate('reviewerId',    'userName email')
-     .populate('approverId',    'userName email')
-     .lean();
+    // Assignments (contributor / reviewer / approver) for the fetched questions only
+    const assignments = await QuestionAssignment
+      .find(
+        { clientId, periodId, questionId: { $in: questionIds } },
+        { questionId: 1, contributorId: 1, reviewerId: 1, approverId: 1, dueDate: 1 }
+      )
+      .populate('contributorId', 'userName email')
+      .populate('reviewerId',    'userName email')
+      .populate('approverId',    'userName email')
+      .lean();
 
     const assignmentMap = {};
-    for (const a of assignments) {
-      assignmentMap[String(a.questionId)] = a;
-    }
+    for (const a of assignments) assignmentMap[String(a.questionId)] = a;
 
-    // Merge question + answer into one record per question
-    let data = questions.map((q) => {
+    const data = questions.map((q) => {
       const answer     = answerMap[String(q._id)]     || null;
       const assignment = assignmentMap[String(q._id)] || null;
       return {
@@ -389,87 +429,49 @@ const listAllAnswers = async (req, res) => {
         evidenceRequirement: q.evidenceRequirement,
         displayOrder:        q.displayOrder,
 
-        // Answer fields (null if not yet started)
-        answerId:       answer ? answer._id                             : null,
-        answerStatus:   answer ? answer.status                         : 'not_started',
-        answerSource:   answer ? answer.answerSource                   : null,
-        answerData:     answer ? answer.answerData                     : null,
-        sourceTrace:    answer ? answer.sourceTrace                    : [],
-        evidenceIds:    answer ? answer.evidenceIds                    : [],
-        applicabilityStatus: answer ? answer.applicabilityStatus       : null,
-        submittedAt:    answer ? answer.submittedAt                    : null,
-        reviewedAt:     answer ? answer.reviewedAt                     : null,
-        approvedAt:     answer ? answer.approvedAt                     : null,
-        updatedAt:      answer ? answer.updatedAt                      : null,
-
-        // Consultant metric approval (only relevant for core_metric / hybrid answers)
+        answerId:     answer ? answer._id               : null,
+        answerStatus: answer ? answer.status            : 'not_started',
+        answerSource: answer ? answer.answerSource      : null,
+        answerData:   answer ? answer.answerData        : null,
+        sourceTrace:  answer ? answer.sourceTrace       : [],
+        evidenceIds:  answer ? answer.evidenceIds       : [],
+        applicabilityStatus: answer ? answer.applicabilityStatus : null,
+        submittedAt:  answer ? answer.submittedAt       : null,
+        reviewedAt:   answer ? answer.reviewedAt        : null,
+        approvedAt:   answer ? answer.approvedAt        : null,
+        updatedAt:    answer ? answer.updatedAt         : null,
         consultantMetricApproval: answer ? answer.consultantMetricApproval : null,
-
         openCommentCount: answer ? (commentMap[String(answer._id)] || 0) : 0,
 
-        // Assignment — contributor/reviewer/approver with populated names
-        assignedContributor: assignment ? assignment.contributorId : null,
-        assignedReviewer:    assignment ? assignment.reviewerId    : null,
-        assignedApprover:    assignment ? assignment.approverId    : null,
+        // Assignment with populated names
+        contributorId: assignment ? assignment.contributorId : null,
+        reviewerId:    assignment ? assignment.reviewerId    : null,
+        approverId:    assignment ? assignment.approverId    : null,
+        dueDate:       assignment ? assignment.dueDate       : null,
       };
     });
 
-    // Summary counts for quick consultant overview
-    const summary = {
-      total:              data.length,
-      notStarted:         data.filter((d) => d.answerStatus === 'not_started').length,
-      inProgress:         data.filter((d) => d.answerStatus === 'in_progress').length,
-      submitted:          data.filter((d) => d.answerStatus === 'submitted_to_reviewer').length,
-      reviewerApproved:   data.filter((d) => d.answerStatus === 'reviewer_approved').length,
-      finalApproved:      data.filter((d) => d.answerStatus === 'final_approved').length,
+    // Per-page summary (when no sectionCode, compute over page data)
+    const summary = !sectionCode ? {
+      total:            data.length,
+      notStarted:       data.filter((d) => d.answerStatus === 'not_started').length,
+      inProgress:       data.filter((d) => d.answerStatus === 'in_progress').length,
+      submitted:        data.filter((d) => d.answerStatus === 'submitted_to_reviewer').length,
+      reviewerApproved: data.filter((d) => d.answerStatus === 'reviewer_approved').length,
+      finalApproved:    data.filter((d) => d.answerStatus === 'final_approved').length,
       metricPendingConsultantApproval: data.filter((d) =>
         ['core_metric', 'hybrid'].includes(d.answerSource) &&
         !(d.consultantMetricApproval && d.consultantMetricApproval.isApproved)
       ).length,
-    };
+    } : null;
 
-    // Per-section stats — total / answered by contributor / reviewed / approved.
-    // Computed once over the full dataset so the section overview and the
-    // per-section stat cards stay accurate even when `data` below is later
-    // filtered/paginated to a single section.
-    const sectionStatsMap = {};
-    for (const d of data) {
-      const sec = d.sectionCode || 'GENERAL';
-      if (!sectionStatsMap[sec]) {
-        sectionStatsMap[sec] = { sectionCode: sec, total: 0, contributorAnswered: 0, reviewed: 0, approved: 0 };
-      }
-      const s = sectionStatsMap[sec];
-      s.total += 1;
-      if (d.answerStatus !== 'not_started') s.contributorAnswered += 1;
-      if (d.reviewedAt) s.reviewed += 1;
-      if (d.answerStatus === 'final_approved') s.approved += 1;
-    }
-    const sectionStats = Object.values(sectionStatsMap).sort((a, b) => a.sectionCode.localeCompare(b.sectionCode));
+    const pagination = (sectionCode && limit > 0) ? {
+      page, limit,
+      total:      totalCount,
+      totalPages: Math.max(1, Math.ceil(totalCount / limit)),
+    } : null;
 
-    // Lightweight mode — used to populate the section overview without
-    // shipping every question's full answerSchema/answerData payload.
-    if (statsOnly === 'true' || statsOnly === '1') {
-      return res.status(200).json({ success: true, summary, sectionStats, count: data.length });
-    }
-
-    // Optionally scope to a single section and paginate the result —
-    // keeps per-request payloads small for sections with many questions.
-    let pagination = null;
-    if (sectionCode) {
-      data = data.filter((d) => (d.sectionCode || 'GENERAL') === sectionCode);
-
-      const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
-      const limit = Math.max(0, parseInt(req.query.limit, 10) || 0);
-      if (limit > 0) {
-        const total      = data.length;
-        const totalPages = Math.max(1, Math.ceil(total / limit));
-        const start      = (page - 1) * limit;
-        data = data.slice(start, start + limit);
-        pagination = { page, limit, total, totalPages };
-      }
-    }
-
-    return res.status(200).json({ success: true, summary, sectionStats, pagination, count: data.length, data });
+    return res.status(200).json({ success: true, summary, pagination, count: data.length, data });
   } catch (err) {
     console.error('[answerController] listAllAnswers:', err);
     return res.status(500).json({ message: 'Server error', error: err.message });
