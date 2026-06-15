@@ -420,7 +420,7 @@ async function list(clientId, accessCtx, filters = {}) {
 
   const [docs, total] = await Promise.all([
     EsgDataEntry.find(query)
-      .populate('metricId', 'metricName metricCode')
+      .populate('metricId', 'metricName metricCode primaryUnit')
       .populate('submittedBy', 'userName email')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -440,7 +440,7 @@ async function getOne(submissionId, user, clientId) {
     clientId,
     isDeleted: false,
   })
-    .populate('metricId', 'metricName metricCode')
+    .populate('metricId', 'metricName metricCode primaryUnit')
     .populate('submittedBy', 'userName email');
   if (!doc) return { error: 'Submission not found', status: 404 };
   return { doc };

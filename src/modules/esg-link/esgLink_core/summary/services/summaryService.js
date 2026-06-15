@@ -455,13 +455,14 @@ async function enrichEntriesFromMetricLibrary(entries) {
 
   const metrics = await EsgMetric.find(
     { _id: { $in: uniqueIds } },
-    { esgCategory: 1, subcategoryCode: 1 }
+    { esgCategory: 1, subcategoryCode: 1, primaryUnit: 1 }
   ).lean();
 
   const metricMeta = new Map(
     metrics.map((m) => [m._id.toString(), {
       esgCategory:     m.esgCategory     || '',
       subcategoryCode: m.subcategoryCode || '',
+      primaryUnit:     m.primaryUnit     || '',
     }])
   );
 
@@ -472,6 +473,7 @@ async function enrichEntriesFromMetricLibrary(entries) {
       ...entry,
       esgCategory:     lib.esgCategory     || entry.esgCategory     || '',
       subcategoryCode: lib.subcategoryCode || entry.subcategoryCode || '',
+      primaryUnit:     lib.primaryUnit     || entry.primaryUnit     || entry.unitOfMeasurement || '',
     };
   });
 }
@@ -480,51 +482,60 @@ async function enrichEntriesFromMetricLibrary(entries) {
 
 async function computeAndSaveSummary(clientId, boundaryDocId, periodDef) {
   const start = Date.now();
+  let _step = 'init';
 
-  const boundary = await EsgLinkBoundary.findOne({ _id: boundaryDocId, clientId, isDeleted: false });
-  if (!boundary) return null;
+  try {
+    _step = 'findBoundary';
+    const boundary = await EsgLinkBoundary.findOne({ _id: boundaryDocId, clientId, isDeleted: false });
+    if (!boundary) return null;
 
-  const nodeMap = new Map();
-  for (const node of boundary.nodes || []) {
-    nodeMap.set(node.id, { label: node.label || node.id, type: node.type || '', details: node.details || {} });
-  }
+    _step = 'buildNodeMap';
+    const nodeMap = new Map();
+    for (const node of boundary.nodes || []) {
+      nodeMap.set(node.id, { label: node.label || node.id, type: node.type || '', details: node.details || {} });
+    }
 
-  const rawEntries = await EsgDataEntry.find({
-    clientId,
-    boundaryDocId,
-    ...periodDef.dbFilter,
-    isDeleted:      false,
-    workflowStatus: { $nin: ['superseded', 'rejected'] },
-  }).lean();
+    _step = 'findEntries';
+    const rawEntries = await EsgDataEntry.find({
+      clientId,
+      boundaryDocId,
+      ...periodDef.dbFilter,
+      isDeleted:      false,
+      workflowStatus: { $nin: ['superseded', 'rejected'] },
+    }).lean();
 
-  // For financial_year: apply JS post-filter to scope entries to exact date range
-  const filteredEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
+    // For financial_year: apply JS post-filter to scope entries to exact date range
+    const filteredEntries = periodDef.jsFilter ? rawEntries.filter(periodDef.jsFilter) : rawEntries;
 
-  // Step 1: enrich from boundary metricsDetails (code, name, type, rollUpBehavior)
-  const boundaryEnriched = enrichEntriesFromBoundary(filteredEntries, boundary);
+    _step = 'enrichFromBoundary';
+    // Step 1: enrich from boundary metricsDetails (code, name, type, rollUpBehavior)
+    const boundaryEnriched = enrichEntriesFromBoundary(filteredEntries, boundary);
 
-  // Step 2: enrich esgCategory + subcategoryCode from EsgMetric library
-  const entries = await enrichEntriesFromMetricLibrary(boundaryEnriched);
+    _step = 'enrichFromLibrary';
+    // Step 2: enrich esgCategory + subcategoryCode from EsgMetric library
+    const entries = await enrichEntriesFromMetricLibrary(boundaryEnriched);
 
-  const buckets = { approved: [], reviewerPending: [], approverPending: [], draft: [] };
-  for (const entry of entries) {
-    const bucket = classifyEntry(entry);
-    if (bucket) buckets[bucket].push(entry);
-  }
+    _step = 'classify';
+    const buckets = { approved: [], reviewerPending: [], approverPending: [], draft: [] };
+    for (const entry of entries) {
+      const bucket = classifyEntry(entry);
+      if (bucket) buckets[bucket].push(entry);
+    }
 
-  const approvedSummary        = buildLayer(buckets.approved,        nodeMap);
-  const reviewerPendingSummary = buildLayer(buckets.reviewerPending, nodeMap);
-  const approverPendingSummary = buildLayer(buckets.approverPending, nodeMap);
-  const draftSummary           = buildLayer(buckets.draft,           nodeMap);
+    _step = 'buildLayers';
+    const approvedSummary        = buildLayer(buckets.approved,        nodeMap);
+    const reviewerPendingSummary = buildLayer(buckets.reviewerPending, nodeMap);
+    const approverPendingSummary = buildLayer(buckets.approverPending, nodeMap);
+    const draftSummary           = buildLayer(buckets.draft,           nodeMap);
 
-  const doc = await EsgBoundarySummary.findOneAndUpdate(
-    {
+    const filter = {
       clientId,
       boundaryDocId,
       periodType: periodDef.periodType,
       periodKey:  periodDef.periodKey,
-    },
-    {
+    };
+
+    const update = {
       $set: {
         periodYear:  periodDef.periodYear,
         periodStart: periodDef.periodStart,
@@ -537,21 +548,42 @@ async function computeAndSaveSummary(clientId, boundaryDocId, periodDef) {
         computationDurationMs: Date.now() - start,
         totalEntries:          filteredEntries.length,
       },
-    },
-    { upsert: true, new: true }
-  );
+    };
 
-  // Real-time broadcast after save
-  esgSocket.emitSummaryUpdated(
-    clientId,
-    boundaryDocId,
-    periodDef.periodType,
-    periodDef.periodKey,
-    doc.approvedSummary?.totals,
-    doc.totalEntries
-  );
+    _step = 'save';
+    let doc;
+    try {
+      doc = await EsgBoundarySummary.findOneAndUpdate(filter, update, { upsert: true, new: true });
+    } catch (saveErr) {
+      if (saveErr.code === 11000) {
+        // Two concurrent requests raced to upsert the same period — read the winner's doc back.
+        doc = await EsgBoundarySummary.findOne(filter).lean();
+        if (!doc) throw saveErr;
+      } else {
+        throw saveErr;
+      }
+    }
 
-  return doc;
+    // Real-time broadcast after save
+    _step = 'broadcast';
+    esgSocket.emitSummaryUpdated(
+      clientId,
+      boundaryDocId,
+      periodDef.periodType,
+      periodDef.periodKey,
+      doc.approvedSummary?.totals,
+      doc.totalEntries
+    );
+
+    return doc;
+  } catch (err) {
+    console.error(
+      `[ESG Summary] computeAndSaveSummary failed at step "${_step}" ` +
+      `(${periodDef.periodType}:${periodDef.periodKey}, client=${clientId}): ${err.message}`
+    );
+    console.error(err.stack || err);
+    throw err;
+  }
 }
 
 // ─── Financial year helper (April–March) ─────────────────────────────────────
@@ -632,14 +664,32 @@ function triggerAllPeriodSummaryRefresh(clientId, boundaryDocId, period) {
 const SUMMARY_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 async function getCachedSummary(clientId, boundaryDocId, periodDef, { forceRefresh = false } = {}) {
-  if (forceRefresh) return computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+  if (forceRefresh) {
+    try {
+      return await computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+    } catch (err) {
+      console.error(`[ESG Summary] forceRefresh compute failed for ${periodDef.periodType}:${periodDef.periodKey}:`, err.message);
+      return null;
+    }
+  }
+
   const doc = await EsgBoundarySummary.findOne({
     clientId,
     boundaryDocId,
     periodType: periodDef.periodType,
     periodKey:  periodDef.periodKey,
   }).lean();
-  if (!doc) return computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+
+  if (!doc) {
+    try {
+      return await computeAndSaveSummary(clientId, boundaryDocId, periodDef);
+    } catch (err) {
+      // computeAndSaveSummary already logs the step-level error; return null so
+      // callers get a 404 (no data) rather than an unhandled 500.
+      return null;
+    }
+  }
+
   // Stale-while-revalidate: serve cached doc immediately, recompute in background
   if (Date.now() - new Date(doc.lastComputedAt).getTime() > SUMMARY_STALE_MS) {
     setImmediate(() => computeAndSaveSummary(clientId, boundaryDocId, periodDef).catch(() => {}));
@@ -937,31 +987,122 @@ function _buildDbFilter(periodDef) {
 // =============================================================================
 
 /**
+ * Merge all 4 workflow layers of an EsgBoundarySummary doc into one combined view.
+ * Dashboard for consultant_admin shows all layers summed — compare must match this.
+ * Each entry lives in exactly ONE layer at any time, so summing is correct.
+ */
+function _mergeLayers(doc) {
+  const LAYER_KEYS = ['approvedSummary', 'approverPendingSummary', 'reviewerPendingSummary', 'draftSummary'];
+  const totals    = { E: 0, S: 0, G: 0 };
+  const metricMap = new Map();
+  const nodeMap   = new Map();
+
+  for (const key of LAYER_KEYS) {
+    const layer = doc?.[key];
+    if (!layer) continue;
+
+    totals.E += layer.totals?.E || 0;
+    totals.S += layer.totals?.S || 0;
+    totals.G += layer.totals?.G || 0;
+
+    for (const m of layer.byMetric || []) {
+      if (!m.metricCode) continue;
+      if (!metricMap.has(m.metricCode)) {
+        metricMap.set(m.metricCode, {
+          metricCode:      m.metricCode,
+          metricName:      m.metricName,
+          esgCategory:     m.esgCategory,
+          subcategoryCode: m.subcategoryCode,
+          primaryUnit:     m.primaryUnit,
+          combinedValue:   0,
+        });
+      }
+      metricMap.get(m.metricCode).combinedValue += m.combinedValue || 0;
+    }
+
+    for (const n of layer.byNode || []) {
+      if (!n.nodeId) continue;
+      if (!nodeMap.has(n.nodeId)) {
+        nodeMap.set(n.nodeId, {
+          nodeId:    n.nodeId,
+          nodeLabel: n.nodeLabel || n.nodeId,
+          metrics:   new Map(),
+        });
+      }
+      const nodeEntry = nodeMap.get(n.nodeId);
+      // prefer the label from the first layer that has it
+      if (n.nodeLabel && nodeEntry.nodeLabel === nodeEntry.nodeId) {
+        nodeEntry.nodeLabel = n.nodeLabel;
+      }
+      for (const m of n.metrics || []) {
+        if (!m.metricCode) continue;
+        if (!nodeEntry.metrics.has(m.metricCode)) {
+          nodeEntry.metrics.set(m.metricCode, { ...m, value: 0 });
+        }
+        nodeEntry.metrics.get(m.metricCode).value += m.value || 0;
+      }
+    }
+  }
+
+  return {
+    totals,
+    byMetric: Array.from(metricMap.values()),
+    byNode:   Array.from(nodeMap.values()).map((n) => ({
+      nodeId:    n.nodeId,
+      nodeLabel: n.nodeLabel,
+      metrics:   Array.from(n.metrics.values()),
+    })),
+  };
+}
+
+/**
  * Compare two or more periods side-by-side for a client.
  * periodsArray: [{periodType, year, month, date, fyStart, fyEnd}, ...]
  */
-async function comparePeriodsForClient(clientId, periodsArray, user) {
-  const boundaries = await EsgLinkBoundary.find({ clientId, isDeleted: { $ne: true } }).select('_id boundaryName').lean();
+async function comparePeriodsForClient(clientId, periodsArray, user, options = {}) {
+  const { boundaryId: filterBoundaryId } = options;
+
+  let allBoundaries = await EsgLinkBoundary.find({ clientId, isDeleted: { $ne: true } })
+    .select('_id boundaryName')
+    .lean();
+
+  if (filterBoundaryId) {
+    allBoundaries = allBoundaries.filter((b) => String(b._id) === String(filterBoundaryId));
+  }
 
   const results = await Promise.all(
     periodsArray.map(async (params) => {
       const pDef = resolvePeriod(params);
-      const bData = await Promise.all(
-        boundaries.map(async (b) => {
-          const cached = await EsgBoundarySummary.findOne({
-            clientId, boundaryDocId: b._id,
-            periodType: pDef.periodType, periodKey: pDef.periodKey,
-          }).lean();
-          return {
-            boundaryDocId: b._id,
-            boundaryName: b.boundaryName || b._id,
-            approvedTotals: cached?.approvedSummary?.totals || { E: 0, S: 0, G: 0 },
-            totalEntries: cached?.totalEntries || 0,
-          };
-        })
+
+      // Fetch all summaries for this period in one query
+      const summaries = await EsgBoundarySummary.find({
+        clientId,
+        boundaryDocId: { $in: allBoundaries.map((b) => b._id) },
+        periodType: pDef.periodType,
+        periodKey:  pDef.periodKey,
+      }).lean();
+
+      const summaryByBoundary = new Map(summaries.map((s) => [String(s.boundaryDocId), s]));
+
+      // Merge all 4 workflow layers per boundary (approved + pending + draft)
+      // so compare shows same data as the dashboard for consultant_admin
+      const mergedBySummary = new Map(
+        summaries.map((s) => [String(s.boundaryDocId), _mergeLayers(s)])
       );
 
-      const combined = bData.reduce(
+      // Build per-boundary list
+      const boundaries = allBoundaries.map((b) => {
+        const merged = mergedBySummary.get(String(b._id));
+        return {
+          boundaryDocId:  b._id,
+          boundaryName:   b.boundaryName || String(b._id),
+          approvedTotals: merged?.totals || { E: 0, S: 0, G: 0 },
+          totalEntries:   summaryByBoundary.get(String(b._id))?.totalEntries || 0,
+        };
+      });
+
+      // Combined E/S/G totals across all boundaries (all layers)
+      const combinedTotals = boundaries.reduce(
         (acc, b) => {
           acc.E += b.approvedTotals.E || 0;
           acc.S += b.approvedTotals.S || 0;
@@ -971,7 +1112,71 @@ async function comparePeriodsForClient(clientId, periodsArray, user) {
         { E: 0, S: 0, G: 0 }
       );
 
-      return { periodKey: pDef.periodKey, periodType: pDef.periodType, periodStart: pDef.periodStart, boundaries: bData, combinedTotals: combined };
+      // Aggregate byMetric across all boundaries (all layers merged)
+      const metricMap = new Map();
+      for (const merged of mergedBySummary.values()) {
+        for (const m of merged.byMetric || []) {
+          if (!m.metricCode) continue;
+          if (!metricMap.has(m.metricCode)) {
+            metricMap.set(m.metricCode, { ...m, combinedValue: 0 });
+          }
+          metricMap.get(m.metricCode).combinedValue += m.combinedValue || 0;
+        }
+      }
+      const byMetric = Array.from(metricMap.values());
+
+      // Aggregate byNode across all boundaries (all layers merged) — per-node metric breakdown
+      const nodeMap = new Map();
+      for (const merged of mergedBySummary.values()) {
+        for (const n of merged.byNode || []) {
+          if (!n.nodeId) continue;
+          if (!nodeMap.has(n.nodeId)) {
+            nodeMap.set(n.nodeId, {
+              nodeId:    n.nodeId,
+              nodeLabel: n.nodeLabel || n.nodeId,
+              totals:    { E: 0, S: 0, G: 0 },
+              metricMap: new Map(),
+            });
+          }
+          const node = nodeMap.get(n.nodeId);
+          // prefer a human-readable label if we have one
+          if (n.nodeLabel && n.nodeLabel !== n.nodeId) node.nodeLabel = n.nodeLabel;
+
+          for (const m of n.metrics || []) {
+            if (!m.metricCode) continue;
+            if (!node.metricMap.has(m.metricCode)) {
+              node.metricMap.set(m.metricCode, {
+                metricCode:      m.metricCode,
+                metricName:      m.metricName,
+                esgCategory:     m.esgCategory,
+                subcategoryCode: m.subcategoryCode,
+                unit:            m.unit || '',
+                value:           0,
+              });
+            }
+            const entry = node.metricMap.get(m.metricCode);
+            entry.value += m.value || 0;
+            if (m.esgCategory) {
+              node.totals[m.esgCategory] = (node.totals[m.esgCategory] || 0) + (m.value || 0);
+            }
+          }
+        }
+      }
+
+      const byNode = Array.from(nodeMap.values()).map((n) => {
+        const { metricMap: mm, ...rest } = n;
+        return { ...rest, byMetric: Array.from(mm.values()) };
+      });
+
+      return {
+        periodKey:      pDef.periodKey,
+        periodType:     pDef.periodType,
+        periodStart:    pDef.periodStart,
+        combinedTotals,
+        boundaries,
+        byMetric,
+        byNode,
+      };
     })
   );
 

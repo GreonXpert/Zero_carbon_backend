@@ -2,7 +2,7 @@
 
 const cron            = require('node-cron');
 const EsgLinkBoundary = require('../../boundary/models/EsgLinkBoundary');
-const { triggerAllPeriodSummaryRefresh } = require('../services/summaryService');
+const { triggerAllPeriodSummaryRefresh, refreshAllBoundaryPeriods } = require('../services/summaryService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Returns current year / month / day period definitions
@@ -50,6 +50,29 @@ async function _runMaintenance() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Startup backfill — recomputes ALL historical period summaries for every
+// active boundary by inspecting existing EsgDataEntry documents.
+// Runs once on server start so periods like 2025 that were never cached get
+// computed without needing a manual refresh-all API call.
+// ─────────────────────────────────────────────────────────────────────────────
+async function _runStartupBackfill() {
+  console.log('[ESG Summary] Running startup historical backfill...');
+  try {
+    const boundaries = await EsgLinkBoundary.find({ isActive: true, isDeleted: false })
+      .select('_id clientId').lean();
+
+    for (const b of boundaries) {
+      await refreshAllBoundaryPeriods(b.clientId, b._id).catch((err) =>
+        console.error(`[ESG Summary] Backfill failed for boundary ${b._id}:`, err.message)
+      );
+    }
+    console.log('[ESG Summary] Startup historical backfill complete');
+  } catch (err) {
+    console.error('[ESG Summary] Startup backfill error:', err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cron initialiser — call from registerJobs.js after DB connects
 // ─────────────────────────────────────────────────────────────────────────────
 function startEsgSummaryMaintenanceJob() {
@@ -58,6 +81,9 @@ function startEsgSummaryMaintenanceJob() {
     scheduled: true,
     timezone:  'UTC',
   });
+
+  // Backfill historical summaries once on startup (fire-and-forget)
+  setImmediate(_runStartupBackfill);
 
   console.log('[ESG Summary Maintenance] Scheduled — hourly at :30 UTC');
 }

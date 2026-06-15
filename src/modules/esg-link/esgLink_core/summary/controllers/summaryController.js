@@ -32,6 +32,10 @@ function ok(res, data) {
 
 function handleErr(res, err) {
   const status = err.status || 500;
+  if (status === 500) {
+    console.error('[ESG Summary] 500 error:', err.message);
+    console.error(err.stack || err);
+  }
   return res.status(status).json({ success: false, message: err.message });
 }
 
@@ -258,7 +262,8 @@ async function comparePeriodsForClient(req, res) {
     if (!periodsArray.length) {
       return res.status(400).json({ success: false, message: 'periods query param is required (JSON array)' });
     }
-    const data = await svc.comparePeriodsForClient(clientId, periodsArray, req.user);
+    const facilityId = req.query.facilityId || null;
+    const data = await svc.comparePeriodsForClient(clientId, periodsArray, req.user, { boundaryId: facilityId });
     return ok(res, { data });
   } catch (err) { return handleErr(res, err); }
 }
