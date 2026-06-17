@@ -228,8 +228,9 @@ ConsultantClientQuotaSchema.statics.reserveUserSlot = async function (
 
   // Single authoritative maxCount read from the fetched document.
   // Default to 1 only when the field is truly absent (undefined).
-  // null is a valid value meaning "unlimited" — must be preserved as-is.
-  const maxCount = doc?.userTypeQuotas?.[quotaKey]?.maxCount ?? 1;
+  // null is a valid value meaning "unlimited" — ?? would convert null→1, so use explicit check.
+  const rawMax  = doc?.userTypeQuotas?.[quotaKey]?.maxCount;
+  const maxCount = rawMax === undefined ? 1 : rawMax;
 
   if (maxCount === null) {
     // Unlimited — increment for dashboard accuracy, no cap enforced.

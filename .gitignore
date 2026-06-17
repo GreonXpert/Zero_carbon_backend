@@ -43,3 +43,12 @@ src/migrations/
 # typescript
 *.tsbuildinfo
 
+/test_users.json
+/load_test_summary.json
+/login_test.js
+
+/result
+/Document
+/scripts
+/tests
+/__tests__

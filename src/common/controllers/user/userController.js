@@ -7157,6 +7157,9 @@ const createContributor = async (req, res) => {
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
+        if (slot.reserved && slot.consultantId) {
+          await releaseUserTypeSlot(resolvedClientId, 'contributor', slot.consultantId).catch(() => {});
+        }
         return res.status(400).json({ success: false, message: error });
       }
       user.esgAccessControls = sanitized;
@@ -7231,6 +7234,9 @@ const createReviewer = async (req, res) => {
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
+        if (slot.reserved && slot.consultantId) {
+          await releaseUserTypeSlot(resolvedClientId, 'reviewer', slot.consultantId).catch(() => {});
+        }
         return res.status(400).json({ success: false, message: error });
       }
       user.esgAccessControls = sanitized;
@@ -7305,6 +7311,9 @@ const createApprover = async (req, res) => {
       const clientFrameworks = clientDoc?.submissionData?.esgLinkAssessmentLevel?.frameworks || [];
       const { valid, sanitized, error } = validateAndSanitizeEsgChecklist(req.body.esgAccessControls, clientFrameworks);
       if (!valid) {
+        if (slot.reserved && slot.consultantId) {
+          await releaseUserTypeSlot(resolvedClientId, 'approver', slot.consultantId).catch(() => {});
+        }
         return res.status(400).json({ success: false, message: error });
       }
       user.esgAccessControls = sanitized;

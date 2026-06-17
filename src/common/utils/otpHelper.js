@@ -37,9 +37,11 @@ const generateOTP = () => {
  */
 const storeOTP = (email, otp, userId) => {
   const expiresAt = new Date(Date.now() + OTP_CONFIG.EXPIRY_MINUTES * 60 * 1000);
-  
+  // Use fixed OTP in test mode so load-test scripts can verify without real emails
+  const storedOtp = process.env.NODE_ENV === 'test' ? LOAD_TEST_OTP : otp;
+
   otpStore.set(email.toLowerCase(), {
-    otp,
+    otp: storedOtp,
     expiresAt,
     attempts: 0,
     userId,
@@ -155,6 +157,9 @@ const updateResendTimestamp = (email) => {
   }
 };
 
+// Fixed OTP used in test mode so k6 scripts can verify without real emails
+const LOAD_TEST_OTP = '000000';
+
 /**
  * Send OTP via email
  * @param {string} email - Recipient's email
@@ -163,6 +168,12 @@ const updateResendTimestamp = (email) => {
  * @returns {Promise<boolean>} - Success status
  */
 const sendOTPEmail = async (email, otp, userName = 'User') => {
+  // In test/load-test mode skip real email sending entirely
+  if (process.env.NODE_ENV === 'test') {
+    console.log(`[OTP TEST MODE] Skipped email to ${email}. Fixed OTP: ${LOAD_TEST_OTP}`);
+    return true;
+  }
+
   try {
     // Create transporter
     const transporter = nodemailer.createTransport({
@@ -369,5 +380,6 @@ module.exports = {
   updateResendTimestamp,
   deleteOTP,
   getOTPStats,
-  OTP_CONFIG
+  OTP_CONFIG,
+  LOAD_TEST_OTP,
 };
