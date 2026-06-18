@@ -16,7 +16,16 @@
       "Bash(Select-Object -First 20 FullName)",
       "Bash(node -e ' *)",
       "Bash(Head -20)",
-      "Bash(grep -E \"\\\\.js$|\\\\.ts$\")"
+      "Bash(grep -E \"\\\\.js$|\\\\.ts$\")",
+      "mcp__visualize__read_me",
+      "mcp__visualize__show_widget",
+      "Bash(dir \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\" /b)",
+      "Bash(findstr -v node_modules)",
+      "Bash(findstr \"\\\\.js$\")",
+      "Bash(Get-ChildItem \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\\\\src\\\\app\\\\\" -Recurse | Select-Object FullName)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d.get\\('main','no main'\\)\\)\")",
+      "Bash(npx jest *)",
+      "Bash(k6 run *)"
     ]
   }
 }

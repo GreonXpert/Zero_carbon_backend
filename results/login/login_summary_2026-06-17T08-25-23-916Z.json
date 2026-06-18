@@ -1,0 +1,808 @@
+{
+  "root_group": {
+    "checks": [
+      {
+        "name": "[consultant_admin] Step1 status 200",
+        "path": "::[consultant_admin] Step1 status 200",
+        "id": "1145f91c68dca800fe3578b6827a3f0f",
+        "passes": 144,
+        "fails": 0
+      },
+      {
+        "name": "[consultant_admin] Step1 has tempToken",
+        "path": "::[consultant_admin] Step1 has tempToken",
+        "id": "3b252e579ce258d1932fd3763498846e",
+        "passes": 144,
+        "fails": 0
+      },
+      {
+        "name": "[consultant_admin] Step1 under 3s",
+        "path": "::[consultant_admin] Step1 under 3s",
+        "id": "6deb0a0fe3d30af854f3f4f907601b2a",
+        "passes": 39,
+        "fails": 105
+      },
+      {
+        "fails": 52,
+        "name": "[consultant_admin] Step2 status 200",
+        "path": "::[consultant_admin] Step2 status 200",
+        "id": "c5c003b2e51ae45b31f5616491a82a96",
+        "passes": 51
+      },
+      {
+        "name": "[consultant_admin] Step2 has token",
+        "path": "::[consultant_admin] Step2 has token",
+        "id": "9165679b905bbf62a09d204f2005fda7",
+        "passes": 51,
+        "fails": 52
+      },
+      {
+        "path": "::[consultant_admin] Step2 under 3s",
+        "id": "5d40f5ccdafa2caa8c6c3266d96a3073",
+        "passes": 23,
+        "fails": 80,
+        "name": "[consultant_admin] Step2 under 3s"
+      },
+      {
+        "id": "4b9138baf3edfbf0a5c162d6bec8891a",
+        "passes": 135,
+        "fails": 0,
+        "name": "[consultant] Step1 status 200",
+        "path": "::[consultant] Step1 status 200"
+      },
+      {
+        "name": "[consultant] Step1 has tempToken",
+        "path": "::[consultant] Step1 has tempToken",
+        "id": "a7d34dec0b391ea9d11ee1158cdf3d3d",
+        "passes": 135,
+        "fails": 0
+      },
+      {
+        "name": "[consultant] Step1 under 3s",
+        "path": "::[consultant] Step1 under 3s",
+        "id": "a7236b9f1e1243f13acdf7af265c97be",
+        "passes": 27,
+        "fails": 108
+      },
+      {
+        "passes": 42,
+        "fails": 52,
+        "name": "[consultant] Step2 status 200",
+        "path": "::[consultant] Step2 status 200",
+        "id": "d3076b976f7841cda653ee34c960e73a"
+      },
+      {
+        "name": "[consultant] Step2 has token",
+        "path": "::[consultant] Step2 has token",
+        "id": "1334166f0366cada55e4aaee1d70b8ec",
+        "passes": 42,
+        "fails": 52
+      },
+      {
+        "path": "::[consultant] Step2 under 3s",
+        "id": "617897ee53991d409de0d430bead5b6f",
+        "passes": 13,
+        "fails": 81,
+        "name": "[consultant] Step2 under 3s"
+      },
+      {
+        "name": "[super_admin] Step1 status 200",
+        "path": "::[super_admin] Step1 status 200",
+        "id": "e882a6929c309389fdb57ccf6ad473bd",
+        "passes": 141,
+        "fails": 0
+      },
+      {
+        "name": "[super_admin] Step1 has tempToken",
+        "path": "::[super_admin] Step1 has tempToken",
+        "id": "1d631bbd7ded0be9e3f1db25101c35de",
+        "passes": 141,
+        "fails": 0
+      },
+      {
+        "id": "85da9e28e2b1308ea6899bc81eaae421",
+        "passes": 30,
+        "fails": 111,
+        "name": "[super_admin] Step1 under 3s",
+        "path": "::[super_admin] Step1 under 3s"
+      },
+      {
+        "name": "[super_admin] Step2 status 200",
+        "path": "::[super_admin] Step2 status 200",
+        "id": "2ba27bf00cff3c3afa542b1eacffa78a",
+        "passes": 59,
+        "fails": 44
+      },
+      {
+        "name": "[super_admin] Step2 has token",
+        "path": "::[super_admin] Step2 has token",
+        "id": "ad1ad3cbbc57d89e1cb925cbbf2678e9",
+        "passes": 59,
+        "fails": 44
+      },
+      {
+        "fails": 92,
+        "name": "[super_admin] Step2 under 3s",
+        "path": "::[super_admin] Step2 under 3s",
+        "id": "0657b15a8c1765307a5eca7d5c3bd438",
+        "passes": 11
+      },
+      {
+        "id": "ca8f3ca6d3d30c2a8123ba2b5f4f8a7c",
+        "passes": 107,
+        "fails": 0,
+        "name": "[client_admin] Step1 status 200",
+        "path": "::[client_admin] Step1 status 200"
+      },
+      {
+        "path": "::[client_admin] Step1 has tempToken",
+        "id": "ac7953d07219fba37c4877b7f8050944",
+        "passes": 107,
+        "fails": 0,
+        "name": "[client_admin] Step1 has tempToken"
+      },
+      {
+        "passes": 10,
+        "fails": 97,
+        "name": "[client_admin] Step1 under 3s",
+        "path": "::[client_admin] Step1 under 3s",
+        "id": "40f8086bcf47e32ce1119af0daf5dea4"
+      },
+      {
+        "name": "[client_admin] Step2 status 200",
+        "path": "::[client_admin] Step2 status 200",
+        "id": "3e0abde2358e9eae74348bff8fa57771",
+        "passes": 24,
+        "fails": 33
+      },
+      {
+        "name": "[client_admin] Step2 has token",
+        "path": "::[client_admin] Step2 has token",
+        "id": "d9f74f54522e1b8e997f2c6ea5e50a54",
+        "passes": 24,
+        "fails": 33
+      },
+      {
+        "name": "[client_admin] Step2 under 3s",
+        "path": "::[client_admin] Step2 under 3s",
+        "id": "91a4ed1e0ca47dc51b0b88f9173d6ae9",
+        "passes": 1,
+        "fails": 56
+      },
+      {
+        "passes": 108,
+        "fails": 0,
+        "name": "[client_employee_head] Step1 status 200",
+        "path": "::[client_employee_head] Step1 status 200",
+        "id": "f127864811ade6a0b588e1bbf1aa4eff"
+      },
+      {
+        "path": "::[client_employee_head] Step1 has tempToken",
+        "id": "ab6d32d3dc71c825f6e8d8ceb8cc13d3",
+        "passes": 108,
+        "fails": 0,
+        "name": "[client_employee_head] Step1 has tempToken"
+      },
+      {
+        "passes": 4,
+        "fails": 104,
+        "name": "[client_employee_head] Step1 under 3s",
+        "path": "::[client_employee_head] Step1 under 3s",
+        "id": "59a5fe743e9e400f5d894de27447e89b"
+      },
+      {
+        "passes": 104,
+        "fails": 0,
+        "name": "[employee] Step1 status 200",
+        "path": "::[employee] Step1 status 200",
+        "id": "77bfa373ec4448ef48af81b5217aafa4"
+      },
+      {
+        "passes": 104,
+        "fails": 0,
+        "name": "[employee] Step1 has tempToken",
+        "path": "::[employee] Step1 has tempToken",
+        "id": "47ec75e0db1412e426c29488f0bbf73b"
+      },
+      {
+        "passes": 0,
+        "fails": 104,
+        "name": "[employee] Step1 under 3s",
+        "path": "::[employee] Step1 under 3s",
+        "id": "d3b40ce85cec9d95265a3dc99a13c84b"
+      },
+      {
+        "passes": 100,
+        "fails": 0,
+        "name": "[contributor] Step1 status 200",
+        "path": "::[contributor] Step1 status 200",
+        "id": "04f6ad16f3bd1677a220668febd0a1cc"
+      },
+      {
+        "name": "[contributor] Step1 has tempToken",
+        "path": "::[contributor] Step1 has tempToken",
+        "id": "1efd1134e4b183853c1c6842207815e0",
+        "passes": 100,
+        "fails": 0
+      },
+      {
+        "id": "b7757e61caec8dff804711767b76e280",
+        "passes": 0,
+        "fails": 100,
+        "name": "[contributor] Step1 under 3s",
+        "path": "::[contributor] Step1 under 3s"
+      },
+      {
+        "name": "[reviewer] Step1 status 200",
+        "path": "::[reviewer] Step1 status 200",
+        "id": "20f76d59ec97194ef60677ce86def392",
+        "passes": 97,
+        "fails": 1
+      },
+      {
+        "name": "[reviewer] Step1 has tempToken",
+        "path": "::[reviewer] Step1 has tempToken",
+        "id": "78eb8fe28a5eb640cbb9c46a81351c4e",
+        "passes": 97,
+        "fails": 1
+      },
+      {
+        "fails": 98,
+        "name": "[reviewer] Step1 under 3s",
+        "path": "::[reviewer] Step1 under 3s",
+        "id": "278be4bea519162f9bbae8b55a8b8d16",
+        "passes": 0
+      },
+      {
+        "path": "::[client_employee_head] Step2 status 200",
+        "id": "76cbdadc0f17d89b0fcc35a12920f201",
+        "passes": 4,
+        "fails": 45,
+        "name": "[client_employee_head] Step2 status 200"
+      },
+      {
+        "name": "[client_employee_head] Step2 has token",
+        "path": "::[client_employee_head] Step2 has token",
+        "id": "8e15dbf68a0397569abe0db35f96811a",
+        "passes": 4,
+        "fails": 45
+      },
+      {
+        "name": "[client_employee_head] Step2 under 3s",
+        "path": "::[client_employee_head] Step2 under 3s",
+        "id": "6446b0a867c63eeffb44fe5092187340",
+        "passes": 0,
+        "fails": 49
+      },
+      {
+        "name": "[approver] Step1 status 200",
+        "path": "::[approver] Step1 status 200",
+        "id": "aece09f1dcbb33ca7998b6c944fa77aa",
+        "passes": 93,
+        "fails": 0
+      },
+      {
+        "name": "[approver] Step1 has tempToken",
+        "path": "::[approver] Step1 has tempToken",
+        "id": "654be89e8fc8ef6a92feec75fc368671",
+        "passes": 93,
+        "fails": 0
+      },
+      {
+        "id": "8970a520cb09bccd8d1eebe366412438",
+        "passes": 0,
+        "fails": 93,
+        "name": "[approver] Step1 under 3s",
+        "path": "::[approver] Step1 under 3s"
+      },
+      {
+        "name": "[auditor] Step1 status 200",
+        "path": "::[auditor] Step1 status 200",
+        "id": "dfd478e3768f0c386b838b824be2f3c4",
+        "passes": 88,
+        "fails": 0
+      },
+      {
+        "name": "[auditor] Step1 has tempToken",
+        "path": "::[auditor] Step1 has tempToken",
+        "id": "4052585eaac9167592ad788bbb5559ed",
+        "passes": 88,
+        "fails": 0
+      },
+      {
+        "passes": 0,
+        "fails": 88,
+        "name": "[auditor] Step1 under 3s",
+        "path": "::[auditor] Step1 under 3s",
+        "id": "d53e6ec3085c855e5ac5a1b6fd030381"
+      },
+      {
+        "name": "[supportManager] Step1 status 200",
+        "path": "::[supportManager] Step1 status 200",
+        "id": "a1599dfe9092060d268f80de357859e7",
+        "passes": 97,
+        "fails": 0
+      },
+      {
+        "name": "[supportManager] Step1 has tempToken",
+        "path": "::[supportManager] Step1 has tempToken",
+        "id": "b816336134361ad81071cda8b5601a9c",
+        "passes": 97,
+        "fails": 0
+      },
+      {
+        "id": "f77af3ef2be70213ce8cd8f7a046211e",
+        "passes": 0,
+        "fails": 97,
+        "name": "[supportManager] Step1 under 3s",
+        "path": "::[supportManager] Step1 under 3s"
+      },
+      {
+        "id": "8669a41dac05b2b2ebbcdb3d46bb6abd",
+        "passes": 96,
+        "fails": 0,
+        "name": "[support] Step1 status 200",
+        "path": "::[support] Step1 status 200"
+      },
+      {
+        "id": "6261f0538fdec807ec62bbe9ccdb606f",
+        "passes": 96,
+        "fails": 0,
+        "name": "[support] Step1 has tempToken",
+        "path": "::[support] Step1 has tempToken"
+      },
+      {
+        "name": "[support] Step1 under 3s",
+        "path": "::[support] Step1 under 3s",
+        "id": "9a5153c0da84c5ca175b6bd043a81d4a",
+        "passes": 0,
+        "fails": 96
+      },
+      {
+        "id": "7a2c17aed060cbcd9cda5b1107e5fcb8",
+        "passes": 84,
+        "fails": 0,
+        "name": "[viewer] Step1 status 200",
+        "path": "::[viewer] Step1 status 200"
+      },
+      {
+        "path": "::[viewer] Step1 has tempToken",
+        "id": "56a1c6c41ab57c9238caa3ad30909578",
+        "passes": 84,
+        "fails": 0,
+        "name": "[viewer] Step1 has tempToken"
+      },
+      {
+        "name": "[viewer] Step1 under 3s",
+        "path": "::[viewer] Step1 under 3s",
+        "id": "7eb7804638dfa9d696c82b498b07583e",
+        "passes": 0,
+        "fails": 84
+      },
+      {
+        "name": "[employee] Step2 status 200",
+        "path": "::[employee] Step2 status 200",
+        "id": "95db9512433fb81b487964ffde70c87a",
+        "passes": 0,
+        "fails": 44
+      },
+      {
+        "path": "::[employee] Step2 has token",
+        "id": "7a0e79a5283b849fee9afd33ee3b771a",
+        "passes": 0,
+        "fails": 44,
+        "name": "[employee] Step2 has token"
+      },
+      {
+        "id": "c6f16979a413ad13844adfb39f3b437d",
+        "passes": 0,
+        "fails": 44,
+        "name": "[employee] Step2 under 3s",
+        "path": "::[employee] Step2 under 3s"
+      },
+      {
+        "id": "76346ac01306eb2e9f5df8f00a37e6c6",
+        "passes": 23,
+        "fails": 33,
+        "name": "[contributor] Step2 status 200",
+        "path": "::[contributor] Step2 status 200"
+      },
+      {
+        "path": "::[contributor] Step2 has token",
+        "id": "41a44f25aaee8050ec38d33c3375c968",
+        "passes": 23,
+        "fails": 33,
+        "name": "[contributor] Step2 has token"
+      },
+      {
+        "name": "[contributor] Step2 under 3s",
+        "path": "::[contributor] Step2 under 3s",
+        "id": "ca211e65c85a7ced7701b8af603997b2",
+        "passes": 0,
+        "fails": 56
+      },
+      {
+        "passes": 29,
+        "fails": 27,
+        "name": "[reviewer] Step2 status 200",
+        "path": "::[reviewer] Step2 status 200",
+        "id": "85459b5e05e0847330b71576b29cc40a"
+      },
+      {
+        "name": "[reviewer] Step2 has token",
+        "path": "::[reviewer] Step2 has token",
+        "id": "d1e65fd8281c3de5faeb608f5808a76b",
+        "passes": 29,
+        "fails": 27
+      },
+      {
+        "name": "[reviewer] Step2 under 3s",
+        "path": "::[reviewer] Step2 under 3s",
+        "id": "1c0534c282fec34ba9ffe80d219c37d5",
+        "passes": 0,
+        "fails": 56
+      },
+      {
+        "name": "[approver] Step2 status 200",
+        "path": "::[approver] Step2 status 200",
+        "id": "d9dc67fd793df1409a14dfd7267d3b00",
+        "passes": 38,
+        "fails": 23
+      },
+      {
+        "passes": 38,
+        "fails": 23,
+        "name": "[approver] Step2 has token",
+        "path": "::[approver] Step2 has token",
+        "id": "41787006e6aa6614cd10d0269ec7a87e"
+      },
+      {
+        "fails": 61,
+        "name": "[approver] Step2 under 3s",
+        "path": "::[approver] Step2 under 3s",
+        "id": "e3b42e59fa0c591a30425353e2d9eeef",
+        "passes": 0
+      },
+      {
+        "passes": 1,
+        "fails": 35,
+        "name": "[auditor] Step2 status 200",
+        "path": "::[auditor] Step2 status 200",
+        "id": "96f3d95f308cce258640cb08e412710a"
+      },
+      {
+        "name": "[auditor] Step2 has token",
+        "path": "::[auditor] Step2 has token",
+        "id": "c4b6be2ef0e986e726c8f4b940832bcb",
+        "passes": 1,
+        "fails": 35
+      },
+      {
+        "name": "[auditor] Step2 under 3s",
+        "path": "::[auditor] Step2 under 3s",
+        "id": "bc0718274f31809b5e3a87fb021047ea",
+        "passes": 0,
+        "fails": 36
+      },
+      {
+        "fails": 29,
+        "name": "[supportManager] Step2 status 200",
+        "path": "::[supportManager] Step2 status 200",
+        "id": "b4f14c324d56d3002b159bde9bbf5924",
+        "passes": 64
+      },
+      {
+        "name": "[supportManager] Step2 has token",
+        "path": "::[supportManager] Step2 has token",
+        "id": "de938c3d5a39332e291faa46d74780b0",
+        "passes": 64,
+        "fails": 29
+      },
+      {
+        "name": "[supportManager] Step2 under 3s",
+        "path": "::[supportManager] Step2 under 3s",
+        "id": "f6257b122674b980a08891634d2bfb2c",
+        "passes": 0,
+        "fails": 93
+      },
+      {
+        "fails": 23,
+        "name": "[support] Step2 status 200",
+        "path": "::[support] Step2 status 200",
+        "id": "85dacd071fdba21d21ab3874f53a883f",
+        "passes": 73
+      },
+      {
+        "path": "::[support] Step2 has token",
+        "id": "5f764c79557e3af3830a5f0582d01ec7",
+        "passes": 73,
+        "fails": 23,
+        "name": "[support] Step2 has token"
+      },
+      {
+        "name": "[support] Step2 under 3s",
+        "path": "::[support] Step2 under 3s",
+        "id": "4d7eee63a223666ac76f888191bd7c84",
+        "passes": 0,
+        "fails": 96
+      },
+      {
+        "name": "[viewer] Step2 status 200",
+        "path": "::[viewer] Step2 status 200",
+        "id": "0ef1f9b9e74aa88bc184663f87ec1491",
+        "passes": 8,
+        "fails": 32
+      },
+      {
+        "passes": 8,
+        "fails": 32,
+        "name": "[viewer] Step2 has token",
+        "path": "::[viewer] Step2 has token",
+        "id": "c1544afff16c4f224295c39f5d85378f"
+      },
+      {
+        "passes": 0,
+        "fails": 40,
+        "name": "[viewer] Step2 under 3s",
+        "path": "::[viewer] Step2 under 3s",
+        "id": "191842b67e2e8505cc423c64bb023e70"
+      }
+    ],
+    "name": "",
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "groups": []
+  },
+  "options": {
+    "summaryTrendStats": [
+      "avg",
+      "min",
+      "med",
+      "max",
+      "p(90)",
+      "p(95)"
+    ],
+    "summaryTimeUnit": "",
+    "noColor": false
+  },
+  "state": {
+    "isStdOutTTY": true,
+    "isStdErrTTY": true,
+    "testRunDurationMs": 190054.1387
+  },
+  "metrics": {
+    "checks": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.551613374215214,
+        "passes": 3778,
+        "fails": 3071
+      }
+    },
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "min": 140.6429,
+        "med": 40395.3137,
+        "max": 60067.5947,
+        "p(90)": 60000.48706,
+        "p(95)": 60000.8501,
+        "avg": 35567.72438656836
+      },
+      "thresholds": {
+        "p(95)<3000": {
+          "ok": false
+        }
+      }
+    },
+    "login_step2_errors": {
+      "thresholds": {
+        "rate<0.05": {
+          "ok": false
+        }
+      },
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.5315315315315315,
+        "passes": 472,
+        "fails": 416
+      }
+    },
+    "http_reqs": {
+      "contains": "default",
+      "values": {
+        "count": 2509,
+        "rate": 13.201501515104864
+      },
+      "type": "counter"
+    },
+    "step1_login_ms": {
+      "contains": "time",
+      "values": {
+        "max": 60000.6,
+        "p(90)": 55098.06384,
+        "p(95)": 55969.92377,
+        "avg": 29753.218764874597,
+        "min": 140.6429,
+        "med": 28852.1426
+      },
+      "type": "trend"
+    },
+    "iteration_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(95)": 107881.21367999999,
+        "avg": 77490.34680844557,
+        "min": 3454.1366,
+        "med": 86470.0043,
+        "max": 123226.0013,
+        "p(90)": 105789.13154
+      }
+    },
+    "data_sent": {
+      "type": "counter",
+      "contains": "data",
+      "values": {
+        "count": 1137362,
+        "rate": 5984.4105883709435
+      }
+    },
+    "vus": {
+      "type": "gauge",
+      "contains": "default",
+      "values": {
+        "value": 3,
+        "min": 0,
+        "max": 1001
+      }
+    },
+    "http_req_blocked": {
+      "values": {
+        "avg": 0.42410530091669973,
+        "min": 0,
+        "med": 0,
+        "max": 26.1169,
+        "p(90)": 1.0131,
+        "p(95)": 1.50616
+      },
+      "type": "trend",
+      "contains": "time"
+    },
+    "http_req_waiting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 35567.501838939854,
+        "min": 139.7942,
+        "med": 40395.0237,
+        "max": 60067.5947,
+        "p(90)": 60000.486659999995,
+        "p(95)": 60000.8501
+      }
+    },
+    "http_req_receiving": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "min": 0,
+        "med": 0,
+        "max": 5.5002,
+        "p(90)": 0.78944,
+        "p(95)": 0.9996,
+        "avg": 0.17147186129932254
+      }
+    },
+    "http_req_failed": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.20167397369469908,
+        "passes": 506,
+        "fails": 2003
+      }
+    },
+    "http_req_connecting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 0.3830075727381424,
+        "min": 0,
+        "med": 0,
+        "max": 26.1169,
+        "p(90)": 1.0078200000000002,
+        "p(95)": 1.10858
+      }
+    },
+    "iterations": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "rate": 4.2987751047591365,
+        "count": 817
+      }
+    },
+    "login_step1_errors": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.0007168458781362007,
+        "passes": 1,
+        "fails": 1394
+      },
+      "thresholds": {
+        "rate<0.05": {
+          "ok": true
+        }
+      }
+    },
+    "data_received": {
+      "type": "counter",
+      "contains": "data",
+      "values": {
+        "count": 3286173,
+        "rate": 17290.720541409602
+      }
+    },
+    "step2_otp_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "min": 326.2907,
+        "med": 60000.11565,
+        "max": 60067.5947,
+        "p(90)": 60001.19423,
+        "p(95)": 60002.618965,
+        "avg": 48752.68020326569
+      }
+    },
+    "vus_max": {
+      "type": "gauge",
+      "contains": "default",
+      "values": {
+        "value": 1001,
+        "min": 1001,
+        "max": 1001
+      }
+    },
+    "http_req_tls_handshaking": {
+      "contains": "time",
+      "values": {
+        "avg": 0,
+        "min": 0,
+        "med": 0,
+        "max": 0,
+        "p(90)": 0,
+        "p(95)": 0
+      },
+      "type": "trend"
+    },
+    "http_req_sending": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 0.0510757672379434,
+        "min": 0,
+        "med": 0,
+        "max": 6.0174,
+        "p(90)": 0,
+        "p(95)": 0.50776
+      }
+    },
+    "http_req_duration{expected_response:true}": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "min": 140.6429,
+        "med": 29656.8503,
+        "max": 59985.8281,
+        "p(90)": 55174.6841,
+        "p(95)": 56281.8222,
+        "avg": 30138.182181477838
+      }
+    }
+  }
+}

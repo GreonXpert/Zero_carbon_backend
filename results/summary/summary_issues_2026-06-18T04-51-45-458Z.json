@@ -1,0 +1,9 @@
+[
+  {
+    "endpoint": "GET /api/summaries/allocation-details/:scopeIdentifier",
+    "status": 404,
+    "detail": "Route not registered in summaryRoutes.js — listed in API spec but not implemented",
+    "severity": "medium",
+    "ts": "2026-06-18T04:51:44.736Z"
+  }
+]

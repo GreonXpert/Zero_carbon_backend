@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-06-17T10:16:46.887Z",
+  "issues": [
+    {
+      "endpoint": "POST /api/users/me/logout-all-devices",
+      "status": 403,
+      "detail": "Test user lacks canLogoutAllDevices permission. k6 setup() uses this endpoint — sessions are NOT being pre-cleared for most test users. Grant permission via PATCH /api/admin/users/:id/user-permissions { canLogoutAllDevices: true }.",
+      "severity": "medium",
+      "ts": "2026-06-17T10:16:38.234Z"
+    }
+  ]
+}

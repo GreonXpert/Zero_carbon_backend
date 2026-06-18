@@ -1,0 +1,63 @@
+{
+  "_comment": "Output schema template. login_test.js writes login_load_<timestamp>.json to this folder after each run.",
+  "_howToRun": {
+    "smoke":  "k6 run --env MODE=smoke  __tests__/users/login_test.js",
+    "load":   "k6 run --env MODE=load   __tests__/users/login_test.js",
+    "stress": "k6 run --env MODE=stress __tests__/users/login_test.js",
+    "spike":  "k6 run --env MODE=spike  __tests__/users/login_test.js",
+    "localhost": "k6 run --env MODE=load --env BASE_URL=http://localhost:5000 __tests__/users/login_test.js",
+    "note": "Server must be running NODE_ENV=test for OTP=000000 to be accepted"
+  },
+  "meta": {
+    "mode":          "smoke | load | stress | spike",
+    "baseUrl":       "https://api.zerocarbon.greonxpert.com",
+    "timestamp":     "ISO-8601 e.g. 2026-06-18T10:00:00.000Z",
+    "totalRequests": 0,
+    "vusMax":        0,
+    "testUsers":     18
+  },
+  "rates": {
+    "loginErrors":       "0.00%",
+    "otpErrors":         "0.00%",
+    "logoutErrors":      "0.00%",
+    "httpFailed":        "0.00%",
+    "serverErrors":      0,
+    "rateLimitHits":     0,
+    "sessionLimitHits":  0
+  },
+  "stepLatency": {
+    "login": {
+      "avg_ms": "0",
+      "p90_ms": "0",
+      "p95_ms": "0",
+      "p99_ms": "0",
+      "min_ms": "0",
+      "max_ms": "0"
+    },
+    "otp": {
+      "avg_ms": "0",
+      "p90_ms": "0",
+      "p95_ms": "0",
+      "p99_ms": "0",
+      "min_ms": "0",
+      "max_ms": "0"
+    },
+    "logout": {
+      "avg_ms": "0",
+      "p90_ms": "0",
+      "p95_ms": "0",
+      "min_ms": "0",
+      "max_ms": "0"
+    }
+  },
+  "thresholds": {
+    "login_step_ms p(95)<3000":  "✅ PASS | ❌ FAIL",
+    "otp_step_ms p(95)<3000":    "✅ PASS | ❌ FAIL",
+    "logout_step_ms p(95)<3000": "✅ PASS | ❌ FAIL",
+    "login_errors rate<0.02":    "✅ PASS | ❌ FAIL",
+    "otp_errors rate<0.02":      "✅ PASS | ❌ FAIL",
+    "http_req_failed rate<0.05": "✅ PASS | ❌ FAIL"
+  },
+  "issues": [],
+  "rawMetrics": {}
+}

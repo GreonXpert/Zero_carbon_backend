@@ -47,8 +47,13 @@ src/migrations/
 /load_test_summary.json
 /login_test.js
 
-/result
+/results
 /Document
 /scripts
 /tests
 /__tests__
+results/
+Document/
+scripts/
+tests/
+__tests__/
