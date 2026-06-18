@@ -841,6 +841,27 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
 
     const items = [];
 
+    // Batch ProgressSnapshot + PathwayAnnual for all targets (N×2 → 2 parallel queries)
+    const targetIds = targets.map(t => t._id);
+    const [allSnaps, allPathways] = await Promise.all([
+      ProgressSnapshot.find({
+        target_id: { $in: targetIds },
+        clientId,
+        snapshot_type: 'ANNUAL',
+      }).sort({ snapshot_date: -1 }).lean(),
+      PathwayAnnual.find({
+        target_id: { $in: targetIds },
+        calendar_year: year,
+      }).lean(),
+    ]);
+
+    const snapMap = new Map();
+    for (const s of allSnaps) {
+      const key = String(s.target_id);
+      if (!snapMap.has(key)) snapMap.set(key, s); // first = latest (sorted desc)
+    }
+    const pathwayMap = new Map(allPathways.map(p => [String(p.target_id), p]));
+
     for (const target of targets) {
       const base = typeof target.base_year_emissions === 'number'
         ? target.base_year_emissions
@@ -850,22 +871,13 @@ async function buildSbtiProgressForSummary(clientId, baseSummary) {
       const isScope3Only = target.scope_boundary && target.scope_boundary.includes('S3');
       const actualEmission = isScope3Only ? scope3 : (scope1 + scope2);
 
-      // Try ProgressSnapshot first (M3 progress service may have computed this)
-      const snap = await ProgressSnapshot.findOne({
-        target_id: target._id,
-        clientId,
-        snapshot_type: 'ANNUAL',
-      }).sort({ snapshot_date: -1 }).lean();
+      const snap = snapMap.get(String(target._id));
 
       let allowedEmissions = null;
       if (snap) {
         allowedEmissions = snap.allowed_emissions;
       } else {
-        // Fall back to PathwayAnnual row for this year
-        const pathway = await PathwayAnnual.findOne({
-          target_id: target._id,
-          calendar_year: year,
-        }).lean();
+        const pathway = pathwayMap.get(String(target._id));
         if (pathway) allowedEmissions = pathway.allowed_emissions;
       }
 
@@ -2334,13 +2346,14 @@ const getEmissionSummary = async (req, res) => {
     // NEW: extract & convert processEmissionSummary (all fields are Maps)
     const processEmissionSummary = convertMap(summary.processEmissionSummary || {});
 
+    const { dataEntriesIncluded: _unused, ...cleanMetadata } = summary.metadata || {};
     const baseResponse = {
       clientId: summary.clientId,
       period: summary.period,
       emissionSummary,
       reductionSummary,
       processEmissionSummary,          // ← always attached at root
-      metadata: summary.metadata || {},
+      metadata: cleanMetadata,
       data_freshness: dataFreshness    // 'fresh' | 'stale' — frontend can show "refreshing…"
     };
 
@@ -4259,7 +4272,7 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
         clientId,
         processingStatus: "processed",
         timestamp: { $gte: from, $lte: to }
-      }).lean(),
+      }).select('calculatedEmissions scopeIdentifier nodeId scopeType timestamp _id').lean(),
       EmissionSummary.findOne(summaryQuery)
         .select("processEmissionSummary emissionSummary.byNode period metadata")
         .sort({ "period.to": -1, updatedAt: -1 })
@@ -4737,7 +4750,7 @@ const getScopeIdentifierHierarchy = async (req, res) => {
 
     // ── Parallel fetch: DataEntry + Flowcharts + EmissionSummary ─────────────
     const [entries, orgChart, processChart, emissionSummaryDoc] = await Promise.all([
-      DataEntry.find(findQuery).lean(),
+      DataEntry.find(findQuery).select('calculatedEmissions scopeIdentifier nodeId scopeType categoryName activity emissionFactor inputType timestamp _id').lean(),
       Flowchart.findOne({ clientId, isActive: true }).lean(),
       ProcessFlowchart.findOne({ clientId, isDeleted: { $ne: true } }).lean(),
       EmissionSummary.findOne(summaryQuery)
@@ -5268,7 +5281,12 @@ const getReductionSummaryHierarchy = async (req, res) => {
       }
     }
 
-    const rows = await NetReductionEntry.find(entryQuery).lean();
+    const [rows, allProjects] = await Promise.all([
+      NetReductionEntry.find(entryQuery).lean(),
+      Reduction.find({ clientId, isDeleted: { $ne: true } })
+        .select("projectId projectName projectActivity category scope location calculationMethodology")
+        .lean(),
+    ]);
 
     if (!rows.length) {
       return res.status(200).json({
@@ -5290,14 +5308,8 @@ const getReductionSummaryHierarchy = async (req, res) => {
     // -------------------------------
     // 3) LOAD REDUCTION META (scope/location/category/activity/name)
     // -------------------------------
-    const uniqProjectIds = Array.from(new Set(rows.map((r) => r.projectId)));
-    const projects = await Reduction.find({
-      clientId,
-      projectId: { $in: uniqProjectIds },
-      isDeleted: { $ne: true },
-    })
-      .select("projectId projectName projectActivity category scope location calculationMethodology")
-      .lean();
+    const uniqProjectIds = new Set(rows.map((r) => String(r.projectId)));
+    const projects = allProjects.filter(p => uniqProjectIds.has(String(p.projectId)));
 
     const metaByProject = new Map();
     projects.forEach((p) => metaByProject.set(p.projectId, p));
@@ -5770,6 +5782,16 @@ const compareSummarySelections = async (req, res) => {
         day: Number(body.day || req.query.day) || 1,
         from: body.from || req.query.from,
         to: body.to || req.query.to,
+      };
+    }
+
+    if (!globalPeriod) {
+      globalPeriod = {
+        periodType: 'yearly',
+        year: moment.utc().year(),
+        month: moment.utc().month() + 1,
+        week: 1,
+        day: 1,
       };
     }
 

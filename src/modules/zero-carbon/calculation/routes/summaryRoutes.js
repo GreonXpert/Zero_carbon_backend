@@ -150,11 +150,12 @@ router.get(
 // routes/summaries.js (or wherever you define summary routes)
 router.get(
   "/:clientId/reduction/projects",
-    zcGate,
+  zcGate,
+  checkSummaryPermission,
   getReductionSummariesByProjects
 );
 
 
-router.post('/:clientId/compare', zcGate, compareSummarySelections)
+router.post('/:clientId/compare', zcGate, checkSummaryPermission, compareSummarySelections)
 
 module.exports = router;
