@@ -25,7 +25,23 @@
       "Bash(Get-ChildItem \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\\\\src\\\\app\\\\\" -Recurse | Select-Object FullName)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d.get\\('main','no main'\\)\\)\")",
       "Bash(npx jest *)",
-      "Bash(k6 run *)"
+      "Bash(k6 run *)",
+      "Bash(grep -v \"#\\\\|/\\\\*\")",
+      "Bash(grep -v \"node_modules\\\\|#\\\\|\\\\/\\\\*\\\\|comment\\\\|reduce\\\\|Reduce\")",
+      "Bash(gh repo *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "PowerShell(npm install -g uipro-cli 2>&1)",
+      "Bash(grep -E \"\\\\.\\(js|ts\\)$\")",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(gh api *)",
+      "WebFetch(domain:api.github.com)",
+      "PowerShell(npx uipro-cli init --ai claude 2>&1)",
+      "Bash(dir .claude/skills/)",
+      "Bash(ls /c/Users/fazil/.claude/ 2>&1)",
+      "Read(//c/Users/fazil/**)",
+      "Read(//c/Users/fazil/AppData/Roaming/Claude//**)"
     ]
   }
 }

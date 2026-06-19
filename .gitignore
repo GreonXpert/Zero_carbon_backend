@@ -57,3 +57,4 @@ Document/
 scripts/
 tests/
 __tests__/
+.claude/

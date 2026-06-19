@@ -8,6 +8,7 @@ const Flowchart = require('../../zero-carbon/organization/models/Flowchart');
 const ProcessFlowchart = require('../../zero-carbon/organization/models/ProcessFlowchart');
 const Reduction = require('../../zero-carbon/reduction/models/Reduction');
 const TargetMaster = require('../../zero-carbon/m3/models/TargetMaster');
+const { updateClientIdReferencesOnActivation } = require('../client/clientController');
 
 /**
  * Helper to find a client by clientId (string).
@@ -24,37 +25,78 @@ async function findClientByIdOrFail(clientId) {
 
 /**
  * APPROVE SANDBOX
+ * - Promotes clientId: Sandbox_GreonXXX → GreonXXX
  * - Sets client.sandbox = false
- * - Sets all related users sandbox = false
- * - DOES NOT change stage / status / subscription / IDs
+ * - Updates clientId + sandbox flag on all related users and collections
  */
 const approveSandboxClient = async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    // Only super_admin and consultant_admin can approve
     if (!['super_admin', 'consultant_admin'].includes(req.user.userType)) {
       return res.status(403).json({
         success: false,
-        message:
-          'Access denied. Only super_admin and consultant_admin can approve sandbox clients',
+        message: 'Access denied. Only super_admin and consultant_admin can approve sandbox clients',
       });
     }
 
     const client = await findClientByIdOrFail(clientId);
 
+    if (!client.sandbox) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client is not currently in sandbox mode',
+      });
+    }
+
+    const oldClientId = client.clientId;
+
+    // Resolve sequence number (needed to build real GreonXXX id)
+    if (!client.clientSequenceNumber) {
+      const match = oldClientId && oldClientId.match(/(\d+)$/);
+      if (match) {
+        client.clientSequenceNumber = parseInt(match[1], 10);
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot determine client sequence number for ID promotion',
+        });
+      }
+    }
+
+    // Promote Sandbox_GreonXXX → GreonXXX
+    const newClientId = Client.buildClientIdForStage(client.clientSequenceNumber, 'active');
+
+    client.clientId = newClientId;
     client.sandbox = false;
+
+    if (!Array.isArray(client.timeline)) client.timeline = [];
+    client.timeline.push({
+      stage: client.stage,
+      status: client.status,
+      action: 'sandbox_approved',
+      performedBy: req.user.id,
+      notes: `Sandbox approved. Client ID promoted from ${oldClientId} to ${newClientId}.`,
+      timestamp: new Date(),
+    });
+
     await client.save();
 
-    // Update all users belonging to this client
-    await User.updateMany(
-      { clientId: client.clientId },
-      { $set: { sandbox: false } }
-    );
+    // Update clientId across all collections and activate all users
+    try {
+      await updateClientIdReferencesOnActivation(
+        oldClientId,
+        newClientId,
+        req.user.id,
+        'sandbox_approved'
+      );
+    } catch (err) {
+      console.error('approveSandboxClient: reference update error:', err.message);
+    }
 
     return res.status(200).json({
       success: true,
-      message: 'Sandbox approved successfully',
+      message: `Sandbox approved. Client ID promoted to ${newClientId}.`,
       client: {
         clientId: client.clientId,
         sandbox: client.sandbox,
@@ -67,10 +109,7 @@ const approveSandboxClient = async (req, res) => {
     const status = err.statusCode || 500;
     return res.status(status).json({
       success: false,
-      message:
-        err.statusCode === 404
-          ? err.message
-          : 'Failed to approve sandbox client',
+      message: err.statusCode === 404 ? err.message : 'Failed to approve sandbox client',
       error: err.message,
     });
   }

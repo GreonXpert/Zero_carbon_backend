@@ -6181,11 +6181,13 @@ const updateClientModuleAccess = async (req, res) => {
     client.accessibleModules = normalizedModules;
 
     // ─────────────────────────────────────────────
-    // 7) If esg_link is newly added, initialize ESGLink subscription
+    // 7) Initialize ESGLink subscription if esg_link is present but sub-doc is missing.
+    // Covers both: newly added module AND pre-existing esg_link with no sub-doc
+    // (can happen when esg_link was added via submissionData before activation).
     // accountDetails is encrypted, so markModified('accountDetails') after update.
     // ─────────────────────────────────────────────
     if (
-      addedModules.includes('esg_link') &&
+      normalizedModules.includes('esg_link') &&
       !client.accountDetails?.esgLinkSubscription?.subscriptionEndDate
     ) {
       const accountDetailsPlain =
@@ -7499,33 +7501,31 @@ const moveToActive = async (req, res) => {
     const prevStage = client.stage;
     const oldClientId = client.clientId;
 
-    // 1) Build the real active clientId (GreonXXX)
-    if (!client.clientSequenceNumber) {
-      const match = client.clientId && client.clientId.match(/(\d+)$/);
-      if (match) {
-        client.clientSequenceNumber = parseInt(match[1], 10);
-      } else {
-        const seq = await Client.getNextClientSequence();
-        client.clientSequenceNumber = seq;
+    // 1) Build clientId — only promote to GreonXXX when NOT staying in sandbox
+    let newClientId;
+    if (sandboxStatus === true) {
+      // Sandbox activation: keep Sandbox_GreonXXX until admin explicitly approves
+      newClientId = oldClientId;
+      client.sandbox = true;
+    } else {
+      // Real activation: promote Sandbox_GreonXXX → GreonXXX
+      if (!client.clientSequenceNumber) {
+        const match = client.clientId && client.clientId.match(/(\d+)$/);
+        if (match) {
+          client.clientSequenceNumber = parseInt(match[1], 10);
+        } else {
+          const seq = await Client.getNextClientSequence();
+          client.clientSequenceNumber = seq;
+        }
       }
+      newClientId = Client.buildClientIdForStage(client.clientSequenceNumber, "active");
+      client.clientId = newClientId;
+      client.sandbox = false;
     }
-
-    const newClientId = Client.buildClientIdForStage(
-      client.clientSequenceNumber,
-      "active"
-    );
-    client.clientId = newClientId;
 
     // 2) Move to active stage + status
     client.stage = "active";
     client.status = "active";
-
-    // 3) Sandbox flag
-    if (typeof sandboxStatus === "boolean") {
-      client.sandbox = sandboxStatus;
-    } else {
-      client.sandbox = false; // default: real client on activation
-    }
 
     // 4) Initialize subscription
     if (!client.accountDetails) client.accountDetails = {};
@@ -7616,7 +7616,7 @@ try {
 
   const clientAdminUser = await createClientAdmin(newClientId, {
     consultantId: req.user.id,
-    sandbox: false,
+    sandbox: sandboxStatus === true,
     accessibleModules: clientModules,
   });
 
@@ -7937,4 +7937,5 @@ module.exports = {
   migrateSupportManagerSync,
   markQuotaCreated,
   moveToActive,
+  updateClientIdReferencesOnActivation,
 };

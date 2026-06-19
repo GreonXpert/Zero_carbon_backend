@@ -41,8 +41,9 @@ function isModuleSubscriptionActive(client, moduleName) {
   }
 
   if (moduleName === MODULE_NAMES.ESG_LINK) {
-    const status = client?.accountDetails?.esgLinkSubscription?.subscriptionStatus;
-    return ACTIVE_STATUSES.has(status);
+    const esl = client?.accountDetails?.esgLinkSubscription;
+    if (!esl) return true;
+    return ACTIVE_STATUSES.has(esl.subscriptionStatus);
   }
 
   return false;

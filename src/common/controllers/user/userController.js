@@ -1062,6 +1062,10 @@ const accessibleModules = accessibleModulesResult.value;
         profileImage: consultantAdmin.profileImage || null,
         concurrentLoginLimit: consultantAdmin.concurrentLoginLimit || 1
       },
+      greonIQ: {
+        isUnlimited: true,
+        balance: null,
+      },
       imageUpload: imageUploadResult
     });
 
@@ -1383,11 +1387,11 @@ ZeroCarbon Team`;
     // ==========================================
     // 10. SEED GREON IQ CREDIT WALLET
     // ==========================================
+    const initialCredits = typeof req.body.initialCredits === 'number' && req.body.initialCredits > 0
+      ? req.body.initialCredits
+      : 500;
     try {
-      const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
-      const initialCredits = typeof req.body.initialCredits === 'number' && req.body.initialCredits > 0
-        ? req.body.initialCredits
-        : 500;
+      const { getOrCreateWallet, addCredits } = require('../../../modules/greon-iq/services/creditWalletService');
       await getOrCreateWallet(consultant._id, 'consultant', null);
       await addCredits(consultant._id, initialCredits, 'initial_grant', {
         triggeredBy: String(req.user._id),
@@ -1416,6 +1420,10 @@ ZeroCarbon Team`;
         createdAt: consultant.createdAt,
         profileImage: consultant.profileImage?.url || null,
         concurrentLoginLimit: consultant.concurrentLoginLimit
+      },
+      greonIQ: {
+        isUnlimited: false,
+        balance: initialCredits,
       },
       instructions: {
         nextSteps: [
@@ -1664,7 +1672,7 @@ const createClientAdmin = async (clientId, clientData = {}) => {
 
     // Seed GreOn IQ credit wallet for new client_admin
     try {
-      const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
+      const { getOrCreateWallet, addCredits } = require('../../../modules/greon-iq/services/creditWalletService');
       const initialCredits = typeof clientData.initialCredits === 'number' && clientData.initialCredits > 0
         ? clientData.initialCredits
         : 10000;
@@ -1986,7 +1994,7 @@ const createEmployeeHead = async (req, res) => {
 
         // Seed GreOn IQ credit wallet (fixed 5,000 credits — not configurable)
         try {
-          const { getOrCreateWallet, addCredits } = require('../../modules/greon-iq/services/creditWalletService');
+          const { getOrCreateWallet, addCredits } = require('../../../modules/greon-iq/services/creditWalletService');
           await getOrCreateWallet(head._id, 'client_employee_head', head.clientId);
           await addCredits(head._id, 5000, 'initial_grant', {
             triggeredBy: String(req.user._id),

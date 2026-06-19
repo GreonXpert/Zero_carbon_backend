@@ -2205,21 +2205,22 @@ const getEmissionSummary = async (req, res) => {
       summary = await recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id);
     } else {
       // Change 5: Try Redis first — fastest path (<1 ms)
-      const cached = await redisCache.get(redisCacheKey);
-      if (cached) {
-        // Run stale-m3 check on the cached payload so the background recompute
-        // can fire even when Redis is warm (previously unreachable from cache path).
+      const _rawCached = await redisCache.getRaw(redisCacheKey);
+      if (_rawCached) {
+        // Parse only for stale-m3 check; serve raw bytes on the happy path
+        // to skip JSON.stringify (saves 4–16 ms per response).
+        const cached = JSON.parse(_rawCached);
         const _cRS = cached?.data?.reductionSummary;
         const _cM3P = (_cRS?.byProject || []).filter(p => p.methodology === 'methodology3');
         const cacheHasStaleM3 = (_cRS?.m3Summary?.entriesCount || 0) > 0
           && _cM3P.length > 0
           && _cM3P.every(p => !p.totalBE && !p.totalPE && !p.totalLE);
         if (cacheHasStaleM3) {
-          // Evict the stale entry so the DB path below can detect + fix it.
           await redisCache.del(redisCacheKey);
           // fall through to DB load
         } else {
-          return res.status(200).json(cached);
+          res.setHeader('Content-Type', 'application/json');
+          return res.end(_rawCached);
         }
       }
 
@@ -2408,11 +2409,13 @@ const getEmissionSummary = async (req, res) => {
       };
     }
 
-    // Write to Redis only for fresh/non-stale data so stale responses
-    // don't overwrite a potentially newer background calculation result.
-    if (dataFreshness === 'fresh') {
-      redisCache.set(redisCacheKey, responsePayload, redisTTL).catch(() => {});
-    }
+    // Cache both fresh and stale responses.
+    // Stale gets a 60-second TTL so the background recalculation (setImmediate)
+    // can overwrite it quickly; fresh gets the full redisTTL (600 s for current
+    // year, 86400 s for past years). Without this, any period whose EmissionSummary
+    // doc is stale would never be cached and would hammer Atlas M0 on every request.
+    const cacheTTL = dataFreshness === 'fresh' ? redisTTL : 60;
+    redisCache.set(redisCacheKey, responsePayload, cacheTTL).catch(() => {});
 
     return res.status(200).json(responsePayload);
 
@@ -2451,8 +2454,8 @@ const getMultipleSummaries = async (req, res) => {
     const cacheKey = redisCache.multipleSummariesKey(
       clientId, periodType, startYear, endYear, startMonth, endMonth, limit, type
     );
-    const cached = await redisCache.get(cacheKey);
-    if (cached) return res.status(200).json(cached);
+    const _mRaw = await redisCache.getRaw(cacheKey);
+    if (_mRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_mRaw); }
 
     // ---------------------------------------------
     // 1) BUILD QUERY
@@ -2808,8 +2811,8 @@ const getFilteredSummary = async (req, res) => {
     // Key is built from sorted query params to handle all current & future filter combos.
     const _fCacheKey = `filtered_summary:${clientId}:` +
       Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
-    const _fCached = await redisCache.get(_fCacheKey);
-    if (_fCached) return res.status(200).json(_fCached);
+    const _fRaw = await redisCache.getRaw(_fCacheKey);
+    if (_fRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_fRaw); }
     // Helper: write-after (3 min TTL, non-blocking), then send response.
     const sendFiltered = (payload) => {
       redisCache.set(_fCacheKey, payload, 180).catch(() => {});
@@ -3608,8 +3611,8 @@ const getTopLowEmissionStats = async (req, res) => {
 
     // BUG 10 FIX: Redis read-before — top/low stats are cached for 5 min.
     const _tlCacheKey = redisCache.topLowKey(clientId, periodType, year, month, limitRaw);
-    const _tlCached = await redisCache.get(_tlCacheKey);
-    if (_tlCached) return res.status(200).json(_tlCached);
+    const _tlRaw = await redisCache.getRaw(_tlCacheKey);
+    if (_tlRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_tlRaw); }
     // Write-after helper: cache successful responses for 5 min (non-blocking).
     const sendTopLow = (payload) => {
       redisCache.set(_tlCacheKey, payload, 300).catch(() => {});
@@ -4241,8 +4244,8 @@ const getScopeIdentifierEmissionExtremes = async (req, res) => {
 
     // BUG 10 FIX: Redis read-before — scope identifier extremes cached 5 min.
     const _exCacheKey = `scope_extremes:${clientId}:${periodType}:${year||0}:${month||0}:${week||0}:${day||0}`;
-    const _exCached = await redisCache.get(_exCacheKey);
-    if (_exCached) return res.status(200).json(_exCached);
+    const _exRaw = await redisCache.getRaw(_exCacheKey);
+    if (_exRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_exRaw); }
 
     // ----------------------------------------------
     // Resolve period
@@ -4645,8 +4648,8 @@ const getScopeIdentifierHierarchy = async (req, res) => {
     // BUG 10 FIX: Redis read-before — hierarchy view cached 5 min.
     const _hierCacheKey = `hierarchy_summary:${clientId}:` +
       Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
-    const _hierCached = await redisCache.get(_hierCacheKey);
-    if (_hierCached) return res.status(200).json(_hierCached);
+    const _hierRaw = await redisCache.getRaw(_hierCacheKey);
+    if (_hierRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_hierRaw); }
 
     // ── helpers ─────────────────────────────────────────────────────────────
     const toArr = (v) => {
@@ -5180,8 +5183,8 @@ const getReductionSummaryHierarchy = async (req, res) => {
     // BUG 11 FIX: Redis read-before — reduction hierarchy cached 5 min.
     const _redHierKey = `reduction_hierarchy:${clientId}:` +
       Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
-    const _redHierCached = await redisCache.get(_redHierKey);
-    if (_redHierCached) return res.status(200).json(_redHierCached);
+    const _redHierRaw = await redisCache.getRaw(_redHierKey);
+    if (_redHierRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_redHierRaw); }
 
     const now = moment.utc();
 
@@ -5644,8 +5647,8 @@ const getReductionSummariesByProjects = async (req, res) => {
     // BUG 11 FIX: Redis read-before — reduction projects comparison cached 5 min.
     const _redProjKey = `reduction_projects:${clientId}:` +
       Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join(':');
-    const _redProjCached = await redisCache.get(_redProjKey);
-    if (_redProjCached) return res.status(200).json(_redProjCached);
+    const _redProjRaw = await redisCache.getRaw(_redProjKey);
+    if (_redProjRaw) { res.setHeader('Content-Type', 'application/json'); return res.end(_redProjRaw); }
 
     const list = String(projectIds || "")
   .split(",")
