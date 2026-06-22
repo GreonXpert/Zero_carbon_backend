@@ -3074,7 +3074,9 @@ const createSupport = async (req, res) => {
       contactNumber,
       userName,
       address,
-      specialization,
+      supportSpecialization,
+      supportEmployeeId,
+      supportBranch,
       supportJobRole,
       supportManagerId, // super_admin only
 
@@ -3220,7 +3222,9 @@ const createSupport = async (req, res) => {
       userType: "support",
       address,
       isActive: true,
-      specialization,
+      supportSpecialization,
+      supportEmployeeId,
+      supportBranch,
       supportJobRole,
 
       supportManagerId: supportManager._id,
