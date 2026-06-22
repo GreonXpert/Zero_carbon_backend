@@ -34,10 +34,11 @@ function checkRateLimit(keyId, maxRequests = 100, windowMs = 60000) {
 function esgApiKeyAuth(keyType) {
   return async function (req, res, next) {
     try {
-      const { clientId, nodeId, mappingId, apiKey: plaintextKey } = req.params;
+      const { clientId, nodeId, mappingId } = req.params;
+      const plaintextKey = req.headers['x-api-key'];
 
       if (!plaintextKey) {
-        return res.status(401).json({ success: false, message: 'API key required' });
+        return res.status(401).json({ success: false, message: 'API key required — send in X-API-Key header' });
       }
 
       // ── 1. Prefix lookup ───────────────────────────────────────────────────

@@ -1134,11 +1134,11 @@ const saveAPIData = async (req, res) => {
       scopeIdentifier,
       dataId: entry._id,
       timestamp,
-      dataValues: Object.fromEntries(entry.dataValues),
-      cumulativeValues: Object.fromEntries(entry.cumulativeValues),
-      highData: Object.fromEntries(entry.highData),
-      lowData: Object.fromEntries(entry.lowData),
-      lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+      dataValues: mapToObject(entry.dataValues),
+      cumulativeValues: mapToObject(entry.cumulativeValues),
+      highData: mapToObject(entry.highData),
+      lowData: mapToObject(entry.lowData),
+      lastEnteredData: mapToObject(entry.lastEnteredData),
 
       // ✅ NEW: send dataEntryCumulative
       dataEntryCumulative,
@@ -1158,10 +1158,10 @@ const saveAPIData = async (req, res) => {
     res.status(201).json({
       message: 'API data saved successfully',
       dataId: entry._id,
-      cumulativeValues: Object.fromEntries(entry.cumulativeValues),
-      highData: Object.fromEntries(entry.highData),
-      lowData: Object.fromEntries(entry.lowData),
-      lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+      cumulativeValues: mapToObject(entry.cumulativeValues),
+      highData: mapToObject(entry.highData),
+      lowData: mapToObject(entry.lowData),
+      lastEnteredData: mapToObject(entry.lastEnteredData),
 
       // ✅ NEW: return dataEntryCumulative
       dataEntryCumulative,
@@ -1406,11 +1406,11 @@ const saveIoTData = async (req, res) => {
       scopeIdentifier,
       dataId: entry._id,
       timestamp,
-      dataValues: Object.fromEntries(entry.dataValues),
-      cumulativeValues: Object.fromEntries(entry.cumulativeValues),
-      highData: Object.fromEntries(entry.highData),
-      lowData: Object.fromEntries(entry.lowData),
-      lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+      dataValues: mapToObject(entry.dataValues),
+      cumulativeValues: mapToObject(entry.cumulativeValues),
+      highData: mapToObject(entry.highData),
+      lowData: mapToObject(entry.lowData),
+      lastEnteredData: mapToObject(entry.lastEnteredData),
 
       // ✅ NEW: emit dataEntryCumulative
       dataEntryCumulative,
@@ -1431,10 +1431,10 @@ const saveIoTData = async (req, res) => {
     res.status(201).json({
       message: 'IoT data saved successfully',
       dataId: entry._id,
-      cumulativeValues: Object.fromEntries(entry.cumulativeValues),
-      highData: Object.fromEntries(entry.highData),
-      lowData: Object.fromEntries(entry.lowData),
-      lastEnteredData: Object.fromEntries(entry.lastEnteredData),
+      cumulativeValues: mapToObject(entry.cumulativeValues),
+      highData: mapToObject(entry.highData),
+      lowData: mapToObject(entry.lowData),
+      lastEnteredData: mapToObject(entry.lastEnteredData),
 
       // ✅ NEW: return dataEntryCumulative
       dataEntryCumulative,

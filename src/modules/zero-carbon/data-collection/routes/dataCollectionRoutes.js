@@ -65,37 +65,37 @@ const zcGate = requireActiveModuleSubscription('zero_carbon');
 
 /**
  * DATA COLLECTION API DATA INGESTION
- * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/api-data
- * 
- * ✅ PROTECTED with API Key (type: DC_API)
- * ⚠️ NEW: API key passed in URL as :apiKey parameter
- * 
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data
+ *
+ * ✅ PROTECTED with API Key (type: DC_API) — send key in X-API-Key header
+ *
  * Example:
- * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/dcapi_abc123xyz456/api-data
+ * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/api-data
+ * X-API-Key: dcapi_abc123xyz456
  * Body: { value: 100, date: "2024-12-12", ... }
  */
 router.post(
-  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/api-data',
-  apiKeyMiddleware.dataCollectionAPI,   // ✅ API Key Auth (from URL params)
-  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/api-data',
+  apiKeyMiddleware.dataCollectionAPI,
+  apiKeyRateLimit(100, 60000),
   saveAPIData
 );
 
 /**
  * DATA COLLECTION IoT DATA INGESTION
- * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/iot-data
- * 
- * ✅ PROTECTED with API Key (type: DC_IOT)
- * ⚠️ NEW: API key passed in URL as :apiKey parameter
- * 
+ * POST /api/data-collection/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data
+ *
+ * ✅ PROTECTED with API Key (type: DC_IOT) — send key in X-API-Key header
+ *
  * Example:
- * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/dciot_abc123xyz456/iot-data
+ * POST /api/data-collection/clients/CLIENT123/nodes/NODE456/scopes/scope1/iot-data
+ * X-API-Key: dciot_abc123xyz456
  * Body: { value: 100, timestamp: "2024-12-12T10:00:00Z", ... }
  */
 router.post(
-  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/:apiKey/iot-data',
-  apiKeyMiddleware.dataCollectionIoT,   // ✅ API Key Auth (from URL params)
-  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  '/clients/:clientId/nodes/:nodeId/scopes/:scopeIdentifier/iot-data',
+  apiKeyMiddleware.dataCollectionIoT,
+  apiKeyRateLimit(100, 60000),
   saveIoTData
 );
 

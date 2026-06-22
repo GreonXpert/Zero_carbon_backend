@@ -8,10 +8,13 @@ const socketIo    = require('socket.io');
 const helmet      = require('helmet');
 const compression = require('compression');
 const path        = require('path');
+const mongoose    = require('mongoose');
 
 dotenv.config();
 
 const connectDB = require('./src/common/config/db');
+const logger    = require('./src/common/config/logger');
+const pinoHttp  = require('pino-http');
 const { initializeSuperAdmin } = require('./src/common/controllers/user/userController');
 
 const { registerRoutes }  = require('./src/app/bootstrap/registerRoutes');
@@ -35,10 +38,7 @@ app.use(compression({
   }
 }));
 
-// Security headers (first pass — default)
-app.use(helmet());
-
-// Security headers (second pass — explicit CSP + HSTS)
+// Security headers — explicit CSP + HSTS (single call, no duplicate overhead)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -53,21 +53,12 @@ app.use(helmet({
 // Body parser
 app.use(express.json({ limit: '10mb' }));
 
-// Global request logger
-app.use((req, res, next) => {
-  console.log(`\n[${new Date().toISOString()}] ➜ ${req.method} ${req.originalUrl}`);
-  console.log('  Params:', req.params);
-  console.log('  Query :', req.query);
-  console.log('  Body  :', req.body);
-  next();
-});
-
-if (process.env.NODE_ENV !== 'production') {
-  app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-    next();
-  });
-}
+// Structured request logger — redacts auth headers, passwords, tokens.
+// /health is excluded from auto-logging to keep logs clean.
+app.use(pinoHttp({
+  logger,
+  autoLogging: { ignore: (req) => req.url === '/health' },
+}))
 
 // CORS
 app.use(cors({
@@ -90,6 +81,28 @@ app.use(
   helmet.crossOriginResourcePolicy({ policy: 'cross-origin' }),
   express.static('uploads')
 );
+
+// ── Health check — load balancers, Docker HEALTHCHECK, PM2, k6 smoke tests ──
+app.get('/health', (req, res) => {
+  const dbState  = mongoose.connection.readyState;
+  // readyState: 0=disconnected 1=connected 2=connecting 3=disconnecting
+  const dbStatus = dbState === 1 ? 'connected' : 'disconnected';
+  const status   = dbState === 1 ? 'ok' : 'degraded';
+  const mem      = process.memoryUsage();
+
+  res.status(status === 'ok' ? 200 : 503).json({
+    status,
+    timestamp:   new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
+    db:          dbStatus,
+    memory: {
+      heapUsedMB:  Math.round(mem.heapUsed  / 1024 / 1024),
+      heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
+      rssMB:       Math.round(mem.rss       / 1024 / 1024),
+    },
+  });
+});
 
 // ── Mount all API routes ────────────────────────────────────────────────────
 registerRoutes(app);
@@ -156,5 +169,40 @@ server.listen(PORT, () => {
   console.log(`🚀 Server started on port ${PORT}`);
   console.log(`📡 Socket.IO server running with authentication`);
 });
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+
+function shutdown(signal) {
+  console.log(`\n[${new Date().toISOString()}] ${signal} received — shutting down gracefully…`);
+
+  // Force-exit safety net: if shutdown takes longer than 10 s, bail out hard.
+  // .unref() so this timer never prevents the process from exiting on its own.
+  const forceExit = setTimeout(() => {
+    console.error('❌ Graceful shutdown timed out after 10 s — forcing exit.');
+    process.exit(1);
+  }, 10_000);
+  forceExit.unref();
+
+  // Step 1 — stop accepting new connections; let in-flight requests finish.
+  server.close(async () => {
+    console.log('✅ HTTP server closed.');
+
+    // Step 2 — close the Mongoose connection pool cleanly.
+    try {
+      await mongoose.connection.close();
+      console.log('✅ MongoDB connection closed.');
+    } catch (err) {
+      console.error('⚠️  Error closing MongoDB connection:', err.message);
+    }
+
+    // Step 3 — clean exit.
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 module.exports = { app, server, io };

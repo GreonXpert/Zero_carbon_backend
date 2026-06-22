@@ -143,7 +143,7 @@ async function parseApiPayload(req, dataFormat) {
   return { error: `Unsupported dataFormat: ${dataFormat}`, status: 400 };
 }
 
-// ── POST /:clientId/:nodeId/:mappingId/:apiKey/api-data ───────────────────────
+// ── POST /:clientId/:nodeId/:mappingId/api-data  (X-API-Key header) ──────────
 async function ingestApiData(req, res) {
   try {
     return await _ingest(req, res, 'api', 'ESG_API');
@@ -153,7 +153,7 @@ async function ingestApiData(req, res) {
   }
 }
 
-// ── POST /:clientId/:nodeId/:mappingId/:apiKey/iot-data ───────────────────────
+// ── POST /:clientId/:nodeId/:mappingId/iot-data  (X-API-Key header) ──────────
 async function ingestIotData(req, res) {
   try {
     return await _ingest(req, res, 'iot', 'ESG_IOT');

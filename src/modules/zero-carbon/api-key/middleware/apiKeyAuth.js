@@ -1,20 +1,18 @@
-// middleware/apiKeyAuth.js (UPDATED - API Key in URL Params)
+// middleware/apiKeyAuth.js — API key read from X-API-Key header
 const ApiKey = require('../ApiKey');
 const { verifyApiKey, isIpWhitelisted } = require('../utils/keyGenerator');
 
 /**
- * Middleware to authenticate API/IoT requests using API keys
- * 
- * ⚠️ UPDATED: API key is now passed as URL parameter instead of header
- * 
+ * Middleware to authenticate API/IoT requests using API keys.
+ *
  * This middleware:
- * 1. Extracts the API key from req.params.apiKey
+ * 1. Extracts the API key from req.headers['x-api-key']
  * 2. Validates the key exists and is active
  * 3. Verifies the key matches the route parameters
  * 4. Checks expiry
  * 5. Records usage
  * 6. Optional: IP whitelist validation
- * 
+ *
  * @param {string} keyType - Expected key type: 'NET_API', 'NET_IOT', 'DC_API', 'DC_IOT'
  * @returns {Function} Express middleware
  */
@@ -22,19 +20,15 @@ function apiKeyAuth(keyType) {
   return async (req, res, next) => {
     try {
       console.log(`[API Key Auth] Authenticating ${keyType} request`);
-      console.log(`[API Key Auth] URL Params:`, req.params);
-      
-      // ============== Extract API Key from URL Params ==============
-      const apiKey = req.params.apiKey;
 
-      console.log(`[API Key Auth] Extracted key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'NONE'}`);
+      // ============== Extract API Key from X-API-Key header ==============
+      const apiKey = req.headers['x-api-key'];
 
       if (!apiKey) {
-        console.log('[API Key Auth] No API key provided in URL');
         return res.status(401).json({
           success: false,
           error: 'API key is required',
-          message: 'Please provide an API key as a URL parameter. Format: /.../:apiKey/api or /.../:apiKey/iot'
+          message: 'Provide the API key in the X-API-Key request header.'
         });
       }
 

@@ -13,18 +13,18 @@ const rawTextParser = express.text({
   limit: '10mb',
 });
 
-// No JWT auth on these routes — protected by ESG API key in URL path
+// No JWT auth on these routes — protected by X-API-Key header
 // Rate limited inside esgApiKeyAuth middleware (100 req/min per key)
 
 router.post(
-  '/:clientId/:nodeId/:mappingId/:apiKey/api-data',
+  '/:clientId/:nodeId/:mappingId/api-data',
   rawTextParser,
   esgKeyMiddleware.esgAPI,
   ingestionCtrl.ingestApiData
 );
 
 router.post(
-  '/:clientId/:nodeId/:mappingId/:apiKey/iot-data',
+  '/:clientId/:nodeId/:mappingId/iot-data',
   esgKeyMiddleware.esgIoT,
   ingestionCtrl.ingestIotData
 );

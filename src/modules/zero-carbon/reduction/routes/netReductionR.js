@@ -38,37 +38,37 @@ const zcGate = requireActiveModuleSubscription('zero_carbon');
 
 /**
  * NET REDUCTION API DATA INGESTION
- * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/:apiKey/api
- * 
- * ✅ PROTECTED with API Key (type: NET_API)
- * ⚠️ NEW: API key passed in URL as :apiKey parameter
- * 
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/api
+ *
+ * ✅ PROTECTED with API Key (type: NET_API) — send key in X-API-Key header
+ *
  * Example:
- * POST /api/net-reduction/CLIENT123/PROJECT456/method1/nrapi_abc123xyz456/api
+ * POST /api/net-reduction/CLIENT123/PROJECT456/method1/api
+ * X-API-Key: nrapi_abc123xyz456
  * Body: { value: 100, date: "2024-12-12", ... }
  */
 router.post(
-  '/:clientId/:projectId/:calculationMethodology/:apiKey/api',
-  apiKeyMiddleware.netReductionAPI,     // ✅ API Key Auth (from URL params)
-  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  '/:clientId/:projectId/:calculationMethodology/api',
+  apiKeyMiddleware.netReductionAPI,
+  apiKeyRateLimit(100, 60000),
   saveApiNetReduction
 );
 
 /**
  * NET REDUCTION IoT DATA INGESTION
- * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/:apiKey/iot
- * 
- * ✅ PROTECTED with API Key (type: NET_IOT)
- * ⚠️ NEW: API key passed in URL as :apiKey parameter
- * 
+ * POST /api/net-reduction/:clientId/:projectId/:calculationMethodology/iot
+ *
+ * ✅ PROTECTED with API Key (type: NET_IOT) — send key in X-API-Key header
+ *
  * Example:
- * POST /api/net-reduction/CLIENT123/PROJECT456/method1/nriot_abc123xyz456/iot
+ * POST /api/net-reduction/CLIENT123/PROJECT456/method1/iot
+ * X-API-Key: nriot_abc123xyz456
  * Body: { value: 100, timestamp: "2024-12-12T10:00:00Z", ... }
  */
 router.post(
-  '/:clientId/:projectId/:calculationMethodology/:apiKey/iot',
-  apiKeyMiddleware.netReductionIoT,     // ✅ API Key Auth (from URL params)
-  apiKeyRateLimit(100, 60000),           // Rate limit: 100 req/min
+  '/:clientId/:projectId/:calculationMethodology/iot',
+  apiKeyMiddleware.netReductionIoT,
+  apiKeyRateLimit(100, 60000),
   saveIotNetReduction
 );
 

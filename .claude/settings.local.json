@@ -41,7 +41,13 @@
       "Bash(dir .claude/skills/)",
       "Bash(ls /c/Users/fazil/.claude/ 2>&1)",
       "Read(//c/Users/fazil/**)",
-      "Read(//c/Users/fazil/AppData/Roaming/Claude//**)"
+      "Read(//c/Users/fazil/AppData/Roaming/Claude//**)",
+      "Bash(node -e \"require\\('pino'\\); console.log\\('pino ok'\\)\")",
+      "Bash(node -e \"require\\('pino-http'\\); console.log\\('pino-http ok'\\)\")",
+      "Bash(node -e \"require\\('pino-pretty'\\); console.log\\('pino-pretty ok'\\)\")",
+      "Bash(Get-ChildItem -Path \"src\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(python \"D:\\\\Desktop\\\\Zero Carbon\\\\Zero_carbon_backend\\\\.claude\\\\skills\\\\ui-ux-pro-max\\\\scripts\\\\search.py\" \"ESG data integration API key management SaaS dashboard professional\" --design-system -p \"ESGLink API Key Management\" -f markdown)"
     ]
   }
 }
