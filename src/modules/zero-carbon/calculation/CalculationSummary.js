@@ -1,6 +1,7 @@
 // controllers/Calculation/CalculationSummary.js
 
-const EmissionSummary = require('./EmissionSummary');
+const EmissionSummary        = require('./EmissionSummary');
+const DailySummarySnapshot   = require('./DailySummarySnapshot');
 const DataEntry = require('../organization/models/DataEntry');
 const redisCache = require('../../../common/utils/redisCache');
 
@@ -217,6 +218,188 @@ function ensureMapEntry(map, key, defaultValue = {}) {
 
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// P2-02 — MongoDB aggregation pipeline (replaces DataEntry.find + JS loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build a MongoDB aggregation pipeline that pre-groups DataEntry emissions.
+ *
+ * Instead of loading every raw DataEntry document into Node.js and running
+ * extractEmissionValues() N times, we push that work into MongoDB:
+ *
+ *   Stage 1: $match  — same filter as DataEntry.find(query)
+ *   Stage 2: $project — inline the extractEmissionValues logic, handling both
+ *              new format (incoming.original) and old format (incoming directly)
+ *   Stage 3: $match  — drop zero-CO2e entries (mirrors JS `if CO2e===0 continue`)
+ *   Stage 4: $group  — sum gases per unique combination of grouping keys
+ *
+ * Result: M grouped docs instead of N raw docs loaded into Node.js (M << N).
+ */
+function buildEmissionAggregationPipeline(matchQuery) {
+  // Helper: build an expression that sums a specific gas from a dynamic-key
+  // bucket container, handling both flat and one-deep nesting.
+  const sumGasFromBucketExpr = (bucketFieldPath, gasField) => {
+    // Get the gas value from a named variable, with CO2e fallback chain
+    const directGasExpr = (itemVar) => {
+      if (gasField === 'CO2e') {
+        return {
+          $toDouble: {
+            $ifNull: [
+              `${itemVar}.CO2e`,
+              { $ifNull: [
+                `${itemVar}.emission`,
+                { $ifNull: [
+                  `${itemVar}.CO2eWithUncertainty`,
+                  { $ifNull: [`${itemVar}.emissionWithUncertainty`, 0] }
+                ]}
+              ]}
+            ]
+          }
+        };
+      }
+      return { $toDouble: { $ifNull: [`${itemVar}.${gasField}`, 0] } };
+    };
+
+    // Check whether the item has a direct gas field (CO2e handles fallback names)
+    const hasDirectGas = (itemVar) => {
+      if (gasField === 'CO2e') {
+        return { $or: [
+          { $ne: [{ $type: `${itemVar}.CO2e` }, 'missing'] },
+          { $ne: [{ $type: `${itemVar}.emission` }, 'missing'] },
+          { $ne: [{ $type: `${itemVar}.CO2eWithUncertainty` }, 'missing'] },
+          { $ne: [{ $type: `${itemVar}.emissionWithUncertainty` }, 'missing'] }
+        ]};
+      }
+      return { $ne: [{ $type: `${itemVar}.${gasField}` }, 'missing'] };
+    };
+
+    return {
+      $reduce: {
+        input: { $objectToArray: { $ifNull: [bucketFieldPath, {}] } },
+        initialValue: 0,
+        in: {
+          $let: {
+            vars: { outerItem: '$$this.v' },
+            in: {
+              $add: [
+                '$$value',
+                {
+                  $cond: {
+                    if: { $eq: [{ $type: '$$outerItem' }, 'object'] },
+                    then: {
+                      $cond: {
+                        // Flat case: gas field is directly on outerItem
+                        if: hasDirectGas('$$outerItem'),
+                        then: directGasExpr('$$outerItem'),
+                        else: {
+                          // One-deep case: outerItem is a sub-bucket container
+                          $reduce: {
+                            input: { $objectToArray: { $ifNull: ['$$outerItem', {}] } },
+                            initialValue: 0,
+                            in: {
+                              $let: {
+                                vars: { innerItem: '$$this.v' },
+                                in: {
+                                  $add: [
+                                    '$$value',
+                                    {
+                                      $cond: {
+                                        if: { $and: [
+                                          { $eq: [{ $type: '$$innerItem' }, 'object'] },
+                                          hasDirectGas('$$innerItem')
+                                        ]},
+                                        then: directGasExpr('$$innerItem'),
+                                        else: 0
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    else: 0
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    };
+  };
+
+  // Detect new format: incoming.original exists and is a non-null object
+  const isNewFormatExpr = {
+    $and: [
+      { $ne: [{ $type: '$calculatedEmissions.incoming.original' }, 'missing'] },
+      { $ne: [{ $type: '$calculatedEmissions.incoming.original' }, 'null'] }
+    ]
+  };
+
+  // Extract a gas from either new-format (incoming.original) or old-format (incoming)
+  const extractGasExpr = (gasField) => ({
+    $cond: {
+      if: isNewFormatExpr,
+      then: sumGasFromBucketExpr('$calculatedEmissions.incoming.original', gasField),
+      else: sumGasFromBucketExpr('$calculatedEmissions.incoming', gasField)
+    }
+  });
+
+  return [
+    // Stage 1: Same filter as DataEntry.find(query)
+    { $match: matchQuery },
+
+    // Stage 2: Inline extractEmissionValues — keep only grouping fields + gas values
+    {
+      $project: {
+        nodeId:          1,
+        scopeType:       1,
+        scopeIdentifier: 1,
+        categoryName:    1,
+        activity:        1,
+        inputType:       1,
+        emissionFactor:  1,
+        _co2e:           extractGasExpr('CO2e'),
+        _co2:            extractGasExpr('CO2'),
+        _ch4:            extractGasExpr('CH4'),
+        _n2o:            extractGasExpr('N2O'),
+        _uncertainty:    { $toDouble: { $ifNull: ['$calculatedEmissions.uncertainty.deltaE', 0] } }
+      }
+    },
+
+    // Stage 3: Drop zero-emission entries (mirrors the JS `if CO2e===0 continue` guard)
+    { $match: { _co2e: { $gt: 0 } } },
+
+    // Stage 4: Pre-accumulate per unique dimension combination
+    {
+      $group: {
+        _id: {
+          nodeId:          '$nodeId',
+          scopeType:       '$scopeType',
+          scopeIdentifier: '$scopeIdentifier',
+          categoryName:    '$categoryName',
+          activity:        '$activity',
+          inputType:       '$inputType',
+          emissionFactor:  '$emissionFactor'
+        },
+        CO2e:           { $sum: '$_co2e' },
+        CO2:            { $sum: '$_co2' },
+        CH4:            { $sum: '$_ch4' },
+        N2O:            { $sum: '$_n2o' },
+        uncertainty:    { $sum: '$_uncertainty' },
+        dataPointCount: { $sum: 1 },
+        entryIds:       { $push: '$_id' }
+      }
+    }
+  ];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Calculate comprehensive emission summary for a client
  * All values are converted to tonnes
@@ -254,12 +437,11 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       timestamp: { $gte: from, $lte: to }
     };
 
-    // Run independent queries in parallel (Change 2: projections, Change 3: parallel)
-    const DATA_ENTRY_PROJECTION = 'calculatedEmissions nodeId scopeIdentifier categoryName activity scopeType inputType emissionFactor timestamp _id';
+    // P2-02: use aggregation pipeline instead of find() + JS loop
     const PROCESS_ENTRY_PROJECTION = 'calculatedEmissions nodeId scopeIdentifier scopeType inputType emissionFactor categoryName activity timestamp _id';
 
-    const [dataEntries, activeChart, fetchedProcessEntries] = await Promise.all([
-      DataEntry.find(query).select(DATA_ENTRY_PROJECTION).lean(),
+    const [groupedEntries, activeChart, fetchedProcessEntries] = await Promise.all([
+      DataEntry.aggregate(buildEmissionAggregationPipeline(query)),
       getActiveFlowchart(clientId),
       ProcessEmissionDataEntry.find({
         clientId,
@@ -271,10 +453,14 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       })
     ]);
 
+    // Flatten aggregation results for metadata
+    const totalDataPoints = groupedEntries.reduce((sum, g) => sum + g.dataPointCount, 0);
+    const allEntryIds     = groupedEntries.flatMap(g => g.entryIds);
+
     // ============================================================
     // CASE 1: NO DATA FOUND
     // ============================================================
-    if (dataEntries.length === 0) {
+    if (totalDataPoints === 0) {
       console.log(`No processed data entries found for ${clientId} in this period.`);
 
       return {
@@ -333,7 +519,7 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     // ============================================================
     // CASE 2: FLOWCHART + NODES PREPARATION
     // ============================================================
-    console.log(`Found ${dataEntries.length} data entries.`);
+    console.log(`[P2-02] Aggregation returned ${groupedEntries.length} group(s) from ${totalDataPoints} data point(s).`);
 
     if (!activeChart || !activeChart.chart) {
       console.error(`No active flowchart found for ${clientId}`);
@@ -384,8 +570,8 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
       trends: {},
 
       metadata: {
-        totalDataPoints: dataEntries.length,
-        dataEntriesIncluded: dataEntries.map(e => e._id),
+        totalDataPoints,
+        dataEntriesIncluded: allEntryIds,
         calculatedBy: userId,
         lastCalculated: new Date(),
         errors: [],
@@ -397,50 +583,49 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     };
 
     // ============================================================
-    // PROCESS EACH DATA ENTRY
+    // P2-02: BUILD MAPS FROM PRE-GROUPED AGGREGATION RESULTS
+    // (replaces per-entry extractEmissionValues JS loop)
     // ============================================================
-    for (const entry of dataEntries) {
+    for (const group of groupedEntries) {
       try {
-        const emissionValues = extractEmissionValues(entry.calculatedEmissions);
-        if (emissionValues.CO2e === 0) {
-          // Skip zero-emission entries (e.g. entries saved before emission
-          // factors were configured). Warn if activity data exists so config
-          // issues are visible in logs rather than silently ignored.
-          const hasActivityData = entry.calculatedEmissions &&
-            Object.keys(entry.calculatedEmissions?.incoming || {}).length > 0;
-          if (hasActivityData) {
-            console.warn(
-              `[EmissionSummary] Skipping entry ${entry._id} — CO2e is 0 ` +
-              `despite having incoming data. Check emission factor config for ` +
-              `scope ${entry.scopeIdentifier} on node ${entry.nodeId}.`
-            );
-          }
-          continue;
-        }
+        const {
+          _id: {
+            nodeId, scopeType,
+            categoryName: aggCategoryName,
+            activity:     aggActivity,
+            inputType, emissionFactor, scopeIdentifier
+          },
+          CO2e, CO2, CH4, N2O, uncertainty, dataPointCount: groupCount
+        } = group;
 
-        const nodeContext = nodeMap.get(entry.nodeId);
+        // CO2e > 0 guaranteed by $match: { _co2e: { $gt: 0 } } in the pipeline
+        const emissionValues = { CO2e, CO2, CH4, N2O, uncertainty };
+
+        const nodeContext = nodeMap.get(nodeId);
         if (!nodeContext) {
-          emissionSummary.metadata.errors.push(`Node ${entry.nodeId} not found`);
+          emissionSummary.metadata.errors.push(`Node ${nodeId} not found in flowchart`);
           continue;
         }
 
-        const scopeDetail = nodeContext.scopeDetails.find(s => s.scopeIdentifier === entry.scopeIdentifier);
-        const categoryName = scopeDetail?.categoryName || entry.categoryName || "Unknown Category";
-        const activity = scopeDetail?.activity || entry.activity || "Unknown Activity";
+        // scopeDetail lookup can override categoryName/activity from flowchart metadata
+        const scopeDetail  = nodeContext.scopeDetails.find(s => s.scopeIdentifier === scopeIdentifier);
+        const categoryName = scopeDetail?.categoryName || aggCategoryName || 'Unknown Category';
+        const activity     = scopeDetail?.activity     || aggActivity     || 'Unknown Activity';
 
         // === TOTALS ===
         addEmissionValues(emissionSummary.totalEmissions, emissionValues);
 
         // === BY SCOPE ===
-        if (emissionSummary.byScope[entry.scopeType]) {
-          addEmissionValues(emissionSummary.byScope[entry.scopeType], emissionValues, true);
+        if (emissionSummary.byScope[scopeType]) {
+          addEmissionValues(emissionSummary.byScope[scopeType], emissionValues);
+          emissionSummary.byScope[scopeType].dataPointCount += groupCount;
         }
 
         // === BY CATEGORY ===
         const cat = ensureMapEntry(
           emissionSummary.byCategory,
           categoryName,
-          { scopeType: entry.scopeType, activities: new Map() }
+          { scopeType, activities: new Map() }
         );
         addEmissionValues(cat, emissionValues);
 
@@ -452,27 +637,31 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
         const a2 = ensureMapEntry(
           emissionSummary.byActivity,
           activity,
-          { scopeType: entry.scopeType, categoryName }
+          { scopeType, categoryName }
         );
         addEmissionValues(a2, emissionValues);
 
         // === BY NODE ===
         const node = ensureMapEntry(
           emissionSummary.byNode,
-          entry.nodeId,
+          nodeId,
           {
-            nodeLabel: nodeContext.label,
+            nodeLabel:  nodeContext.label,
             department: nodeContext.department,
-            location: nodeContext.location,
+            location:   nodeContext.location,
             byScope: {
-              "Scope 1": { CO2e: 0, dataPointCount: 0 },
-              "Scope 2": { CO2e: 0, dataPointCount: 0 },
-              "Scope 3": { CO2e: 0, dataPointCount: 0 }
+              'Scope 1': { CO2e: 0, dataPointCount: 0 },
+              'Scope 2': { CO2e: 0, dataPointCount: 0 },
+              'Scope 3': { CO2e: 0, dataPointCount: 0 }
             }
           }
         );
-        addEmissionValues(node, emissionValues, true);
-        addEmissionValues(node.byScope[entry.scopeType], emissionValues, true);
+        addEmissionValues(node, emissionValues);
+        node.dataPointCount += groupCount;
+        if (node.byScope[scopeType]) {
+          addEmissionValues(node.byScope[scopeType], emissionValues);
+          node.byScope[scopeType].dataPointCount += groupCount;
+        }
 
         // === BY DEPARTMENT ===
         const dept = ensureMapEntry(emissionSummary.byDepartment, nodeContext.department);
@@ -483,24 +672,22 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
         addEmissionValues(loc, emissionValues);
 
         // === BY INPUT TYPE ===
-        if (emissionSummary.byInputType[entry.inputType]) {
-          emissionSummary.byInputType[entry.inputType].CO2e += emissionValues.CO2e;
-          emissionSummary.byInputType[entry.inputType].dataPointCount += 1;
+        if (emissionSummary.byInputType[inputType]) {
+          emissionSummary.byInputType[inputType].CO2e           += CO2e;
+          emissionSummary.byInputType[inputType].dataPointCount += groupCount;
         }
 
         // === BY EMISSION FACTOR ===
         const eff = ensureMapEntry(
           emissionSummary.byEmissionFactor,
-          entry.emissionFactor || "Unknown",
-          {
-            scopeTypes: { "Scope 1": 0, "Scope 2": 0, "Scope 3": 0 }
-          }
+          emissionFactor || 'Unknown',
+          { scopeTypes: { 'Scope 1': 0, 'Scope 2': 0, 'Scope 3': 0 } }
         );
         addEmissionValues(eff, emissionValues);
-        eff.scopeTypes[entry.scopeType] += 1;
+        if (eff.scopeTypes[scopeType] !== undefined) eff.scopeTypes[scopeType] += groupCount;
 
       } catch (err) {
-        emissionSummary.metadata.errors.push(`Entry ${entry._id} error: ${err.message}`);
+        emissionSummary.metadata.errors.push(`Emission group error: ${err.message}`);
         emissionSummary.metadata.hasErrors = true;
       }
     }
@@ -561,11 +748,13 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
     emissionSummary.metadata.calculationDuration =
       Date.now() - emissionSummary.metadata.lastCalculated.getTime();
 
-    console.log("📊 NEW emissionSummary totals:", {
+    console.log('📊 [P2-02] emissionSummary totals:', {
+      groups:   groupedEntries.length,
+      points:   totalDataPoints,
       totalCO2e: emissionSummary.totalEmissions.CO2e,
-      s1: emissionSummary.byScope["Scope 1"].CO2e,
-      s2: emissionSummary.byScope["Scope 2"].CO2e,
-      s3: emissionSummary.byScope["Scope 3"].CO2e
+      s1: emissionSummary.byScope['Scope 1'].CO2e,
+      s2: emissionSummary.byScope['Scope 2'].CO2e,
+      s3: emissionSummary.byScope['Scope 3'].CO2e
     });
 
     // fetchedProcessEntries was already fetched in the parallel Promise.all above.
@@ -577,26 +766,40 @@ const calculateEmissionSummary = async (clientId, periodType, year, month, week,
 
     // ============================================================
     // BUILD PROCESS EMISSION SUMMARY
+    // Only built when the client has an active (non-deleted) ProcessFlowchart.
+    // Without this guard, orphaned ProcessEmissionDataEntry records (left behind
+    // after a flowchart is deleted) would produce misleading non-zero data.
     // Non-blocking: errors here must NOT break the main calculation.
     // ============================================================
     let processEmissionSummaryData = null;
-    try {
-      processEmissionSummaryData = await buildProcessEmissionSummary(
-        clientId,
-        dataEntries,           // main-chart entries (Strategy B fallback only)
-        nodeMap,               // org-chart node metadata
-        periodType, year, month, week, day, userId,
-        fetchedProcessEntries  // ← pre-fetched process entries (Strategy A - authoritative)
-      );
-      if (processEmissionSummaryData) {
-        console.log(
-          `📊 [ProcessEmissionSummary] Built — ` +
-          `totalAllocatedCO2e: ${processEmissionSummaryData.metadata?.totalAllocatedCO2e}, ` +
-          `dataPoints: ${processEmissionSummaryData.metadata?.dataPointCount}`
+
+    const hasActiveProcessFlowchart = await ProcessFlowchart.exists({
+      clientId,
+      isDeleted: { $ne: true }
+    });
+
+    if (hasActiveProcessFlowchart) {
+      try {
+        processEmissionSummaryData = await buildProcessEmissionSummary(
+          clientId,
+          [],                    // P2-02: raw DataEntries not loaded; Strategy A (fetchedProcessEntries) is authoritative
+          nodeMap,               // org-chart node metadata
+          periodType, year, month, week, day, userId,
+          fetchedProcessEntries  // ← pre-fetched process entries (Strategy A - authoritative)
         );
+        if (processEmissionSummaryData) {
+          console.log(
+            `📊 [ProcessEmissionSummary] Built — ` +
+            `totalAllocatedCO2e: ${processEmissionSummaryData.metadata?.totalAllocatedCO2e}, ` +
+            `dataPoints: ${processEmissionSummaryData.metadata?.dataPointCount}`
+          );
+        }
+      } catch (procErr) {
+        console.error('[ProcessEmissionSummary] Non-fatal build error:', procErr.message);
       }
-    } catch (procErr) {
-      console.error('[ProcessEmissionSummary] Non-fatal build error:', procErr.message);
+    } else {
+      processEmissionSummaryData = buildEmptyProcessEmissionSummary();
+      console.log(`[ProcessEmissionSummary] Skipped — no active ProcessFlowchart for ${clientId}`);
     }
 
     // ============================================================
@@ -1267,10 +1470,8 @@ async function buildProcessEmissionSummary(
         clientId,
         isDeleted: { $ne: true }
       }).lean();
-      if (!processChart) {
-        processChart = await ProcessFlowchart.findOne({ clientId })
-          .sort({ updatedAt: -1 }).lean();
-      }
+      // No fallback to deleted charts — if no active chart exists, processNodeMap
+      // stays empty and a zero summary is produced (matching the Fix 1 guard above).
     } catch (chartErr) {
       console.warn('[ProcessEmissionSummary] ProcessFlowchart query error:', chartErr.message);
     }
@@ -2224,51 +2425,79 @@ const getEmissionSummary = async (req, res) => {
         }
       }
 
-      if (noParts) {
-        summary = await EmissionSummary.findOne(baseQuery)
-          .sort({ "period.to": -1, updatedAt: -1 })
-          .lean();
-      } else {
-        const exactQuery = { ...baseQuery };
-        if (year)  exactQuery["period.year"]  = y;
-        if (month) exactQuery["period.month"] = m;
-        if (week)  exactQuery["period.week"]  = w;
-        if (day)   exactQuery["period.day"]   = d;
-
-        summary = await EmissionSummary.findOne(exactQuery).lean();
-
-        const stale =
-          summary &&
-          summary.metadata &&
-          (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
-
-        if (!summary) {
-          // No cached document at all — must calculate synchronously (first-ever request)
-          const recomputed = await recalculateAndSaveSummary(
-            clientId, periodType, y, m, w, d, req.user?._id
-          );
-          if (recomputed) {
-            summary = recomputed;
-          } else if (preferLatest === "true") {
-            summary = await EmissionSummary.findOne(baseQuery)
-              .sort({ "period.to": -1, updatedAt: -1 })
-              .lean();
+      // ── P2-01: DailySummarySnapshot fast path ──────────────────────────────
+      // For the two most common dashboard views (current-year and all-time),
+      // try today's pre-computed snapshot before touching EmissionSummary.
+      // The nightly cron at 01:30 UTC guarantees a fresh snapshot is always
+      // ready.  Falls through silently on any miss or error.
+      if (['yearly', 'all-time'].includes(periodType) && noParts) {
+        try {
+          const todayUTC = moment.utc().startOf('day').toDate();
+          const snap = await DailySummarySnapshot.findOne({
+            clientId,
+            snapshotDate: todayUTC,
+            status: 'ready',
+          }).lean();
+          if (snap) {
+            const snapData = periodType === 'yearly' ? snap.yearlyData : snap.allTimeData;
+            if (snapData && snapData.clientId) {
+              summary      = snapData;
+              dataFreshness = 'snapshot';
+            }
           }
-        } else if (stale) {
-          // Change 1: Stale cache — return immediately, recalculate in background
-          dataFreshness = 'stale';
-          setImmediate(() => {
-            recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id)
-              .then(() => {
-                // BUG 2 FIX: invalidate all type variants + notify frontend via socket
-                const allTypes = ['both', 'emission', 'reduction', 'process'];
-                Promise.all(allTypes.map(t =>
-                  redisCache.del(redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d, t))
-                )).catch(() => {});
-                emitSummaryUpdate('summary_refreshed', { clientId, periodType, year: y, month: m, week: w, day: d });
-              })
-              .catch(err => console.error('[BgRecalc] Error:', err.message));
-          });
+        } catch (snapErr) {
+          console.warn('[DailySummarySnapshot] fast-path read error:', snapErr.message);
+        }
+      }
+      // ── End P2-01 ───────────────────────────────────────────────────────────
+
+      if (!summary) {
+        if (noParts) {
+          summary = await EmissionSummary.findOne(baseQuery)
+            .sort({ "period.to": -1, updatedAt: -1 })
+            .lean();
+        } else {
+          const exactQuery = { ...baseQuery };
+          if (year)  exactQuery["period.year"]  = y;
+          if (month) exactQuery["period.month"] = m;
+          if (week)  exactQuery["period.week"]  = w;
+          if (day)   exactQuery["period.day"]   = d;
+
+          summary = await EmissionSummary.findOne(exactQuery).lean();
+
+          const stale =
+            summary &&
+            summary.metadata &&
+            (Date.now() - new Date(summary.metadata.lastCalculated).getTime()) > 3600000;
+
+          if (!summary) {
+            // No cached document at all — must calculate synchronously (first-ever request)
+            const recomputed = await recalculateAndSaveSummary(
+              clientId, periodType, y, m, w, d, req.user?._id
+            );
+            if (recomputed) {
+              summary = recomputed;
+            } else if (preferLatest === "true") {
+              summary = await EmissionSummary.findOne(baseQuery)
+                .sort({ "period.to": -1, updatedAt: -1 })
+                .lean();
+            }
+          } else if (stale) {
+            // Change 1: Stale cache — return immediately, recalculate in background
+            dataFreshness = 'stale';
+            setImmediate(() => {
+              recalculateAndSaveSummary(clientId, periodType, y, m, w, d, req.user?._id)
+                .then(() => {
+                  // BUG 2 FIX: invalidate all type variants + notify frontend via socket
+                  const allTypes = ['both', 'emission', 'reduction', 'process'];
+                  Promise.all(allTypes.map(t =>
+                    redisCache.del(redisCache.emissionSummaryKey(clientId, periodType, y, m, w, d, t))
+                  )).catch(() => {});
+                  emitSummaryUpdate('summary_refreshed', { clientId, periodType, year: y, month: m, week: w, day: d });
+                })
+                .catch(err => console.error('[BgRecalc] Error:', err.message));
+            });
+          }
         }
       }
     }
