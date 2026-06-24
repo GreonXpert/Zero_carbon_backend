@@ -497,6 +497,11 @@ DataEntrySchema.pre("validate", function (next) {
 DataEntrySchema.pre("save", async function (next) {
   try {
     if (this._skipRecalculation) {
+      // Preserve the signal for the post-save hook before deleting it here.
+      // Without this, recalculateDataEntriesAfter saves (which set _skipRecalculation)
+      // would still cascade into updateSummariesOnDataChange because the post-save
+      // hook runs after this delete and can no longer see the flag.
+      this._skipPostSaveUpdate = true;
       delete this._skipRecalculation;
       return next();
     }
@@ -530,8 +535,12 @@ DataEntrySchema.pre("save", async function (next) {
 // 🔹 POST-SAVE HOOK - Trigger recalculation of later entries when a historical entry is inserted
 DataEntrySchema.post('save', async function(doc) {
   try {
-    // Skip if this is part of a recalculation process or is a summary
-    if (doc._skipRecalculation || doc._isRecalculating || doc.isSummary) {
+    // _skipPostSaveUpdate is set by the pre-save hook when _skipRecalculation was true.
+    // This prevents the cascade: recalculateDataEntriesAfter sets _skipRecalculation on
+    // each entry it saves, but the pre-save hook deletes it before post-save runs.
+    // Without checking _skipPostSaveUpdate here, all 13 recalculated entries would each
+    // fire another updateSummariesOnDataChange, causing ~112 parallel aggregations → OOM.
+    if (doc._skipRecalculation || doc._isRecalculating || doc.isSummary || doc._skipPostSaveUpdate) {
       return;
     }
     

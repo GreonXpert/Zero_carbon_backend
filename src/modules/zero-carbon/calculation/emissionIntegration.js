@@ -58,36 +58,33 @@ const triggerEmissionCalculation = async (dataEntry) => {
       if (calculationResult.data.emissions) {
         dataEntry.calculatedEmissions = calculationResult.data.emissions;
         dataEntry.emissionCalculationStatus = 'completed';
-        
-        // 🔴 FIX: Explicitly set processed status so it doesn't get overwritten to 'pending'
-        dataEntry.processingStatus = 'processed'; 
-        
+        dataEntry.processingStatus = 'processed';
         dataEntry.emissionCalculatedAt = new Date();
-        // Carry the skip flag through to the second save so the post-save hook also skips
-        // summary updates during batch CSV uploads.
-        if (dataEntry._skipSummaryUpdate) dataEntry._skipSummaryUpdate = true;
+        // This save only updates emission result fields — skip the full recalculation
+        // cascade that the post-save hook would otherwise trigger.
+        dataEntry._skipRecalculation = true;
         await dataEntry.save();
 
-        // 🆕 Trigger summary updates after successful calculation
-        // Skip during batch CSV uploads — summaries are recalculated once at the end.
+        // Fire summary update in the background so the HTTP response is not blocked.
+        // Previously this was awaited here, causing 20+ second timeouts on clients
+        // with many data entries. Skip during batch CSV uploads (recalc at end).
         if (!dataEntry._skipSummaryUpdate) {
-          console.log(`📊 Triggering summary updates for client: ${clientId}`);
-          try {
-            await updateSummariesOnDataChange(dataEntry);
-            console.log(`📊 ✅ Summary updates completed for client: ${clientId}`);
-          } catch (summaryError) {
-            console.error(`📊 ❌ Error updating summaries for client ${clientId}:`, summaryError);
-            // Don't throw error to avoid affecting the main calculation flow
-            dataEntry.summaryUpdateStatus = 'failed';
-            dataEntry.summaryUpdateError = summaryError.message;
-            await dataEntry.save();
-          }
+          const _entryForSummary = dataEntry;
+          setImmediate(async () => {
+            try {
+              await updateSummariesOnDataChange(_entryForSummary);
+              console.log(`📊 ✅ Summary updates completed for client: ${clientId}`);
+            } catch (summaryError) {
+              console.error(`📊 ❌ Error updating summaries for client ${clientId}:`, summaryError.message);
+            }
+          });
         }
       }
     } else {
       console.error(`❌ Emission calculation failed for DataEntry: ${dataEntryId}`);
       dataEntry.emissionCalculationStatus = 'failed';
       dataEntry.emissionCalculationError = calculationResult?.data?.message || 'Unknown error';
+      dataEntry._skipRecalculation = true;
       await dataEntry.save();
     }
 
@@ -95,16 +92,14 @@ const triggerEmissionCalculation = async (dataEntry) => {
 
   } catch (error) {
     console.error('Error in triggerEmissionCalculation:', error);
-    
-    // Update data entry with error status
     try {
       dataEntry.emissionCalculationStatus = 'error';
       dataEntry.emissionCalculationError = error.message;
+      dataEntry._skipRecalculation = true;
       await dataEntry.save();
     } catch (saveError) {
       console.error('Error updating data entry:', saveError);
     }
-    
     return { success: false, error: error.message };
   }
 };
