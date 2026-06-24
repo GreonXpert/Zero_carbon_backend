@@ -297,7 +297,7 @@ const allItems = [
 const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
 
 // 2. fetch formulas
-const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } }).lean();
 const formulasById = {};
 formulas.forEach(f => formulasById[f._id.toString()] = f);
 
@@ -879,7 +879,7 @@ exports.saveM3NetReduction = async (req, res) => {
 
     const formulas = await ReductionFormula.find({
       _id: { $in: formulaIds }
-    });
+    }).lean();
 
     const formulasById = {};
     formulas.forEach(f => {
@@ -1023,7 +1023,7 @@ exports.saveM3NetReduction = async (req, res) => {
     await recomputeProjectCumulative(clientId, projectId, "methodology3");
     try {
       await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 });
     } catch (e) {
       console.warn("recomputeClientNetReductionSummary failed:", e.message);
@@ -1087,7 +1087,8 @@ async function recomputeProjectCumulative(clientId, projectId, calculationMethod
   const rows = await NetReductionEntry
     .find({ clientId, projectId, calculationMethodology })
     .sort({ timestamp: 1 }) // chronological
-    .select('_id netReduction');
+    .select('_id netReduction')
+    .lean();
 
   let cum = 0;
   let hi = null;
@@ -1601,7 +1602,7 @@ exports.saveApiNetReduction = async (req, res) => {
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 }); } catch {}
 
       emitNR("net-reduction:api-saved", {
@@ -1664,7 +1665,7 @@ exports.saveApiNetReduction = async (req, res) => {
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
         try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 }); } catch {}
 
         emitNR("net-reduction:api-saved", {
@@ -1716,12 +1717,17 @@ exports.saveApiNetReduction = async (req, res) => {
         ...new Set(allItems.map(it => it.formulaId.toString()))
       ];
 
-      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } }).lean();
       const formulasById = {};
       formulas.forEach(f => (formulasById[f._id.toString()] = f));
 
       // Evaluate Methodology 3
-      const result = await evaluateM3(ctx.doc, formulasById, entryPayload);
+      let result;
+      try {
+        result = await evaluateM3(ctx.doc, formulasById, entryPayload);
+      } catch (e) {
+        return res.status(400).json({ success: false, message: e.message });
+      }
 
       const entry = await NetReductionEntry.create({
         clientId,
@@ -1746,7 +1752,7 @@ exports.saveApiNetReduction = async (req, res) => {
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 }); } catch {}
 
       emitNR("net-reduction:api-saved", {
@@ -1864,7 +1870,7 @@ exports.saveIotNetReduction = async (req, res) => {
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 });} catch {}
 
       emitNR("net-reduction:iot-saved", {
@@ -1929,7 +1935,7 @@ exports.saveIotNetReduction = async (req, res) => {
 
         try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
         try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 });} catch {}
 
         emitNR("net-reduction:iot-saved", {
@@ -1979,7 +1985,7 @@ exports.saveIotNetReduction = async (req, res) => {
 
       const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
 
-      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } }).lean();
       const formulasById = {};
       formulas.forEach(f => (formulasById[f._id.toString()] = f));
 
@@ -2010,7 +2016,7 @@ exports.saveIotNetReduction = async (req, res) => {
 
       try { await recomputeProjectCumulative(clientId, projectId, calculationMethodology); } catch {}
       try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 }); } catch {}
 
       emitNR("net-reduction:iot-saved", {
@@ -2178,7 +2184,7 @@ exports.uploadCsvNetReduction = async (req, res) => {
         ...(m3.leakageEmissions  || [])
       ];
       const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
-      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+      const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } }).lean();
       formulas.forEach(f => { formulasById[f._id.toString()] = f; });
     }
 
@@ -2368,7 +2374,8 @@ exports.uploadCsvNetReduction = async (req, res) => {
 
       // load reduction & formula
       const red = await Reduction.findOne({ clientId, projectId, isDeleted:false })
-        .select('calculationMethodology m2');
+        .select('calculationMethodology m2')
+        .lean();
       if (!red) return res.status(404).json({ success:false, message:'Reduction not found' });
       if (red.calculationMethodology !== 'methodology2') {
         return res.status(400).json({ success:false, message:`Project uses ${red.calculationMethodology}` });
@@ -2377,7 +2384,7 @@ exports.uploadCsvNetReduction = async (req, res) => {
         return res.status(400).json({ success:false, message:'No formula attached to this reduction (m2.formulaRef.formulaId)' });
       }
 
-      const formula = await ReductionFormula.findById(red.m2.formulaRef.formulaId);
+      const formula = await ReductionFormula.findById(red.m2.formulaRef.formulaId).lean();
       if (!formula || formula.isDeleted) {
         return res.status(404).json({ success:false, message:'Formula not found' });
       }
@@ -2461,7 +2468,7 @@ exports.uploadCsvNetReduction = async (req, res) => {
       await logNetReductionCreate(req, entry);
 
       try { await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 }); } catch (e) { console.warn('summary recompute failed:', e.message); }
 
             emitNR('net-reduction:iot-saved', {
@@ -2499,7 +2506,8 @@ exports.uploadCsvNetReduction = async (req, res) => {
       const { clientId, projectId, calculationMethodology } = req.params;
       const latest = await NetReductionEntry.findOne({ clientId, projectId, calculationMethodology })
         .sort({ timestamp: -1 })
-        .select('cumulativeNetReduction highNetReduction lowNetReduction date time');
+        .select('cumulativeNetReduction highNetReduction lowNetReduction date time')
+        .lean();
       if (!latest) return res.status(404).json({ success:false, message:'No net reduction data' });
       res.status(200).json({ success:true, data: latest });
     } catch (err) {
@@ -2525,7 +2533,8 @@ async function recomputeSeries(clientId, projectId, calculationMethodology) {
     clientId, projectId, calculationMethodology
   })
   .sort({ timestamp: 1 })
-  .select('_id netReduction');
+  .select('_id netReduction')
+  .lean();
 
   let cum = 0;
   let high = null;
@@ -2988,7 +2997,7 @@ exports.updateManualNetReductionEntry = async (req, res) => {
       clientId,
       projectId,
       isDeleted: false
-    }).select("m3 calculationMethodology reductionDataEntry");
+    }).select("m3 calculationMethodology reductionDataEntry").lean();
 
     if (!reductionDoc)
       return res
@@ -3028,7 +3037,7 @@ exports.updateManualNetReductionEntry = async (req, res) => {
     ];
 
     const formulaIds = [...new Set(allItems.map(it => it.formulaId.toString()))];
-    const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } });
+    const formulas = await ReductionFormula.find({ _id: { $in: formulaIds } }).lean();
 
     const formulasById = {};
     formulas.forEach(f => (formulasById[f._id.toString()] = f));
@@ -3099,7 +3108,7 @@ exports.updateManualNetReductionEntry = async (req, res) => {
 
     try {
       await recomputeClientNetReductionSummary(clientId, {
-  timestamps: saved.map(e => e.timestamp).filter(Boolean),
+  timestamps: (Array.isArray(saved) ? saved : [entry]).map(e => e.timestamp).filter(Boolean),
 });
     } catch {}
 
@@ -3159,7 +3168,7 @@ exports.deleteManualNetReductionEntry = async (req, res) => {
       clientId,
       projectId,
       calculationMethodology
-    }).select("_id inputType sourceDetails timestamp");
+    }).select("_id inputType sourceDetails timestamp").lean();
 
     if (!entry) {
       return res.status(404).json({ success: false, message: "Entry not found" });
@@ -3279,7 +3288,7 @@ async function findActiveKey({ clientId, projectId, calculationMethodology, keyT
     calculationMethodology,
     keyType,
     status: "ACTIVE"
-  }).sort({ createdAt: -1 });
+  }).sort({ createdAt: -1 }).lean();
 }
 
 // ✅ helper: resolve consultant targets (consultant_admin + assigned consultant)
@@ -3780,12 +3789,12 @@ exports.listNetReductions = async (req, res) => {
     let allowedClientIds = null;
 
     if (user.userType === 'consultant') {
-      const assigned = await Client.find({ 'leadInfo.assignedConsultantId': user.id }).select('clientId');
+      const assigned = await Client.find({ 'leadInfo.assignedConsultantId': user.id }).select('clientId').lean();
       allowedClientIds = assigned.map(c => c.clientId);
     }
 
     if (user.userType === 'consultant_admin') {
-      const consultants = await User.find({ consultantAdminId: user.id }).select('_id');
+      const consultants = await User.find({ consultantAdminId: user.id }).select('_id').lean();
       const consultantIds = consultants.map(c => c._id.toString());
       consultantIds.push(user.id);
 
@@ -3794,7 +3803,7 @@ exports.listNetReductions = async (req, res) => {
           { 'leadInfo.consultantAdminId': user.id },
           { 'leadInfo.assignedConsultantId': { $in: consultantIds } }
         ]
-      }).select('clientId');
+      }).select('clientId').lean();
 
       allowedClientIds = clients.map(c => c.clientId);
     }

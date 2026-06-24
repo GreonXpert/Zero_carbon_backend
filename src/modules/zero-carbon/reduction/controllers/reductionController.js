@@ -32,7 +32,7 @@ async function canCreateOrEdit(user, clientId) {
     return { ok: false, reason: 'Only consultants/consultant_admins' };
   }
 
-  const client = await Client.findOne({ clientId }).select('leadInfo.createdBy leadInfo.assignedConsultantId');
+  const client = await Client.findOne({ clientId }).select('leadInfo.createdBy leadInfo.assignedConsultantId').lean();
   if (!client) return { ok: false, reason: 'Client not found' };
 
   if (user.userType === 'consultant_admin') {
@@ -861,7 +861,7 @@ exports.getAllReductions = async (req, res) => {
         userType: "consultant",
         consultantAdminId: userId,
         isActive: true,
-      }).select("_id");
+      }).select("_id").lean();
 
       const ids = [userId, ...teamConsultants.map((u) => u._id)];
 
@@ -874,7 +874,7 @@ exports.getAllReductions = async (req, res) => {
           { "leadInfo.assignedConsultantId": userId },
           { "workflowTracking.assignedConsultantId": userId },
         ],
-      }).select("clientId");
+      }).select("clientId").lean();
 
       const myClientIds = myClients.map((c) => c.clientId);
 
@@ -1424,7 +1424,7 @@ async function canViewSoftDeletedReduction(user, clientId, reductionDoc) {
 
   // 3) assigned consultant for this client can view
   if (user.userType === 'consultant') {
-    const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId');
+    const client = await Client.findOne({ clientId }).select('leadInfo.assignedConsultantId').lean();
     if (client?.leadInfo?.assignedConsultantId?.toString?.() === user.id?.toString?.()) {
       return { ok: true };
     }
@@ -2003,7 +2003,8 @@ exports.getClientReductionWorkflowStatus = async (req, res) => {
 
     // Find client
     const client = await Client.findOne({ clientId })
-      .select('clientId workflowTracking.reduction');
+      .select('clientId workflowTracking.reduction')
+      .lean();
 
     if (!client) {
       return res.status(404).json({
